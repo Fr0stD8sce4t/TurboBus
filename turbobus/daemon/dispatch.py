@@ -138,6 +138,7 @@ def handle_request(
             bytes_completed=payload.get("bytes_completed"),
             error=payload.get("error"),
             completion_source=payload.get("completion_source"),
+            completion_evidence=payload.get("completion_evidence"),
         )
     if request.request_type == RequestType.VALIDATE_LEASE:
         payload = request.payload

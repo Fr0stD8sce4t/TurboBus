@@ -7,29 +7,34 @@ history instead of appending old plans.
 
 Real buffer correctness gate.
 
-`TransferReceipt` evidence must prove that daemon-issued worker or backend
-execution moved the requested bytes correctly. The next code work should verify
-buffer contents across the public intent path instead of accepting status-only
-completion.
+Completed receipts for intent-backed transfers must prove executed and verified
+bytes. Status-only worker/backend completion is no longer enough.
 
 ## Current Status
 
-- The intent-to-worker execution loop is closed for local integration coverage.
-- Executable intent receipts complete only after worker or backend completion
-  evidence, or terminal failure/cancelation.
-- Public H2D and D2H intent execution goes through daemon-issued worker plans.
-- Delayed admission, expired plans, worker failure, success, and stale-session
-  timeout cleanup now have focused coverage.
+- The daemon rejects intent completion without worker/backend source and
+  verified byte evidence.
+- `TransferReceipt.metadata` now records `verified`, `verified_bytes`, and
+  `content_match`.
+- Public intent worker and direct backend paths pass local verified-byte
+  evidence into daemon receipts.
+- Local tests cover missing evidence and content-mismatch rejection.
+
+## Remaining Work For This Target
+
+- Add native CUDA/readback evidence so real GPU transfers produce verified
+  source/destination byte proof instead of relying on test fixture evidence.
+- Run the public intent H2D and D2H correctness checks on a CUDA server.
 
 ## Exit Criteria
 
 - Public intent transfers verify destination bytes for worker and backend
-  execution paths.
+  execution paths on real CUDA buffers.
 - A completed receipt records executed and verified byte evidence.
 - Tests fail if worker/backend status reports completion without matching
   buffer contents.
 
 ## Next Step
 
-Add the real buffer correctness gate for the public intent path. Do not move to
-benchmark repair until completed receipts require verified bytes.
+Implement the native CUDA/readback verifier for the public intent path. Do not
+move to benchmark repair until real CUDA transfers produce verified receipts.

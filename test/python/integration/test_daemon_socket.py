@@ -1330,6 +1330,13 @@ class DaemonSocketTest(unittest.TestCase):
                     transfer_id,
                     state="complete",
                     bytes_completed=64,
+                    completion_source="worker",
+                    completion_evidence={
+                        "verified_bytes": 64,
+                        "content_match": True,
+                        "verification_source": "socket-test",
+                        "verification_method": "fixture_compare",
+                    },
                 ).ok
             )
             completed = client.wait_transfer_receipt("intent-1")

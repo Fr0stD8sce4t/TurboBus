@@ -52,7 +52,13 @@ class CompleteExecutor:
             transfer_id=request.transfer_id,
             state=WorkerTransferState.COMPLETE,
             bytes_completed=planned_bytes(request),
-            metadata={"staging_slot_id": staging_slot.slot_id},
+            metadata={
+                "staging_slot_id": staging_slot.slot_id,
+                "verified_bytes": planned_bytes(request),
+                "content_match": True,
+                "verification_source": "test_worker",
+                "verification_method": "fixture_compare",
+            },
         )
 
 
@@ -166,6 +172,8 @@ class FakeDirectBackend(FakeCudaBackend):
         self.registered = []
         self.unregistered = []
         self.completed_bytes = None
+        self.verified_bytes = None
+        self.content_match = True
 
     def set_device(self, device_index):
         self.device_selections.append(int(device_index))
@@ -220,7 +228,14 @@ class FakeDirectBackend(FakeCudaBackend):
             else:
                 plan = self.offloads[-1][4]
             bytes_completed = int(plan["total_bytes"])
-        return {"bytes": bytes_completed}
+        verified_bytes = self.verified_bytes
+        if verified_bytes is None:
+            verified_bytes = bytes_completed
+        return {
+            "bytes": bytes_completed,
+            "verified_bytes": verified_bytes,
+            "content_match": self.content_match,
+        }
 
 
 def planned_bytes(request: WorkerTransferRequest) -> int:

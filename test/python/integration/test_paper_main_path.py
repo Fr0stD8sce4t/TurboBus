@@ -276,11 +276,34 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertFalse(intent_only_completion.ok)
         self.assertIn("execution evidence", intent_only_completion.error)
 
+        missing_verification = daemon.transfer_status(
+            submitted.payload["transfer_id"],
+            state="complete",
+            bytes_completed=64,
+            completion_source="worker",
+        )
+        self.assertFalse(missing_verification.ok)
+        self.assertIn("verified byte evidence", missing_verification.error)
+
+        mismatched_verification = daemon.transfer_status(
+            submitted.payload["transfer_id"],
+            state="complete",
+            bytes_completed=64,
+            completion_source="worker",
+            completion_evidence={
+                "verified_bytes": 32,
+                "content_match": True,
+            },
+        )
+        self.assertFalse(mismatched_verification.ok)
+        self.assertIn("verified byte evidence mismatch", mismatched_verification.error)
+
         completed = daemon.transfer_status(
             submitted.payload["transfer_id"],
             state="complete",
             bytes_completed=64,
             completion_source="worker",
+            completion_evidence=_verified_evidence(64, source="worker"),
         )
         self.assertTrue(completed.ok, completed.error)
         waited = daemon.wait_transfer_receipt(intent.intent_id)
@@ -290,6 +313,9 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(final_receipt.bytes_completed, 64)
         self.assertEqual(final_receipt.metadata["completion_source"], "worker")
         self.assertTrue(final_receipt.metadata["executed"])
+        self.assertTrue(final_receipt.metadata["verified"])
+        self.assertEqual(final_receipt.metadata["verified_bytes"], 64)
+        self.assertTrue(final_receipt.metadata["content_match"])
 
     def test_public_client_executes_h2d_intent_through_worker(self) -> None:
         daemon = _daemon_with_profile([1])
@@ -323,6 +349,9 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(receipt.bytes_completed, 64)
         self.assertEqual(receipt.metadata["completion_source"], "worker")
         self.assertTrue(receipt.metadata["executed"])
+        self.assertTrue(receipt.metadata["verified"])
+        self.assertEqual(receipt.metadata["verified_bytes"], 64)
+        self.assertTrue(receipt.metadata["content_match"])
         self.assertEqual(len(executor.requests), 1)
         self.assertEqual(executor.requests[0].authorization.direction, "h2d")
         profile = daemon.describe().payload
@@ -360,8 +389,110 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(receipt.bytes_completed, 64)
         self.assertEqual(receipt.metadata["completion_source"], "worker")
         self.assertTrue(receipt.metadata["executed"])
+        self.assertTrue(receipt.metadata["verified"])
+        self.assertEqual(receipt.metadata["verified_bytes"], 64)
+        self.assertTrue(receipt.metadata["content_match"])
         self.assertEqual(len(executor.requests), 1)
         self.assertEqual(executor.requests[0].authorization.direction, "d2h")
+
+    def test_public_client_direct_backend_receipt_requires_verified_bytes(self) -> None:
+        daemon = _daemon_with_profile([])
+        session = daemon.register_session(
+            target_gpu=0,
+            requested_relays=[],
+            max_inflight_chunks=8,
+        )
+        self.assertTrue(session.ok, session.error)
+        session_id = session.payload["session"]["session_id"]
+        self.assertTrue(daemon.register_job(job_id="job-1", session_id=session_id).ok)
+        backend = FakeDirectBackend()
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            receipt = TurboBusClient(
+                daemon=daemon,
+                transfer_executor=WorkerIntentTransferExecutor(
+                    buffers={
+                        source.buffer_id: source,
+                        target.buffer_id: target,
+                    },
+                    worker_client=WorkerTransferClient(
+                        daemon,
+                        executor=CompleteExecutor(),
+                    ),
+                    backend=backend,
+                ),
+            ).submit_transfer_intent(
+                _intent(
+                    intent_id="intent-public-direct",
+                    session_id=session_id,
+                    direction="h2d",
+                    source_buffer_id=source.buffer_id,
+                    destination_buffer_id=target.buffer_id,
+                )
+            )
+
+        self.assertEqual(receipt.state, TransferStatusState.COMPLETE)
+        self.assertEqual(receipt.metadata["completion_source"], "backend")
+        self.assertTrue(receipt.metadata["executed"])
+        self.assertTrue(receipt.metadata["verified"])
+        self.assertEqual(receipt.metadata["verified_bytes"], 64)
+        self.assertTrue(receipt.metadata["content_match"])
+        self.assertEqual(len(backend.fetches), 1)
+
+    def test_public_worker_completion_without_matching_bytes_is_rejected(self) -> None:
+        class MismatchedVerificationExecutor:
+            def execute(self, request, staging_slot):
+                return WorkerTransferResult(
+                    transfer_id=request.transfer_id,
+                    state=WorkerTransferState.COMPLETE,
+                    bytes_completed=64,
+                    metadata={
+                        "staging_slot_id": staging_slot.slot_id,
+                        "verified_bytes": 64,
+                        "content_match": False,
+                        "verification_source": "test_worker",
+                        "verification_method": "fixture_compare",
+                    },
+                )
+
+        daemon = _daemon_with_profile([1])
+        session_id = _register_session_and_job(daemon, "job-1")
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            intent = _intent(
+                intent_id="intent-public-mismatch",
+                session_id=session_id,
+                direction="h2d",
+                source_buffer_id=source.buffer_id,
+                destination_buffer_id=target.buffer_id,
+            )
+            with self.assertRaisesRegex(RuntimeError, "matching buffer evidence"):
+                TurboBusClient(
+                    daemon=daemon,
+                    transfer_executor=WorkerIntentTransferExecutor(
+                        buffers={
+                            source.buffer_id: source,
+                            target.buffer_id: target,
+                        },
+                        worker_client=WorkerTransferClient(
+                            daemon,
+                            executor=MismatchedVerificationExecutor(),
+                        ),
+                    ),
+                ).submit_transfer_intent(intent)
+
+        profile = daemon.describe().payload
+        self.assertEqual(profile["reservations"], {})
+        self.assertEqual(profile["staging_records"], {})
+        receipt = TransferReceipt(**daemon.wait_transfer_receipt(intent.intent_id).payload["receipt"])
+        self.assertEqual(receipt.state, TransferStatusState.CANCELED)
+        self.assertIn("worker_status_report_failed", receipt.error)
 
     def test_public_client_does_not_execute_delayed_admission(self) -> None:
         daemon = _daemon_with_profile([1])
@@ -627,6 +758,15 @@ def _register_buffer_objects(
             metadata=registration.metadata,
         )
         assert response.ok, response.error
+
+
+def _verified_evidence(bytes_: int, *, source: str) -> dict[str, object]:
+    return {
+        "verified_bytes": int(bytes_),
+        "content_match": True,
+        "verification_source": str(source),
+        "verification_method": "fixture_compare",
+    }
 
 
 def _register_job_buffers(daemon: TurboBusDaemon, job_id: str) -> str:

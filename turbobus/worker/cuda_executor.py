@@ -138,6 +138,12 @@ class CudaWorkerExecutor:
                     planned_relay_bytes,
                 ),
                 "relay_chunks": relay_chunks,
+                "verified_bytes": _stats_int(stats, "verified_bytes", 0),
+                "content_match": _stats_bool(stats, "content_match", False),
+                "verification_source": "cuda_worker",
+                "verification_method": str(
+                    _stats_value(stats, "verification_method", "backend_stats")
+                ),
             },
         )
 
@@ -327,8 +333,20 @@ def _failed_result(
 
 
 def _stats_int(stats: Any, field_name: str, default: int) -> int:
-    value = getattr(stats, field_name, default)
+    value = _stats_value(stats, field_name, default)
     return int(value if value is not None else default)
+
+
+def _stats_bool(stats: Any, field_name: str, default: bool) -> bool:
+    value = _stats_value(stats, field_name, default)
+    return bool(value if value is not None else default)
+
+
+def _stats_value(stats: Any, field_name: str, default: Any) -> Any:
+    value = getattr(stats, field_name, default)
+    if isinstance(stats, dict):
+        value = stats.get(field_name, value)
+    return value
 
 
 __all__ = ["CudaWorkerExecutor"]

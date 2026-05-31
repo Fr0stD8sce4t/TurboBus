@@ -161,10 +161,12 @@ def receipt_for_transfer(
     plan_expires_at: float | None,
     admitted_state: str,
     completion_source: str | None = None,
+    completion_evidence: dict[str, object] | None = None,
 ) -> TransferReceipt:
     error = status.error
     if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
         error = error or f"transfer {status.state.value}"
+    evidence = dict(completion_evidence or {})
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -192,6 +194,13 @@ def receipt_for_transfer(
             "plan_expires_at": plan_expires_at,
             "completion_source": completion_source,
             "executed": completion_source in {"worker", "backend"},
+            "verified": bool(evidence.get("verified", False)),
+            "verified_bytes": int(evidence.get("verified_bytes", 0) or 0),
+            "content_match": bool(evidence.get("content_match", False)),
+            "verification_source": evidence.get("verification_source"),
+            "verification_method": evidence.get("verification_method"),
+            "source_digest": evidence.get("source_digest"),
+            "destination_digest": evidence.get("destination_digest"),
         },
     )
 

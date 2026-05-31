@@ -563,6 +563,7 @@ class FakeDaemonClient:
         bytes_completed: int | None = None,
         error: str | None = None,
         completion_source: str | None = None,
+        completion_evidence: dict[str, object] | None = None,
     ) -> DaemonResponse:
         self.status_updates.append(
             {
@@ -571,6 +572,7 @@ class FakeDaemonClient:
                 "bytes_completed": bytes_completed,
                 "error": error,
                 "completion_source": completion_source,
+                "completion_evidence": completion_evidence,
             }
         )
         return self.status_response

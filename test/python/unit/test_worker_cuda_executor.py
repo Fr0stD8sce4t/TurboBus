@@ -18,6 +18,8 @@ class FakeRuntime:
 
 class FakeStats:
     bytes = 16
+    verified_bytes = 16
+    content_match = True
     direct_bytes = 0
     direct_chunks = 0
     relay_bytes = 16
@@ -26,6 +28,8 @@ class FakeStats:
 
 class FakePoolStats:
     bytes = 64
+    verified_bytes = 64
+    content_match = True
     direct_bytes = 16
     direct_chunks = 1
     relay_bytes = 48
@@ -34,6 +38,8 @@ class FakePoolStats:
 
 class FakeMultiRelayPoolStats:
     bytes = 96
+    verified_bytes = 96
+    content_match = True
     direct_bytes = 32
     direct_chunks = 2
     relay_bytes = 64
@@ -42,6 +48,8 @@ class FakeMultiRelayPoolStats:
 
 class FakeD2HMultiRelayPoolStats:
     bytes = 96
+    verified_bytes = 96
+    content_match = True
     direct_bytes = 32
     direct_chunks = 2
     relay_bytes = 64
@@ -50,12 +58,16 @@ class FakeD2HMultiRelayPoolStats:
 
 class FakePoolStatsWithoutPathBytes:
     bytes = 64
+    verified_bytes = 64
+    content_match = True
     direct_chunks = 1
     relay_chunks = 3
 
 
 class FakeD2HStats:
     bytes = 16
+    verified_bytes = 16
+    content_match = True
     direct_bytes = 0
     direct_chunks = 0
     relay_bytes = 16

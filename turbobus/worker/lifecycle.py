@@ -73,12 +73,35 @@ class WorkerTransferStatusReporter:
             bytes_completed=status_update["bytes_completed"],
             error=status_update["error"],
             completion_source="worker",
+            completion_evidence=_completion_evidence_for_result(result),
         )
         if not response.ok:
             raise WorkerStatusReportError(
                 response.error or "worker transfer status report failed"
             )
         return response
+
+
+def _completion_evidence_for_result(
+    result: WorkerTransferResult,
+) -> dict[str, object] | None:
+    if result.state is not WorkerTransferState.COMPLETE:
+        return None
+    metadata = dict(result.metadata)
+    evidence = metadata.get("completion_evidence")
+    if isinstance(evidence, Mapping):
+        return dict(evidence)
+    evidence_keys = {
+        "verified_bytes",
+        "content_match",
+        "verification_source",
+        "verification_method",
+        "source_digest",
+        "destination_digest",
+    }
+    if not any(key in metadata for key in evidence_keys):
+        return None
+    return {key: metadata[key] for key in evidence_keys if key in metadata}
 
 
 class WorkerTransferCleanupCoordinator:

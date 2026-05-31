@@ -97,6 +97,7 @@ class TurboBusDaemon:
         self._lease_tokens: dict[str, LeaseToken] = {}
         self._transfer_statuses: dict[str, TransferStatus] = {}
         self._transfer_completion_sources: dict[str, str] = {}
+        self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
         self._staging_records: dict[str, dict[str, object]] = {}
         self._audit_records: list[dict[str, object]] = []
         self._connection_scoped_sessions: set[str] = set()
@@ -512,6 +513,7 @@ class TurboBusDaemon:
         bytes_completed: int | None = None,
         error: str | None = None,
         completion_source: str | None = None,
+        completion_evidence: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         with self._lock:
             status = self._transfer_statuses.get(str(transfer_id))
@@ -525,18 +527,6 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
-            if (
-                requested_state is TransferStatusState.COMPLETE
-                and self._intent_requires_execution_evidence_locked(status.transfer_id)
-                and not _is_execution_completion_source(completion_source)
-            ):
-                return DaemonResponse(
-                    ok=False,
-                    error=(
-                        "intent transfer completion requires worker/backend "
-                        "execution evidence"
-                    ),
-                )
             if status.state in _TERMINAL_TRANSFER_STATES:
                 if (
                     requested_state == status.state
@@ -589,11 +579,51 @@ class TurboBusDaemon:
                         payload={"status": asdict(failed), "removed": removed},
                     )
                 return DaemonResponse(ok=False, error=str(exc))
+            normalized_completion_source = str(completion_source or "").lower()
+            normalized_completion_evidence: dict[str, object] | None = None
+            if updated.state is TransferStatusState.COMPLETE:
+                if self._intent_requires_execution_evidence_locked(updated.transfer_id):
+                    if not _is_execution_completion_source(normalized_completion_source):
+                        return DaemonResponse(
+                            ok=False,
+                            error=(
+                                "intent transfer completion requires worker/backend "
+                                "execution evidence"
+                            ),
+                        )
+                    try:
+                        normalized_completion_evidence = _normalize_completion_evidence(
+                            completion_evidence,
+                            expected_bytes=updated.bytes_total,
+                            completion_source=normalized_completion_source,
+                        )
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                elif completion_evidence is not None:
+                    if isinstance(completion_evidence, Mapping):
+                        try:
+                            normalized_completion_evidence = (
+                                _normalize_completion_evidence(
+                                    completion_evidence,
+                                    expected_bytes=updated.bytes_total,
+                                    completion_source=normalized_completion_source,
+                                )
+                            )
+                        except ValueError:
+                            normalized_completion_evidence = dict(completion_evidence)
+                    else:
+                        normalized_completion_evidence = {
+                            "raw_completion_evidence": str(completion_evidence)
+                        }
             self._transfer_statuses[updated.transfer_id] = updated
             if updated.state is TransferStatusState.COMPLETE:
-                self._transfer_completion_sources[updated.transfer_id] = str(
-                    completion_source or ""
-                ).lower()
+                self._transfer_completion_sources[updated.transfer_id] = (
+                    normalized_completion_source
+                )
+                if normalized_completion_evidence is not None:
+                    self._transfer_completion_evidence[updated.transfer_id] = (
+                        normalized_completion_evidence
+                    )
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
             removed = _empty_removed_summary()
             if updated.state is TransferStatusState.COMPLETE:
@@ -2359,6 +2389,7 @@ class TurboBusDaemon:
         ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
         admission = dict(self._transfer_admissions.get(transfer_id, {}))
         completion_source = self._transfer_completion_sources.get(transfer_id)
+        completion_evidence = self._transfer_completion_evidence.get(transfer_id)
         return daemon_receipts.receipt_for_transfer(
             transfer_id=transfer_id,
             intent=intent,
@@ -2370,6 +2401,7 @@ class TurboBusDaemon:
             plan_expires_at=self._transfer_plan_expirations.get(transfer_id),
             admitted_state=_ADMISSION_ADMITTED,
             completion_source=completion_source,
+            completion_evidence=completion_evidence,
         )
 
     def _intent_requires_execution_evidence_locked(self, transfer_id: str) -> bool:
@@ -3797,6 +3829,55 @@ def _is_execution_completion_source(completion_source: str | None) -> bool:
     if completion_source is None:
         return False
     return str(completion_source).lower() in {"worker", "backend"}
+
+
+def _normalize_completion_evidence(
+    evidence: Mapping[str, object] | None,
+    *,
+    expected_bytes: int,
+    completion_source: str,
+) -> dict[str, object]:
+    if not isinstance(evidence, Mapping):
+        raise ValueError("complete intent transfer requires verified byte evidence")
+    expected = int(expected_bytes)
+    try:
+        verified_bytes = int(evidence["verified_bytes"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("complete intent transfer requires verified byte evidence") from exc
+    if verified_bytes != expected:
+        raise ValueError(
+            f"verified byte evidence mismatch: {verified_bytes} != {expected}"
+        )
+    content_match = bool(evidence.get("content_match", False))
+    if not content_match:
+        raise ValueError("complete intent transfer requires matching buffer evidence")
+    source_digest = evidence.get("source_digest")
+    destination_digest = evidence.get("destination_digest")
+    if (
+        source_digest is not None
+        and destination_digest is not None
+        and str(source_digest) != str(destination_digest)
+    ):
+        raise ValueError("verified byte evidence digest mismatch")
+    return {
+        "verified": True,
+        "verified_bytes": verified_bytes,
+        "content_match": True,
+        "verification_source": str(
+            evidence.get("verification_source") or completion_source
+        ),
+        "verification_method": str(evidence.get("verification_method") or "unknown"),
+        **(
+            {}
+            if source_digest is None
+            else {"source_digest": str(source_digest)}
+        ),
+        **(
+            {}
+            if destination_digest is None
+            else {"destination_digest": str(destination_digest)}
+        ),
+    }
 
 
 def _empty_removed_summary() -> dict[str, int]:

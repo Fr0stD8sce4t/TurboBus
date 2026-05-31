@@ -576,7 +576,7 @@ def _execute_direct_fallback_transfer(
             source_buffer_id=source.buffer_id,
             target_buffer_id=target.buffer_id,
         )
-        bytes_completed = _execute_direct_plan(
+        bytes_completed, completion_evidence = _execute_direct_plan(
             backend=backend,
             runtime_options=runtime_options,
             direction=transfer_request.direction.value,
@@ -602,7 +602,15 @@ def _execute_direct_fallback_transfer(
         state="complete",
         bytes_completed=bytes_completed,
         completion_source="backend",
+        completion_evidence=completion_evidence,
     )
+    if not completed.ok:
+        daemon_client.transfer_status(
+            transfer_id,
+            state="failed",
+            bytes_completed=0,
+            error=completed.error or "backend verification failed",
+        )
     _require_ok(completed, "daemon direct transfer completion update failed")
     status = daemon_client.transfer_status(transfer_id)
     _require_ok(status, "daemon transfer status query failed")
@@ -635,7 +643,7 @@ def _execute_direct_plan(
     plan_payload: Mapping[str, object],
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
-) -> int:
+) -> tuple[int, dict[str, object]]:
     if direction == "h2d":
         if not isinstance(source, SharedPinnedCpuBuffer):
             raise TypeError("direct h2d source must be a SharedPinnedCpuBuffer")
@@ -679,7 +687,7 @@ def _run_direct_plan(
     device_ptr: int,
     device_bytes: int,
     direction: str,
-) -> int:
+) -> tuple[int, dict[str, object]]:
     _require_direct_plan_matches_target(
         plan_payload,
         target_device=int(target_device),
@@ -712,11 +720,17 @@ def _run_direct_plan(
                 native_plan,
             )
         backend.wait(runtime, handle)
-        return _direct_plan_completed_bytes(
-            backend,
-            runtime,
-            handle,
+        stats = _direct_plan_stats(backend, runtime, handle)
+        bytes_completed = _direct_plan_completed_bytes(
+            stats,
             plan_payload=plan_payload,
+        )
+        return (
+            bytes_completed,
+            _direct_plan_completion_evidence(
+                stats,
+                expected_bytes=int(plan_payload["total_bytes"]),
+            ),
         )
     finally:
         host_buffer.unregister_from_cuda()
@@ -806,22 +820,50 @@ def _set_cuda_device_for_direct_plan(backend, target_device: int) -> None:
         setter(int(target_device))
 
 
-def _direct_plan_completed_bytes(
+def _direct_plan_stats(
     backend,
     runtime,
     handle,
+):
+    statter = getattr(backend, "stats", None)
+    if not callable(statter):
+        return {}
+    return statter(runtime, handle)
+
+
+def _direct_plan_completed_bytes(
+    stats,
     *,
     plan_payload: Mapping[str, object],
 ) -> int:
-    statter = getattr(backend, "stats", None)
-    if callable(statter):
-        stats = statter(runtime, handle)
-        bytes_value = getattr(stats, "bytes", None)
-        if bytes_value is None and isinstance(stats, Mapping):
-            bytes_value = stats.get("bytes")
-        if bytes_value is not None:
-            return int(bytes_value)
+    bytes_value = _stats_value(stats, "bytes")
+    if bytes_value is not None:
+        return int(bytes_value)
     return int(plan_payload["total_bytes"])
+
+
+def _direct_plan_completion_evidence(
+    stats,
+    *,
+    expected_bytes: int,
+) -> dict[str, object]:
+    verified_bytes = _stats_value(stats, "verified_bytes")
+    return {
+        "verified_bytes": 0 if verified_bytes is None else int(verified_bytes),
+        "content_match": bool(_stats_value(stats, "content_match") or False),
+        "verification_source": "backend",
+        "verification_method": str(
+            _stats_value(stats, "verification_method") or "backend_stats"
+        ),
+        "expected_bytes": int(expected_bytes),
+    }
+
+
+def _stats_value(stats, field_name: str):
+    value = getattr(stats, field_name, None)
+    if value is None and isinstance(stats, Mapping):
+        value = stats.get(field_name)
+    return value
 
 
 def _require_direct_plan_matches_target(

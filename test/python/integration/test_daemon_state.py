@@ -3621,6 +3621,13 @@ class DaemonStateTest(unittest.TestCase):
                 transfer_id,
                 state="complete",
                 bytes_completed=64,
+                completion_source="worker",
+                completion_evidence={
+                    "verified_bytes": 64,
+                    "content_match": True,
+                    "verification_source": "daemon-state-test",
+                    "verification_method": "fixture_compare",
+                },
             ).ok
         )
         waited = daemon.wait_transfer_receipt(intent.intent_id)

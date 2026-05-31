@@ -14,17 +14,18 @@ bytes. Status-only worker/backend completion is no longer enough.
 
 - The daemon rejects intent completion without worker/backend source and
   verified byte evidence.
-- `TransferReceipt.metadata` now records `verified`, `verified_bytes`, and
-  `content_match`.
-- Public intent worker and direct backend paths pass local verified-byte
-  evidence into daemon receipts.
-- Local tests cover missing evidence and content-mismatch rejection.
+- Public intent worker and direct backend paths pass verification evidence into
+  daemon receipts.
+- The native extension now exposes CUDA readback comparison through
+  `verify_transfer`; Python backend, direct fallback, and worker CUDA executor
+  call that verifier after daemon-issued execution completes.
+- Local tests cover verifier plumbing, missing evidence, and content-mismatch
+  rejection.
 
 ## Remaining Work For This Target
 
-- Add native CUDA/readback evidence so real GPU transfers produce verified
-  source/destination byte proof instead of relying on test fixture evidence.
-- Run the public intent H2D and D2H correctness checks on a CUDA server.
+- Build the native CUDA extension on a CUDA server.
+- Run public intent H2D and D2H correctness checks against real GPU buffers.
 
 ## Exit Criteria
 
@@ -36,5 +37,5 @@ bytes. Status-only worker/backend completion is no longer enough.
 
 ## Next Step
 
-Implement the native CUDA/readback verifier for the public intent path. Do not
-move to benchmark repair until real CUDA transfers produce verified receipts.
+Run the native CUDA build and public intent H2D/D2H correctness checks on a
+CUDA server. Do not move to benchmark repair until those checks pass.

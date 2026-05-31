@@ -40,6 +40,19 @@ class TransferBackend(Protocol):
     def make_transfer_plan(self, plan: Any) -> Any:
         ...
 
+    def verify_transfer(
+        self,
+        *,
+        target_device: int,
+        direction: str,
+        host_ptr: int,
+        host_bytes: int,
+        device_ptr: int,
+        device_bytes: int,
+        ranges: Iterable,
+    ) -> dict[str, object]:
+        ...
+
     def fetch_plan_to_gpu(
         self,
         runtime: Any,

@@ -99,6 +99,17 @@ class CudaWorkerExecutor:
         bytes_completed = _stats_int(stats, "bytes", int(plan_payload["total_bytes"]))
         planned_direct_bytes = _assignment_byte_count(plan_payload, "direct")
         planned_relay_bytes = _assignment_byte_count(plan_payload, "relay")
+        try:
+            completion_evidence = _worker_completion_evidence(
+                backend=self.backend,
+                stats=stats,
+                request=request,
+                resources=resources,
+                target_device=int(target_device),
+                ranges=_plan_transfer_ranges(plan_payload),
+            )
+        except Exception as exc:
+            return _failed_result(request, staging_slot, str(exc))
         direct_chunks = _stats_int(
             stats,
             "direct_chunks",
@@ -138,12 +149,7 @@ class CudaWorkerExecutor:
                     planned_relay_bytes,
                 ),
                 "relay_chunks": relay_chunks,
-                "verified_bytes": _stats_int(stats, "verified_bytes", 0),
-                "content_match": _stats_bool(stats, "content_match", False),
-                "verification_source": "cuda_worker",
-                "verification_method": str(
-                    _stats_value(stats, "verification_method", "backend_stats")
-                ),
+                **completion_evidence,
             },
         )
 
@@ -347,6 +353,58 @@ def _stats_value(stats: Any, field_name: str, default: Any) -> Any:
     if isinstance(stats, dict):
         value = stats.get(field_name, value)
     return value
+
+
+def _worker_completion_evidence(
+    *,
+    backend,
+    stats: Any,
+    request: WorkerTransferRequest,
+    resources: WorkerDataPlaneResources,
+    target_device: int,
+    ranges: tuple[dict[str, int], ...],
+) -> dict[str, object]:
+    verifier = getattr(backend, "verify_transfer", None)
+    if callable(verifier):
+        evidence = dict(
+            verifier(
+                target_device=int(target_device),
+                direction=request.data_plane.direction,
+                host_ptr=resources.host_ptr,
+                host_bytes=resources.host_bytes,
+                device_ptr=resources.device_ptr,
+                device_bytes=resources.device_bytes,
+                ranges=ranges,
+            )
+        )
+        evidence.setdefault("verification_source", "cuda_worker")
+        return evidence
+    return {
+        "verified_bytes": _stats_int(stats, "verified_bytes", 0),
+        "content_match": _stats_bool(stats, "content_match", False),
+        "verification_source": "cuda_worker",
+        "verification_method": str(
+            _stats_value(stats, "verification_method", "backend_stats")
+        ),
+    }
+
+
+def _plan_transfer_ranges(plan_payload: dict[str, object]) -> tuple[dict[str, int], ...]:
+    ranges: list[dict[str, int]] = []
+    for assignment in plan_payload.get("assignments", ()) or ():
+        if not isinstance(assignment, dict):
+            continue
+        for chunk in assignment.get("chunks", ()) or ():
+            if not isinstance(chunk, dict):
+                continue
+            ranges.append(
+                {
+                    "src_offset": int(chunk["src_offset"]),
+                    "dst_offset": int(chunk["dst_offset"]),
+                    "bytes": int(chunk["bytes"]),
+                }
+            )
+    return tuple(ranges)
 
 
 __all__ = ["CudaWorkerExecutor"]

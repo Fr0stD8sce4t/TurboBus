@@ -131,6 +131,47 @@ class CudaNativeBackend:
             raise RuntimeError("native runtime does not support CUDA IPC handles")
         closer(ptr)
 
+    def verify_transfer(
+        self,
+        *,
+        target_device: int,
+        direction: str,
+        host_ptr: int,
+        host_bytes: int,
+        device_ptr: int,
+        device_bytes: int,
+        ranges: Iterable,
+    ) -> dict[str, object]:
+        normalized_direction = str(direction).lower()
+        if normalized_direction not in {"h2d", "d2h"}:
+            raise ValueError("direction must be h2d or d2h")
+        host_size = int(host_bytes)
+        device_size = int(device_bytes)
+        if host_size <= 0:
+            raise ValueError("host_bytes must be positive")
+        if device_size <= 0:
+            raise ValueError("device_bytes must be positive")
+        native_ranges = self.make_ranges(
+            ranges,
+            source_bytes=host_size if normalized_direction == "h2d" else device_size,
+            destination_bytes=device_size if normalized_direction == "h2d" else host_size,
+        )
+        self.require_available()
+        verifier = getattr(self._runtime_engine._turbobus, "verify_transfer", None)
+        if not callable(verifier):
+            raise RuntimeError("native runtime does not support transfer verification")
+        return dict(
+            verifier(
+                int(target_device),
+                normalized_direction,
+                int(host_ptr),
+                host_size,
+                int(device_ptr),
+                device_size,
+                native_ranges,
+            )
+        )
+
     def fetch_plan_to_gpu(
         self,
         runtime: Any,

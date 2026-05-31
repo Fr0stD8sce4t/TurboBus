@@ -700,11 +700,12 @@ def _run_direct_plan(
     runtime = backend.create_runtime(runtime_options)
     backend.initialize_runtime(runtime, int(target_device), [])
     host_buffer.register_for_cuda(backend)
+    host_ptr = host_buffer.address
     try:
         if direction == "h2d":
             handle = backend.fetch_plan_to_gpu(
                 runtime,
-                host_buffer.address,
+                host_ptr,
                 host_buffer.size_bytes,
                 device_ptr,
                 int(device_bytes),
@@ -715,7 +716,7 @@ def _run_direct_plan(
                 runtime,
                 device_ptr,
                 int(device_bytes),
-                host_buffer.address,
+                host_ptr,
                 host_buffer.size_bytes,
                 native_plan,
             )
@@ -729,6 +730,14 @@ def _run_direct_plan(
             bytes_completed,
             _direct_plan_completion_evidence(
                 stats,
+                backend=backend,
+                target_device=int(target_device),
+                direction=direction,
+                host_ptr=host_ptr,
+                host_bytes=host_buffer.size_bytes,
+                device_ptr=int(device_ptr),
+                device_bytes=int(device_bytes),
+                ranges=_plan_transfer_ranges(plan_payload),
                 expected_bytes=int(plan_payload["total_bytes"]),
             ),
         )
@@ -845,6 +854,40 @@ def _direct_plan_completed_bytes(
 def _direct_plan_completion_evidence(
     stats,
     *,
+    backend,
+    target_device: int,
+    direction: str,
+    host_ptr: int,
+    host_bytes: int,
+    device_ptr: int,
+    device_bytes: int,
+    ranges: Iterable[Mapping[str, int]],
+    expected_bytes: int,
+) -> dict[str, object]:
+    verifier = getattr(backend, "verify_transfer", None)
+    if callable(verifier):
+        evidence = dict(
+            verifier(
+                target_device=int(target_device),
+                direction=str(direction).lower(),
+                host_ptr=int(host_ptr),
+                host_bytes=int(host_bytes),
+                device_ptr=int(device_ptr),
+                device_bytes=int(device_bytes),
+                ranges=tuple(ranges),
+            )
+        )
+        evidence.setdefault("expected_bytes", int(expected_bytes))
+        return evidence
+    return _direct_plan_stats_completion_evidence(
+        stats,
+        expected_bytes=int(expected_bytes),
+    )
+
+
+def _direct_plan_stats_completion_evidence(
+    stats,
+    *,
     expected_bytes: int,
 ) -> dict[str, object]:
     verified_bytes = _stats_value(stats, "verified_bytes")
@@ -857,6 +900,24 @@ def _direct_plan_completion_evidence(
         ),
         "expected_bytes": int(expected_bytes),
     }
+
+
+def _plan_transfer_ranges(plan_payload: Mapping[str, object]) -> tuple[dict[str, int], ...]:
+    ranges: list[dict[str, int]] = []
+    for assignment in plan_payload.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            continue
+        for chunk in assignment.get("chunks", ()) or ():
+            if not isinstance(chunk, Mapping):
+                continue
+            ranges.append(
+                {
+                    "src_offset": int(chunk["src_offset"]),
+                    "dst_offset": int(chunk["dst_offset"]),
+                    "bytes": int(chunk["bytes"]),
+                }
+            )
+    return tuple(ranges)
 
 
 def _stats_value(stats, field_name: str):

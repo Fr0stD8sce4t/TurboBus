@@ -441,6 +441,7 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(receipt.metadata["verified_bytes"], 64)
         self.assertTrue(receipt.metadata["content_match"])
         self.assertEqual(len(backend.fetches), 1)
+        self.assertEqual(len(backend.verify_calls), 1)
 
     def test_public_worker_completion_without_matching_bytes_is_rejected(self) -> None:
         class MismatchedVerificationExecutor:

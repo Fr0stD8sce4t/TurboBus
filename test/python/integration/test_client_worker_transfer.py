@@ -174,6 +174,7 @@ class FakeDirectBackend(FakeCudaBackend):
         self.completed_bytes = None
         self.verified_bytes = None
         self.content_match = True
+        self.verify_calls = []
 
     def set_device(self, device_index):
         self.device_selections.append(int(device_index))
@@ -235,6 +236,38 @@ class FakeDirectBackend(FakeCudaBackend):
             "bytes": bytes_completed,
             "verified_bytes": verified_bytes,
             "content_match": self.content_match,
+        }
+
+    def verify_transfer(
+        self,
+        *,
+        target_device,
+        direction,
+        host_ptr,
+        host_bytes,
+        device_ptr,
+        device_bytes,
+        ranges,
+    ):
+        self.verify_calls.append(
+            (
+                target_device,
+                direction,
+                host_ptr,
+                host_bytes,
+                device_ptr,
+                device_bytes,
+                tuple(dict(item) for item in ranges),
+            )
+        )
+        verified_bytes = self.verified_bytes
+        if verified_bytes is None:
+            verified_bytes = sum(int(item["bytes"]) for item in ranges)
+        return {
+            "verified_bytes": verified_bytes,
+            "content_match": self.content_match,
+            "verification_source": "fake_cuda_readback",
+            "verification_method": "fixture_compare",
         }
 
 

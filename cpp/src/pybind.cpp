@@ -7,6 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "turbobus/runtime.h"
 
@@ -57,6 +58,66 @@ void CheckCuda(cudaError_t result, const char* message) {
     throw std::runtime_error(std::string(message) + ": " +
                              cudaGetErrorString(result));
   }
+}
+
+py::dict VerifyTransferBytes(int target_device, const std::string& direction,
+                             std::uintptr_t host_ptr, std::size_t host_bytes,
+                             std::uintptr_t device_ptr, std::size_t device_bytes,
+                             const std::vector<turbobus::TransferRange>& ranges) {
+  if (target_device < 0) {
+    throw std::invalid_argument("target_device must be non-negative");
+  }
+  if (host_ptr == 0) {
+    throw std::invalid_argument("host_ptr must not be null");
+  }
+  if (device_ptr == 0) {
+    throw std::invalid_argument("device_ptr must not be null");
+  }
+  if (ranges.empty()) {
+    throw std::invalid_argument("verification requires at least one range");
+  }
+  const bool h2d = direction == "h2d";
+  const bool d2h = direction == "d2h";
+  if (!h2d && !d2h) {
+    throw std::invalid_argument("direction must be h2d or d2h");
+  }
+
+  CheckCuda(cudaSetDevice(target_device), "cudaSetDevice verification failed");
+  const auto* host = reinterpret_cast<const unsigned char*>(host_ptr);
+  const auto* device = reinterpret_cast<const unsigned char*>(device_ptr);
+  std::size_t verified_bytes = 0;
+  bool content_match = true;
+
+  for (const auto& range : ranges) {
+    const std::size_t host_offset = h2d ? range.src_offset : range.dst_offset;
+    const std::size_t device_offset = h2d ? range.dst_offset : range.src_offset;
+    if (range.bytes == 0) {
+      throw std::invalid_argument("verification range bytes must be positive");
+    }
+    if (host_offset + range.bytes > host_bytes) {
+      throw std::invalid_argument("verification range exceeds host buffer");
+    }
+    if (device_offset + range.bytes > device_bytes) {
+      throw std::invalid_argument("verification range exceeds device buffer");
+    }
+
+    std::vector<unsigned char> observed(range.bytes);
+    CheckCuda(cudaMemcpy(observed.data(), device + device_offset, range.bytes,
+                         cudaMemcpyDeviceToHost),
+              "cudaMemcpy verification readback failed");
+    if (std::memcmp(host + host_offset, observed.data(), range.bytes) == 0) {
+      verified_bytes += range.bytes;
+    } else {
+      content_match = false;
+    }
+  }
+
+  py::dict result;
+  result["verified_bytes"] = verified_bytes;
+  result["content_match"] = content_match;
+  result["verification_source"] = "native_cuda_readback";
+  result["verification_method"] = "cudaMemcpyDeviceToHost_compare";
+  return result;
 }
 
 }  // namespace
@@ -129,6 +190,9 @@ PYBIND11_MODULE(_turbobus, m) {
                     "cudaIpcCloseMemHandle failed");
         },
         py::arg("device_ptr"), py::call_guard<py::gil_scoped_release>());
+  m.def("verify_transfer", &VerifyTransferBytes, py::arg("target_device"),
+        py::arg("direction"), py::arg("host_ptr"), py::arg("host_bytes"),
+        py::arg("device_ptr"), py::arg("device_bytes"), py::arg("ranges"));
 
   py::enum_<turbobus::TransferMode>(m, "TransferMode")
       .value("Pool", turbobus::TransferMode::Pool)

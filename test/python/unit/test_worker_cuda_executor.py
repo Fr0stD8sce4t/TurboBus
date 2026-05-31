@@ -85,6 +85,7 @@ class FakeBackend:
         self.offload_calls = []
         self.wait_calls = []
         self.stats_calls = []
+        self.verify_calls = []
 
     def make_transfer_plan(self, plan):
         self.plan_payloads.append(plan)
@@ -131,6 +132,35 @@ class FakeBackend:
     def stats(self, runtime, handle):
         self.stats_calls.append((runtime, handle))
         return self.stats_result
+
+    def verify_transfer(
+        self,
+        *,
+        target_device,
+        direction,
+        host_ptr,
+        host_bytes,
+        device_ptr,
+        device_bytes,
+        ranges,
+    ):
+        self.verify_calls.append(
+            (
+                target_device,
+                direction,
+                host_ptr,
+                host_bytes,
+                device_ptr,
+                device_bytes,
+                tuple(dict(item) for item in ranges),
+            )
+        )
+        return {
+            "verified_bytes": sum(int(item["bytes"]) for item in ranges),
+            "content_match": True,
+            "verification_source": "fake_cuda_readback",
+            "verification_method": "fixture_compare",
+        }
 
 
 class FakeCpuBuffer:
@@ -407,6 +437,23 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         )
         self.assertEqual(backend.wait_calls[0][1], "handle-1")
         self.assertEqual(backend.stats_calls[0][1], "handle-1")
+        self.assertEqual(
+            backend.verify_calls,
+            [
+                (
+                    0,
+                    "h2d",
+                    1000,
+                    64,
+                    2000,
+                    64,
+                    ({"src_offset": 4, "dst_offset": 8, "bytes": 16},),
+                )
+            ],
+        )
+        self.assertEqual(result.metadata["verified_bytes"], 16)
+        self.assertTrue(result.metadata["content_match"])
+        self.assertEqual(result.metadata["verification_source"], "fake_cuda_readback")
 
     def test_executor_fails_without_bound_resources(self) -> None:
         request = worker_request()

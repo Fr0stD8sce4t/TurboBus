@@ -23,7 +23,6 @@ class FakeHostRegisterNativeModule:
         self.export_device_ipc_handle_calls = []
         self.open_device_ipc_handle_calls = []
         self.close_device_ipc_handle_calls = []
-        self.verify_transfer_calls = []
         self.exported_ipc_handle = bytes(exported_ipc_handle)
 
     def set_device(self, device_index):
@@ -45,34 +44,6 @@ class FakeHostRegisterNativeModule:
 
     def close_device_ipc_handle(self, device_ptr):
         self.close_device_ipc_handle_calls.append(device_ptr)
-
-    def verify_transfer(
-        self,
-        target_device,
-        direction,
-        host_ptr,
-        host_bytes,
-        device_ptr,
-        device_bytes,
-        ranges,
-    ):
-        self.verify_transfer_calls.append(
-            (
-                target_device,
-                direction,
-                host_ptr,
-                host_bytes,
-                device_ptr,
-                device_bytes,
-                ranges,
-            )
-        )
-        return {
-            "verified_bytes": 16,
-            "content_match": True,
-            "verification_source": "fake_native",
-            "verification_method": "fixture_compare",
-        }
 
 
 class FakeRuntimeEngine:
@@ -301,33 +272,6 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertEqual(native.export_device_ipc_handle_calls, [100])
         self.assertEqual(native.open_device_ipc_handle_calls, [b"i" * 64])
         self.assertEqual(native.close_device_ipc_handle_calls, [200])
-
-    def test_backend_verifies_transfer_through_native_runtime(self) -> None:
-        engine = FakeRuntimeEngine()
-        native = FakeHostRegisterNativeModule()
-        engine._turbobus = native
-        backend = CudaNativeBackend(engine)
-
-        evidence = backend.verify_transfer(
-            target_device=0,
-            direction="h2d",
-            host_ptr=100,
-            host_bytes=64,
-            device_ptr=200,
-            device_bytes=64,
-            ranges=({"src_offset": 0, "dst_offset": 8, "bytes": 16},),
-        )
-
-        self.assertEqual(
-            engine.range_calls,
-            [([{"src_offset": 0, "dst_offset": 8, "bytes": 16}], 64, 64)],
-        )
-        self.assertEqual(
-            native.verify_transfer_calls,
-            [(0, "h2d", 100, 64, 200, 64, ["native-range"])],
-        )
-        self.assertEqual(evidence["verified_bytes"], 16)
-        self.assertTrue(evidence["content_match"])
 
     def test_backend_rejects_malformed_cuda_ipc_handles_before_native_open(self) -> None:
         engine = FakeRuntimeEngine()

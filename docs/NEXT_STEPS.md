@@ -19,8 +19,9 @@ bytes. Status-only worker/backend completion is no longer enough.
 - The native extension now exposes CUDA readback comparison through
   `verify_transfer`; Python backend, direct fallback, and worker CUDA executor
   call that verifier after daemon-issued execution completes.
-- Local tests cover verifier plumbing, missing evidence, and content-mismatch
-  rejection.
+- Local tests cover daemon receipt rejection for missing or mismatched evidence.
+  Real buffer correctness is not considered verified until CUDA server checks
+  run against real buffers.
 
 ## Remaining Work For This Target
 

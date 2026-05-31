@@ -10,6 +10,8 @@ from .schema import (
     BufferRegistration,
     DaemonResponse,
     ExecutionTicket,
+    TransferIntent,
+    TransferReceipt,
     WorkerTransferAuthorizationRequest,
 )
 from .transfer import TransferRange, TransferRequest
@@ -297,6 +299,96 @@ class WorkerManagedTransferClient:
         )
 
 
+@dataclass
+class WorkerIntentTransferExecutor:
+    """Execute daemon-submitted TransferIntent payloads without choosing routes."""
+
+    buffers: Mapping[str, SharedPinnedCpuBuffer | CudaIpcDeviceBuffer]
+    worker_client: object
+    backend: object = default_cuda_backend
+    runtime_options: RuntimeOptions = field(default_factory=RuntimeOptions)
+
+    def execute_transfer_intent(
+        self,
+        intent: TransferIntent,
+        response: DaemonResponse,
+        daemon_client,
+    ) -> TransferReceipt:
+        if not isinstance(intent, TransferIntent):
+            raise TypeError("intent must be a TransferIntent")
+        _require_ok(response, "daemon transfer intent submission failed")
+        source, target = _intent_buffers(self.buffers, intent)
+        transfer_request = _transfer_request_from_intent(intent)
+        payload = _intent_execution_payload(response.payload)
+        if _is_direct_only_worker_plan(payload):
+            _execute_direct_fallback_transfer(
+                daemon_client=daemon_client,
+                backend=self.backend,
+                runtime_options=self.runtime_options,
+                transfer_request=transfer_request,
+                planned_payload=payload,
+                session_id=intent.session_id,
+                job_id=intent.job_id,
+                source=source,
+                target=target,
+            )
+            return _wait_for_intent_receipt(daemon_client, intent.intent_id)
+        lease_tokens = _worker_lease_tokens(daemon_client, response)
+        if not lease_tokens:
+            return _receipt_from_daemon_payload(payload, expected_intent_id=intent.intent_id)
+        primary_lease_token = lease_tokens[0]
+        try:
+            _require_worker_plan_matches_leases(
+                payload,
+                lease_tokens,
+                direction=intent.direction,
+            )
+            authorization_request = WorkerTransferAuthorizationRequest(
+                transfer_id=str(payload["transfer_id"]),
+                lease_id=str(primary_lease_token["lease_id"]),
+                token=str(primary_lease_token["token"]),
+                session_id=intent.session_id,
+                job_id=intent.job_id,
+                src_buffer_id=intent.source_buffer_id,
+                dst_buffer_id=intent.destination_buffer_id,
+                direction=intent.direction,
+                ranges=(),
+                relay_gpu=int(primary_lease_token["relay_gpu"]),
+            )
+            worker_execution = _submit_worker_execution(
+                self.worker_client,
+                authorization_request,
+                expected_bytes=int(intent.total_bytes),
+            )
+        except _WorkerCompletionEnvelopeError:
+            _cleanup_planned_relay_leases(
+                daemon_client,
+                lease_tokens,
+                reason="worker_completion_invalid",
+                strict=False,
+            )
+            raise
+        except Exception:
+            _cleanup_planned_relay_leases(
+                daemon_client,
+                lease_tokens,
+                reason="worker_execution_exception",
+                strict=False,
+            )
+            raise
+        if worker_execution.final_state != "complete":
+            _cleanup_planned_relay_leases(
+                daemon_client,
+                lease_tokens,
+                reason="worker_completion_not_complete",
+                strict=False,
+            )
+            raise RuntimeError(
+                worker_execution.error or "worker-managed intent transfer did not complete"
+            )
+        return _wait_for_intent_receipt(daemon_client, intent.intent_id)
+
+
 def _ranges_or_full_buffer(
     ranges: Iterable[TransferRange | tuple[int, int, int] | dict] | None,
     source_bytes: int,
@@ -308,6 +400,61 @@ def _ranges_or_full_buffer(
     if bytes_to_copy <= 0:
         raise ValueError("transfer buffers must be non-empty")
     return (TransferRange(src_offset=0, dst_offset=0, bytes=bytes_to_copy),)
+
+
+def _intent_buffers(
+    buffers: Mapping[str, SharedPinnedCpuBuffer | CudaIpcDeviceBuffer],
+    intent: TransferIntent,
+) -> tuple[SharedPinnedCpuBuffer | CudaIpcDeviceBuffer, SharedPinnedCpuBuffer | CudaIpcDeviceBuffer]:
+    try:
+        source = buffers[intent.source_buffer_id]
+        target = buffers[intent.destination_buffer_id]
+    except KeyError as exc:
+        raise ValueError(f"missing executable buffer for intent: {exc.args[0]}") from exc
+    if source.job_id != intent.job_id or target.job_id != intent.job_id:
+        raise ValueError("intent buffers must belong to the intent job")
+    return source, target
+
+
+def _transfer_request_from_intent(intent: TransferIntent) -> TransferRequest:
+    return TransferRequest.from_ranges(
+        intent.ranges,
+        chunk_bytes=_intent_chunk_bytes(intent),
+        direction=intent.direction,
+        mode="auto",
+        job_id=intent.job_id,
+        metadata={
+            "buffer_ids": (
+                intent.source_buffer_id,
+                intent.destination_buffer_id,
+            )
+        },
+    )
+
+
+def _intent_chunk_bytes(intent: TransferIntent) -> int:
+    for source in (intent.policy_hints, intent.metadata):
+        if not isinstance(source, Mapping):
+            continue
+        value = source.get("chunk_bytes")
+        if value is None:
+            continue
+        chunk_bytes = int(value)
+        if chunk_bytes <= 0:
+            raise ValueError("chunk_bytes must be positive")
+        return chunk_bytes
+    return max(1, int(intent.total_bytes))
+
+
+def _intent_execution_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    execution_payload = dict(payload)
+    if "plan" not in execution_payload:
+        decision = execution_payload.get("decision")
+        if isinstance(decision, Mapping):
+            plan = decision.get("plan")
+            if isinstance(plan, Mapping):
+                execution_payload["plan"] = dict(plan)
+    return execution_payload
 
 
 def _register_buffer(daemon_client, registration: BufferRegistration) -> None:
@@ -1181,6 +1328,32 @@ def _require_ok(response: DaemonResponse, message: str) -> None:
         raise RuntimeError(response.error or message)
 
 
+def _wait_for_intent_receipt(daemon_client, intent_id: str) -> TransferReceipt:
+    waiter = getattr(daemon_client, "wait_transfer_receipt", None)
+    if not callable(waiter):
+        raise TypeError("daemon client must support wait_transfer_receipt")
+    response = waiter(str(intent_id), timeout_seconds=0.0)
+    _require_ok(response, "daemon receipt wait failed")
+    return _receipt_from_daemon_payload(
+        response.payload,
+        expected_intent_id=str(intent_id),
+    )
+
+
+def _receipt_from_daemon_payload(
+    payload: Mapping[str, object],
+    *,
+    expected_intent_id: str,
+) -> TransferReceipt:
+    receipt_payload = payload.get("receipt")
+    if not isinstance(receipt_payload, Mapping):
+        raise ValueError("daemon response missing receipt")
+    receipt = TransferReceipt(**dict(receipt_payload))
+    if receipt.intent_id != str(expected_intent_id):
+        raise ValueError("daemon receipt intent_id does not match request")
+    return receipt
+
+
 def make_worker_managed_transfer_client(
     daemon_client,
     *,
@@ -1210,5 +1383,6 @@ def make_worker_managed_transfer_client(
 __all__ = [
     "WorkerManagedTransferClient",
     "WorkerManagedTransferResult",
+    "WorkerIntentTransferExecutor",
     "make_worker_managed_transfer_client",
 ]

@@ -1,7 +1,7 @@
 # TurboBus Next Steps
 
-This file is the only active forward plan. Keep it short: remove completed
-history instead of moving it to an appendix.
+This file is the only active forward plan. Keep it short and remove completed
+history instead of appending old plans.
 
 ## Current Main Target
 
@@ -11,37 +11,31 @@ Intent-to-worker execution loop.
 execution, status reporting, `TransferReceipt` creation, and cleanup. A receipt
 must not report completion from scheduling alone.
 
-## Done In This Target
+## Current Status
 
-- Intent-backed transfers now require worker/backend execution evidence before
-  they can be marked complete.
-- Worker status reports mark completion as `worker` execution.
-- Direct daemon-ticketed backend fallback marks completion as `backend`
-  execution.
-- Transfer receipts expose `metadata.completion_source` and
-  `metadata.executed` so later benchmark and paper-validation work can reject
-  intent-only evidence.
-- Integration tests cover the guard: an intent-only completion update is
-  rejected, while worker-backed completion produces a completed receipt.
+- Intent-backed transfers require worker/backend completion evidence.
+- Public `TurboBusClient` can be configured with a worker intent executor that
+  submits `TransferIntent`, executes the daemon-issued plan, and returns the
+  final receipt.
+- H2D and D2H public-intent integration tests prove worker completion,
+  executed receipt metadata, and daemon status updates without application-side
+  physical route selection.
 
 ## Remaining Work For This Target
 
-- Replace client-side intent submission that only returns the initial daemon
-  receipt with a public execution path that waits for worker/backend completion
-  when executable buffers and worker/backend clients are available.
-- Add one H2D and one D2H public-intent integration test that goes through
-  `TurboBusClient` or its worker-managed equivalent and proves completion,
-  receipt metadata, and cleanup.
-- Keep delayed or expired admissions from executing until rescheduled.
+- Verify delayed or expired admissions cannot execute until rescheduled.
+- Confirm lease and staging cleanup for public-intent worker execution in
+  success and failure cases.
 
 ## Exit Criteria
 
 - Receipts for executable transfers are complete only after worker/backend
   completion or explicit failure.
 - Leases and staging records are released on success, failure, and timeout.
-- Tests fail if an intent-backed transfer completes from scheduling state alone.
+- Tests fail if an intent-backed transfer completes from scheduling state alone
+  or executes an expired/delayed plan.
 
 ## Next Step
 
-Finish the public intent execution path for H2D and D2H without adding
-application-side physical route controls.
+Close delayed/expired admission behavior for public-intent execution. Do not
+move to the real buffer correctness gate until this target is closed.

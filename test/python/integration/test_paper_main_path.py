@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import unittest
 
+from turbobus.api import TurboBusClient
 from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBufferAllocator
-from turbobus.client_transfer import make_worker_managed_transfer_client
+from turbobus.client_transfer import (
+    WorkerIntentTransferExecutor,
+    make_worker_managed_transfer_client,
+)
 from turbobus.daemon.protocol import WorkerTransferAuthorizationRequest
 from turbobus.daemon.server import TurboBusDaemon
 from turbobus.schema import TransferIntent, TransferReceipt, TransferStatusState, WorkloadKind
@@ -286,6 +290,78 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(final_receipt.metadata["completion_source"], "worker")
         self.assertTrue(final_receipt.metadata["executed"])
 
+    def test_public_client_executes_h2d_intent_through_worker(self) -> None:
+        daemon = _daemon_with_profile([1])
+        session_id = _register_session_and_job(daemon, "job-1")
+        executor = CompleteExecutor()
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            receipt = TurboBusClient(
+                daemon=daemon,
+                transfer_executor=WorkerIntentTransferExecutor(
+                    buffers={
+                        source.buffer_id: source,
+                        target.buffer_id: target,
+                    },
+                    worker_client=WorkerTransferClient(daemon, executor=executor),
+                ),
+            ).submit_transfer_intent(
+                _intent(
+                    intent_id="intent-public-h2d",
+                    session_id=session_id,
+                    direction="h2d",
+                    source_buffer_id=source.buffer_id,
+                    destination_buffer_id=target.buffer_id,
+                )
+            )
+
+        self.assertEqual(receipt.state, TransferStatusState.COMPLETE)
+        self.assertEqual(receipt.bytes_completed, 64)
+        self.assertEqual(receipt.metadata["completion_source"], "worker")
+        self.assertTrue(receipt.metadata["executed"])
+        self.assertEqual(len(executor.requests), 1)
+        self.assertEqual(executor.requests[0].authorization.direction, "h2d")
+        profile = daemon.describe().payload
+        self.assertEqual(profile["transfer_statuses"][receipt.metadata["transfer_id"]]["state"], "complete")
+
+    def test_public_client_executes_d2h_intent_through_worker(self) -> None:
+        daemon = _daemon_with_profile([1])
+        session_id = _register_session_and_job(daemon, "job-1")
+        executor = CompleteExecutor()
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as target:
+            source = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            receipt = TurboBusClient(
+                daemon=daemon,
+                transfer_executor=WorkerIntentTransferExecutor(
+                    buffers={
+                        source.buffer_id: source,
+                        target.buffer_id: target,
+                    },
+                    worker_client=WorkerTransferClient(daemon, executor=executor),
+                ),
+            ).submit_transfer_intent(
+                _intent(
+                    intent_id="intent-public-d2h",
+                    session_id=session_id,
+                    direction="d2h",
+                    source_buffer_id=source.buffer_id,
+                    destination_buffer_id=target.buffer_id,
+                )
+            )
+
+        self.assertEqual(receipt.state, TransferStatusState.COMPLETE)
+        self.assertEqual(receipt.bytes_completed, 64)
+        self.assertEqual(receipt.metadata["completion_source"], "worker")
+        self.assertTrue(receipt.metadata["executed"])
+        self.assertEqual(len(executor.requests), 1)
+        self.assertEqual(executor.requests[0].authorization.direction, "d2h")
+
 
 def _target_buffer(buffer_id: str, job_id: str, size_bytes: int) -> CudaIpcDeviceBuffer:
     return CudaIpcDeviceBuffer.from_device_pointer(
@@ -296,6 +372,60 @@ def _target_buffer(buffer_id: str, job_id: str, size_bytes: int) -> CudaIpcDevic
         device_ptr=4096,
         backend=FakeCudaBackend(),
     )
+
+
+def _intent(
+    *,
+    intent_id: str,
+    session_id: str,
+    direction: str,
+    source_buffer_id: str,
+    destination_buffer_id: str,
+) -> TransferIntent:
+    return TransferIntent(
+        intent_id=intent_id,
+        job_id="job-1",
+        session_id=session_id,
+        source_buffer_id=source_buffer_id,
+        destination_buffer_id=destination_buffer_id,
+        direction=direction,
+        total_bytes=64,
+        ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 64},),
+        workload_kind=WorkloadKind.KV_CACHE,
+        policy_hints={"chunk_bytes": 16},
+    )
+
+
+def _register_session_and_job(daemon: TurboBusDaemon, job_id: str) -> str:
+    session = daemon.register_session(
+        target_gpu=0,
+        requested_relays=[1],
+        max_inflight_chunks=8,
+    )
+    assert session.ok, session.error
+    session_id = session.payload["session"]["session_id"]
+    assert daemon.register_job(job_id=job_id, session_id=session_id).ok
+    return session_id
+
+
+def _register_buffer_objects(
+    daemon: TurboBusDaemon,
+    *buffers,
+) -> None:
+    for buffer in buffers:
+        registration = buffer.buffer_registration()
+        response = daemon.register_buffer(
+            buffer_id=registration.buffer_id,
+            job_id=registration.job_id,
+            kind=registration.kind,
+            size_bytes=registration.size_bytes,
+            device_index=registration.device_index,
+            address=registration.address,
+            pinned=registration.pinned,
+            handle_type=registration.handle_type,
+            metadata=registration.metadata,
+        )
+        assert response.ok, response.error
 
 
 def _register_job_buffers(daemon: TurboBusDaemon, job_id: str) -> str:

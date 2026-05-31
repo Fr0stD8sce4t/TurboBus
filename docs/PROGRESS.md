@@ -8,33 +8,30 @@ Current main target: intent-to-worker execution loop.
 
 ## Completed This Round
 
-- Added a daemon guard so intent-backed transfers cannot be marked complete
-  without worker/backend execution evidence.
-- Updated worker status reporting to identify worker completion.
-- Updated direct daemon-ticketed backend fallback to identify backend
-  completion.
-- Added receipt metadata for `completion_source` and `executed`.
-- Updated integration tests so intent-only completion is rejected and
-  worker-backed completion produces a completed receipt.
+- Added an optional public intent executor to `TurboBusClient`.
+- Added `WorkerIntentTransferExecutor`, which executes daemon-submitted intent
+  payloads using daemon-issued tickets and worker/backend completion.
+- Added H2D and D2H public-intent integration coverage that proves final
+  receipts carry worker execution evidence.
 
 ## Validation
 
 - `python -m unittest test.python.integration.test_paper_main_path`
+- `python -m unittest test.python.unit.test_public_client_api`
 - `python -m unittest test.python.integration.test_client_worker_transfer`
-- `python -m unittest test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_complete_to_daemon_complete_status test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_failed_to_daemon_failed_status`
-- `python -m unittest test.python.integration.test_daemon_socket`
+- `python -m unittest test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_complete_to_daemon_complete_status test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_failed_to_daemon_failed_status test.python.integration.test_daemon_socket`
 
 All listed tests passed locally.
 
 ## Remaining Risk
 
-- Public `TurboBusClient.submit_transfer_intent` still returns the initial
-  daemon receipt; the next code step must connect public intent submission to
-  worker/backend execution for executable H2D and D2H buffers.
+- Delayed and expired admission execution still need explicit public-intent
+  tests before the intent-to-worker target is complete.
 - CUDA, native extension, and real vLLM workload execution were not run in this
   local Windows environment.
 
 ## Next Main Target
 
 Continue intent-to-worker execution loop. Do not move to the real buffer
-correctness gate until public intent execution is closed.
+correctness gate until delayed/expired admission and cleanup behavior are
+closed for public-intent execution.

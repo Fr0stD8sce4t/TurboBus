@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 
 from turbobus.api import TurboBusClient
@@ -494,6 +495,74 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertEqual(receipt.state, TransferStatusState.FAILED)
         self.assertEqual(receipt.error, "copy failed")
 
+    def test_public_intent_timeout_cleans_worker_staging_and_cancels_receipt(self) -> None:
+        class TimeoutAfterAuthorizationExecutor:
+            def __init__(self, daemon: TurboBusDaemon, session_id: str) -> None:
+                self.daemon = daemon
+                self.session_id = session_id
+                self.requests = []
+                self.expired_sessions: list[str] = []
+
+            def execute(self, request, staging_slot):
+                self.requests.append(request)
+                self.assert_staging_registered(request)
+                self.daemon._sessions[self.session_id].last_seen = time.time() - 10.0
+                self.expired_sessions = self.daemon.reap_stale_sessions(now=time.time())
+                return WorkerTransferResult(
+                    transfer_id=request.transfer_id,
+                    state=WorkerTransferState.COMPLETE,
+                    bytes_completed=64,
+                )
+
+            def assert_staging_registered(self, request) -> None:
+                profile = self.daemon.describe().payload
+                if request.authorization.lease_id not in profile["staging_records"]:
+                    raise AssertionError("worker staging record was not registered")
+
+        daemon = _daemon_with_profile([1], session_timeout_seconds=1.0)
+        session_id = _register_session_and_job(daemon, "job-1")
+        executor = TimeoutAfterAuthorizationExecutor(daemon, session_id)
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            intent = _intent(
+                intent_id="intent-public-timeout",
+                session_id=session_id,
+                direction="h2d",
+                source_buffer_id=source.buffer_id,
+                destination_buffer_id=target.buffer_id,
+            )
+            with self.assertRaisesRegex(RuntimeError, "terminal transfer status"):
+                TurboBusClient(
+                    daemon=daemon,
+                    transfer_executor=WorkerIntentTransferExecutor(
+                        buffers={
+                            source.buffer_id: source,
+                            target.buffer_id: target,
+                        },
+                        worker_client=WorkerTransferClient(
+                            daemon,
+                            executor=executor,
+                        ),
+                    ),
+                ).submit_transfer_intent(intent)
+
+        self.assertEqual(executor.expired_sessions, [session_id])
+        self.assertEqual(len(executor.requests), 1)
+        profile = daemon.describe().payload
+        self.assertEqual(profile["sessions"], {})
+        self.assertEqual(profile["jobs"], {})
+        self.assertEqual(profile["buffers"], {})
+        self.assertEqual(profile["reservations"], {})
+        self.assertEqual(profile["staging_records"], {})
+        self.assertEqual(profile["relay_quotas"][1]["active_chunks"], 0)
+        receipt = TransferReceipt(**daemon.wait_transfer_receipt(intent.intent_id).payload["receipt"])
+        self.assertEqual(receipt.state, TransferStatusState.CANCELED)
+        self.assertEqual(receipt.error, "stale_session_timeout")
+        self.assertEqual(receipt.metadata["executed"], False)
+
 
 def _target_buffer(buffer_id: str, job_id: str, size_bytes: int) -> CudaIpcDeviceBuffer:
     return CudaIpcDeviceBuffer.from_device_pointer(
@@ -598,11 +667,13 @@ def _daemon_with_profile(
     relay_gpus: list[int],
     *,
     max_inflight_chunks_per_relay: int = 8,
+    session_timeout_seconds: float = 0.0,
 ) -> TurboBusDaemon:
     daemon = TurboBusDaemon(
         relay_gpus=relay_gpus,
         max_sessions_per_relay=4,
         max_inflight_chunks_per_relay=max_inflight_chunks_per_relay,
+        session_timeout_seconds=session_timeout_seconds,
         topology_provider=StaticTopologyProvider(
             DaemonResourceInventory(
                 gpus=tuple(

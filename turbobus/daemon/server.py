@@ -1419,7 +1419,15 @@ class TurboBusDaemon:
         if quota is not None:
             quota.active_chunks = max(0, quota.active_chunks - reservation.chunks)
         if transfer_id is not None and mark_terminal:
-            self._mark_transfer_terminal_if_unblocked_locked(transfer_id, final_state)
+            self._mark_transfer_terminal_if_unblocked_locked(
+                transfer_id,
+                final_state,
+                error=(
+                    cleanup_reason
+                    if final_state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}
+                    else None
+                ),
+            )
         if cleanup_reason is not None:
             self._system_cleanup_events.append(
                 CleanupRequest(
@@ -2799,6 +2807,7 @@ class TurboBusDaemon:
         self,
         transfer_id: str,
         final_state: TransferStatusState,
+        error: str | None = None,
     ) -> None:
         if any(value == transfer_id for value in self._reservation_transfers.values()):
             return
@@ -2817,7 +2826,7 @@ class TurboBusDaemon:
             bytes_total=status.bytes_total,
             bytes_completed=completed,
             session_id=status.session_id,
-            error=status.error,
+            error=status.error if error is None else error,
         )
         self._refresh_transfer_queue_record_locked(transfer_id)
 

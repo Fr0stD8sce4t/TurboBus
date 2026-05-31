@@ -4,33 +4,32 @@
 
 Active plan: `docs/NEXT_STEPS.md`.
 
-Current main target: intent-to-worker execution loop.
+Current main target: real buffer correctness gate.
 
 ## Completed This Round
 
-- Added admission validation to public intent execution so delayed or expired
-  plans are rejected before worker execution.
-- Added public-intent tests for delayed admission, expired plans, worker
-  failure cleanup, H2D execution, and D2H execution.
-- Verified failure cleanup clears reservations, staging records, relay quota,
-  and leaves a failed receipt.
+- Closed the intent-to-worker execution loop target.
+- Added public-intent timeout coverage where worker authorization registers
+  daemon staging state, stale-session cleanup runs before completion, and the
+  final receipt is canceled instead of completed.
+- Confirmed timeout cleanup clears sessions, jobs, buffers, reservations,
+  staging records, and relay quota state for the public intent path.
 
 ## Validation
 
-- `python -m unittest test.python.integration.test_paper_main_path`
-- `python -m unittest test.python.integration.test_client_worker_transfer test.python.unit.test_public_client_api`
-- `python -m unittest test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_complete_to_daemon_complete_status test.python.integration.test_worker_helper.WorkerHelperTest.test_status_reporter_maps_failed_to_daemon_failed_status test.python.integration.test_daemon_socket`
-- `python -m py_compile turbobus\client_transfer.py test\python\integration\test_paper_main_path.py`
-
-All listed tests passed locally.
+- `python -m unittest test.python.integration.test_paper_main_path test.python.integration.test_client_worker_transfer`
+  passed: 48 tests, 1 skipped.
+- `python -m unittest test.python.integration.test_daemon_state.DaemonStateTest.test_stale_session_reap_releases_staging_records_and_owner_state test.python.integration.test_daemon_state.DaemonStateTest.test_stale_session_reap_releases_reservations_and_quota test.python.integration.test_daemon_state.DaemonStateTest.test_worker_failure_status_releases_reservation_and_staging_record`
+  passed: 3 tests.
+- `python -m py_compile turbobus\daemon\server.py test\python\integration\test_paper_main_path.py`
+  passed.
 
 ## Remaining Risk
 
-- Timeout or stale-session cleanup still needs explicit public-intent coverage.
-- CUDA, native extension, and real vLLM workload execution were not run in this
-  local Windows environment.
+- CUDA, native extension, and real vLLM workload execution still need server
+  validation.
+- Completed receipts do not yet require verified destination bytes.
 
 ## Next Main Target
 
-Continue intent-to-worker execution loop. Do not move to the real buffer
-correctness gate until timeout cleanup is covered for public-intent execution.
+Add the real buffer correctness gate for public intent execution.

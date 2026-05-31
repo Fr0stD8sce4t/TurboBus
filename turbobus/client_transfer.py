@@ -414,6 +414,7 @@ def _execute_direct_fallback_transfer(
         transfer_id,
         state="complete",
         bytes_completed=bytes_completed,
+        completion_source="backend",
     )
     _require_ok(completed, "daemon direct transfer completion update failed")
     status = daemon_client.transfer_status(transfer_id)

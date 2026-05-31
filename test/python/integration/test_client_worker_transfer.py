@@ -81,6 +81,7 @@ class RecordingWorkerClient:
             worker_request.transfer_id,
             state="complete",
             bytes_completed=bytes_completed,
+            completion_source="worker",
         )
         lease_responses = []
         for lease_id in lease_ids:

@@ -4,7 +4,6 @@
 
 #include "turbobus/executor.h"
 #include "turbobus/dummy_compute.h"
-#include "turbobus/planner.h"
 #include "turbobus/profiler.h"
 #include "turbobus/topology.h"
 #include "turbobus/types.h"
@@ -48,7 +47,6 @@ class TurboBusRuntime {
 
   TopologyManager topology_manager_;
   BandwidthProfiler profiler_;
-  ChunkPlanner planner_;
   CudaRelayExecutor executor_;
 };
 

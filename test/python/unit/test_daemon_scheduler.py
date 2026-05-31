@@ -257,6 +257,28 @@ class DaemonSchedulerTest(unittest.TestCase):
         self.assertEqual(decision.metadata["leases"], [])
         self.assertIn("profile miss", decision.fallback_reason)
 
+    def test_p2p_disabled_returns_direct_fallback(self) -> None:
+        scheduler = self.make_scheduler()
+        session = self.make_session()
+        quotas = {1: RelayQuota(relay_gpu=1, max_inflight_chunks=8)}
+        profile = profile_entry()
+        profile["profile"]["relays"][0]["p2p_enabled"] = False
+
+        decision = scheduler.plan_transfer(
+            session=session,
+            profile_entry=profile,
+            relay_quotas=quotas,
+            total_bytes=64,
+            chunk_bytes=16,
+            mode=TransferMode.POOL,
+            direction="h2d",
+        )
+
+        self.assertEqual(decision.state, SchedulingDecisionState.FALLBACK)
+        self.assertEqual(decision.metadata["stats"]["resolved_mode"], "direct")
+        self.assertEqual(decision.metadata["leases"], [])
+        self.assertIn("no daemon-approved relay path", decision.fallback_reason)
+
     def test_invalid_request_values_are_rejected(self) -> None:
         scheduler = self.make_scheduler()
         session = self.make_session()

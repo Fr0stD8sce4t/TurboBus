@@ -10,6 +10,10 @@ import uuid
 from dataclasses import asdict
 from typing import Iterable, Mapping
 
+from . import dispatch as daemon_dispatch
+from . import leases as daemon_leases
+from . import profiles as daemon_profiles
+from . import receipts as daemon_receipts
 from .protocol import (
     BufferRegistration,
     CleanupRequest,
@@ -33,7 +37,6 @@ from ..scheduler import (
     DaemonScheduler,
     SchedulingDecision,
     scheduling_decision_leases,
-    scheduling_decision_stats,
 )
 
 
@@ -93,6 +96,7 @@ class TurboBusDaemon:
         self._transfer_tickets: dict[str, str] = {}
         self._lease_tokens: dict[str, LeaseToken] = {}
         self._transfer_statuses: dict[str, TransferStatus] = {}
+        self._transfer_completion_sources: dict[str, str] = {}
         self._staging_records: dict[str, dict[str, object]] = {}
         self._audit_records: list[dict[str, object]] = []
         self._connection_scoped_sessions: set[str] = set()
@@ -507,6 +511,7 @@ class TurboBusDaemon:
         state: str | None = None,
         bytes_completed: int | None = None,
         error: str | None = None,
+        completion_source: str | None = None,
     ) -> DaemonResponse:
         with self._lock:
             status = self._transfer_statuses.get(str(transfer_id))
@@ -520,6 +525,18 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
+            if (
+                requested_state is TransferStatusState.COMPLETE
+                and self._intent_requires_execution_evidence_locked(status.transfer_id)
+                and not _is_execution_completion_source(completion_source)
+            ):
+                return DaemonResponse(
+                    ok=False,
+                    error=(
+                        "intent transfer completion requires worker/backend "
+                        "execution evidence"
+                    ),
+                )
             if status.state in _TERMINAL_TRANSFER_STATES:
                 if (
                     requested_state == status.state
@@ -573,6 +590,10 @@ class TurboBusDaemon:
                     )
                 return DaemonResponse(ok=False, error=str(exc))
             self._transfer_statuses[updated.transfer_id] = updated
+            if updated.state is TransferStatusState.COMPLETE:
+                self._transfer_completion_sources[updated.transfer_id] = str(
+                    completion_source or ""
+                ).lower()
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
             removed = _empty_removed_summary()
             if updated.state is TransferStatusState.COMPLETE:
@@ -1305,8 +1326,10 @@ class TurboBusDaemon:
         key = self._profile_key(target_gpu, relay_gpus)
         with self._lock:
             self._purge_stale_profiles_locked(time.time())
-            entry = self._profile_cache.get(key)
-            return DaemonResponse(ok=True, payload={"profile": dict(entry) if entry else None})
+            return DaemonResponse(
+                ok=True,
+                payload={"profile": daemon_profiles.cached_profile(self._profile_cache, key)},
+            )
 
     def put_profile(
         self,
@@ -1318,29 +1341,28 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         target = int(target_gpu)
         relays = self._normalize_relays(relay_gpus)
-        normalized = self._normalize_profile(profile, target)
-        entry = {
-            "target_gpu": target,
-            "relay_gpus": relays,
-            "profile_bytes": int(profile_bytes),
-            "updated_at": float(time.time() if updated_at is None else updated_at),
-            "profile": normalized,
-        }
+        entry = daemon_profiles.profile_entry(
+            target_gpu=target,
+            relay_gpus=relays,
+            profile=profile,
+            profile_bytes=int(profile_bytes),
+            updated_at=float(time.time() if updated_at is None else updated_at),
+        )
         key = self._profile_key(target, relays)
         with self._lock:
             self._purge_stale_profiles_locked(time.time())
-            self._profile_cache[key] = entry
-        return DaemonResponse(ok=True, payload={"profile": dict(entry)})
+            stored = daemon_profiles.put_cached_profile(self._profile_cache, key, entry)
+        return DaemonResponse(ok=True, payload={"profile": stored})
 
     def invalidate_profile(self, target_gpu: int, relay_gpus: Iterable[int]) -> DaemonResponse:
         key = self._profile_key(target_gpu, relay_gpus)
         with self._lock:
-            removed = self._profile_cache.pop(key, None)
+            removed = daemon_profiles.invalidate_cached_profile(self._profile_cache, key)
             return DaemonResponse(
                 ok=True,
                 payload={
                     "profile_key": key,
-                    "removed": removed is not None,
+                    "removed": removed,
                 },
             )
 
@@ -1678,40 +1700,22 @@ class TurboBusDaemon:
         reservations: list[TransferReservation],
     ) -> dict[str, object]:
         admission = dict(self._transfer_admissions.get(str(transfer_id), {}))
-        payload = {
-            "decision": asdict(decision),
-            "decision_id": decision.decision_id,
-            "topology_snapshot_id": decision.topology_snapshot_id,
-            "plan": dict(decision.plan),
-            "path_summary": list(decision.path_summary),
-            "stats": scheduling_decision_stats(decision).as_dict(),
-            "leases": [
-                lease.as_dict() for lease in scheduling_decision_leases(decision)
-            ],
-            "admission": admission,
-            "plan_generation": self._transfer_plan_generations.get(str(transfer_id), 0),
-            "plan_expires_at": self._transfer_plan_expirations.get(str(transfer_id)),
-            "transfer_id": str(transfer_id),
-            "transfer_status": asdict(status),
-            "planning": {
-                "target_gpu": session.target_gpu,
-                "profile_key": self._profile_key(session.target_gpu, planning_relays),
-                "relay_eligibility": relay_eligibility,
-            },
-            "reservations": [asdict(reservation) for reservation in reservations],
-        }
-        payload["lease_tokens"] = [
-            asdict(self._lease_tokens[reservation.reservation_id])
-            for reservation in reservations
-            if reservation.reservation_id in self._lease_tokens
-        ]
         ticket_id = self._transfer_tickets.get(str(transfer_id))
-        payload["ticket"] = (
-            None
-            if ticket_id is None
-            else asdict(self._execution_tickets[ticket_id])
+        ticket = None if ticket_id is None else self._execution_tickets[ticket_id]
+        return daemon_receipts.planned_transfer_payload(
+            transfer_id=transfer_id,
+            decision=decision,
+            status=status,
+            session=session,
+            profile_key=self._profile_key(session.target_gpu, planning_relays),
+            relay_eligibility=relay_eligibility,
+            reservations=reservations,
+            admission=admission,
+            plan_generation=self._transfer_plan_generations.get(str(transfer_id), 0),
+            plan_expires_at=self._transfer_plan_expirations.get(str(transfer_id)),
+            lease_tokens=self._lease_tokens,
+            ticket=ticket,
         )
-        return payload
 
     def _validate_transfer_admission_locked(
         self,
@@ -2046,28 +2050,23 @@ class TurboBusDaemon:
         reservation_id: str,
         reservation: TransferReservation,
     ) -> dict[str, object]:
-        record = asdict(reservation)
-        record["transfer_id"] = self._reservation_transfers.get(str(reservation_id))
-        lease = self._lease_tokens.get(str(reservation_id))
-        record["job_id"] = None if lease is None else lease.job_id
-        record["buffer_ids"] = () if lease is None else lease.buffer_ids
-        return record
+        return daemon_leases.runtime_reservation_record(
+            reservation_id=reservation_id,
+            reservation=reservation,
+            reservation_transfers=self._reservation_transfers,
+            lease_tokens=self._lease_tokens,
+        )
 
     def _runtime_lease_record_locked(
         self,
         lease_id: str,
         lease: LeaseToken,
     ) -> dict[str, object]:
-        return {
-            "lease_id": lease.lease_id,
-            "session_id": lease.session_id,
-            "relay_gpu": lease.relay_gpu,
-            "job_id": lease.job_id,
-            "buffer_ids": lease.buffer_ids,
-            "issued_at": lease.issued_at,
-            "expires_at": lease.expires_at,
-            "transfer_id": self._reservation_transfers.get(str(lease_id)),
-        }
+        return daemon_leases.runtime_lease_record(
+            lease_id=lease_id,
+            lease=lease,
+            reservation_transfers=self._reservation_transfers,
+        )
 
     def _job_runtime_state_locked(
         self,
@@ -2319,44 +2318,19 @@ class TurboBusDaemon:
         expires_at: float | None = None,
         lease_ids: tuple[str, ...] = (),
     ) -> ExecutionTicket:
-        direction = _decision_direction(decision)
-        ticket_ranges = _ticket_ranges_for_plan(decision.plan, direction=direction)
-        resolved_expires_at = (
-            float(expires_at)
-            if expires_at is not None
-            else float(
-                self._transfer_plan_expirations.get(
-                    str(transfer_id),
-                    float(now) + _DEFAULT_PLAN_TTL_SECONDS,
-                )
-            )
-        )
-        if resolved_expires_at <= float(now):
-            resolved_expires_at = float(now) + _DEFAULT_PLAN_TTL_SECONDS
-        return ExecutionTicket(
-            ticket_id=f"ticket-{transfer_id}",
-            decision_id=decision.decision_id,
-            intent_id=decision.intent_id,
-            topology_snapshot_id=decision.topology_snapshot_id,
-            job_id=decision.job_id,
-            session_id=decision.session_id,
+        return daemon_receipts.execution_ticket_for_plan(
+            transfer_id=transfer_id,
+            decision=decision,
             source_buffer_id=source_buffer_id,
             destination_buffer_id=destination_buffer_id,
-            direction=direction,
-            total_bytes=sum(item["bytes"] for item in ticket_ranges),
-            ranges=ticket_ranges,
-            plan=dict(decision.plan),
-            issued_at=float(now),
-            expires_at=resolved_expires_at,
+            now=now,
+            plan_generation=self._transfer_plan_generations.get(str(transfer_id), 0),
+            default_expires_at=self._transfer_plan_expirations.get(
+                str(transfer_id),
+                float(now) + _DEFAULT_PLAN_TTL_SECONDS,
+            ),
+            expires_at=expires_at,
             lease_ids=lease_ids,
-            metadata={
-                "issuer": "turbobus-daemon",
-                "transfer_id": transfer_id,
-                "plan_generation": self._transfer_plan_generations.get(
-                    str(transfer_id),
-                    0,
-                ),
-            },
         )
 
     def _receipt_for_intent_locked(self, intent_id: str) -> TransferReceipt:
@@ -2375,37 +2349,25 @@ class TurboBusDaemon:
         if decision is None:
             raise ValueError("scheduling decision is unavailable")
         ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
-        error = status.error
-        if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
-            error = error or f"transfer {status.state.value}"
         admission = dict(self._transfer_admissions.get(transfer_id, {}))
-        return TransferReceipt(
-            receipt_id=f"receipt-{transfer_id}",
-            ticket_id=(
-                ticket.ticket_id
-                if ticket is not None
-                else f"ticket-pending-{transfer_id}"
-            ),
-            intent_id=intent.intent_id,
-            decision_id=decision.decision_id,
-            topology_snapshot_id=decision.topology_snapshot_id,
-            job_id=intent.job_id,
-            session_id=intent.session_id,
-            state=status.state,
-            bytes_total=status.bytes_total,
-            bytes_completed=status.bytes_completed,
-            started_at=decision.issued_at,
-            path_stats=decision.path_summary,
-            error=error,
-            metadata={
-                "transfer_id": transfer_id,
-                "fallback_reason": decision.fallback_reason,
-                "admission_state": admission.get("state", _ADMISSION_ADMITTED),
-                "admission_reason": admission.get("reason"),
-                "plan_generation": self._transfer_plan_generations.get(transfer_id, 0),
-                "plan_expires_at": self._transfer_plan_expirations.get(transfer_id),
-            },
+        completion_source = self._transfer_completion_sources.get(transfer_id)
+        return daemon_receipts.receipt_for_transfer(
+            transfer_id=transfer_id,
+            intent=intent,
+            status=status,
+            decision=decision,
+            ticket=ticket,
+            admission=admission,
+            plan_generation=self._transfer_plan_generations.get(transfer_id, 0),
+            plan_expires_at=self._transfer_plan_expirations.get(transfer_id),
+            admitted_state=_ADMISSION_ADMITTED,
+            completion_source=completion_source,
         )
+
+    def _intent_requires_execution_evidence_locked(self, transfer_id: str) -> bool:
+        request = self._transfer_plan_requests.get(str(transfer_id), {})
+        intent_id = request.get("intent_id")
+        return intent_id is not None and str(intent_id) in self._transfer_intents
 
     def _topology_snapshot_id_locked(self) -> str:
         if self._topology_provider is None:
@@ -2435,11 +2397,10 @@ class TurboBusDaemon:
         return lease_token
 
     def _active_buffer_lease_ids_locked(self, buffer_id: str) -> tuple[str, ...]:
-        normalized = str(buffer_id)
-        return tuple(
-            lease_id
-            for lease_id, lease in sorted(self._lease_tokens.items())
-            if lease_id in self._reservations and normalized in lease.buffer_ids
+        return daemon_leases.active_buffer_lease_ids(
+            lease_tokens=self._lease_tokens,
+            reservations=self._reservations,
+            buffer_id=buffer_id,
         )
 
     def _register_staging_record_locked(
@@ -3031,16 +2992,11 @@ class TurboBusDaemon:
         return reservation
 
     def _purge_stale_profiles_locked(self, now: float) -> list[str]:
-        if self._profile_max_age_seconds <= 0.0:
-            return []
-        expired = [
-            key
-            for key, entry in self._profile_cache.items()
-            if now - float(entry.get("updated_at", 0.0) or 0.0) > self._profile_max_age_seconds
-        ]
-        for key in expired:
-            self._profile_cache.pop(key, None)
-        return expired
+        return daemon_profiles.purge_stale_profiles(
+            self._profile_cache,
+            max_age_seconds=self._profile_max_age_seconds,
+            now=now,
+        )
 
     def describe(self) -> DaemonResponse:
         with self._lock:
@@ -3118,183 +3074,11 @@ class TurboBusDaemon:
         request: DaemonRequest,
         connection_id: str | None = None,
     ) -> DaemonResponse:
-        if request.request_type == RequestType.REGISTER_JOB:
-            payload = request.payload
-            return self.register_job(
-                job_id=str(payload["job_id"]),
-                user_id=payload.get("user_id"),
-                session_id=payload.get("session_id"),
-                container_id=payload.get("container_id"),
-                process_id=payload.get("process_id"),
-                weight=float(payload.get("weight", 1.0)),
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.REGISTER_BUFFER:
-            payload = request.payload
-            return self.register_buffer(
-                buffer_id=str(payload["buffer_id"]),
-                job_id=str(payload["job_id"]),
-                kind=str(payload.get("kind", "cpu_pinned")),
-                size_bytes=int(payload.get("size_bytes", 0)),
-                device_index=payload.get("device_index"),
-                address=payload.get("address"),
-                pinned=bool(payload.get("pinned", False)),
-                handle_type=str(payload.get("handle_type", "registered_buffer")),
-                metadata=payload.get("metadata") or {},
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.GET_INVENTORY:
-            return self.get_inventory()
-        if request.request_type == RequestType.DISCOVER_RELAYS:
-            payload = request.payload
-            target_gpu = payload.get("target_gpu")
-            return self.discover_relays(
-                target_gpu=None if target_gpu is None else int(target_gpu),
-                requested_relays=payload.get("relay_gpus"),
-            )
-        if request.request_type == RequestType.REAP_EXPIRED_LEASES:
-            payload = request.payload
-            expired = self.reap_expired_leases(now=payload.get("now"))
-            return DaemonResponse(
-                ok=True,
-                payload={
-                    "expired_lease_ids": expired,
-                    "expired_count": len(expired),
-                },
-            )
-        if request.request_type == RequestType.REGISTER_SESSION:
-            payload = request.payload
-            return self.register_session(
-                target_gpu=int(payload["target_gpu"]),
-                requested_relays=payload.get("relay_gpus", []),
-                max_inflight_chunks=int(payload.get("max_inflight_chunks", 8)),
-                peer_identity=request.peer_identity,
-                connection_scoped=bool(payload.get("connection_scoped", False)),
-                connection_id=connection_id,
-            )
-        if request.request_type == RequestType.CLOSE_SESSION:
-            if request.session_id is None:
-                return DaemonResponse(ok=False, error="session_id is required")
-            return self.close_session(request.session_id)
-        if request.request_type == RequestType.RESERVE_TRANSFER:
-            if request.session_id is None:
-                return DaemonResponse(ok=False, error="session_id is required")
-            payload = request.payload
-            return self.reserve_transfer(
-                session_id=request.session_id,
-                relay_gpu=int(payload["relay_gpu"]),
-                chunks=int(payload.get("chunks", 1)),
-                bytes_=int(payload.get("bytes", 0)),
-                direction=str(payload.get("direction", "unknown")),
-            )
-        if request.request_type == RequestType.PLAN_TRANSFER:
-            if request.session_id is None:
-                return DaemonResponse(ok=False, error="session_id is required")
-            payload = request.payload
-            total_bytes = int(payload.get("total_bytes", payload.get("bytes", 0)))
-            return self.plan_transfer(
-                session_id=request.session_id,
-                total_bytes=total_bytes,
-                chunk_bytes=int(payload.get("chunk_bytes", 16 * 1024 * 1024)),
-                mode=str(payload.get("mode", "pool")),
-                direction=str(payload.get("direction", "h2d")),
-                job_id=str(payload["job_id"]) if "job_id" in payload else None,
-                buffer_ids=payload.get("buffer_ids"),
-                ranges=payload.get("ranges"),
-                intent_id=payload.get("intent_id"),
-                topology_snapshot_id=payload.get("topology_snapshot_id"),
-                workload_kind=str(payload.get("workload_kind", "generic")),
-                priority=int(payload.get("priority", 0)),
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.SUBMIT_TRANSFER_INTENT:
-            payload = request.payload
-            intent_payload = payload.get("intent")
-            if not isinstance(intent_payload, dict):
-                return DaemonResponse(ok=False, error="intent is required")
-            return self.submit_transfer_intent(
-                TransferIntent(**intent_payload),
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.WAIT_TRANSFER_RECEIPT:
-            payload = request.payload
-            return self.wait_transfer_receipt(
-                intent_id=str(payload["intent_id"]),
-                timeout_seconds=payload.get("timeout_seconds"),
-            )
-        if request.request_type == RequestType.RESCHEDULE_TRANSFER:
-            payload = request.payload
-            return self.reschedule_transfer(
-                transfer_id=str(payload["transfer_id"]),
-                now=payload.get("now"),
-            )
-        if request.request_type == RequestType.RELEASE_TRANSFER:
-            payload = request.payload
-            reservation_id = payload.get("reservation_id")
-            if reservation_id is None:
-                return DaemonResponse(ok=False, error="reservation_id is required")
-            return self.release_transfer(str(reservation_id))
-        if request.request_type == RequestType.TRANSFER_STATUS:
-            payload = request.payload
-            return self.transfer_status(
-                transfer_id=str(payload["transfer_id"]),
-                state=payload.get("state"),
-                bytes_completed=payload.get("bytes_completed"),
-                error=payload.get("error"),
-            )
-        if request.request_type == RequestType.VALIDATE_LEASE:
-            payload = request.payload
-            return self.validate_lease(
-                lease_id=str(payload["lease_id"]),
-                token=str(payload["token"]),
-                session_id=payload.get("session_id"),
-                relay_gpu=payload.get("relay_gpu"),
-                job_id=payload.get("job_id"),
-                buffer_ids=payload.get("buffer_ids"),
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.AUTHORIZE_WORKER_TRANSFER:
-            return self.authorize_worker_transfer(
-                WorkerTransferAuthorizationRequest(**request.payload),
-                peer_identity=request.peer_identity,
-            )
-        if request.request_type == RequestType.CLEANUP:
-            payload = request.payload
-            return self.cleanup(
-                target_kind=str(payload["target_kind"]),
-                target_id=str(payload["target_id"]),
-                reason=str(payload.get("reason", "manual")),
-                force=bool(payload.get("force", False)),
-            )
-        if request.request_type == RequestType.INVALIDATE_PROFILE:
-            payload = request.payload
-            return self.invalidate_profile(
-                target_gpu=int(payload["target_gpu"]),
-                relay_gpus=payload.get("relay_gpus", []),
-            )
-        if request.request_type == RequestType.INVALIDATE_TOPOLOGY:
-            return self.invalidate_topology()
-        if request.request_type == RequestType.GET_PROFILE:
-            payload = request.payload
-            return self.get_profile(
-                target_gpu=int(payload["target_gpu"]),
-                relay_gpus=payload.get("relay_gpus", []),
-            )
-        if request.request_type == RequestType.PUT_PROFILE:
-            payload = request.payload
-            try:
-                return self.put_profile(
-                    target_gpu=int(payload["target_gpu"]),
-                    relay_gpus=payload.get("relay_gpus", []),
-                    profile=payload.get("profile", {}),
-                    profile_bytes=int(payload.get("profile_bytes", 0)),
-                    updated_at=payload.get("updated_at"),
-                )
-            except Exception as exc:
-                return DaemonResponse(ok=False, error=str(exc))
-        if request.request_type == RequestType.PROFILE:
-            return self.describe()
-        return DaemonResponse(ok=False, error=f"unsupported request: {request.request_type}")
+        return daemon_dispatch.handle_request(
+            self,
+            request,
+            connection_id=connection_id,
+        )
 
     def _eligible_relays_for_session_locked(self, session: Session) -> tuple[int, ...]:
         relay_eligibility = self._relay_eligibility_for_session_locked(session)
@@ -3436,25 +3220,7 @@ class TurboBusDaemon:
                 "reason": eligibility["reason"],
             },
             "inventory": self._relay_inventory_record(inventory, relay_gpu, target_gpu),
-            "quota": (
-                None
-                if quota is None
-                else {
-                    "relay_gpu": quota.relay_gpu,
-                    "max_sessions": quota.max_sessions,
-                    "active_sessions": len(quota.sessions),
-                    "available_sessions": max(
-                        0,
-                        quota.max_sessions - len(quota.sessions),
-                    ),
-                    "max_inflight_chunks": quota.max_inflight_chunks,
-                    "active_chunks": quota.active_chunks,
-                    "available_chunks": max(
-                        0,
-                        quota.max_inflight_chunks - quota.active_chunks,
-                    ),
-                }
-            ),
+            "quota": daemon_leases.relay_quota_record(quota),
             "sessions": self._relay_session_records_locked(relay_gpu),
             "reservations": self._relay_reservation_records_locked(relay_gpu),
             "leases": self._relay_lease_records_locked(relay_gpu),
@@ -3501,65 +3267,31 @@ class TurboBusDaemon:
         }
 
     def _relay_session_records_locked(self, relay_gpu: int) -> list[dict[str, object]]:
-        quota = self._relay_quotas.get(relay_gpu)
-        if quota is None:
-            return []
-        records = []
-        for session_id in sorted(quota.sessions):
-            session = self._sessions.get(session_id)
-            if session is None:
-                continue
-            records.append(
-                {
-                    "session_id": session.session_id,
-                    "target_gpu": session.target_gpu,
-                    "active": session.active,
-                    "active_chunks": session.active_chunks,
-                    "max_inflight_chunks": session.max_inflight_chunks,
-                    "job_ids": sorted(
-                        job.job_id
-                        for job in self._jobs.values()
-                        if job.session_id == session.session_id
-                    ),
-                }
-            )
-        return records
+        return daemon_leases.relay_session_records(
+            relay_gpu=relay_gpu,
+            quota=self._relay_quotas.get(relay_gpu),
+            sessions=self._sessions,
+            jobs=self._jobs,
+        )
 
     def _relay_reservation_records_locked(
         self,
         relay_gpu: int,
     ) -> list[dict[str, object]]:
-        records = []
-        for reservation_id, reservation in sorted(self._reservations.items()):
-            if reservation.relay_gpu != relay_gpu:
-                continue
-            lease = self._lease_tokens.get(reservation_id)
-            record = asdict(reservation)
-            record["transfer_id"] = self._reservation_transfers.get(reservation_id)
-            record["job_id"] = None if lease is None else lease.job_id
-            records.append(record)
-        return records
+        return daemon_leases.relay_reservation_records(
+            relay_gpu=relay_gpu,
+            reservations=self._reservations,
+            lease_tokens=self._lease_tokens,
+            reservation_transfers=self._reservation_transfers,
+        )
 
     def _relay_lease_records_locked(self, relay_gpu: int) -> list[dict[str, object]]:
-        records = []
-        for lease_id, lease in sorted(self._lease_tokens.items()):
-            if lease.relay_gpu != relay_gpu:
-                continue
-            if lease_id not in self._reservations:
-                continue
-            records.append(
-                {
-                    "lease_id": lease.lease_id,
-                    "session_id": lease.session_id,
-                    "relay_gpu": lease.relay_gpu,
-                    "job_id": lease.job_id,
-                    "buffer_ids": lease.buffer_ids,
-                    "issued_at": lease.issued_at,
-                    "expires_at": lease.expires_at,
-                    "transfer_id": self._reservation_transfers.get(lease_id),
-                }
-            )
-        return records
+        return daemon_leases.relay_lease_records(
+            relay_gpu=relay_gpu,
+            lease_tokens=self._lease_tokens,
+            reservations=self._reservations,
+            reservation_transfers=self._reservation_transfers,
+        )
 
     def handle_wire_message(
         self,
@@ -3587,45 +3319,11 @@ class TurboBusDaemon:
 
     @staticmethod
     def _profile_key(target_gpu: int, relay_gpus: Iterable[int]) -> str:
-        relays = ",".join(str(gpu) for gpu in TurboBusDaemon._normalize_relays(relay_gpus))
-        return f"target={int(target_gpu)};relays={relays}"
+        return daemon_profiles.profile_key(target_gpu, relay_gpus)
 
     @staticmethod
     def _normalize_relays(relay_gpus: Iterable[int]) -> list[int]:
         return sorted({int(gpu) for gpu in relay_gpus})
-
-    @staticmethod
-    def _normalize_profile(profile: dict, target_gpu: int) -> dict:
-        if not isinstance(profile, dict):
-            raise ValueError("profile must be a dict")
-        direct_h2d = float(profile.get("direct_h2d_bw_gbps", 0.0) or 0.0)
-        direct_d2h = float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0)
-        if direct_h2d <= 0.0:
-            raise ValueError("profile direct_h2d_bw_gbps must be positive")
-        relays = []
-        for relay in profile.get("relays", []) or []:
-            if not isinstance(relay, dict):
-                raise ValueError("profile relays must be dicts")
-            relays.append(
-                {
-                    "relay_device": int(relay["relay_device"]),
-                    "target_device": int(relay.get("target_device", target_gpu)),
-                    "h2d_bw_gbps": float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
-                    "d2h_bw_gbps": float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
-                    "p2p_bw_gbps": float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
-                    "effective_bw_gbps": float(relay.get("effective_bw_gbps", 0.0) or 0.0),
-                    "effective_d2h_bw_gbps": float(
-                        relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
-                    ),
-                    "p2p_enabled": bool(relay.get("p2p_enabled", False)),
-                }
-            )
-        return {
-            "target_device": int(profile.get("target_device", target_gpu)),
-            "direct_h2d_bw_gbps": direct_h2d,
-            "direct_d2h_bw_gbps": direct_d2h,
-            "relays": relays,
-        }
 
     def serve_forever(self, socket_path: str) -> None:
         if os.path.exists(socket_path):
@@ -3907,51 +3605,6 @@ def _relay_devices_from_plan(
     return relays
 
 
-def _ticket_ranges_for_plan(
-    plan: dict[str, object],
-    *,
-    direction: str,
-) -> tuple[dict[str, int], ...]:
-    if not isinstance(plan, dict):
-        raise ValueError("transfer plan is unavailable")
-    ranges: list[dict[str, int]] = []
-    requested_direction = str(direction).lower()
-    for assignment in plan.get("assignments", ()) or ():
-        if not isinstance(assignment, dict):
-            raise ValueError("transfer plan assignment must be an object")
-        path = assignment.get("path")
-        if not isinstance(path, dict):
-            raise ValueError("transfer plan assignment path must be an object")
-        if str(path.get("direction", "")).lower() != requested_direction:
-            continue
-        for chunk in assignment.get("chunks", ()) or ():
-            if not isinstance(chunk, dict):
-                raise ValueError("transfer plan chunk must be an object")
-            ranges.append(
-                {
-                    "src_offset": int(chunk["src_offset"]),
-                    "dst_offset": int(chunk["dst_offset"]),
-                    "bytes": int(chunk["bytes"]),
-                }
-            )
-    if not ranges:
-        raise ValueError("daemon plan has no authorized chunks")
-    return tuple(ranges)
-
-
-def _decision_direction(decision: SchedulingDecision) -> str:
-    for assignment in decision.plan.get("assignments", ()) or ():
-        if not isinstance(assignment, dict):
-            continue
-        path = assignment.get("path")
-        if not isinstance(path, dict):
-            continue
-        direction = str(path.get("direction", "")).lower()
-        if direction in {"h2d", "d2h"}:
-            return direction
-    raise ValueError("scheduling decision plan has no direction")
-
-
 def _decision_is_direct_only(decision: SchedulingDecision) -> bool:
     assignments = decision.plan.get("assignments", ()) or ()
     if not assignments:
@@ -4129,6 +3782,12 @@ def _status_bytes_match(
         return int(bytes_completed) == status.bytes_completed
     except (TypeError, ValueError):
         return False
+
+
+def _is_execution_completion_source(completion_source: str | None) -> bool:
+    if completion_source is None:
+        return False
+    return str(completion_source).lower() in {"worker", "backend"}
 
 
 def _empty_removed_summary() -> dict[str, int]:

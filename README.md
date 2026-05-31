@@ -22,6 +22,9 @@ The target system is centered on:
 
 ## Current Direction
 
-The active direction is the paper-parity plan in `AGENTS.md` and `docs/`.
-Start with Phase 0, which realigns core code, tests, benchmarks, examples,
-exports, and adapters around daemon-first scheduling.
+The active forward plan is `docs/NEXT_STEPS.md`.
+
+The next code work is the intent-to-worker execution loop: submitted transfer
+intent must drive daemon-issued tickets, worker/backend execution, status
+updates, receipts, and cleanup. Older phase-by-phase and Phase 7 artifact-only
+plans are retired.

@@ -7,6 +7,7 @@ import time
 import unittest
 
 from turbobus import runtime_engine
+from turbobus.planner_engine import PlannerEngine
 from turbobus.runtime_engine import RuntimeOptions, TransferHandle
 
 
@@ -282,6 +283,99 @@ class RangeAndPlanConversionTest(unittest.TestCase):
         self.assertEqual(assignment.chunks[0].dst_offset, 8)
         self.assertEqual(assignment.chunks[0].bytes, 16)
 
+    def test_native_transfer_plan_accepts_python_planner_model(self) -> None:
+        class NativePlan:
+            def __init__(self) -> None:
+                self.total_bytes = 0
+                self.chunk_bytes = 0
+                self.assignments = []
+
+        class NativeAssignment:
+            def __init__(self) -> None:
+                self.path = None
+                self.chunks = []
+
+        class NativePath:
+            def __init__(self) -> None:
+                self.kind_value = None
+                self.direction_value = None
+                self.target_device = -1
+                self.relay_device = -1
+                self.h2d_bw_gbps = 0.0
+                self.d2h_bw_gbps = 0.0
+                self.p2p_bw_gbps = 0.0
+                self.effective_bw_gbps = 0.0
+                self.enabled = False
+
+        class NativeChunk:
+            def __init__(self) -> None:
+                self.src_offset = 0
+                self.dst_offset = 0
+                self.bytes = 0
+
+        class PathKind:
+            RelayH2DThenP2P = "relay-h2d"
+            RelayP2PThenD2H = "relay-d2h"
+            DirectH2D = "direct-h2d"
+            DirectD2H = "direct-d2h"
+
+        class TransferDirection:
+            H2D = "h2d"
+            D2H = "d2h"
+
+        profile = SimpleNamespace(
+            target_device=0,
+            direct_h2d_bw_gbps=1.0,
+            direct_d2h_bw_gbps=1.0,
+            relays=[
+                SimpleNamespace(
+                    relay_device=1,
+                    target_device=0,
+                    h2d_bw_gbps=8.0,
+                    d2h_bw_gbps=7.0,
+                    p2p_bw_gbps=40.0,
+                    effective_bw_gbps=8.0,
+                    effective_d2h_bw_gbps=7.0,
+                    p2p_enabled=True,
+                )
+            ],
+        )
+        planner_plan = PlannerEngine().plan(
+            total_bytes=64,
+            chunk_bytes=16,
+            profile=profile,
+            mode="pool",
+        )
+
+        old_extension = runtime_engine._turbobus
+        runtime_engine._turbobus = type(
+            "Ext",
+            (),
+            {
+                "TransferPlan": NativePlan,
+                "PathAssignment": NativeAssignment,
+                "Path": NativePath,
+                "Chunk": NativeChunk,
+                "PathKind": PathKind,
+                "TransferDirection": TransferDirection,
+            },
+        )
+        try:
+            native = runtime_engine._native_transfer_plan(planner_plan)
+        finally:
+            runtime_engine._turbobus = old_extension
+
+        self.assertEqual(native.total_bytes, 64)
+        self.assertEqual(native.chunk_bytes, 16)
+        self.assertEqual(
+            {assignment.path.kind_value for assignment in native.assignments},
+            {"direct-h2d", "relay-h2d"},
+        )
+        self.assertEqual(
+            sum(chunk.bytes for assignment in native.assignments for chunk in assignment.chunks),
+            64,
+        )
+
     def test_native_transfer_plan_rejects_total_byte_mismatch(self) -> None:
         class NativePlan:
             def __init__(self) -> None:
@@ -348,6 +442,141 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                                         "bytes": 16,
                                     },
                                 ],
+                            }
+                        ],
+                    }
+                )
+        finally:
+            runtime_engine._turbobus = old_extension
+
+    def test_native_transfer_plan_rejects_disabled_path(self) -> None:
+        class NativePlan:
+            pass
+
+        old_extension = runtime_engine._turbobus
+        runtime_engine._turbobus = type("Ext", (), {"TransferPlan": NativePlan})
+        try:
+            with self.assertRaisesRegex(ValueError, "disabled path"):
+                runtime_engine._native_transfer_plan(
+                    {
+                        "total_bytes": 16,
+                        "chunk_bytes": 16,
+                        "assignments": [
+                            {
+                                "path": {"kind": "direct", "direction": "h2d", "enabled": False},
+                                "chunks": [{"src_offset": 0, "dst_offset": 0, "bytes": 16}],
+                            }
+                        ],
+                    }
+                )
+        finally:
+            runtime_engine._turbobus = old_extension
+
+    def test_native_transfer_plan_rejects_invalid_chunk_range(self) -> None:
+        class NativePlan:
+            def __init__(self) -> None:
+                self.total_bytes = 0
+                self.chunk_bytes = 0
+                self.assignments = []
+
+        class NativeAssignment:
+            pass
+
+        class NativePath:
+            pass
+
+        class NativeChunk:
+            pass
+
+        class PathKind:
+            DirectH2D = "direct-h2d"
+            RelayH2DThenP2P = "relay-h2d"
+            DirectD2H = "direct-d2h"
+            RelayP2PThenD2H = "relay-d2h"
+
+        class TransferDirection:
+            H2D = "h2d"
+            D2H = "d2h"
+
+        old_extension = runtime_engine._turbobus
+        runtime_engine._turbobus = type(
+            "Ext",
+            (),
+            {
+                "TransferPlan": NativePlan,
+                "PathAssignment": NativeAssignment,
+                "Path": NativePath,
+                "Chunk": NativeChunk,
+                "PathKind": PathKind,
+                "TransferDirection": TransferDirection,
+            },
+        )
+        try:
+            with self.assertRaisesRegex(ValueError, "chunk offsets"):
+                runtime_engine._native_transfer_plan(
+                    {
+                        "total_bytes": 16,
+                        "chunk_bytes": 16,
+                        "assignments": [
+                            {
+                                "path": {"kind": "direct", "direction": "h2d", "enabled": True},
+                                "chunks": [{"src_offset": 0, "dst_offset": 0, "bytes": 0}],
+                            }
+                        ],
+                    }
+                )
+        finally:
+            runtime_engine._turbobus = old_extension
+
+    def test_native_transfer_plan_rejects_direction_kind_mismatch(self) -> None:
+        class NativePlan:
+            def __init__(self) -> None:
+                self.total_bytes = 0
+                self.chunk_bytes = 0
+                self.assignments = []
+
+        class NativeAssignment:
+            pass
+
+        class NativePath:
+            pass
+
+        class NativeChunk:
+            pass
+
+        class PathKind:
+            DirectH2D = "direct-h2d"
+            RelayH2DThenP2P = "relay-h2d"
+            DirectD2H = "direct-d2h"
+            RelayP2PThenD2H = "relay-d2h"
+
+        class TransferDirection:
+            H2D = "h2d"
+            D2H = "d2h"
+
+        old_extension = runtime_engine._turbobus
+        runtime_engine._turbobus = type(
+            "Ext",
+            (),
+            {
+                "TransferPlan": NativePlan,
+                "PathAssignment": NativeAssignment,
+                "Path": NativePath,
+                "Chunk": NativeChunk,
+                "PathKind": PathKind,
+                "TransferDirection": TransferDirection,
+            },
+        )
+        try:
+            with self.assertRaisesRegex(ValueError, "unsupported transfer plan path"):
+                runtime_engine._native_transfer_plan(
+                    {
+                        "total_bytes": 16,
+                        "chunk_bytes": 16,
+                        "assignments": [
+                            {
+                                "path": {"kind": "sideways", "direction": "h2d", "enabled": True},
+                                "chunks": [{"src_offset": 0, "dst_offset": 0, "bytes": 16}],
                             }
                         ],
                     }

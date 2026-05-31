@@ -9,9 +9,6 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../../cpp turbobus_cpp_build)
 
-add_executable(test_planner test_planner.cpp)
-target_link_libraries(test_planner PRIVATE turbobus_core)
-
 add_executable(test_direct_h2d test_direct_h2d.cu)
 target_link_libraries(test_direct_h2d PRIVATE turbobus_core)
 

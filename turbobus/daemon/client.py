@@ -256,6 +256,7 @@ class TurboBusDaemonClient:
         state: str | None = None,
         bytes_completed: int | None = None,
         error: str | None = None,
+        completion_source: str | None = None,
     ) -> DaemonResponse:
         payload: dict[str, object] = {"transfer_id": str(transfer_id)}
         if state is not None:
@@ -264,6 +265,8 @@ class TurboBusDaemonClient:
             payload["bytes_completed"] = int(bytes_completed)
         if error is not None:
             payload["error"] = str(error)
+        if completion_source is not None:
+            payload["completion_source"] = str(completion_source)
         return self.send(
             DaemonRequest(
                 request_type=RequestType.TRANSFER_STATUS,

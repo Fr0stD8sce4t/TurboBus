@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 
@@ -15,9 +14,8 @@ from daemon_support import add_daemon_options
 
 
 BENCHMARKS = REPO_ROOT / "benchmarks"
-EXAMPLES = REPO_ROOT / "examples"
 
-WORKLOADS = ("model-loading", "training-offload", "optimizer-offload", "vllm-kv")
+WORKLOADS = ("model-loading", "training-offload", "optimizer-offload")
 STATE_OFFLOAD_WORKLOAD_KINDS = {
     "training-offload": "training_state",
     "optimizer-offload": "optimizer_state",
@@ -26,7 +24,6 @@ PHASE6_REPORT_SCHEMA = "phase6_unified_v1"
 WORKLOAD_KIND_BY_WORKLOAD = {
     "model-loading": "model_weights",
     **STATE_OFFLOAD_WORKLOAD_KINDS,
-    "vllm-kv": "kv_cache",
 }
 REQUIRED_UNIFIED_METRIC_FIELDS = (
     "report_schema",
@@ -70,13 +67,10 @@ def selected_workloads(value: str) -> list[str]:
 
 def output_paths(output_dir: Path, workload: str) -> dict[str, Path]:
     safe = workload.replace("-", "_")
-    paths = {
+    return {
         "json": output_dir / f"{safe}.json",
         "summary": output_dir / f"{safe}_summary.txt",
     }
-    if workload == "vllm-kv":
-        paths["log"] = output_dir / f"{safe}.log"
-    return paths
 
 
 def clear_workload_outputs(paths: dict[str, Path]) -> None:
@@ -95,54 +89,6 @@ def daemon_command_args(args) -> list[str]:
     if args.daemon_socket_path:
         command.extend(["--daemon-socket-path", args.daemon_socket_path])
     return command
-
-
-def vllm_kv_job_count(args) -> int:
-    return max(1, int(getattr(args, "vllm_job_count", 1)))
-
-
-def vllm_kv_job_suffix(job_index: int | None) -> str:
-    if job_index is None:
-        return ""
-    return f"job{job_index + 1}"
-
-
-def vllm_kv_job_identity(args, job_index: int | None = None) -> dict[str, str]:
-    suffix = vllm_kv_job_suffix(job_index)
-    if not suffix:
-        return {
-            "job_id": args.job_id,
-            "session_id": args.session_id,
-            "cpu_buffer_id": args.cpu_buffer_id,
-            "gpu_buffer_id": args.gpu_buffer_id,
-            "prefix_key": args.vllm_prefix_key,
-        }
-    return {
-        "job_id": f"{args.job_id}-{suffix}",
-        "session_id": f"{args.session_id}-{suffix}",
-        "cpu_buffer_id": f"{args.cpu_buffer_id}-{suffix}",
-        "gpu_buffer_id": f"{args.gpu_buffer_id}-{suffix}",
-        "prefix_key": f"{args.vllm_prefix_key}-{suffix}",
-    }
-
-
-def vllm_kv_job_paths(paths: dict[str, Path], job_index: int | None = None) -> dict[str, Path]:
-    if job_index is None:
-        return paths
-    log_path = paths["log"]
-    suffix = vllm_kv_job_suffix(job_index)
-    return {**paths, "log": log_path.with_name(f"{log_path.stem}_{suffix}{log_path.suffix}")}
-
-
-def clear_vllm_kv_outputs(args, paths: dict[str, Path]) -> None:
-    clear_workload_outputs(paths)
-    if paths["log"].is_file():
-        paths["log"].unlink()
-    count = vllm_kv_job_count(args)
-    for job_index in range(count):
-        log_path = vllm_kv_job_paths(paths, job_index)["log"]
-        if log_path.is_file():
-            log_path.unlink()
 
 
 def build_model_loading_command(args, paths: dict[str, Path]) -> list[str]:
@@ -246,62 +192,6 @@ def build_optimizer_offload_command(args, paths: dict[str, Path]) -> list[str]:
     return build_training_offload_command(args, paths, workload="optimizer-offload")
 
 
-def build_vllm_kv_command(args, paths: dict[str, Path]) -> list[str]:
-    return build_vllm_kv_job_command(args, paths, None)
-
-
-def build_vllm_kv_job_command(args, paths: dict[str, Path], job_index: int | None) -> list[str]:
-    identity = vllm_kv_job_identity(args, job_index)
-    job_paths = vllm_kv_job_paths(paths, job_index)
-    command = [
-        sys.executable,
-        str(EXAMPLES / "vllm_turbobus_kv_connector.py"),
-        "--model",
-        args.vllm_model,
-        "--job-id",
-        identity["job_id"],
-        "--session-id",
-        identity["session_id"],
-        "--cpu-buffer-id",
-        identity["cpu_buffer_id"],
-        "--gpu-buffer-id",
-        identity["gpu_buffer_id"],
-        "--prompt-repeat",
-        str(args.vllm_prompt_repeat),
-        "--second-prompt-suffix",
-        args.vllm_second_prompt_suffix,
-        "--prefix-key",
-        identity["prefix_key"],
-        "--matched-tokens",
-        str(args.vllm_matched_tokens),
-        "--restore-blocks",
-        str(args.vllm_restore_blocks),
-        "--restore-enabled",
-        "--chunk-bytes",
-        str(args.chunk_bytes),
-        "--daemon-socket-path",
-        args.daemon_socket_path,
-        "--log-output",
-        str(job_paths["log"]),
-    ]
-    if args.vllm_prompt:
-        command.extend(["--prompt", args.vllm_prompt])
-    if args.vllm_wait_timeout_seconds is not None:
-        command.extend(["--wait-timeout-seconds", str(args.vllm_wait_timeout_seconds)])
-    if args.vllm_enforce_eager:
-        command.append("--enforce-eager")
-    if args.vllm_enable_multiproc_executor:
-        command.append("--enable-multiproc-executor")
-    return command
-
-
-def build_vllm_kv_commands(args, paths: dict[str, Path]) -> list[list[str]]:
-    count = vllm_kv_job_count(args)
-    if count == 1:
-        return [build_vllm_kv_job_command(args, paths, None)]
-    return [build_vllm_kv_job_command(args, paths, index) for index in range(count)]
-
-
 def build_workload_command(args, workload: str, paths: dict[str, Path]) -> list[str]:
     if workload == "model-loading":
         return build_model_loading_command(args, paths)
@@ -309,15 +199,7 @@ def build_workload_command(args, workload: str, paths: dict[str, Path]) -> list[
         return build_training_offload_command(args, paths, workload=workload)
     if workload == "optimizer-offload":
         return build_optimizer_offload_command(args, paths)
-    if workload == "vllm-kv":
-        return build_vllm_kv_command(args, paths)
     raise ValueError(f"unsupported workload: {workload}")
-
-
-def build_workload_commands(args, workload: str, paths: dict[str, Path]) -> list[list[str]]:
-    if workload == "vllm-kv":
-        return build_vllm_kv_commands(args, paths)
-    return [build_workload_command(args, workload, paths)]
 
 
 def run_command(command: list[str]) -> subprocess.CompletedProcess:
@@ -330,85 +212,10 @@ def run_command(command: list[str]) -> subprocess.CompletedProcess:
     )
 
 
-def run_commands_concurrent(commands: list[list[str]]) -> list[subprocess.CompletedProcess]:
-    processes = [
-        subprocess.Popen(
-            command,
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for command in commands
-    ]
-    results = []
-    for command, process in zip(commands, processes):
-        stdout, stderr = process.communicate()
-        results.append(
-            subprocess.CompletedProcess(
-                command,
-                int(process.returncode or 0),
-                stdout,
-                stderr,
-            )
-        )
-    return results
-
-
-def combine_completed_processes(
-    commands: list[list[str]],
-    completed: list[subprocess.CompletedProcess],
-) -> subprocess.CompletedProcess:
-    returncode = 0
-    for item in completed:
-        if item.returncode != 0:
-            returncode = item.returncode
-            break
-    return subprocess.CompletedProcess(
-        commands,
-        returncode,
-        "\n".join(item.stdout for item in completed if item.stdout),
-        "\n".join(item.stderr for item in completed if item.stderr),
-    )
-
-
 def read_json(path: Path, default):
     if not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def parse_summary_line(line: str) -> tuple[str, dict[str, str]]:
-    parts = shlex.split(str(line))
-    if not parts:
-        return "", {}
-    values = {}
-    for item in parts[1:]:
-        if "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        values[key] = value
-    return parts[0], values
-
-
-def parse_vllm_kv_summary(log_path: Path) -> dict[str, dict[str, str]]:
-    if not log_path.exists():
-        return {}
-    parsed = {}
-    in_summary = False
-    for raw_line in log_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if line == "COPY_SUMMARY_BEGIN":
-            in_summary = True
-            continue
-        if line == "COPY_SUMMARY_END":
-            break
-        if not in_summary:
-            continue
-        name, values = parse_summary_line(line)
-        if name:
-            parsed[name] = values
-    return parsed
 
 
 def as_float(value, default: float = 0.0) -> float:
@@ -578,120 +385,13 @@ def collect_training_metrics(
     ]
 
 
-def collect_vllm_kv_metrics(summary: dict) -> list[dict[str, object]]:
-    config = summary.get("vllm_kv_connector_config", {}) or {}
-    save = summary.get("vllm_kv_connector_save", {}) or {}
-    restore = summary.get("vllm_kv_connector_restore", {}) or {}
-    result = summary.get("vllm_kv_connector_result", {}) or {}
-    if not save or not restore:
-        return []
-    transfer_bytes = as_int(restore.get("bytes"))
-    bytes_completed = as_int(restore.get("bytes"))
-    transfer_ms = as_float(restore.get("transfer_ms"))
-    cpu_buffer_id = str(config.get("cpu_buffer_id", ""))
-    gpu_buffer_id = str(config.get("gpu_buffer_id", ""))
-    return [
-        {
-            "report_schema": PHASE6_REPORT_SCHEMA,
-            "workload": "vllm-kv",
-            "policy": "daemon-default",
-            "workload_kind": WORKLOAD_KIND_BY_WORKLOAD["vllm-kv"],
-            "iterations": 1,
-            "ttft_proxy_ms": as_float(restore.get("total_ms")),
-            "transfer_ms": transfer_ms,
-            "performance_ms": transfer_ms,
-            "throughput_gib_s": _gib_per_second_value(
-                transfer_bytes,
-                transfer_ms,
-            ),
-            "transfer_bytes": transfer_bytes,
-            "bytes_completed": bytes_completed,
-            "direct_bytes": as_int(restore.get("direct_bytes")),
-            "relay_bytes": as_int(restore.get("relay_bytes")),
-            "direct_chunks": as_int(restore.get("direct_chunks")),
-            "relay_chunks": as_int(restore.get("relay_chunks")),
-            "receipt_ids": join_metric_values(save.get("receipt_ids"), restore.get("receipt_ids")),
-            "decision_ids": join_values(restore.get("decision_ids")),
-            "topology_snapshot_ids": join_values(restore.get("topology_snapshot_ids")),
-            "ticket_ids": join_values(restore.get("ticket_ids")),
-            "save_decision_ids": join_values(save.get("decision_ids")),
-            "save_topology_snapshot_ids": join_values(save.get("topology_snapshot_ids")),
-            "save_ticket_ids": join_values(save.get("ticket_ids")),
-            "fallback_reason": fallback_reason_value(restore.get("fallback_reason")),
-            "save_receipt_ids": join_values(save.get("receipt_ids")),
-            "restore_receipt_ids": join_values(restore.get("receipt_ids")),
-            "save_ms": as_float(save.get("elapsed_ms")),
-            "restore_ms": as_float(restore.get("elapsed_ms")),
-            "save_layer_count": as_int(save.get("save_layer_count")),
-            "save_layer_ranges": as_int(save.get("save_layer_ranges")),
-            "restore_layers": as_int(restore.get("layers")),
-            "restore_ranges": as_int(restore.get("ranges")),
-            "prompt_tokens": as_int(result.get("prompt_tokens")),
-            "shared_prefix": str(result.get("shared_prefix", "")),
-            "model": str(config.get("model", "")),
-            "job_id": str(config.get("job_id", "")),
-            "session_id": str(config.get("session_id", "")),
-            "cpu_buffer_id": cpu_buffer_id,
-            "gpu_buffer_id": gpu_buffer_id,
-            "source_buffer_id": cpu_buffer_id,
-            "destination_buffer_id": gpu_buffer_id,
-            "correctness_status": correctness_status(transfer_bytes, bytes_completed),
-        }
-    ]
-
-
-def collect_vllm_kv_multi_job_metrics(job_summaries: list[dict]) -> list[dict[str, object]]:
-    metrics = []
-    for job_summary in job_summaries:
-        job_metrics = collect_vllm_kv_metrics(job_summary.get("summary", {}) or {})
-        for metric in job_metrics:
-            metric["job_index"] = as_int(job_summary.get("job_index"))
-            metric["log_path"] = str(job_summary.get("log_path", ""))
-        metrics.extend(job_metrics)
-    return metrics
-
-
 def collect_workload_metrics(workload: str, paths: dict[str, Path]) -> tuple[object, list[dict]]:
     data = read_json(paths["json"], {})
     if workload == "model-loading":
         return data, collect_model_metrics(data)
     if workload in STATE_OFFLOAD_WORKLOAD_KINDS:
         return data, collect_training_metrics(data, workload=workload)
-    if workload == "vllm-kv":
-        if not data:
-            data = parse_vllm_kv_summary(paths["log"])
-        return data, collect_vllm_kv_metrics(data)
     raise ValueError(f"unsupported workload: {workload}")
-
-
-def collect_vllm_kv_workload_metrics(args, paths: dict[str, Path]) -> tuple[object, list[dict]]:
-    count = vllm_kv_job_count(args)
-    if count == 1:
-        data = read_json(paths["json"], {})
-        if not data:
-            data = parse_vllm_kv_summary(paths["log"])
-        return data, collect_vllm_kv_metrics(data)
-
-    jobs = []
-    for job_index in range(count):
-        job_paths = vllm_kv_job_paths(paths, job_index)
-        summary = parse_vllm_kv_summary(job_paths["log"])
-        jobs.append(
-            {
-                "job_index": job_index,
-                "identity": vllm_kv_job_identity(args, job_index),
-                "log_path": str(job_paths["log"]),
-                "summary": summary,
-            }
-        )
-    data = {
-        "vllm_kv_multi_job": {
-            "job_count": count,
-            "fairness_trace": "per-job-daemon-receipts",
-        },
-        "jobs": jobs,
-    }
-    return data, collect_vllm_kv_multi_job_metrics(jobs)
 
 
 def workload_validation_errors(data_path: Path, metrics: list[dict]) -> list[str]:
@@ -750,138 +450,6 @@ def phase6_workload_validation_errors(workload: str, data_path: Path, metrics: l
         if expected_kind is not None and metric.get("workload_kind") != expected_kind:
             errors.append(f"invalid_{workload.replace('-', '_')}_workload_kind")
     return sorted(set(errors), key=errors.index)
-
-
-def vllm_kv_required_summary_errors(summary: dict, text: str) -> list[str]:
-    errors = []
-    for key in (
-        "vllm_kv_connector_config",
-        "vllm_kv_connector_scenario",
-        "vllm_kv_connector_save",
-        "vllm_kv_connector_restore",
-        "vllm_kv_connector_result",
-    ):
-        if key not in summary:
-            errors.append(f"missing_{key}")
-    for event in (
-        "register_kv_caches",
-        "save_layer",
-        "wait_for_save_done",
-        "save",
-        "restore",
-        "start_load_done",
-    ):
-        if f"turbobus_kv_connector_event event={event}" not in text:
-            errors.append(f"missing_event_{event}")
-    errors.extend(vllm_kv_summary_trace_errors(summary))
-    return errors
-
-
-def vllm_kv_summary_trace_errors(summary: dict) -> list[str]:
-    errors = []
-    config = summary.get("vllm_kv_connector_config", {}) or {}
-    for field in ("job_id", "session_id", "cpu_buffer_id", "gpu_buffer_id"):
-        if config.get(field) in (None, ""):
-            errors.append(f"missing_config_{field}")
-    required_transfer_fields = (
-        "receipt_ids",
-        "decision_ids",
-        "topology_snapshot_ids",
-        "ticket_ids",
-        "bytes",
-        "direct_bytes",
-        "relay_bytes",
-        "direct_chunks",
-        "relay_chunks",
-        "elapsed_ms",
-        "transfer_ms",
-    )
-    for name in ("save", "restore"):
-        values = summary.get(f"vllm_kv_connector_{name}", {}) or {}
-        for field in required_transfer_fields:
-            if values.get(field) in (None, ""):
-                errors.append(f"missing_{name}_{field}")
-        if "fallback_reason" not in values:
-            errors.append(f"missing_{name}_fallback_reason")
-    return errors
-
-
-def vllm_kv_validation_errors(paths: dict[str, Path], metrics: list[dict]) -> list[str]:
-    errors = workload_validation_errors(paths["json"], metrics)
-    if not paths["log"].exists():
-        errors.append("missing_log_file")
-        return errors
-    summary = parse_vllm_kv_summary(paths["log"])
-    text = paths["log"].read_text(encoding="utf-8")
-    errors.extend(vllm_kv_required_summary_errors(summary, text))
-    errors.extend(vllm_kv_identity_errors([metric for metric in metrics if metric.get("workload") == "vllm-kv"]))
-    return errors
-
-
-def vllm_kv_identity_errors(metrics: list[dict]) -> list[str]:
-    missing = [
-        str(metric.get("job_index", index))
-        for index, metric in enumerate(metrics)
-        if not metric.get("job_id")
-        or not metric.get("session_id")
-        or not metric.get("cpu_buffer_id")
-        or not metric.get("gpu_buffer_id")
-    ]
-    if not missing:
-        return []
-    return [f"missing_job_identity:{','.join(missing)}"]
-
-
-def vllm_kv_multi_job_validation_errors(
-    args,
-    paths: dict[str, Path],
-    data: dict,
-    metrics: list[dict],
-) -> list[str]:
-    errors = workload_validation_errors(paths["json"], metrics)
-    count = vllm_kv_job_count(args)
-    if count < 2:
-        errors.append("multi_job_requires_at_least_two_jobs")
-    jobs = data.get("jobs", []) if isinstance(data, dict) else []
-    if len(jobs) != count:
-        errors.append("missing_vllm_kv_jobs")
-    for job_index in range(count):
-        job_paths = vllm_kv_job_paths(paths, job_index)
-        if not job_paths["log"].exists():
-            errors.append(f"missing_log_file:job{job_index + 1}")
-            continue
-        summary = parse_vllm_kv_summary(job_paths["log"])
-        text = job_paths["log"].read_text(encoding="utf-8")
-        job_errors = vllm_kv_required_summary_errors(summary, text)
-        errors.extend(f"job{job_index + 1}:{error}" for error in job_errors)
-        job_config = summary.get("vllm_kv_connector_config", {}) or {}
-        expected_identity = vllm_kv_job_identity(args, job_index)
-        for field in ("job_id", "session_id", "cpu_buffer_id", "gpu_buffer_id"):
-            if str(job_config.get(field, "")) != expected_identity[field]:
-                errors.append(
-                    f"job{job_index + 1}:mismatched_{field}"
-                )
-        if job_errors:
-            continue
-    job_ids = [metric.get("job_id") for metric in metrics if metric.get("job_id")]
-    session_ids = [metric.get("session_id") for metric in metrics if metric.get("session_id")]
-    cpu_buffer_ids = [metric.get("cpu_buffer_id") for metric in metrics if metric.get("cpu_buffer_id")]
-    gpu_buffer_ids = [metric.get("gpu_buffer_id") for metric in metrics if metric.get("gpu_buffer_id")]
-    if len(job_ids) != count or len(set(job_ids)) != count:
-        errors.append("non_distinct_job_ids")
-    if len(session_ids) != count or len(set(session_ids)) != count:
-        errors.append("non_distinct_session_ids")
-    if len(cpu_buffer_ids) != count or len(set(cpu_buffer_ids)) != count:
-        errors.append("non_distinct_cpu_buffer_ids")
-    if len(gpu_buffer_ids) != count or len(set(gpu_buffer_ids)) != count:
-        errors.append("non_distinct_gpu_buffer_ids")
-    errors.extend(vllm_kv_identity_errors(metrics))
-    trace_fields = ("decision_ids", "topology_snapshot_ids", "ticket_ids", "save_decision_ids", "save_ticket_ids")
-    for metric in metrics:
-        for field in trace_fields:
-            if not metric.get(field):
-                errors.append(f"missing_metric_{field}")
-    return errors
 
 
 def workload_status(dry_run: bool, returncode: int, validation_errors: list[str]) -> str:
@@ -1008,10 +576,6 @@ def run_validation(args) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     workloads = selected_workloads(args.workloads)
-    if "vllm-kv" in workloads and not str(args.vllm_model).strip():
-        raise ValueError("--vllm-model is required when workload vllm-kv is selected")
-    if "vllm-kv" in workloads and not str(args.daemon_socket_path).strip():
-        raise ValueError("--daemon-socket-path is required when workload vllm-kv is selected")
     result = {
         "config": {
             "session_id": args.session_id,
@@ -1026,59 +590,37 @@ def run_validation(args) -> dict:
             "daemon_socket_path": args.daemon_socket_path,
             "daemon_max_inflight_chunks": args.daemon_max_inflight_chunks,
             "daemon_profile_max_age_seconds": args.daemon_profile_max_age_seconds,
-            "vllm_model": args.vllm_model,
-            "vllm_job_count": vllm_kv_job_count(args),
         },
         "workloads": [],
     }
 
     for workload in workloads:
         paths = output_paths(output_dir, workload)
-        commands = build_workload_commands(args, workload, paths)
-        command = commands[0] if len(commands) == 1 else commands
+        command = build_workload_command(args, workload, paths)
         data_path = paths["json"]
         validation_errors = []
         if args.dry_run:
-            for item in commands:
-                print(
-                    "paper_validation_dry_run",
-                    f"workload={workload}",
-                    " ".join(item),
-                    flush=True,
-                )
+            print(
+                "paper_validation_dry_run",
+                f"workload={workload}",
+                " ".join(command),
+                flush=True,
+            )
             completed = subprocess.CompletedProcess(command, 0, "", "")
             data = {}
             metrics = []
         else:
-            if workload == "vllm-kv":
-                clear_vllm_kv_outputs(args, paths)
-            else:
-                clear_workload_outputs(paths)
-            for item in commands:
-                print("paper_validation_run", f"workload={workload}", " ".join(item), flush=True)
-            if len(commands) == 1:
-                completed = run_command(commands[0])
-            else:
-                completed = combine_completed_processes(commands, run_commands_concurrent(commands))
+            clear_workload_outputs(paths)
+            print("paper_validation_run", f"workload={workload}", " ".join(command), flush=True)
+            completed = run_command(command)
             try:
-                if workload == "vllm-kv":
-                    data, metrics = collect_vllm_kv_workload_metrics(args, paths)
-                else:
-                    data, metrics = collect_workload_metrics(workload, paths)
+                data, metrics = collect_workload_metrics(workload, paths)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 data = {}
                 metrics = []
                 validation_errors.append("invalid_output")
                 validation_errors.append(type(exc).__name__)
-            if workload == "vllm-kv":
-                if data:
-                    write_json(data_path, data)
-                if vllm_kv_job_count(args) > 1:
-                    validation_errors.extend(vllm_kv_multi_job_validation_errors(args, paths, data, metrics))
-                else:
-                    validation_errors.extend(vllm_kv_validation_errors(paths, metrics))
-            else:
-                validation_errors.extend(phase6_workload_validation_errors(workload, data_path, metrics))
+            validation_errors.extend(phase6_workload_validation_errors(workload, data_path, metrics))
         status = workload_status(args.dry_run, completed.returncode, validation_errors)
         result["workloads"].append(
             {
@@ -1105,7 +647,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workloads",
         default="all",
-        help="Comma-separated: all, model-loading, training-offload, optimizer-offload, vllm-kv",
+        help="Comma-separated: all, model-loading, training-offload, optimizer-offload",
     )
     parser.add_argument("--session-id", required=True)
     parser.add_argument("--job-id", default="paper-validation")
@@ -1127,17 +669,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json-output")
     parser.add_argument("--summary-output")
     parser.add_argument("--no-copy-summary", action="store_true")
-    parser.add_argument("--vllm-model", default="")
-    parser.add_argument("--vllm-prompt", default="")
-    parser.add_argument("--vllm-prompt-repeat", type=int, default=64)
-    parser.add_argument("--vllm-second-prompt-suffix", default=" Italy")
-    parser.add_argument("--vllm-prefix-key", default="paper-validation-vllm-kv")
-    parser.add_argument("--vllm-restore-blocks", type=int, default=8)
-    parser.add_argument("--vllm-matched-tokens", type=int, default=128)
-    parser.add_argument("--vllm-job-count", type=int, default=1)
-    parser.add_argument("--vllm-wait-timeout-seconds", type=float, default=None)
-    parser.add_argument("--vllm-enforce-eager", action="store_true")
-    parser.add_argument("--vllm-enable-multiproc-executor", action="store_true")
     add_daemon_options(parser)
     return parser
 

@@ -12,7 +12,6 @@ find_package(CUDAToolkit REQUIRED)
 add_library(turbobus_core
   src/dummy_compute_cuda.cu
   src/executor_cuda.cu
-  src/planner.cpp
   src/profiler_cuda.cu
   src/runtime.cpp
   src/topology_cuda.cpp

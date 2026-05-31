@@ -248,6 +248,10 @@ class DaemonScheduler:
                 continue
             if not defer_relay_admission and relay_device in runtime_view.busy_relays:
                 continue
+            if not bool(relay.get("p2p_enabled", False)):
+                continue
+            if float(relay.get("p2p_bw_gbps", 0.0) or 0.0) <= 0.0:
+                continue
             relays.append(
                 _RelayProfile(
                     relay_device=relay_device,

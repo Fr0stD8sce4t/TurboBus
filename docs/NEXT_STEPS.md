@@ -14,18 +14,17 @@ must not report completion from scheduling alone.
 ## Current Status
 
 - Intent-backed transfers require worker/backend completion evidence.
-- Public `TurboBusClient` can be configured with a worker intent executor that
-  submits `TransferIntent`, executes the daemon-issued plan, and returns the
-  final receipt.
-- H2D and D2H public-intent integration tests prove worker completion,
-  executed receipt metadata, and daemon status updates without application-side
-  physical route selection.
+- Public `TurboBusClient` can execute H2D and D2H intents through daemon-issued
+  worker plans without application-side physical route selection.
+- Public intent execution now refuses delayed or expired admissions before data
+  movement.
+- Public worker failure and success paths release relay reservations and
+  staging state in local integration coverage.
 
 ## Remaining Work For This Target
 
-- Verify delayed or expired admissions cannot execute until rescheduled.
-- Confirm lease and staging cleanup for public-intent worker execution in
-  success and failure cases.
+- Add timeout or stale-session cleanup coverage for public-intent execution.
+- Confirm the final receipt and daemon profile state after that timeout cleanup.
 
 ## Exit Criteria
 
@@ -37,5 +36,5 @@ must not report completion from scheduling alone.
 
 ## Next Step
 
-Close delayed/expired admission behavior for public-intent execution. Do not
-move to the real buffer correctness gate until this target is closed.
+Close timeout cleanup coverage for public-intent execution. Do not move to the
+real buffer correctness gate until this target is closed.

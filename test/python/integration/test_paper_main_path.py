@@ -19,7 +19,7 @@ from test.python.integration.test_client_worker_transfer import (
     FakeDirectBackend,
     daemon_with_relay_path,
 )
-from turbobus.worker import WorkerTransferClient
+from turbobus.worker import WorkerTransferClient, WorkerTransferResult, WorkerTransferState
 
 
 class PaperMainPathTest(unittest.TestCase):
@@ -361,6 +361,138 @@ class PaperMainPathTest(unittest.TestCase):
         self.assertTrue(receipt.metadata["executed"])
         self.assertEqual(len(executor.requests), 1)
         self.assertEqual(executor.requests[0].authorization.direction, "d2h")
+
+    def test_public_client_does_not_execute_delayed_admission(self) -> None:
+        daemon = _daemon_with_profile([1])
+        busy_session = _register_job_buffers(daemon, "busy")
+        busy = daemon.plan_transfer(
+            session_id=busy_session,
+            total_bytes=64,
+            chunk_bytes=16,
+            mode="relay",
+            direction="h2d",
+            job_id="busy",
+            buffer_ids=["busy-cpu", "busy-gpu"],
+            ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 64},),
+        )
+        self.assertTrue(busy.ok, busy.error)
+        self.assertTrue(
+            daemon.transfer_status(
+                busy.payload["transfer_id"],
+                state="running",
+                bytes_completed=16,
+            ).ok
+        )
+        session_id = _register_session_and_job(daemon, "job-1")
+        executor = CompleteExecutor()
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            intent = _intent(
+                intent_id="intent-delayed-public",
+                session_id=session_id,
+                direction="h2d",
+                source_buffer_id=source.buffer_id,
+                destination_buffer_id=target.buffer_id,
+            )
+            with self.assertRaisesRegex(RuntimeError, "admission is delayed"):
+                TurboBusClient(
+                    daemon=daemon,
+                    transfer_executor=WorkerIntentTransferExecutor(
+                        buffers={
+                            source.buffer_id: source,
+                            target.buffer_id: target,
+                        },
+                        worker_client=WorkerTransferClient(daemon, executor=executor),
+                    ),
+                ).submit_transfer_intent(intent)
+
+        self.assertEqual(executor.requests, [])
+        waited = daemon.wait_transfer_receipt("intent-delayed-public")
+        self.assertTrue(waited.ok, waited.error)
+        receipt = TransferReceipt(**waited.payload["receipt"])
+        self.assertEqual(receipt.state, TransferStatusState.SUBMITTED)
+        self.assertEqual(receipt.metadata["admission_state"], "delayed")
+
+    def test_public_intent_executor_rejects_expired_plan_before_worker_execute(self) -> None:
+        daemon = _daemon_with_profile([1])
+        session_id = _register_session_and_job(daemon, "job-1")
+        executor = CompleteExecutor()
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            intent = _intent(
+                intent_id="intent-expired-public",
+                session_id=session_id,
+                direction="h2d",
+                source_buffer_id=source.buffer_id,
+                destination_buffer_id=target.buffer_id,
+            )
+            submitted = daemon.submit_transfer_intent(intent)
+            self.assertTrue(submitted.ok, submitted.error)
+            daemon._transfer_plan_expirations[submitted.payload["transfer_id"]] = 0.0
+            with self.assertRaisesRegex(RuntimeError, "plan expired"):
+                WorkerIntentTransferExecutor(
+                    buffers={
+                        source.buffer_id: source,
+                        target.buffer_id: target,
+                    },
+                    worker_client=WorkerTransferClient(daemon, executor=executor),
+                ).execute_transfer_intent(intent, submitted, daemon)
+
+        self.assertEqual(executor.requests, [])
+        receipt = TransferReceipt(**daemon.wait_transfer_receipt(intent.intent_id).payload["receipt"])
+        self.assertEqual(receipt.state, TransferStatusState.SUBMITTED)
+
+    def test_public_worker_failure_cleans_relay_resources_and_failed_receipt(self) -> None:
+        class FailedExecutor:
+            def execute(self, request, staging_slot):
+                return WorkerTransferResult(
+                    transfer_id=request.transfer_id,
+                    state=WorkerTransferState.FAILED,
+                    error="copy failed",
+                )
+
+        daemon = _daemon_with_profile([1])
+        session_id = _register_session_and_job(daemon, "job-1")
+        allocator = SharedPinnedCpuBufferAllocator(name_prefix="tb-paper-main")
+
+        with allocator.allocate("job-1-cpu", "job-1", 64) as source:
+            target = _target_buffer("job-1-gpu", "job-1", 64)
+            _register_buffer_objects(daemon, source, target)
+            intent = _intent(
+                intent_id="intent-public-failed",
+                session_id=session_id,
+                direction="h2d",
+                source_buffer_id=source.buffer_id,
+                destination_buffer_id=target.buffer_id,
+            )
+            with self.assertRaisesRegex(RuntimeError, "copy failed"):
+                TurboBusClient(
+                    daemon=daemon,
+                    transfer_executor=WorkerIntentTransferExecutor(
+                        buffers={
+                            source.buffer_id: source,
+                            target.buffer_id: target,
+                        },
+                        worker_client=WorkerTransferClient(
+                            daemon,
+                            executor=FailedExecutor(),
+                        ),
+                    ),
+                ).submit_transfer_intent(intent)
+
+        profile = daemon.describe().payload
+        self.assertEqual(profile["reservations"], {})
+        self.assertEqual(profile["staging_records"], {})
+        self.assertEqual(profile["relay_quotas"][1]["active_chunks"], 0)
+        receipt = TransferReceipt(**daemon.wait_transfer_receipt(intent.intent_id).payload["receipt"])
+        self.assertEqual(receipt.state, TransferStatusState.FAILED)
+        self.assertEqual(receipt.error, "copy failed")
 
 
 def _target_buffer(buffer_id: str, job_id: str, size_bytes: int) -> CudaIpcDeviceBuffer:

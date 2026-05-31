@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import time
 
 from .backends.cuda import default_cuda_backend
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
@@ -320,6 +321,9 @@ class WorkerIntentTransferExecutor:
         source, target = _intent_buffers(self.buffers, intent)
         transfer_request = _transfer_request_from_intent(intent)
         payload = _intent_execution_payload(response.payload)
+        admission_error = _intent_execution_admission_error(payload)
+        if admission_error is not None:
+            raise RuntimeError(admission_error)
         if _is_direct_only_worker_plan(payload):
             _execute_direct_fallback_transfer(
                 daemon_client=daemon_client,
@@ -336,6 +340,7 @@ class WorkerIntentTransferExecutor:
         lease_tokens = _worker_lease_tokens(daemon_client, response)
         if not lease_tokens:
             return _receipt_from_daemon_payload(payload, expected_intent_id=intent.intent_id)
+        _validate_intent_lease_tokens(daemon_client, intent, lease_tokens)
         primary_lease_token = lease_tokens[0]
         try:
             _require_worker_plan_matches_leases(
@@ -455,6 +460,41 @@ def _intent_execution_payload(payload: Mapping[str, object]) -> dict[str, object
             if isinstance(plan, Mapping):
                 execution_payload["plan"] = dict(plan)
     return execution_payload
+
+
+def _intent_execution_admission_error(payload: Mapping[str, object]) -> str | None:
+    admission = payload.get("admission")
+    if isinstance(admission, Mapping):
+        state = str(admission.get("state", "")).lower()
+        if state and state != "admitted":
+            return f"transfer admission is {state}"
+    expires_at = payload.get("plan_expires_at")
+    if expires_at is not None and time.time() > float(expires_at):
+        return "transfer plan expired"
+    return None
+
+
+def _validate_intent_lease_tokens(
+    daemon_client,
+    intent: TransferIntent,
+    lease_tokens: Iterable[Mapping[str, object]],
+) -> None:
+    validator = getattr(daemon_client, "validate_lease", None)
+    if not callable(validator):
+        return
+    for lease_token in lease_tokens:
+        response = validator(
+            lease_id=str(lease_token["lease_id"]),
+            token=str(lease_token["token"]),
+            session_id=intent.session_id,
+            relay_gpu=int(lease_token["relay_gpu"]),
+            job_id=intent.job_id,
+            buffer_ids=[intent.source_buffer_id, intent.destination_buffer_id],
+        )
+        if not isinstance(response, DaemonResponse):
+            raise TypeError("daemon lease validation must return a DaemonResponse")
+        if not response.ok:
+            raise RuntimeError(response.error or "intent lease validation failed")
 
 
 def _register_buffer(daemon_client, registration: BufferRegistration) -> None:

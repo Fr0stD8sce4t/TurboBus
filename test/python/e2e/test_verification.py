@@ -7,15 +7,13 @@ import unittest
 from unittest.mock import patch
 
 from turbobus.verification import (
-    PublicIntentCudaVerificationResult,
-    _build_public_intent_verification_daemon,
+    WorkerManagedH2DRelayVerificationResult,
     _build_verification_daemon,
     _cuda_environment_relay_gpu,
     _required_cuda_device_count,
     _resolve_verification_buffer_sizes,
     _worker_helper_required,
     main,
-    verify_public_intent_cuda_transfer,
 )
 
 
@@ -282,95 +280,10 @@ class WorkerManagedH2DRelayVerificationTest(unittest.TestCase):
         self.assertEqual(_required_cuda_device_count(0, None), 1)
         self.assertEqual(_required_cuda_device_count(0, 7), 8)
 
-    def test_public_intent_backend_fixture_seeds_direct_plan(self) -> None:
-        daemon = _build_public_intent_verification_daemon(
-            target_gpu=0,
-            relay_gpu=-1,
-            max_inflight_chunks=8,
-            profile_bytes=4096,
-            execution_path="backend",
-        )
-        session = daemon.register_session(
-            target_gpu=0,
-            requested_relays=[],
-            max_inflight_chunks=8,
-        )
-        self.assertTrue(session.ok)
-        session_id = session.payload["session"]["session_id"]
-        daemon.register_job("job-1", session_id=session_id)
-        _register_cpu_buffer(daemon, 4096)
-        _register_gpu_buffer(daemon, 4096)
-
-        plan = daemon.plan_transfer(
-            session_id=session_id,
-            total_bytes=4096,
-            chunk_bytes=1024,
-            mode="auto",
+    def test_cli_forwards_range_offsets_to_h2d_verifier(self) -> None:
+        result = WorkerManagedH2DRelayVerificationResult(
             direction="h2d",
-            job_id="job-1",
-            buffer_ids=("cpu-buffer", "gpu-buffer"),
-        )
-
-        self.assertTrue(plan.ok)
-        self.assertEqual(plan.payload["stats"]["resolved_mode"], "direct")
-        self.assertEqual(plan.payload["lease_tokens"], [])
-        self.assertEqual(
-            plan.payload["plan"]["assignments"][0]["path"]["kind"],
-            "direct",
-        )
-
-    def test_public_intent_worker_fixture_seeds_relay_plan(self) -> None:
-        daemon = _build_public_intent_verification_daemon(
-            target_gpu=0,
-            relay_gpu=1,
-            max_inflight_chunks=8,
-            profile_bytes=4096,
-            execution_path="worker",
-        )
-        session_id = _register_verification_job_buffers(
-            daemon,
-            direction="h2d",
-            total_bytes=4096,
-        )
-
-        plan = daemon.plan_transfer(
-            session_id=session_id,
-            total_bytes=4096,
-            chunk_bytes=1024,
-            mode="auto",
-            direction="h2d",
-            job_id="job-1",
-            buffer_ids=("cpu-buffer", "gpu-buffer"),
-        )
-
-        self.assertTrue(plan.ok)
-        self.assertEqual(plan.payload["stats"]["resolved_mode"], "pool")
-        self.assertGreater(plan.payload["stats"]["relay_bytes"], 0)
-        self.assertEqual(len(plan.payload["lease_tokens"]), 1)
-        self.assertIn(
-            "relay",
-            {
-                assignment["path"]["kind"]
-                for assignment in plan.payload["plan"]["assignments"]
-            },
-        )
-
-    def test_public_intent_worker_verifier_requires_multiple_chunks(self) -> None:
-        with self.assertRaisesRegex(ValueError, "chunk_bytes smaller than bytes"):
-            with patch("turbobus.verification._require_unix_sockets"):
-                verify_public_intent_cuda_transfer(
-                    direction="h2d",
-                    execution_path="worker",
-                    bytes_to_copy=16,
-                    chunk_bytes=16,
-                )
-
-    def test_cli_forwards_range_offsets_to_public_intent_verifier(self) -> None:
-        result = PublicIntentCudaVerificationResult(
-            direction="h2d",
-            execution_path="worker",
-            intent_id="intent-1",
-            receipt_id="receipt-1",
+            transfer_mode="relay",
             transfer_id="transfer-1",
             job_id="job-1",
             bytes_requested=16,
@@ -382,29 +295,25 @@ class WorkerManagedH2DRelayVerificationTest(unittest.TestCase):
             target_gpu=0,
             relay_gpu=1,
             state="complete",
-            completion_source="worker",
-            verified=True,
-            verified_bytes=16,
-            content_match=True,
-            verification_source="native_cuda_readback",
-            verification_method="cudaMemcpyDeviceToHost_compare",
-            direct_bytes=0,
-            direct_chunks=0,
-            relay_bytes=16,
-            relay_chunks=2,
+            worker_final_state="complete",
+            worker_path="relay_h2d",
+            worker_direct_bytes=0,
+            worker_direct_chunks=0,
+            worker_relay_bytes=16,
+            worker_relay_chunks=2,
             daemon_reservations_released=True,
             daemon_relay_active_chunks=0,
         )
         stdout = io.StringIO()
-        with patch("turbobus.verification.verify_public_intent_cuda_transfer") as verifier:
+        with patch("turbobus.verification.verify_worker_managed_h2d_relay") as verifier:
             verifier.return_value = result
             with contextlib.redirect_stdout(stdout):
                 exit_code = main(
                     [
                         "--direction",
                         "h2d",
-                        "--execution-path",
-                        "worker",
+                        "--mode",
+                        "relay",
                         "--bytes",
                         "16",
                         "--chunk-bytes",
@@ -422,7 +331,6 @@ class WorkerManagedH2DRelayVerificationTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         verifier.assert_called_once()
-        self.assertEqual(verifier.call_args.kwargs["execution_path"], "worker")
         self.assertEqual(verifier.call_args.kwargs["src_offset"], 8)
         self.assertEqual(verifier.call_args.kwargs["dst_offset"], 24)
         self.assertEqual(verifier.call_args.kwargs["source_buffer_bytes"], 64)

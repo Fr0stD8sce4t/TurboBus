@@ -10,16 +10,11 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Mapping, Sequence
 
-from .api import TurboBusClient
 from .backends.cuda import default_cuda_backend
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBufferAllocator
-from .client_transfer import (
-    WorkerIntentTransferExecutor,
-    make_worker_managed_transfer_client,
-)
+from .client_transfer import make_worker_managed_transfer_client
 from .daemon import TurboBusDaemonClient
 from .daemon.server import TurboBusDaemon
-from .schema import TransferIntent, WorkloadKind
 from .topology import (
     DaemonResourceInventory,
     FabricLinkRecord,
@@ -66,40 +61,6 @@ class WorkerManagedH2DRelayVerificationResult(WorkerManagedRelayVerificationResu
 @dataclass(frozen=True)
 class WorkerManagedD2HRelayVerificationResult(WorkerManagedRelayVerificationResult):
     pass
-
-
-@dataclass(frozen=True)
-class PublicIntentCudaVerificationResult:
-    direction: str
-    execution_path: str
-    intent_id: str
-    receipt_id: str
-    transfer_id: str
-    job_id: str
-    bytes_requested: int
-    bytes_completed: int
-    src_offset: int
-    dst_offset: int
-    source_buffer_bytes: int
-    destination_buffer_bytes: int
-    target_gpu: int
-    relay_gpu: int | None
-    state: str
-    completion_source: str
-    verified: bool
-    verified_bytes: int
-    content_match: bool
-    verification_source: str
-    verification_method: str
-    direct_bytes: int
-    direct_chunks: int
-    relay_bytes: int
-    relay_chunks: int
-    daemon_reservations_released: bool
-    daemon_relay_active_chunks: int
-
-    def as_dict(self) -> dict[str, object]:
-        return asdict(self)
 
 
 class _VerificationTopologyProvider(TopologyProvider):
@@ -183,276 +144,6 @@ def verify_worker_managed_d2h_relay(
         socket_dir=socket_dir,
         startup_timeout_seconds=startup_timeout_seconds,
     )
-
-
-def verify_public_intent_cuda_transfer(
-    *,
-    direction: str = "h2d",
-    execution_path: str = "worker",
-    target_gpu: int = 0,
-    relay_gpu: int = 1,
-    bytes_to_copy: int = 1024 * 1024,
-    chunk_bytes: int = 256 * 1024,
-    src_offset: int = 0,
-    dst_offset: int = 0,
-    source_buffer_bytes: int | None = None,
-    destination_buffer_bytes: int | None = None,
-    max_inflight_chunks: int = 8,
-    socket_dir: str | None = None,
-    startup_timeout_seconds: float = 10.0,
-) -> PublicIntentCudaVerificationResult:
-    """Verify real CUDA bytes through the public TransferIntent API."""
-
-    _require_unix_sockets()
-    direction = str(direction).lower()
-    if direction not in {"h2d", "d2h"}:
-        raise ValueError("direction must be h2d or d2h")
-    execution_path = str(execution_path).lower()
-    if execution_path not in {"backend", "worker"}:
-        raise ValueError("execution_path must be backend or worker")
-    target = int(target_gpu)
-    relay = None if execution_path == "backend" else int(relay_gpu)
-    total_bytes = int(bytes_to_copy)
-    chunk_size = int(chunk_bytes)
-    if total_bytes <= 0:
-        raise ValueError("bytes_to_copy must be positive")
-    if chunk_size <= 0:
-        raise ValueError("chunk_bytes must be positive")
-    if execution_path == "worker" and total_bytes <= chunk_size:
-        raise ValueError("worker verification requires chunk_bytes smaller than bytes")
-    if int(max_inflight_chunks) <= 0:
-        raise ValueError("max_inflight_chunks must be positive")
-    src_offset = int(src_offset)
-    dst_offset = int(dst_offset)
-    source_size, destination_size = _resolve_verification_buffer_sizes(
-        bytes_to_copy=total_bytes,
-        src_offset=src_offset,
-        dst_offset=dst_offset,
-        source_buffer_bytes=source_buffer_bytes,
-        destination_buffer_bytes=destination_buffer_bytes,
-    )
-
-    torch = _require_cuda_environment(target, relay)
-    pattern = _make_pattern(total_bytes)
-    job_id = (
-        f"verify-intent-{direction}-{execution_path}-"
-        f"{os.getpid()}-{time.time_ns()}"
-    )
-    allocator = SharedPinnedCpuBufferAllocator(
-        name_prefix=f"tb-intent-{direction}-{execution_path}-verify"
-    )
-
-    with tempfile.TemporaryDirectory(dir=socket_dir) as tmpdir:
-        daemon_socket = os.path.join(tmpdir, "turbobusd.sock")
-        worker_socket = os.path.join(tmpdir, "turbobus-worker.sock")
-        process_context = multiprocessing.get_context("spawn")
-        daemon_process = process_context.Process(
-            target=_serve_public_intent_verification_daemon,
-            args=(
-                daemon_socket,
-                target,
-                -1 if relay is None else relay,
-                int(max_inflight_chunks),
-                total_bytes,
-                execution_path,
-            ),
-            daemon=True,
-        )
-        worker_process = (
-            None
-            if execution_path == "backend"
-            else process_context.Process(
-                target=run_worker_helper_process,
-                args=(daemon_socket, worker_socket),
-                daemon=True,
-            )
-        )
-        cpu_buffer = None
-        try:
-            daemon_process.start()
-            _wait_for_socket(daemon_socket, daemon_process, startup_timeout_seconds)
-            worker_client = _UnusedWorkerClient()
-            if worker_process is not None:
-                worker_process.start()
-                _wait_for_socket(worker_socket, worker_process, startup_timeout_seconds)
-                worker_client = WorkerServiceSocketClient(worker_socket)
-
-            daemon_client = TurboBusDaemonClient(daemon_socket)
-            session_response = daemon_client.register_session(
-                target,
-                [] if relay is None else [relay],
-                int(max_inflight_chunks),
-            )
-            _require_daemon_ok(session_response, "daemon session registration failed")
-            session_id = str(session_response.payload["session"]["session_id"])
-            _require_daemon_ok(
-                daemon_client.register_job(job_id=job_id, session_id=session_id),
-                "daemon job registration failed",
-            )
-
-            torch.cuda.set_device(target)
-            if direction == "h2d":
-                cpu_buffer = allocator.allocate(
-                    "verify-cpu-source",
-                    job_id,
-                    source_size,
-                )
-                _zero_shared_cpu_buffer(cpu_buffer)
-                cpu_buffer.write(pattern, offset=src_offset)
-                target_tensor = torch.empty(
-                    destination_size,
-                    dtype=torch.uint8,
-                    device=f"cuda:{target}",
-                )
-                target_tensor.zero_()
-                torch.cuda.synchronize(target)
-                gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
-                    buffer_id="verify-gpu-target",
-                    job_id=job_id,
-                    device_index=target,
-                    size_bytes=destination_size,
-                    device_ptr=int(target_tensor.data_ptr()),
-                    backend=default_cuda_backend,
-                )
-                source_buffer = cpu_buffer
-                destination_buffer = gpu_buffer
-            else:
-                source_tensor = torch.empty(
-                    source_size,
-                    dtype=torch.uint8,
-                    device=f"cuda:{target}",
-                )
-                source_tensor.zero_()
-                source_pattern = _expected_tensor(torch, pattern).to(
-                    device=f"cuda:{target}"
-                )
-                source_tensor[src_offset : src_offset + total_bytes].copy_(
-                    source_pattern
-                )
-                torch.cuda.synchronize(target)
-                gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
-                    buffer_id="verify-gpu-source",
-                    job_id=job_id,
-                    device_index=target,
-                    size_bytes=source_size,
-                    device_ptr=int(source_tensor.data_ptr()),
-                    backend=default_cuda_backend,
-                )
-                cpu_buffer = allocator.allocate(
-                    "verify-cpu-destination",
-                    job_id,
-                    destination_size,
-                )
-                _zero_shared_cpu_buffer(cpu_buffer)
-                source_buffer = gpu_buffer
-                destination_buffer = cpu_buffer
-
-            _require_daemon_ok(
-                source_buffer.register_with_daemon(daemon_client),
-                "daemon source buffer registration failed",
-            )
-            _require_daemon_ok(
-                destination_buffer.register_with_daemon(daemon_client),
-                "daemon destination buffer registration failed",
-            )
-            intent = TransferIntent(
-                intent_id=f"intent-{job_id}",
-                job_id=job_id,
-                session_id=session_id,
-                source_buffer_id=source_buffer.buffer_id,
-                destination_buffer_id=destination_buffer.buffer_id,
-                direction=direction,
-                total_bytes=total_bytes,
-                ranges=(
-                    {
-                        "src_offset": src_offset,
-                        "dst_offset": dst_offset,
-                        "bytes": total_bytes,
-                    },
-                ),
-                workload_kind=WorkloadKind.GENERIC,
-                policy_hints={"chunk_bytes": chunk_size},
-                metadata={"verification": "public_intent_cuda"},
-            )
-            receipt = TurboBusClient(
-                daemon=daemon_client,
-                transfer_executor=WorkerIntentTransferExecutor(
-                    buffers={
-                        source_buffer.buffer_id: source_buffer,
-                        destination_buffer.buffer_id: destination_buffer,
-                    },
-                    worker_client=worker_client,
-                    backend=default_cuda_backend,
-                ),
-            ).submit_transfer_intent(intent)
-            torch.cuda.synchronize(target)
-            if direction == "h2d":
-                _assert_target_matches(
-                    torch,
-                    target_tensor,
-                    _expected_payload(destination_size, pattern, dst_offset),
-                )
-            else:
-                _assert_shared_cpu_matches(
-                    cpu_buffer,
-                    _expected_payload(destination_size, pattern, dst_offset),
-                )
-            _assert_public_intent_receipt(
-                receipt,
-                expected_bytes=total_bytes,
-                expected_completion_source=execution_path,
-            )
-
-            daemon_profile = daemon_client.describe()
-            _require_daemon_ok(daemon_profile, "daemon describe failed")
-            relay_quota = (
-                {}
-                if relay is None
-                else _relay_quota(daemon_profile.payload, relay)
-            )
-            reservations_released = not bool(daemon_profile.payload.get("reservations"))
-            active_chunks = (
-                0 if relay is None else int(relay_quota.get("active_chunks", -1))
-            )
-            if not reservations_released:
-                raise RuntimeError("daemon still has active reservations")
-            if active_chunks != 0:
-                raise RuntimeError("daemon relay active chunk count was not released")
-            return PublicIntentCudaVerificationResult(
-                direction=direction,
-                execution_path=execution_path,
-                intent_id=receipt.intent_id,
-                receipt_id=receipt.receipt_id,
-                transfer_id=str(receipt.metadata.get("transfer_id")),
-                job_id=job_id,
-                bytes_requested=total_bytes,
-                bytes_completed=receipt.bytes_completed,
-                src_offset=src_offset,
-                dst_offset=dst_offset,
-                source_buffer_bytes=source_size,
-                destination_buffer_bytes=destination_size,
-                target_gpu=target,
-                relay_gpu=relay,
-                state=str(receipt.state.value),
-                completion_source=str(receipt.metadata.get("completion_source")),
-                verified=bool(receipt.metadata.get("verified", False)),
-                verified_bytes=int(receipt.metadata.get("verified_bytes", 0) or 0),
-                content_match=bool(receipt.metadata.get("content_match", False)),
-                verification_source=str(receipt.metadata.get("verification_source")),
-                verification_method=str(receipt.metadata.get("verification_method")),
-                direct_bytes=_receipt_path_bytes(receipt.path_stats, "direct"),
-                direct_chunks=_receipt_path_chunks(receipt.path_stats, "direct"),
-                relay_bytes=_receipt_path_bytes(receipt.path_stats, "relay"),
-                relay_chunks=_receipt_path_chunks(receipt.path_stats, "relay"),
-                daemon_reservations_released=reservations_released,
-                daemon_relay_active_chunks=active_chunks,
-            )
-        finally:
-            if cpu_buffer is not None:
-                cpu_buffer.release()
-            if worker_process is not None:
-                _terminate_process(worker_process)
-            _terminate_process(daemon_process)
 
 
 def _verify_worker_managed_relay(
@@ -735,19 +426,14 @@ def _verify_worker_managed_relay(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Verify TurboBus public-intent CUDA execution",
+        description="Verify TurboBus worker-managed CUDA relay over helper socket",
     )
     parser.add_argument("--direction", choices=["h2d", "d2h"], default="h2d")
-    parser.add_argument(
-        "--execution-path",
-        choices=["backend", "worker"],
-        default="worker",
-        help="verification fixture path to require after daemon scheduling",
-    )
+    parser.add_argument("--mode", choices=["direct", "relay", "pool"], default="relay")
     parser.add_argument("--target-gpu", type=int, default=0)
     parser.add_argument("--relay-gpu", type=int, default=1)
     parser.add_argument("--bytes", type=int, default=1024 * 1024)
-    parser.add_argument("--chunk-bytes", type=int, default=256 * 1024)
+    parser.add_argument("--chunk-bytes", type=int, default=1024 * 1024)
     parser.add_argument("--src-offset", type=int, default=0)
     parser.add_argument("--dst-offset", type=int, default=0)
     parser.add_argument("--source-buffer-bytes", type=int, default=None)
@@ -757,13 +443,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--startup-timeout-seconds", type=float, default=10.0)
     args = parser.parse_args(argv)
 
-    result = verify_public_intent_cuda_transfer(
-        direction=args.direction,
-        execution_path=args.execution_path,
+    verifier = (
+        verify_worker_managed_h2d_relay
+        if args.direction == "h2d"
+        else verify_worker_managed_d2h_relay
+    )
+    result = verifier(
         target_gpu=args.target_gpu,
         relay_gpu=args.relay_gpu,
         bytes_to_copy=args.bytes,
         chunk_bytes=args.chunk_bytes,
+        mode=args.mode,
         src_offset=args.src_offset,
         dst_offset=args.dst_offset,
         source_buffer_bytes=args.source_buffer_bytes,
@@ -774,110 +464,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(json.dumps(result.as_dict(), sort_keys=True))
     return 0
-
-
-def _serve_public_intent_verification_daemon(
-    socket_path: str,
-    target_gpu: int,
-    relay_gpu: int,
-    max_inflight_chunks: int,
-    profile_bytes: int,
-    execution_path: str,
-) -> None:
-    daemon = _build_public_intent_verification_daemon(
-        target_gpu=target_gpu,
-        relay_gpu=relay_gpu,
-        max_inflight_chunks=max_inflight_chunks,
-        profile_bytes=profile_bytes,
-        execution_path=execution_path,
-    )
-    daemon.serve_forever(socket_path)
-
-
-def _build_public_intent_verification_daemon(
-    *,
-    target_gpu: int,
-    relay_gpu: int,
-    max_inflight_chunks: int,
-    profile_bytes: int,
-    execution_path: str,
-) -> TurboBusDaemon:
-    execution_path = str(execution_path).lower()
-    if execution_path not in {"backend", "worker"}:
-        raise ValueError("execution_path must be backend or worker")
-    target = int(target_gpu)
-    relay = int(relay_gpu)
-    relay_gpus = [] if execution_path == "backend" else [relay]
-    gpus = [
-        GpuInventoryRecord(
-            device_id=target,
-            backend="cuda",
-            vendor="nvidia",
-            role="target",
-        )
-    ]
-    pcie_paths = []
-    fabric_links = []
-    if execution_path == "worker":
-        gpus.append(
-            GpuInventoryRecord(
-                device_id=relay,
-                backend="cuda",
-                vendor="nvidia",
-                role="relay",
-            )
-        )
-        pcie_paths.append(PciePathRecord(device_id=relay, bandwidth_gbps=16.0))
-        fabric_links.append(
-            FabricLinkRecord(
-                src_device_id=relay,
-                dst_device_id=target,
-                fabric="cuda_p2p",
-                bandwidth_gbps=40.0,
-                enabled=True,
-            )
-        )
-    daemon = TurboBusDaemon(
-        relay_gpus=relay_gpus,
-        max_sessions_per_relay=1,
-        max_inflight_chunks_per_relay=int(max_inflight_chunks),
-        topology_provider=_VerificationTopologyProvider(
-            DaemonResourceInventory(
-                gpus=tuple(gpus),
-                pcie_paths=tuple(pcie_paths),
-                fabric_links=tuple(fabric_links),
-                source="public_intent_verification_static",
-            )
-        ),
-    )
-    profile = {
-        "target_device": target,
-        "direct_h2d_bw_gbps": 16.0 if execution_path == "backend" else 1.0,
-        "direct_d2h_bw_gbps": 16.0 if execution_path == "backend" else 1.0,
-        "relays": [],
-    }
-    if execution_path == "worker":
-        profile["relays"] = [
-            {
-                "relay_device": relay,
-                "target_device": target,
-                "h2d_bw_gbps": 16.0,
-                "d2h_bw_gbps": 16.0,
-                "p2p_bw_gbps": 40.0,
-                "effective_bw_gbps": 16.0,
-                "effective_d2h_bw_gbps": 16.0,
-                "p2p_enabled": True,
-            }
-        ]
-    response = daemon.put_profile(
-        target_gpu=target,
-        relay_gpus=relay_gpus,
-        profile=profile,
-        profile_bytes=int(profile_bytes),
-    )
-    if not response.ok:
-        raise RuntimeError(response.error or "failed to seed daemon profile")
-    return daemon
 
 
 def _serve_verification_daemon(
@@ -1185,41 +771,6 @@ def _assert_transfer_complete(
         )
 
 
-def _assert_public_intent_receipt(
-    receipt,
-    *,
-    expected_bytes: int,
-    expected_completion_source: str,
-) -> None:
-    state = str(getattr(receipt.state, "value", receipt.state))
-    if state != "complete":
-        raise RuntimeError(f"public intent transfer did not complete: {state}")
-    if receipt.bytes_completed != int(expected_bytes):
-        raise RuntimeError(
-            "public intent transfer completed an unexpected byte count: "
-            f"{receipt.bytes_completed} != {int(expected_bytes)}"
-        )
-    metadata = dict(receipt.metadata)
-    completion_source = str(metadata.get("completion_source"))
-    if completion_source != str(expected_completion_source):
-        raise RuntimeError(
-            "public intent transfer completed through "
-            f"{completion_source}, expected {expected_completion_source}"
-        )
-    if not bool(metadata.get("executed", False)):
-        raise RuntimeError("public intent receipt did not record execution")
-    if not bool(metadata.get("verified", False)):
-        raise RuntimeError("public intent receipt did not record verification")
-    verified_bytes = int(metadata.get("verified_bytes", 0) or 0)
-    if verified_bytes != int(expected_bytes):
-        raise RuntimeError(
-            "public intent receipt verified byte mismatch: "
-            f"{verified_bytes} != {int(expected_bytes)}"
-        )
-    if not bool(metadata.get("content_match", False)):
-        raise RuntimeError("public intent receipt did not record content match")
-
-
 def _assert_worker_path_split(
     *,
     direction: str,
@@ -1265,32 +816,6 @@ def _assert_worker_path_split(
         )
 
 
-def _receipt_path_bytes(
-    path_stats,
-    path_kind: str,
-) -> int:
-    total = 0
-    for item in path_stats or ():
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind", "")).lower() == str(path_kind):
-            total += int(item.get("bytes", 0) or 0)
-    return total
-
-
-def _receipt_path_chunks(
-    path_stats,
-    path_kind: str,
-) -> int:
-    total = 0
-    for item in path_stats or ():
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind", "")).lower() == str(path_kind):
-            total += int(item.get("chunk_count", 0) or 0)
-    return total
-
-
 def _expected_tensor(torch, pattern: bytearray):
     from_buffer = getattr(torch, "frombuffer", None)
     if callable(from_buffer):
@@ -1325,11 +850,6 @@ def _terminate_process(process: multiprocessing.Process) -> None:
         process.join(timeout=5)
 
 
-def _require_daemon_ok(response, message: str) -> None:
-    if not response.ok:
-        raise RuntimeError(response.error or message)
-
-
 def _relay_quota(payload: dict[str, object], relay_gpu: int) -> dict[str, object]:
     quotas = payload.get("relay_quotas", {})
     if not isinstance(quotas, dict):
@@ -1343,11 +863,9 @@ def _relay_quota(payload: dict[str, object], relay_gpu: int) -> dict[str, object
 
 
 __all__ = [
-    "PublicIntentCudaVerificationResult",
     "WorkerManagedD2HRelayVerificationResult",
     "WorkerManagedH2DRelayVerificationResult",
     "WorkerManagedRelayVerificationResult",
-    "verify_public_intent_cuda_transfer",
     "verify_worker_managed_d2h_relay",
     "verify_worker_managed_h2d_relay",
 ]

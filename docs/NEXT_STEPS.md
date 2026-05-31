@@ -19,16 +19,13 @@ bytes. Status-only worker/backend completion is no longer enough.
 - The native extension now exposes CUDA readback comparison through
   `verify_transfer`; Python backend, direct fallback, and worker CUDA executor
   call that verifier after daemon-issued execution completes.
-- `python -m turbobus.verification` now drives the public `TransferIntent` API
-  and can require either backend or worker execution as a verification fixture;
-  the intent itself does not choose direct, relay, pool, target GPU, or relay GPU
-  as a physical route.
+- Local tests cover verifier plumbing, missing evidence, and content-mismatch
+  rejection.
 
 ## Remaining Work For This Target
 
 - Build the native CUDA extension on a CUDA server.
-- Run public intent H2D and D2H correctness checks against real GPU buffers for
-  both backend and worker execution.
+- Run public intent H2D and D2H correctness checks against real GPU buffers.
 
 ## Exit Criteria
 
@@ -40,12 +37,5 @@ bytes. Status-only worker/backend completion is no longer enough.
 
 ## Next Step
 
-Run the native CUDA build and these public intent correctness checks on a CUDA
-server. Do not move to benchmark repair until they pass:
-
-```bash
-python -m turbobus.verification --direction h2d --execution-path backend
-python -m turbobus.verification --direction d2h --execution-path backend
-python -m turbobus.verification --direction h2d --execution-path worker --chunk-bytes 262144
-python -m turbobus.verification --direction d2h --execution-path worker --chunk-bytes 262144
-```
+Run the native CUDA build and public intent H2D/D2H correctness checks on a
+CUDA server. Do not move to benchmark repair until those checks pass.

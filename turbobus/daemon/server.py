@@ -48,6 +48,8 @@ _TERMINAL_TRANSFER_STATES = {
 _ADMISSION_ADMITTED = "admitted"
 _ADMISSION_DELAYED = "delayed"
 _ADMISSION_EXPIRED = "expired"
+_ADMISSION_CANCELED = "canceled"
+_ADMISSION_FAILED = "failed"
 _DEFAULT_PLAN_TTL_SECONDS = 30.0
 _TOPOLOGY_UNAVAILABLE_ERROR = (
     "topology provider is required; synthetic topology is test fixture only"
@@ -538,6 +540,14 @@ class TurboBusDaemon:
                     ok=False,
                     error="terminal transfer status cannot be updated",
                 )
+            checked_at = time.time()
+            admission_error = self._transfer_status_update_blocked_reason_locked(
+                status.transfer_id,
+                requested_state,
+                now=checked_at,
+            )
+            if admission_error is not None:
+                return DaemonResponse(ok=False, error=admission_error)
             try:
                 updated = TransferStatus(
                     transfer_id=status.transfer_id,
@@ -616,6 +626,15 @@ class TurboBusDaemon:
                             "raw_completion_evidence": str(completion_evidence)
                         }
             self._transfer_statuses[updated.transfer_id] = updated
+            if updated.state in {
+                TransferStatusState.FAILED,
+                TransferStatusState.CANCELED,
+            }:
+                self._mark_transfer_admission_terminal_locked(
+                    updated.transfer_id,
+                    updated.state,
+                    reason=updated.error,
+                )
             if updated.state is TransferStatusState.COMPLETE:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
@@ -1647,9 +1666,12 @@ class TurboBusDaemon:
     ) -> dict[str, object]:
         leases = scheduling_decision_leases(decision)
         if not leases:
+            fallback_reason = decision.fallback_reason
             return {
                 "state": _ADMISSION_ADMITTED,
-                "reason": "direct_or_fallback_plan",
+                "reason": fallback_reason or "direct_or_fallback_plan",
+                "decision_state": str(decision.state.value),
+                "fallback_reason": fallback_reason,
                 "requested_lease_count": 0,
                 "requested_chunks": 0,
                 "lease_ids": (),
@@ -1664,6 +1686,8 @@ class TurboBusDaemon:
             return {
                 "state": _ADMISSION_ADMITTED,
                 "reason": "relay_resources_available",
+                "decision_state": str(decision.state.value),
+                "fallback_reason": decision.fallback_reason,
                 "requested_lease_count": len(leases),
                 "requested_chunks": requested_chunks,
                 "lease_ids": (),
@@ -1673,6 +1697,8 @@ class TurboBusDaemon:
             return {
                 "state": _ADMISSION_DELAYED,
                 "reason": reason,
+                "decision_state": str(decision.state.value),
+                "fallback_reason": decision.fallback_reason,
                 "requested_lease_count": len(leases),
                 "requested_chunks": requested_chunks,
                 "lease_ids": (),
@@ -1681,6 +1707,8 @@ class TurboBusDaemon:
         return {
             "state": _ADMISSION_ADMITTED,
             "reason": "scheduler_fallback_or_rejection",
+            "decision_state": str(decision.state.value),
+            "fallback_reason": decision.fallback_reason,
             "requested_lease_count": 0,
             "requested_chunks": 0,
             "lease_ids": (),
@@ -1770,6 +1798,10 @@ class TurboBusDaemon:
             return "transfer admission is delayed"
         if admission.get("state") == _ADMISSION_EXPIRED:
             return "transfer plan expired"
+        if admission.get("state") == _ADMISSION_CANCELED:
+            return "transfer admission is canceled"
+        if admission.get("state") == _ADMISSION_FAILED:
+            return "transfer admission failed"
         expires_at = self._transfer_plan_expirations.get(normalized_transfer_id)
         if expires_at is not None and float(now) > float(expires_at):
             admission["state"] = _ADMISSION_EXPIRED
@@ -1783,6 +1815,32 @@ class TurboBusDaemon:
                 return "lease plan generation is unavailable"
             if lease_generation != plan_generation:
                 return "stale execution plan"
+        return None
+
+    def _transfer_status_update_blocked_reason_locked(
+        self,
+        transfer_id: str,
+        requested_state: TransferStatusState,
+        *,
+        now: float,
+    ) -> str | None:
+        if requested_state not in {
+            TransferStatusState.RUNNING,
+            TransferStatusState.COMPLETE,
+        }:
+            return None
+        admission_error = self._validate_transfer_admission_locked(
+            transfer_id,
+            lease_id=None,
+            now=now,
+        )
+        if admission_error is not None:
+            return admission_error
+        if not self._intent_requires_execution_evidence_locked(transfer_id):
+            return None
+        ticket_id = self._transfer_tickets.get(str(transfer_id))
+        if ticket_id is None or ticket_id not in self._execution_tickets:
+            return "intent transfer status update requires daemon-issued execution ticket"
         return None
 
     def _commit_scheduler_leases_locked(
@@ -2860,6 +2918,11 @@ class TurboBusDaemon:
             session_id=status.session_id,
             error=status.error if error is None else error,
         )
+        self._mark_transfer_admission_terminal_locked(
+            transfer_id,
+            final_state,
+            reason=error,
+        )
         self._refresh_transfer_queue_record_locked(transfer_id)
 
     def _mark_transfer_terminal_locked(
@@ -2888,8 +2951,37 @@ class TurboBusDaemon:
             error=status.error if error is None else error,
         )
         self._transfer_statuses[terminal.transfer_id] = terminal
+        self._mark_transfer_admission_terminal_locked(
+            terminal.transfer_id,
+            final_state,
+            reason=error,
+        )
         self._refresh_transfer_queue_record_locked(terminal.transfer_id)
         return terminal
+
+    def _mark_transfer_admission_terminal_locked(
+        self,
+        transfer_id: str,
+        final_state: TransferStatusState,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        if final_state is TransferStatusState.CANCELED:
+            admission_state = _ADMISSION_CANCELED
+        elif final_state is TransferStatusState.FAILED:
+            admission_state = _ADMISSION_FAILED
+        else:
+            return
+        normalized_transfer_id = str(transfer_id)
+        admission = self._transfer_admissions.get(normalized_transfer_id)
+        if admission is None:
+            return
+        updated = dict(admission)
+        updated["state"] = admission_state
+        updated["terminal_at"] = time.time()
+        if reason is not None:
+            updated["terminal_reason"] = str(reason)
+        self._transfer_admissions[normalized_transfer_id] = updated
 
     def _close_session_locked(
         self,

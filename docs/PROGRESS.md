@@ -9,21 +9,22 @@ paper-validation paths reject completed intent transfers that lack execution
 and verified-byte evidence. Complete `TransferReceipt` construction now also
 requires worker/backend source, executed bytes, verified bytes, and
 content-match evidence. Direct backend and worker CUDA execution require
-backend `verify_transfer` instead of stats-only evidence. Native direct H2D and
-D2H CUDA readback have been validated on the server. Public intent backend and
-relay/pool CUDA validation still need server runs.
+backend `verify_transfer` instead of stats-only evidence. The old manual
+helper-socket verification CLI has been removed so active validation stays on
+the public intent path. Native direct H2D and D2H CUDA readback have been
+validated on the server. Public intent backend and relay/pool CUDA validation
+still need server runs.
 
 ## Completed This Round
 
-- Removed stats-only completion evidence fallback from direct backend execution.
-- Removed stats-only completion evidence fallback from worker CUDA execution.
-- Updated existing backend fixtures to model `verify_transfer` explicitly.
+- Removed `turbobus.verification`, which exposed manual mode, target GPU, and
+  relay GPU selection through the old worker-managed route.
+- Confirmed the top-level package does not export the old worker-managed
+  transfer client.
 
 ## Validation
 
-- `python -m unittest test.python.integration.test_client_worker_transfer test.python.unit.test_worker_cuda_executor`
-  passed.
-- `python -m unittest test.python.unit.test_contract_schema test.python.unit.test_public_client_api test.python.integration.test_paper_main_path test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_paper_validation`
+- `python -m unittest test.python.unit.test_package_boundaries`
   passed.
 - `git diff --check` passed.
 

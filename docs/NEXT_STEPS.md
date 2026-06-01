@@ -41,13 +41,16 @@ tests, benchmarks, paper validation, or experiment tooling during this stage.
 - Keep offload and vLLM adapters on `TurboBusRuntimeSession`: adapters submit
   `TransferIntent`, consume `TransferReceipt`, and receive buffer/session
   registration from the runtime session.
+- Keep worker/runtime resource lifecycle explicit: changed CPU shared-memory or
+  CUDA IPC handles must be re-registered, and worker-bound resources must close
+  predictably after H2D/D2H execution.
 - Do not add mock profile data, fake correctness gates, benchmark helpers, or
   paper-validation code while validating this path.
-- The next code entry is worker/runtime resource lifecycle hardening for shared
-  CPU buffers and CUDA IPC device buffers.
+- The next code entry is daemon control-plane state consistency for admission,
+  receipts, and cleanup.
 
 ## Next Entry
 
-Start from `turbobus/runtime_session.py`, `turbobus/worker/resources.py`, and
-`turbobus/worker/lifecycle.py`. Check that shared CPU buffers, CUDA IPC device
-buffers, receipts, and cleanup stay consistent through H2D and D2H execution.
+Start from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`, and
+`turbobus/scheduler/daemon.py`. Check profile misses, delayed admission,
+receipt completion, and cleanup state without adding tests or experiment code.

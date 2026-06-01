@@ -9,29 +9,28 @@ is the system-level Python runtime path: keep the old `client_transfer.py`
 deleted, drive transfers through `TurboBusRuntimeSession`, bootstrap daemon
 profile data, run daemon/worker as production socket services, and connect
 upper adapters to the runtime session without application-side path selection.
+The current pass is hardening shared CPU buffer and CUDA IPC buffer lifecycle.
 
 ## Completed This Round
 
-- Added `TurboBusRuntimeSession.submit_transfer_intent()` and
-  `wait_transfer_receipt()` so adapters can use the system runtime as their
-  intent client.
-- Added runtime-session construction helpers for `AdapterTransferContext`,
-  `OffloadStore`, and `InferenceKVSlotAdapter`.
-- Connected the vLLM KV connector to `TurboBusRuntimeSession` instead of a raw
-  socket `TurboBusClient`.
-- Changed vLLM save/restore CPU backings in the connector path to
-  `SharedPinnedCpuBuffer` objects and registered per-layer CUDA IPC buffers
-  through the runtime session.
-- Kept physical route choice out of offload and vLLM adapter code.
+- Runtime session now fingerprints each buffer registration, so a reused
+  buffer id with a changed shared-memory or CUDA IPC handle is re-registered
+  with the daemon.
+- Worker data-plane resources now expose a closed state, CPU/device buffer
+  roles, and reject property access after close.
+- Worker resource binding now rejects double entry and clears partial binding
+  state on open failure.
+- Worker resource cleanup still closes CUDA IPC handles even when CPU resource
+  close raises.
 
 ## Validation
 
-- `python -m py_compile turbobus/runtime_session.py turbobus/offload_store.py turbobus/adapters/inference.py turbobus/adapters/vllm.py turbobus/adapters/vllm_backing_pool.py turbobus/adapters/vllm_kv_connector.py`
+- `python -m py_compile turbobus/runtime_session.py turbobus/worker/resources.py turbobus/worker/lifecycle.py turbobus/worker/cuda_executor.py`
   passed.
-- `python -c "from turbobus import TurboBusRuntimeSession; from turbobus.offload_store import AdapterTransferContext, OffloadStore; from turbobus.adapters.vllm_kv_connector import TurboBusConnector; print('imports ok')"`
-  passed.
-- `python -m unittest test.python.unit.test_offload_store test.python.unit.test_vllm_kv_connector_main_path`
-  passed.
+- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer` passed
+  with one platform skip.
 - `git diff --check` passed with Windows line-ending warnings only.
 
 ## Remaining Risk
@@ -40,9 +39,10 @@ upper adapters to the runtime session without application-side path selection.
   multi-GPU server.
 - vLLM runtime-session save/restore still needs real CUDA, native extension,
   daemon, and worker socket validation.
-- Shared CPU buffer reuse and CUDA IPC cleanup need a focused lifecycle pass.
+- Daemon admission, receipt completion, and cleanup state still need a focused
+  control-plane pass.
 
 ## Next Main Target
 
-Harden worker/runtime resource lifecycle for shared CPU buffers, CUDA IPC
-device buffers, receipts, and cleanup.
+Harden daemon control-plane state consistency for profile misses, delayed
+admission, receipt completion, and cleanup.

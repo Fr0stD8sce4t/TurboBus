@@ -52,6 +52,11 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _registered_buffer_fingerprints: dict[str, tuple[object, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     _client: TurboBusClient | None = field(default=None, init=False, repr=False)
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
 
@@ -229,6 +234,7 @@ class TurboBusRuntimeSession:
             self._session_id = None
             self._client = None
             self._registered_buffer_ids.clear()
+            self._registered_buffer_fingerprints.clear()
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":
@@ -325,10 +331,12 @@ class TurboBusRuntimeSession:
     def _register_pending_buffers(self) -> None:
         self.session_id
         for buffer_id, buffer in tuple(self._buffers.items()):
-            if buffer_id in self._registered_buffer_ids:
+            fingerprint = _buffer_registration_fingerprint(buffer)
+            if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
                 continue
             register_executable_buffer(self.daemon_client, buffer)
             self._registered_buffer_ids.add(buffer_id)
+            self._registered_buffer_fingerprints[buffer_id] = fingerprint
 
     def _bind_target_gpu(self, device_index: int) -> None:
         device = int(device_index)
@@ -398,3 +406,21 @@ def _range_as_dict(
         "dst_offset": int(getattr(item, "dst_offset")),
         "bytes": int(getattr(item, "bytes")),
     }
+
+
+def _buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, ...]:
+    registration = buffer.buffer_registration()
+    metadata = tuple(
+        sorted((str(key), str(value)) for key, value in registration.metadata.items())
+    )
+    return (
+        registration.buffer_id,
+        registration.job_id,
+        registration.kind,
+        registration.size_bytes,
+        registration.device_index,
+        registration.address,
+        registration.pinned,
+        registration.handle_type,
+        metadata,
+    )

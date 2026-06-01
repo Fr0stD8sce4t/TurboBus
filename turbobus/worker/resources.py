@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..backends.cuda import default_cuda_backend
 from ..client import SharedPinnedCpuBuffer
@@ -18,13 +18,16 @@ class WorkerDataPlaneResources:
     device_ptr: int
     device_bytes: int
     cuda_host_registered: bool = False
+    _closed: bool = field(default=False, init=False, repr=False, compare=False)
 
     @property
     def host_ptr(self) -> int:
+        self._require_open()
         return self.cpu_buffer.address
 
     @property
     def host_bytes(self) -> int:
+        self._require_open()
         return self.cpu_buffer.size_bytes
 
     @property
@@ -41,14 +44,31 @@ class WorkerDataPlaneResources:
 
     @property
     def target_device_ptr(self) -> int:
+        self._require_open()
         return self.device_ptr
 
     @property
     def target_device_bytes(self) -> int:
+        self._require_open()
         return self.device_bytes
 
+    @property
+    def cpu_buffer_role(self) -> str:
+        return "source" if self.request.direction == "h2d" else "destination"
+
+    @property
+    def device_buffer_role(self) -> str:
+        return "destination" if self.request.direction == "h2d" else "source"
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def close(self) -> None:
+        if self._closed:
+            return
         self.cpu_buffer.close()
+        object.__setattr__(self, "_closed", True)
 
     def as_dict(self) -> dict[str, object]:
         cpu_handle = (
@@ -73,12 +93,19 @@ class WorkerDataPlaneResources:
             "cpu_handle_type": cpu_handle.handle_type,
             "host_ptr": self.host_ptr,
             "host_bytes": self.host_bytes,
+            "cpu_buffer_role": self.cpu_buffer_role,
             "device_buffer_id": device_handle.buffer_id,
             "device_handle_type": device_handle.handle_type,
             "device_ptr": self.device_ptr,
             "device_bytes": self.device_bytes,
+            "device_buffer_role": self.device_buffer_role,
             "cuda_host_registered": self.cuda_host_registered,
+            "closed": self.closed,
         }
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise WorkerDataPlaneResourceError("worker data-plane resources are closed")
 
 
 class WorkerDataPlaneResourceBinding:
@@ -99,6 +126,8 @@ class WorkerDataPlaneResourceBinding:
         self._device_index: int | None = None
 
     def __enter__(self) -> WorkerDataPlaneResources:
+        if self._resources is not None or self._device_ptr is not None:
+            raise WorkerDataPlaneResourceError("worker data-plane resources already bound")
         cpu_buffer: SharedPinnedCpuBuffer | None = None
         try:
             cpu_handle = _cpu_handle_for_request(self.request)
@@ -123,23 +152,28 @@ class WorkerDataPlaneResourceBinding:
             )
             return self._resources
         except Exception as exc:
-            if self._device_ptr is not None:
-                _set_cuda_device_index(self.backend, self._device_index)
-                self.backend.close_device_ipc_handle(self._device_ptr)
-                self._device_ptr = None
-            if cpu_buffer is not None:
-                _set_cuda_device_index(self.backend, self._device_index)
-                cpu_buffer.close()
+            try:
+                if self._device_ptr is not None:
+                    _set_cuda_device_index(self.backend, self._device_index)
+                    self.backend.close_device_ipc_handle(self._device_ptr)
+                    self._device_ptr = None
+                if cpu_buffer is not None:
+                    _set_cuda_device_index(self.backend, self._device_index)
+                    cpu_buffer.close()
+            finally:
+                self._resources = None
+                self._device_index = None
             raise WorkerDataPlaneResourceError(
                 f"failed to bind worker data-plane resources: {exc}"
             ) from exc
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         try:
-            if self._resources is not None:
+            resources = self._resources
+            self._resources = None
+            if resources is not None:
                 _set_cuda_device_index(self.backend, self._device_index)
-                self._resources.close()
-                self._resources = None
+                resources.close()
         finally:
             if self._device_ptr is not None:
                 self.backend.close_device_ipc_handle(self._device_ptr)

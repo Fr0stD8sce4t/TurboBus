@@ -8,22 +8,22 @@ The daemon, worker, backend, public client, adapter support, benchmarks, and
 paper-validation paths reject completed intent transfers that lack execution
 and verified-byte evidence. Complete `TransferReceipt` construction now also
 requires worker/backend source, executed bytes, verified bytes, and
-content-match evidence. Native direct H2D and D2H CUDA readback have been
-validated on the server. Public intent backend and relay/pool CUDA validation
-still need server runs.
+content-match evidence. Direct backend and worker CUDA execution require
+backend `verify_transfer` instead of stats-only evidence. Native direct H2D and
+D2H CUDA readback have been validated on the server. Public intent backend and
+relay/pool CUDA validation still need server runs.
 
 ## Completed This Round
 
-- Enforced complete-receipt evidence in `TransferReceipt.__post_init__`.
-- Updated benchmark, public example, offload-store, vLLM, and schema fixtures
-  so valid complete receipts carry worker/backend completion evidence.
-- Kept benchmark and paper-validation paths rejecting intent-only completion.
+- Removed stats-only completion evidence fallback from direct backend execution.
+- Removed stats-only completion evidence fallback from worker CUDA execution.
+- Updated existing backend fixtures to model `verify_transfer` explicitly.
 
 ## Validation
 
-- `python -m unittest test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_benchmark_daemon_support test.python.e2e.test_paper_validation`
+- `python -m unittest test.python.integration.test_client_worker_transfer test.python.unit.test_worker_cuda_executor`
   passed.
-- `python -m unittest test.python.unit.test_contract_schema test.python.unit.test_schema test.python.unit.test_public_client_api test.python.unit.test_offload_store test.python.unit.test_vllm_kv_connector_main_path test.python.e2e.test_public_intent_example test.python.integration.test_paper_main_path test.python.integration.test_daemon_state test.python.integration.test_daemon_socket`
+- `python -m unittest test.python.unit.test_contract_schema test.python.unit.test_public_client_api test.python.integration.test_paper_main_path test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_paper_validation`
   passed.
 - `git diff --check` passed.
 

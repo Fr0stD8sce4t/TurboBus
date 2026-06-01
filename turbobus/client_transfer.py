@@ -729,7 +729,6 @@ def _run_direct_plan(
         return (
             bytes_completed,
             _direct_plan_completion_evidence(
-                stats,
                 backend=backend,
                 target_device=int(target_device),
                 direction=direction,
@@ -852,7 +851,6 @@ def _direct_plan_completed_bytes(
 
 
 def _direct_plan_completion_evidence(
-    stats,
     *,
     backend,
     target_device: int,
@@ -865,41 +863,21 @@ def _direct_plan_completion_evidence(
     expected_bytes: int,
 ) -> dict[str, object]:
     verifier = getattr(backend, "verify_transfer", None)
-    if callable(verifier):
-        evidence = dict(
-            verifier(
-                target_device=int(target_device),
-                direction=str(direction).lower(),
-                host_ptr=int(host_ptr),
-                host_bytes=int(host_bytes),
-                device_ptr=int(device_ptr),
-                device_bytes=int(device_bytes),
-                ranges=tuple(ranges),
-            )
+    if not callable(verifier):
+        raise RuntimeError("direct backend must support transfer verification")
+    evidence = dict(
+        verifier(
+            target_device=int(target_device),
+            direction=str(direction).lower(),
+            host_ptr=int(host_ptr),
+            host_bytes=int(host_bytes),
+            device_ptr=int(device_ptr),
+            device_bytes=int(device_bytes),
+            ranges=tuple(ranges),
         )
-        evidence.setdefault("expected_bytes", int(expected_bytes))
-        return evidence
-    return _direct_plan_stats_completion_evidence(
-        stats,
-        expected_bytes=int(expected_bytes),
     )
-
-
-def _direct_plan_stats_completion_evidence(
-    stats,
-    *,
-    expected_bytes: int,
-) -> dict[str, object]:
-    verified_bytes = _stats_value(stats, "verified_bytes")
-    return {
-        "verified_bytes": 0 if verified_bytes is None else int(verified_bytes),
-        "content_match": bool(_stats_value(stats, "content_match") or False),
-        "verification_source": "backend",
-        "verification_method": str(
-            _stats_value(stats, "verification_method") or "backend_stats"
-        ),
-        "expected_bytes": int(expected_bytes),
-    }
+    evidence.setdefault("expected_bytes", int(expected_bytes))
+    return evidence
 
 
 def _plan_transfer_ranges(plan_payload: Mapping[str, object]) -> tuple[dict[str, int], ...]:

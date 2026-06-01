@@ -132,6 +132,23 @@ class FakeBackend:
         self.stats_calls.append((runtime, handle))
         return self.stats_result
 
+    def verify_transfer(
+        self,
+        *,
+        target_device,
+        direction,
+        host_ptr,
+        host_bytes,
+        device_ptr,
+        device_bytes,
+        ranges,
+    ):
+        return {
+            "verified_bytes": int(getattr(self.stats_result, "verified_bytes", 0)),
+            "content_match": bool(getattr(self.stats_result, "content_match", False)),
+            "verification_method": "fixture_compare",
+        }
+
 
 class FakeCpuBuffer:
     address = 1000

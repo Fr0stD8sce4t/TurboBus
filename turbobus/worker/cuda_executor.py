@@ -102,7 +102,6 @@ class CudaWorkerExecutor:
         try:
             completion_evidence = _worker_completion_evidence(
                 backend=self.backend,
-                stats=stats,
                 request=request,
                 resources=resources,
                 target_device=int(target_device),
@@ -358,35 +357,27 @@ def _stats_value(stats: Any, field_name: str, default: Any) -> Any:
 def _worker_completion_evidence(
     *,
     backend,
-    stats: Any,
     request: WorkerTransferRequest,
     resources: WorkerDataPlaneResources,
     target_device: int,
     ranges: tuple[dict[str, int], ...],
 ) -> dict[str, object]:
     verifier = getattr(backend, "verify_transfer", None)
-    if callable(verifier):
-        evidence = dict(
-            verifier(
-                target_device=int(target_device),
-                direction=request.data_plane.direction,
-                host_ptr=resources.host_ptr,
-                host_bytes=resources.host_bytes,
-                device_ptr=resources.device_ptr,
-                device_bytes=resources.device_bytes,
-                ranges=ranges,
-            )
+    if not callable(verifier):
+        raise RuntimeError("worker backend must support transfer verification")
+    evidence = dict(
+        verifier(
+            target_device=int(target_device),
+            direction=request.data_plane.direction,
+            host_ptr=resources.host_ptr,
+            host_bytes=resources.host_bytes,
+            device_ptr=resources.device_ptr,
+            device_bytes=resources.device_bytes,
+            ranges=ranges,
         )
-        evidence.setdefault("verification_source", "cuda_worker")
-        return evidence
-    return {
-        "verified_bytes": _stats_int(stats, "verified_bytes", 0),
-        "content_match": _stats_bool(stats, "content_match", False),
-        "verification_source": "cuda_worker",
-        "verification_method": str(
-            _stats_value(stats, "verification_method", "backend_stats")
-        ),
-    }
+    )
+    evidence.setdefault("verification_source", "cuda_worker")
+    return evidence
 
 
 def _plan_transfer_ranges(plan_payload: dict[str, object]) -> tuple[dict[str, int], ...]:

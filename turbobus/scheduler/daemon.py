@@ -37,6 +37,22 @@ class _Profile:
 
 
 @dataclass(frozen=True)
+class _RelayPolicy:
+    available_relays: tuple[int, ...]
+    deferred_relays: tuple[dict[str, object], ...]
+    filtered_relays: tuple[dict[str, object], ...]
+    defer_relay_admission: bool
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "available_relays": self.available_relays,
+            "deferred_relays": self.deferred_relays,
+            "filtered_relays": self.filtered_relays,
+            "defer_relay_admission": self.defer_relay_admission,
+        }
+
+
+@dataclass(frozen=True)
 class _RuntimeView:
     job_id: str | None
     workload_kind: str
@@ -133,7 +149,7 @@ class DaemonScheduler:
             workload_kind=workload_kind,
             priority=priority,
         )
-        profile, fallback_reason = self._profile_for_planning(
+        profile, fallback_reason, relay_policy = self._profile_for_planning(
             profile_entry=profile_entry,
             session=session,
             relay_quotas=relay_quotas,
@@ -216,6 +232,7 @@ class DaemonScheduler:
                 "stats": stats.as_dict(),
                 "runtime_state": _runtime_state_metadata(runtime_state),
                 "policy": runtime_view.policy_metadata(),
+                "relay_policy": relay_policy.as_dict(),
             },
         )
 
@@ -228,60 +245,116 @@ class DaemonScheduler:
         direction: str,
         runtime_view: "_RuntimeView",
         defer_relay_admission: bool,
-    ) -> tuple[_Profile, str | None]:
+    ) -> tuple[_Profile, str | None, _RelayPolicy]:
+        empty_policy = _RelayPolicy(
+            available_relays=(),
+            deferred_relays=(),
+            filtered_relays=(),
+            defer_relay_admission=bool(defer_relay_admission),
+        )
         payload = _profile_payload(profile_entry)
         if payload is None:
-            return _direct_fallback_profile(session.target_gpu), "daemon profile miss"
+            return (
+                _direct_fallback_profile(session.target_gpu),
+                "daemon profile miss",
+                empty_policy,
+            )
 
-        relays = []
+        available_relays = []
+        deferred_relays = []
+        deferred_relay_profiles = []
+        filtered_relays: list[dict[str, object]] = []
         allowed_relays = set(int(gpu) for gpu in session.relay_gpus)
         for relay in payload.get("relays", []) or []:
             if not isinstance(relay, Mapping):
                 continue
             relay_device = int(relay["relay_device"])
             if relay_device not in allowed_relays:
-                continue
-            if (
-                not defer_relay_admission
-                and not _relay_has_capacity(session, relay_quotas.get(relay_device))
-            ):
-                continue
-            if not defer_relay_admission and relay_device in runtime_view.busy_relays:
+                filtered_relays.append(
+                    {
+                        "relay_device": relay_device,
+                        "reason": "relay is not assigned to session",
+                    }
+                )
                 continue
             if not bool(relay.get("p2p_enabled", False)):
+                filtered_relays.append(
+                    {"relay_device": relay_device, "reason": "relay p2p is disabled"}
+                )
                 continue
             if float(relay.get("p2p_bw_gbps", 0.0) or 0.0) <= 0.0:
-                continue
-            relays.append(
-                _RelayProfile(
-                    relay_device=relay_device,
-                    target_device=int(relay.get("target_device", session.target_gpu)),
-                    h2d_bw_gbps=float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
-                    d2h_bw_gbps=float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
-                    p2p_bw_gbps=float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
-                    effective_bw_gbps=float(relay.get("effective_bw_gbps", 0.0) or 0.0),
-                    effective_d2h_bw_gbps=float(
-                        relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
-                    ),
-                    p2p_enabled=bool(relay.get("p2p_enabled", False)),
+                filtered_relays.append(
+                    {
+                        "relay_device": relay_device,
+                        "reason": "relay p2p bandwidth is unavailable",
+                    }
                 )
+                continue
+            relay_profile = _RelayProfile(
+                relay_device=relay_device,
+                target_device=int(relay.get("target_device", session.target_gpu)),
+                h2d_bw_gbps=float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
+                d2h_bw_gbps=float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
+                p2p_bw_gbps=float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
+                effective_bw_gbps=float(relay.get("effective_bw_gbps", 0.0) or 0.0),
+                effective_d2h_bw_gbps=float(
+                    relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
+                ),
+                p2p_enabled=bool(relay.get("p2p_enabled", False)),
             )
+            unavailable_reason = _relay_unavailable_reason(
+                session=session,
+                quota=relay_quotas.get(relay_device),
+                relay_device=relay_device,
+                runtime_view=runtime_view,
+            )
+            if unavailable_reason is None:
+                available_relays.append(relay_profile)
+            elif defer_relay_admission:
+                deferred_relay_profiles.append(relay_profile)
+                deferred_relays.append(
+                    {
+                        "relay_device": relay_device,
+                        "reason": unavailable_reason,
+                    }
+                )
+            else:
+                filtered_relays.append(
+                    {
+                        "relay_device": relay_device,
+                        "reason": unavailable_reason,
+                    }
+                )
 
         direct_h2d = float(payload.get("direct_h2d_bw_gbps", 0.0) or 0.0)
         direct_d2h = float(payload.get("direct_d2h_bw_gbps", 0.0) or direct_h2d)
         if direction == "h2d" and direct_h2d <= 0.0:
-            return _direct_fallback_profile(session.target_gpu), "daemon direct profile invalid"
+            return (
+                _direct_fallback_profile(session.target_gpu),
+                "daemon direct profile invalid",
+                empty_policy,
+            )
         if direction == "d2h" and direct_d2h <= 0.0:
             direct_d2h = direct_h2d
 
+        selected_relays = tuple(available_relays)
+        if not selected_relays and defer_relay_admission:
+            selected_relays = tuple(deferred_relay_profiles)
+        relay_policy = _RelayPolicy(
+            available_relays=tuple(relay.relay_device for relay in available_relays),
+            deferred_relays=tuple(deferred_relays),
+            filtered_relays=tuple(filtered_relays),
+            defer_relay_admission=bool(defer_relay_admission),
+        )
         return (
             _Profile(
                 target_device=int(payload.get("target_device", session.target_gpu)),
                 direct_h2d_bw_gbps=direct_h2d,
                 direct_d2h_bw_gbps=direct_d2h,
-                relays=tuple(relays),
+                relays=selected_relays,
             ),
             None,
+            relay_policy,
         )
 
     def _plan_or_direct(
@@ -689,12 +762,24 @@ def _direct_fallback_profile(target_gpu: int) -> _Profile:
     )
 
 
-def _relay_has_capacity(session: Session, quota: RelayQuota | None) -> bool:
-    return (
-        quota is not None
-        and session.active_chunks < session.max_inflight_chunks
-        and quota.active_chunks < quota.max_inflight_chunks
-    )
+def _relay_unavailable_reason(
+    *,
+    session: Session,
+    quota: RelayQuota | None,
+    relay_device: int,
+    runtime_view: _RuntimeView,
+) -> str | None:
+    if relay_device not in session.relay_gpus:
+        return "relay GPU is not assigned to this session"
+    if quota is None:
+        return "relay chunk quota is unavailable"
+    if session.active_chunks >= session.max_inflight_chunks:
+        return "session chunk quota is unavailable"
+    if quota.active_chunks >= quota.max_inflight_chunks:
+        return "relay chunk quota is unavailable"
+    if int(relay_device) in runtime_view.busy_relays:
+        return "relay has active path"
+    return None
 
 
 def _parse_transfer_mode(mode: TransferMode | str) -> TransferMode:

@@ -12,19 +12,20 @@ without application-side path selection.
 
 ## Completed This Round
 
-- Daemon status updates to `running` or `complete` now require an admitted,
-  non-expired transfer plan.
-- Intent transfer status updates to `running` or `complete` now require an
-  existing daemon-issued `ExecutionTicket`.
-- Profile-miss direct fallback is reflected in admission metadata instead of
-  looking like a generic direct plan.
-- Failed or canceled transfers now move admission state to a terminal state, so
-  cleanup receipts no longer look admitted or delayed.
+- Scheduler relay policy now separates available, deferred, and filtered relay
+  candidates in daemon-owned metadata.
+- When delayed admission is allowed, the scheduler prefers currently available
+  relays and only plans against deferred relays when no available relay exists.
+- Profile misses and unusable relay profiles still resolve to explicit direct
+  fallback decisions.
+- Reschedule now clears old leases and tickets before creating the replacement
+  plan, and leaves the transfer in delayed admission if reschedule fails.
 
 ## Validation
 
-- `python -m py_compile turbobus/daemon/server.py turbobus/daemon/dispatch.py turbobus/scheduler/daemon.py`
+- `python -m py_compile turbobus/scheduler/daemon.py turbobus/daemon/server.py turbobus/daemon/dispatch.py`
   passed.
+- `python -m unittest test.python.unit.test_daemon_scheduler` passed.
 - `python -m unittest test.python.integration.test_paper_main_path` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   expected platform skips.
@@ -33,12 +34,12 @@ without application-side path selection.
 
 ## Remaining Risk
 
-- Runtime-session, vLLM, CUDA IPC, and native CUDA behavior still need a real
-  CUDA multi-GPU server with daemon and worker socket services.
-- Scheduler runtime policy still needs a focused pass so initial scheduling and
-  reschedule share one daemon-owned relay/quota/fallback rule path.
+- Scheduler policy has not yet been validated against a real CUDA multi-GPU
+  server with concurrent jobs and live relay load.
+- Worker authorization and cleanup still need a focused isolation pass to make
+  sure stale tickets and leases cannot execute after cleanup or reschedule.
 
 ## Next Main Target
 
-Harden scheduler runtime policy for relay availability, quota, busy relay
-state, fairness fallback, and reschedule.
+Harden isolation and authority across daemon-issued tickets, worker
+authorization, status reporting, and cleanup.

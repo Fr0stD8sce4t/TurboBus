@@ -1261,14 +1261,19 @@ class TurboBusDaemon:
             request = self._transfer_plan_requests.get(normalized_transfer_id)
             if request is None:
                 return DaemonResponse(ok=False, error="transfer plan request is unavailable")
-            _merge_removed(
-                _empty_removed_summary(),
-                self._release_reservations_for_transfer_locked(
-                    normalized_transfer_id,
-                    final_state=TransferStatusState.CANCELED,
-                    cleanup_reason="reschedule",
-                    mark_terminal=False,
-                ),
+            removed = self._release_reservations_for_transfer_locked(
+                normalized_transfer_id,
+                final_state=TransferStatusState.CANCELED,
+                cleanup_reason="reschedule",
+                mark_terminal=False,
+            )
+            self._execution_tickets.pop(
+                self._transfer_tickets.pop(normalized_transfer_id, ""),
+                None,
+            )
+            self._mark_transfer_reschedule_pending_locked(
+                normalized_transfer_id,
+                now=checked_at,
             )
             try:
                 (
@@ -1302,7 +1307,16 @@ class TurboBusDaemon:
                     defer_relay_admission=True,
                 )
             except ValueError as exc:
-                return DaemonResponse(ok=False, error=str(exc))
+                self._mark_transfer_reschedule_failed_locked(
+                    normalized_transfer_id,
+                    reason=str(exc),
+                    now=checked_at,
+                )
+                return DaemonResponse(
+                    ok=False,
+                    error=str(exc),
+                    payload={"removed": removed},
+                )
             generation = int(self._transfer_plan_generations.get(normalized_transfer_id, 0)) + 1
             self._transfer_plan_generations[normalized_transfer_id] = generation
             self._transfer_plans[normalized_transfer_id] = dict(decision.plan)
@@ -1334,10 +1348,6 @@ class TurboBusDaemon:
                 "rescheduled_at": float(checked_at),
             }
             self._transfer_admissions[normalized_transfer_id] = admission
-            self._execution_tickets.pop(
-                self._transfer_tickets.pop(normalized_transfer_id, ""),
-                None,
-            )
             intent_id = request.get("intent_id")
             intent = (
                 None
@@ -1816,6 +1826,46 @@ class TurboBusDaemon:
             if lease_generation != plan_generation:
                 return "stale execution plan"
         return None
+
+    def _mark_transfer_reschedule_pending_locked(
+        self,
+        transfer_id: str,
+        *,
+        now: float,
+    ) -> None:
+        normalized_transfer_id = str(transfer_id)
+        admission = dict(self._transfer_admissions.get(normalized_transfer_id, {}))
+        admission.update(
+            {
+                "state": _ADMISSION_DELAYED,
+                "reason": "reschedule pending",
+                "lease_ids": (),
+                "rescheduled_at": float(now),
+            }
+        )
+        self._transfer_admissions[normalized_transfer_id] = admission
+        self._refresh_transfer_queue_record_locked(normalized_transfer_id, now=now)
+
+    def _mark_transfer_reschedule_failed_locked(
+        self,
+        transfer_id: str,
+        *,
+        reason: str,
+        now: float,
+    ) -> None:
+        normalized_transfer_id = str(transfer_id)
+        admission = dict(self._transfer_admissions.get(normalized_transfer_id, {}))
+        admission.update(
+            {
+                "state": _ADMISSION_DELAYED,
+                "reason": "reschedule failed",
+                "reschedule_error": str(reason),
+                "lease_ids": (),
+                "rescheduled_at": float(now),
+            }
+        )
+        self._transfer_admissions[normalized_transfer_id] = admission
+        self._refresh_transfer_queue_record_locked(normalized_transfer_id, now=now)
 
     def _transfer_status_update_blocked_reason_locked(
         self,

@@ -22,11 +22,15 @@ bytes. Status-only worker/backend completion is no longer enough.
 - Local tests cover daemon receipt rejection for missing or mismatched evidence.
   Real buffer correctness is not considered verified until CUDA server checks
   run against real buffers.
+- CUDA server validation has confirmed native extension build, native direct
+  H2D correctness, and native direct D2H correctness on GPU 0.
 
 ## Remaining Work For This Target
 
-- Build the native CUDA extension on a CUDA server.
-- Run public intent H2D and D2H correctness checks against real GPU buffers.
+- Run public intent H2D and D2H correctness checks against real GPU buffers for
+  backend execution.
+- Run worker relay and pooled correctness once GPU 5 and GPU 6 are idle; they
+  are the available NVLink pair for this machine.
 
 ## Exit Criteria
 
@@ -38,5 +42,5 @@ bytes. Status-only worker/backend completion is no longer enough.
 
 ## Next Step
 
-Run the native CUDA build and public intent H2D/D2H correctness checks on a
-CUDA server. Do not move to benchmark repair until those checks pass.
+Run public intent backend H2D/D2H correctness checks on GPU 0. Do not move to
+benchmark repair until public intent receipts prove executed and verified bytes.

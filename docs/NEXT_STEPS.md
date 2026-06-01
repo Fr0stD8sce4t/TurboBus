@@ -7,33 +7,34 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The current task is to harden isolation and authority across daemon and worker
-control paths. The daemon must remain the only source of `ExecutionTicket` and
-lease authority, while workers and adapters only execute or consume daemon
-issued objects.
+The current task is to harden the runtime/native boundary for production data
+movement. Python runtime code should keep profile bootstrap, tensor validation,
+native plan conversion, and CUDA backend execution clearly separated so worker
+and runtime session paths execute only daemon-issued plans.
 
 ## Exit Criteria
 
-- Peer identity checks consistently cover session, job, and buffer ownership.
-- Worker authorization rejects stale, missing, or cleanup-invalidated tickets
-  and leases.
-- Cleanup and reschedule cannot leave executable tickets or active leases for
-  transfers that are no longer admitted.
-- Runtime session and adapters continue to submit `TransferIntent` and consume
-  `TransferReceipt` without choosing physical paths.
+- Native extension loading, profile conversion, tensor validation, and transfer
+  plan conversion have clear owning modules or helpers.
+- `CudaWorkerExecutor` and direct fallback execute daemon-issued
+  `ExecutionTicket` plans without choosing physical paths.
+- Runtime session profile bootstrap still writes daemon profile data through
+  `put_profile` and does not create mock profile data.
+- Existing runtime/session/adapters continue to submit `TransferIntent` and
+  consume `TransferReceipt`.
 - No benchmark, paper-validation, experiment, or compatibility shim code is
   added during this pass.
 
 ## Current Code Work
 
-- Start from `turbobus/daemon/server.py`, `turbobus/worker/validation.py`, and
-  `turbobus/worker/lifecycle.py`.
+- Start from `turbobus/runtime_engine.py`, `turbobus/backends/cuda.py`, and
+  `turbobus/worker/cuda_executor.py`.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
-- Do not add mock correctness gates, fake receipts, benchmark helpers, or
-  paper-validation code while validating this path.
+- Do not add mock native backends, fake correctness gates, benchmark helpers,
+  or paper-validation code while validating this path.
 
 ## Next Entry
 
-Trace daemon-issued `ExecutionTicket` validation through worker authorization,
-worker execution, status reporting, cleanup, and receipt creation.
+Trace native profile bootstrap and daemon-issued plan execution from
+`TurboBusRuntimeSession` through CUDA backend and worker executor code.

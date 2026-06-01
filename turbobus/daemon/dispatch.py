@@ -129,7 +129,10 @@ def handle_request(
         reservation_id = payload.get("reservation_id")
         if reservation_id is None:
             return DaemonResponse(ok=False, error="reservation_id is required")
-        return daemon.release_transfer(str(reservation_id))
+        return daemon.release_transfer(
+            str(reservation_id),
+            peer_identity=request.peer_identity,
+        )
     if request.request_type == RequestType.TRANSFER_STATUS:
         payload = request.payload
         return daemon.transfer_status(
@@ -139,6 +142,7 @@ def handle_request(
             error=payload.get("error"),
             completion_source=payload.get("completion_source"),
             completion_evidence=payload.get("completion_evidence"),
+            peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.VALIDATE_LEASE:
         payload = request.payload
@@ -163,6 +167,7 @@ def handle_request(
             target_id=str(payload["target_id"]),
             reason=str(payload.get("reason", "manual")),
             force=bool(payload.get("force", False)),
+            peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.INVALIDATE_PROFILE:
         payload = request.payload

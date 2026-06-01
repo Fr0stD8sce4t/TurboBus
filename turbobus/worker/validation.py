@@ -173,12 +173,13 @@ def lease_ids_for_ticket(
 
 
 def transfer_id_for_ticket(ticket: ExecutionTicket, transfer_id: str | None) -> str:
-    if transfer_id is not None:
-        return str(transfer_id)
-    transfer_id = ticket.metadata.get("transfer_id")
-    if transfer_id is None:
+    ticket_transfer_id = ticket.metadata.get("transfer_id")
+    if ticket_transfer_id is None:
         return ticket.ticket_id
-    return str(transfer_id)
+    resolved = str(ticket_transfer_id)
+    if transfer_id is not None and str(transfer_id) != resolved:
+        raise ValueError("transfer_id does not match execution ticket")
+    return resolved
 
 
 def relay_ranges_from_ticket_plan(

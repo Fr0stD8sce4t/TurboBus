@@ -342,6 +342,7 @@ class TurboBusDaemon:
         target_id: str,
         reason: str,
         force: bool = False,
+        peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         cleanup = CleanupRequest(
             target_kind=target_kind,
@@ -354,6 +355,14 @@ class TurboBusDaemon:
             if cleanup.target_kind == "job":
                 if cleanup.target_id not in self._jobs and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown job")
+                try:
+                    if cleanup.target_id in self._jobs:
+                        self._validate_peer_owns_job_locked(
+                            job_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
                 _merge_removed(
                     removed,
                     self._cleanup_job_locked(
@@ -364,6 +373,14 @@ class TurboBusDaemon:
             elif cleanup.target_kind == "buffer":
                 if cleanup.target_id not in self._buffers and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown buffer")
+                try:
+                    if cleanup.target_id in self._buffers:
+                        self._validate_peer_owns_buffer_locked(
+                            buffer_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
                 transfer_ids = self._transfer_ids_for_buffer_locked(cleanup.target_id)
                 for lease_id in self._active_buffer_lease_ids_locked(cleanup.target_id):
                     _merge_removed(
@@ -388,6 +405,14 @@ class TurboBusDaemon:
                     )
                     removed["transfers"] = int(removed["transfers"]) + 1
             elif cleanup.target_kind == "session":
+                try:
+                    if cleanup.target_id in self._sessions:
+                        self._validate_peer_owns_session_locked(
+                            session_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
                 session = self._close_session_locked(
                     cleanup.target_id,
                     reason=cleanup.reason,
@@ -396,6 +421,14 @@ class TurboBusDaemon:
                 if session is None and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown session")
             elif cleanup.target_kind == "reservation":
+                try:
+                    self._validate_peer_owns_lease_locked(
+                        lease_id=cleanup.target_id,
+                        peer_identity=peer_identity,
+                    )
+                except ValueError as exc:
+                    if not cleanup.force or str(exc) != "unknown lease":
+                        return DaemonResponse(ok=False, error=str(exc))
                 released = self._release_reservation_and_count_locked(
                     cleanup.target_id,
                     final_state=TransferStatusState.CANCELED,
@@ -493,9 +526,20 @@ class TurboBusDaemon:
                 },
             )
 
-    def release_transfer(self, reservation_id: str) -> DaemonResponse:
+    def release_transfer(
+        self,
+        reservation_id: str,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
         with self._lock:
             reservation_key = str(reservation_id)
+            try:
+                self._validate_peer_owns_lease_locked(
+                    lease_id=reservation_key,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             transfer_id = self._reservation_transfers.get(reservation_key)
             if transfer_id is not None:
                 status = self._transfer_statuses.get(transfer_id)
@@ -516,11 +560,19 @@ class TurboBusDaemon:
         error: str | None = None,
         completion_source: str | None = None,
         completion_evidence: Mapping[str, object] | None = None,
+        peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         with self._lock:
             status = self._transfer_statuses.get(str(transfer_id))
             if status is None:
                 return DaemonResponse(ok=False, error="unknown transfer")
+            try:
+                self._validate_peer_owns_job_locked(
+                    job_id=status.job_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             if state is None and bytes_completed is None and error is None:
                 return DaemonResponse(ok=True, payload={"status": asdict(status)})
             try:
@@ -2434,14 +2486,19 @@ class TurboBusDaemon:
             )
             if mapped_transfer_id == transfer_id
         )
-        expires_at = max(
-            [float(now) + 30.0]
-            + [
-                float(self._lease_tokens[lease_id].expires_at)
-                for lease_id in lease_ids
-                if lease_id in self._lease_tokens
-                and float(self._lease_tokens[lease_id].expires_at) > float(now)
-            ]
+        lease_expirations = [
+            float(self._lease_tokens[lease_id].expires_at)
+            for lease_id in lease_ids
+            if lease_id in self._lease_tokens
+            and float(self._lease_tokens[lease_id].expires_at) > float(now)
+        ]
+        expires_at = (
+            min(lease_expirations)
+            if lease_expirations
+            else self._transfer_plan_expirations.get(
+                str(transfer_id),
+                float(now) + _DEFAULT_PLAN_TTL_SECONDS,
+            )
         )
         return self._execution_ticket_for_plan_locked(
             transfer_id=transfer_id,
@@ -2880,6 +2937,26 @@ class TurboBusDaemon:
             owner_name="job",
         )
 
+    def _validate_peer_owns_session_locked(
+        self,
+        *,
+        session_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if peer_identity is None or not peer_identity.authenticated:
+            return
+        session_key = str(session_id)
+        if session_key not in self._sessions:
+            raise ValueError("unknown session")
+        session_peer = self._session_peer_identities.get(session_key)
+        if session_peer is None:
+            raise ValueError("session owner identity is unavailable")
+        _validate_peer_owner_match(
+            expected=session_peer,
+            actual=peer_identity,
+            owner_name="session",
+        )
+
     def _validate_peer_owns_buffer_locked(
         self,
         *,
@@ -2900,6 +2977,28 @@ class TurboBusDaemon:
             if str(exc) == "job owner does not match authenticated peer":
                 raise ValueError("buffer owner does not match authenticated peer") from exc
             raise
+
+    def _validate_peer_owns_lease_locked(
+        self,
+        *,
+        lease_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if peer_identity is None or not peer_identity.authenticated:
+            return
+        lease = self._lease_tokens.get(str(lease_id))
+        if lease is None:
+            raise ValueError("unknown lease")
+        if lease.job_id is not None:
+            self._validate_peer_owns_job_locked(
+                job_id=lease.job_id,
+                peer_identity=peer_identity,
+            )
+        for buffer_id in lease.buffer_ids:
+            self._validate_peer_owns_buffer_locked(
+                buffer_id=buffer_id,
+                peer_identity=peer_identity,
+            )
 
     def _validate_transfer_buffers_locked(
         self,

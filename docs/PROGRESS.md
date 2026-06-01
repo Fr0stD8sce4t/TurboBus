@@ -12,34 +12,35 @@ without application-side path selection.
 
 ## Completed This Round
 
-- Scheduler relay policy now separates available, deferred, and filtered relay
-  candidates in daemon-owned metadata.
-- When delayed admission is allowed, the scheduler prefers currently available
-  relays and only plans against deferred relays when no available relay exists.
-- Profile misses and unusable relay profiles still resolve to explicit direct
-  fallback decisions.
-- Reschedule now clears old leases and tickets before creating the replacement
-  plan, and leaves the transfer in delayed admission if reschedule fails.
+- Daemon cleanup, release, and transfer status paths now receive socket peer
+  identity and validate session, job, buffer, or lease ownership.
+- Worker authorization payload parsing now rejects a top-level `transfer_id`
+  that does not match the daemon-issued ticket metadata.
+- Relay intent tickets now expire with the earliest active relay lease instead
+  of outliving their lease authority.
+- Worker/backend status completion remains tied to admitted transfers and
+  daemon-issued tickets.
 
 ## Validation
 
-- `python -m py_compile turbobus/scheduler/daemon.py turbobus/daemon/server.py turbobus/daemon/dispatch.py`
+- `python -m py_compile turbobus/daemon/server.py turbobus/daemon/dispatch.py turbobus/worker/validation.py turbobus/worker/lifecycle.py turbobus/worker/models.py`
   passed.
-- `python -m unittest test.python.unit.test_daemon_scheduler` passed.
-- `python -m unittest test.python.integration.test_paper_main_path` passed.
-- `python -m unittest test.python.integration.test_daemon_socket` passed with
-  expected platform skips.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
 - `python -m unittest test.python.integration.test_client_worker_transfer`
   passed with one expected platform skip.
+- `python -m unittest test.python.integration.test_daemon_socket` passed with
+  expected platform skips.
+- `python -m unittest test.python.integration.test_paper_main_path` passed.
+- `python -m unittest test.python.unit.test_daemon_scheduler` passed.
 
 ## Remaining Risk
 
-- Scheduler policy has not yet been validated against a real CUDA multi-GPU
-  server with concurrent jobs and live relay load.
-- Worker authorization and cleanup still need a focused isolation pass to make
-  sure stale tickets and leases cannot execute after cleanup or reschedule.
+- Peer isolation has not yet been validated with separate OS users or
+  containers on the real daemon socket.
+- Runtime/native profile and plan conversion still need a focused pass before
+  real CUDA multi-GPU validation.
 
 ## Next Main Target
 
-Harden isolation and authority across daemon-issued tickets, worker
-authorization, status reporting, and cleanup.
+Harden the runtime/native boundary for profile bootstrap, tensor validation,
+native plan conversion, and CUDA worker execution.

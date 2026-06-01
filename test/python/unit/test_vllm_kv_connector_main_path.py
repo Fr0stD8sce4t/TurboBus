@@ -167,10 +167,9 @@ class TurboBusKVConnectorMainPathTest(unittest.TestCase):
 
     def test_receipt_trace_rejects_unverified_complete_receipt(self) -> None:
         intent = make_intent()
-        receipt = make_receipt(intent, metadata=unverified_metadata())
 
         with self.assertRaisesRegex(ValueError, "verification evidence"):
-            _receipt_trace_from_receipts([receipt])
+            make_receipt(intent, metadata=unverified_metadata())
 
 
 def make_connector(client: "FakeTurboBusClient", *, restore_enabled: bool) -> TurboBusConnector:

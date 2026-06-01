@@ -70,6 +70,15 @@ class PublicIntentExampleTest(unittest.TestCase):
                 {"kind": "direct", "bytes": 64},
                 {"kind": "relay", "bytes": 32},
             ),
+            metadata={
+                "completion_source": "worker",
+                "executed": True,
+                "verified": True,
+                "verified_bytes": 96,
+                "content_match": True,
+                "verification_source": "fixture_worker",
+                "verification_method": "fixture_compare",
+            },
         )
 
         line = example.receipt_line(receipt)

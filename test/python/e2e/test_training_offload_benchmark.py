@@ -278,6 +278,7 @@ def make_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
         ),
         metadata={
             "fallback_reason": "daemon default",
+            "completion_source": "worker",
             "executed": True,
             "verified": True,
             "verified_bytes": intent.total_bytes,

@@ -129,6 +129,7 @@ class ContractSchemaTest(unittest.TestCase):
             started_at=2.1,
             completed_at=2.8,
             path_stats=({"kind": "relay", "bytes": 4096, "seconds": 0.7},),
+            metadata=verified_metadata(4096),
         )
 
         payload = json.loads(
@@ -266,13 +267,22 @@ class ContractSchemaTest(unittest.TestCase):
             "bytes_completed": 1024,
         }
 
-        receipt = TransferReceipt(**base, state=TransferStatusState.COMPLETE)
+        receipt = TransferReceipt(
+            **{**base, "metadata": verified_metadata(1024)},
+            state=TransferStatusState.COMPLETE,
+        )
 
         self.assertEqual(receipt.bytes_completed, 1024)
 
+        with self.assertRaisesRegex(ValueError, "execution source"):
+            TransferReceipt(**base, state=TransferStatusState.COMPLETE)
         with self.assertRaisesRegex(ValueError, "all bytes"):
             TransferReceipt(
-                **{**base, "bytes_completed": 512},
+                **{
+                    **base,
+                    "bytes_completed": 512,
+                    "metadata": verified_metadata(1024),
+                },
                 state=TransferStatusState.COMPLETE,
             )
         with self.assertRaisesRegex(ValueError, "requires error"):
@@ -314,6 +324,17 @@ class ContractSchemaTest(unittest.TestCase):
                 source="daemon-nvml",
                 discovered_at=-1.0,
             )
+
+def verified_metadata(bytes_: int) -> dict[str, object]:
+    return {
+        "completion_source": "worker",
+        "executed": True,
+        "verified": True,
+        "verified_bytes": int(bytes_),
+        "content_match": True,
+        "verification_source": "fixture_worker",
+        "verification_method": "fixture_compare",
+    }
 
 
 if __name__ == "__main__":

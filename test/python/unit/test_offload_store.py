@@ -374,6 +374,7 @@ class OffloadStoreTest(unittest.TestCase):
                 {"kind": "direct", "bytes": 32, "chunk_count": 2},
                 {"kind": "relay", "bytes": 64, "chunks": 4},
             ),
+            metadata=verified_metadata(intent),
         )
 
         self.assertEqual(

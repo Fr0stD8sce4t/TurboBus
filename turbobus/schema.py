@@ -520,6 +520,7 @@ class TransferReceipt:
         state = TransferStatusState(self.state)
         bytes_total = int(self.bytes_total)
         bytes_completed = int(self.bytes_completed)
+        metadata = _copy_mapping(self.metadata, "metadata")
         if bytes_total < 0:
             raise ValueError("bytes_total must be non-negative")
         if bytes_completed < 0:
@@ -531,6 +532,7 @@ class TransferReceipt:
                 raise ValueError("complete receipt must report all bytes completed")
             if self.error is not None:
                 raise ValueError("complete receipt cannot include error")
+            require_complete_receipt_metadata_evidence(metadata, bytes_total)
         if state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
             if self.error is None or not str(self.error).strip():
                 raise ValueError("failed or canceled receipt requires error")
@@ -587,7 +589,31 @@ class TransferReceipt:
         )
         if self.error is not None:
             object.__setattr__(self, "error", str(self.error))
-        object.__setattr__(self, "metadata", _copy_mapping(self.metadata, "metadata"))
+        object.__setattr__(self, "metadata", metadata)
+
+
+def require_complete_receipt_metadata_evidence(
+    metadata: Mapping[str, Any],
+    bytes_total: int,
+) -> None:
+    completion_source = str(metadata.get("completion_source", "")).lower()
+    if completion_source not in {"worker", "backend"}:
+        raise ValueError("complete receipt missing worker/backend execution source")
+    if not bool(metadata.get("executed", False)):
+        raise ValueError("complete receipt missing execution evidence")
+    if not bool(metadata.get("verified", False)):
+        raise ValueError("complete receipt missing verification evidence")
+    try:
+        verified_bytes = int(metadata.get("verified_bytes", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("complete receipt has invalid verified bytes") from exc
+    if verified_bytes != int(bytes_total):
+        raise ValueError(
+            "complete receipt verified byte mismatch: "
+            f"{verified_bytes} != {int(bytes_total)}"
+        )
+    if not bool(metadata.get("content_match", False)):
+        raise ValueError("complete receipt missing content-match evidence")
 
 
 @dataclass(frozen=True)

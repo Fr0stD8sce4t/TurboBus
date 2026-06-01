@@ -138,6 +138,7 @@ class BenchmarkDaemonSupportTest(unittest.TestCase):
             ),
             metadata={
                 "fallback_reason": "daemon profile miss",
+                "completion_source": "worker",
                 "executed": True,
                 "verified": True,
                 "verified_bytes": 96,

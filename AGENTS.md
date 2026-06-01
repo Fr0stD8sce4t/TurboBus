@@ -18,7 +18,9 @@ The old phase-by-phase plan has been retired. Do not restart from Phase 0 and
 do not continue the old Phase 7 artifact-chain work unless it is reintroduced
 as a small validator around real server execution.
 
-Current first task: implement the intent-to-worker execution loop.
+Current first task: refactor the system-level transfer path so daemon,
+worker, buffer registration, profile bootstrap, and receipt cleanup can be
+driven through one public runtime session API.
 
 Every code change should move the project closer to:
 
@@ -50,7 +52,12 @@ The production path must satisfy these contracts:
 - `turbobus/daemon/server.py`: transfer submission, planning, worker
   authorization, status update, receipt creation, cleanup.
 - `turbobus/daemon/dispatch.py`: daemon request routing.
-- `turbobus/client_transfer.py`: worker-managed transfer client path.
+- `turbobus/runtime_session.py`: production system-level API.
+- `turbobus/intent_executor.py`, `turbobus/worker_managed.py`,
+  `turbobus/direct_fallback.py`, and `turbobus/buffer_registration.py`:
+  split transfer execution path.
+- `turbobus/backends/cuda.py` and `turbobus/runtime_engine.py`: native CUDA
+  backend, profile bootstrap, and plan conversion.
 - `turbobus/worker/lifecycle.py`: authorization, execution, status, cleanup.
 - `turbobus/worker/models.py`: worker request and completion envelopes.
 - `turbobus/worker/validation.py`: ticket and lease validation.
@@ -112,6 +119,9 @@ Prefer breaking changes when the existing code encodes the wrong architecture.
 ## Coding Rules
 
 - Prefer simple, testable interfaces over compatibility shims.
+- After a refactor, delete old files that only re-export moved symbols. Update
+  imports to the new owning modules instead of preserving compatibility export
+  layers.
 - Keep client API, daemon control plane, scheduler, topology discovery, worker
   data plane, backend execution, and framework adapters separate.
 - Keep native data movement framework-agnostic.

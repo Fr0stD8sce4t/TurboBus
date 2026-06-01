@@ -8,8 +8,8 @@ import time
 import unittest
 
 from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBufferAllocator
-from turbobus.client_transfer import make_worker_managed_transfer_client
 from turbobus.daemon.server import TurboBusDaemon
+from turbobus.worker_managed import make_worker_managed_transfer_client
 from turbobus.topology import (
     DaemonResourceInventory,
     FabricLinkRecord,

@@ -2,43 +2,44 @@
 
 ## Current State
 
-Current main target: real buffer correctness gate.
+Current main target: system implementation before experiments.
 
-The daemon, worker, backend, public client, adapter support, benchmarks, and
-paper-validation paths reject completed intent transfers that lack execution
-and verified-byte evidence. Complete `TransferReceipt` construction now also
-requires worker/backend source, executed bytes, verified bytes, and
-content-match evidence. Direct backend and worker CUDA execution require
-backend `verify_transfer` instead of stats-only evidence. The old manual
-helper-socket verification CLI has been removed so active validation stays on
-the public intent path, and the old example-side physical GPU mapping helper
-has also been removed. Paper validation dry-run no longer counts as a passing
-workload, and the old JSON-only benchmark summary command has been removed.
-Native direct H2D and D2H CUDA readback have been validated on the server.
-Public intent backend and relay/pool CUDA validation still need server runs.
+The active route is no longer paper-validation tooling. The current code work
+is the system-level Python runtime path: split and remove the overloaded
+`client_transfer.py`, add `TurboBusRuntimeSession`, keep daemon-first intent
+submission, and make worker/backend completion remain the source of completed
+receipts.
 
 ## Completed This Round
 
-- Removed `benchmarks/summarize_result.py`, which summarized stored JSON
-  artifacts without running or validating real execution.
-- Removed the obsolete e2e test for that artifact-only command.
+- Split the old `client_transfer.py` responsibilities into focused runtime,
+  intent execution, direct fallback, buffer registration, worker-managed, and
+  shared execution modules.
+- Removed the old `client_transfer.py` compatibility export layer and updated
+  imports to the new owning modules.
+- Added `TurboBusRuntimeSession` as the public session/job/buffer/intent entry
+  point for H2D and D2H transfers.
+- Exported `TurboBusRuntimeSession` from the package root.
+- Replaced old progress text that still pointed at paper-validation and
+  correctness-gate work.
 
 ## Validation
 
-- `python -m unittest test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_paper_validation`
+- `python -m py_compile turbobus/buffer_registration.py turbobus/direct_fallback.py turbobus/intent_executor.py turbobus/runtime_session.py turbobus/transfer_execution.py turbobus/worker_managed.py turbobus/__init__.py test/python/integration/test_client_worker_transfer.py test/python/integration/test_paper_main_path.py`
   passed.
-- `rg -n "summarize_result" benchmarks test\python -g "*.py"` found no active code references.
-- `git diff --check` passed.
+- `python -c "from turbobus import TurboBusRuntimeSession; from turbobus.intent_executor import WorkerIntentTransferExecutor; from turbobus.worker_managed import make_worker_managed_transfer_client; print('imports ok')"`
+  passed.
+- `git diff --check` passed with Windows line-ending warnings only.
 
 ## Remaining Risk
 
-- Public intent backend H2D/D2H correctness still needs real CUDA server
-  validation.
-- Worker relay and pooled correctness still need real CUDA validation on a P2P
-  capable GPU pair.
+- The new runtime session has not yet been validated on a CUDA multi-GPU
+  server.
+- Profile bootstrap is still not wired into the runtime session.
+- Worker socket and daemon socket production startup still need a later pass.
 
 ## Next Main Target
 
-Continue the real buffer correctness gate until public intent backend,
-worker-relay, and pooled paths all prove executed and verified bytes on real
-CUDA buffers.
+After this split is checked and committed, continue with profile bootstrap:
+collect or install CUDA bandwidth profile data and submit it to daemon
+`put_profile` before scheduling.

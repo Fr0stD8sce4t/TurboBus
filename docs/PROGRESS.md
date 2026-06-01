@@ -11,21 +11,24 @@ requires worker/backend source, executed bytes, verified bytes, and
 content-match evidence. Direct backend and worker CUDA execution require
 backend `verify_transfer` instead of stats-only evidence. The old manual
 helper-socket verification CLI has been removed so active validation stays on
-the public intent path. Native direct H2D and D2H CUDA readback have been
+the public intent path, and the old example-side physical GPU mapping helper
+has also been removed. Native direct H2D and D2H CUDA readback have been
 validated on the server. Public intent backend and relay/pool CUDA validation
 still need server runs.
 
 ## Completed This Round
 
-- Removed `turbobus.verification`, which exposed manual mode, target GPU, and
-  relay GPU selection through the old worker-managed route.
-- Confirmed the top-level package does not export the old worker-managed
-  transfer client.
+- Removed `turbobus.example_config`, which let examples construct physical
+  target/relay GPU runtime mappings.
+- Removed the obsolete unit test for that helper.
+- Confirmed examples, benchmarks, and adapters do not expose physical path
+  selection arguments.
 
 ## Validation
 
-- `python -m unittest test.python.unit.test_package_boundaries`
+- `python -m unittest test.python.unit.test_package_boundaries test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark`
   passed.
+- `rg -n "example_config|configure_cuda_runtime_mapping|parse_gpu_list" turbobus examples benchmarks test\python -g "*.py"` found no active code references.
 - `git diff --check` passed.
 
 ## Remaining Risk

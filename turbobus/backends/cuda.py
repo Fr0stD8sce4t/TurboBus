@@ -50,6 +50,27 @@ class CudaNativeBackend:
             raise RuntimeError("native runtime does not support initialization")
         initializer(int(target_device), [int(gpu) for gpu in relay_gpus])
 
+    def profile(
+        self,
+        runtime: Any,
+        profile_bytes: int,
+        *,
+        force: bool = False,
+    ) -> Any:
+        profiler = getattr(runtime, "profile", None)
+        if not callable(profiler):
+            raise RuntimeError("native runtime does not support profiling")
+        bytes_to_profile = int(profile_bytes)
+        if bytes_to_profile <= 0:
+            raise ValueError("profile_bytes must be positive")
+        return profiler(bytes_to_profile, bool(force))
+
+    def set_cached_profile(self, runtime: Any, profile: Any) -> None:
+        setter = getattr(runtime, "set_cached_profile", None)
+        if not callable(setter):
+            raise RuntimeError("native runtime does not support cached profiles")
+        setter(profile)
+
     def make_ranges(
         self,
         ranges: Iterable,

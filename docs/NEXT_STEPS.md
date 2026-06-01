@@ -7,11 +7,11 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The current task is to make the Python runtime path usable as one system
-entry point: open a daemon-managed session, register job and buffers, submit
-`TransferIntent`, execute daemon-issued tickets through worker/backend code,
-and return `TransferReceipt`. Do not add tests, benchmarks, paper validation,
-or experiment tooling during this stage.
+The current task is to finish the system-level Python runtime path before any
+experiment work: open a daemon-managed session, register job and buffers,
+bootstrap daemon profile data, submit `TransferIntent`, execute daemon-issued
+tickets through worker/backend code, and return `TransferReceipt`. Do not add
+tests, benchmarks, paper validation, or experiment tooling during this stage.
 
 ## Exit Criteria
 
@@ -22,24 +22,25 @@ or experiment tooling during this stage.
 - Applications and adapters submit `TransferIntent` and consume
   `TransferReceipt`; they do not choose direct, relay, pooled, target GPU, or
   relay GPU paths.
+- `TurboBusRuntimeSession` can reuse a fresh daemon profile or collect native
+  CUDA profile data and write it to daemon `put_profile` before scheduling.
 - Direct, relay, and pooled execution stay daemon scheduling outcomes.
 - Completed receipts come from worker/backend completion or explicit failure,
   not synthetic local evidence.
 
 ## Current Code Work
 
-- Finish the first structural split of the old `client_transfer.py` code into:
-  `runtime_session.py`, `intent_executor.py`, `direct_fallback.py`,
-  `buffer_registration.py`, `worker_managed.py`, and shared execution helpers.
-- Update imports to the new owning modules. Do not keep old files that only
-  re-export moved symbols.
-- Export `TurboBusRuntimeSession` from `turbobus/__init__.py`.
-- After this split compiles, the next main target is profile bootstrap through
-  CUDA backend/runtime helpers into daemon `put_profile`.
+- Keep the old `client_transfer.py` file deleted. Do not recreate it as a
+  compatibility export layer.
+- Keep profile bootstrap on the real native/runtime path: daemon `get_profile`
+  cache hit, native CUDA profile on miss or force, daemon `put_profile` write.
+- Do not add mock profile data, fake correctness gates, benchmark helpers, or
+  paper-validation code while validating this path.
+- The next code entry is production startup cleanup for daemon and worker
+  sockets after the profile bootstrap path is checked.
 
 ## Next Entry
 
-Start from `turbobus/runtime_session.py`, `turbobus/intent_executor.py`,
-`turbobus/direct_fallback.py`, and `turbobus/worker_managed.py`. Verify that
-the runtime session path builds `TransferIntent` and delegates execution to
-`WorkerIntentTransferExecutor` without letting callers choose physical routes.
+Start from `turbobus/runtime_session.py`, `turbobus/backends/cuda.py`, and
+`turbobus/runtime_engine.py`. Verify that profile bootstrap is triggered by
+the runtime session without letting callers choose physical transfer routes.

@@ -13,6 +13,7 @@ from .buffer_registration import (
 )
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .intent_executor import WorkerIntentTransferExecutor
+from . import runtime_engine
 from .runtime_engine import RuntimeOptions
 from .schema import (
     DaemonResponse,
@@ -52,6 +53,7 @@ class TurboBusRuntimeSession:
         repr=False,
     )
     _client: TurboBusClient | None = field(default=None, init=False, repr=False)
+    _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def open(
@@ -179,6 +181,20 @@ class TurboBusRuntimeSession:
             metadata=metadata,
         )
 
+    def bootstrap_profile(self, *, force: bool = False):
+        self.open_session()
+        relays = self._relay_gpus_for_session()
+        profile, response = runtime_engine.bootstrap_daemon_profile(
+            self.daemon_client,
+            self.backend,
+            self.runtime_options,
+            target_gpu=int(self.target_gpu),
+            relay_gpus=relays,
+            force=force,
+        )
+        self._profile_bootstrapped = True
+        return response
+
     def close(self) -> DaemonResponse:
         if self._session_id is None:
             return DaemonResponse(ok=True, payload={"closed": False})
@@ -220,6 +236,7 @@ class TurboBusRuntimeSession:
         metadata: Mapping[str, object] | None,
     ) -> TransferReceipt:
         self._ensure_transfer_buffers(source, target)
+        self._bootstrap_profile_if_enabled()
         normalized_ranges = tuple(
             _range_as_dict(item)
             for item in ranges_or_full_buffer(ranges, source.size_bytes, target.size_bytes)
@@ -319,6 +336,13 @@ class TurboBusRuntimeSession:
         )
         self.relay_gpus = relays
         return relays
+
+    def _bootstrap_profile_if_enabled(self) -> None:
+        if self._profile_bootstrapped:
+            return
+        if not bool(self.runtime_options.profile_on_first_transfer):
+            return
+        self.bootstrap_profile(force=False)
 
 
 __all__ = ["TurboBusRuntimeSession"]

@@ -4,9 +4,10 @@ from dataclasses import dataclass, field, replace
 import time
 from typing import Any
 
-from ..api import TurboBusClient
 from ..api.receipts import require_complete_receipt_evidence
+from ..daemon import TurboBusDaemonClient
 from ..offload_store import AdapterTransferContext, TransferStats, summarize_transfer_handles
+from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids
 from .vllm_backing_pool import TurboBusCPUBackingPool
@@ -164,9 +165,17 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.session_id = self.config.session_id
         self.job_id = self.config.job_id
         self.max_saved_prefixes = self.config.max_saved_prefixes
-        self.client = TurboBusClient(socket_path=self.config.daemon_socket_path)
+        self.daemon_client = TurboBusDaemonClient(self.config.daemon_socket_path)
+        self.runtime_session = TurboBusRuntimeSession.open(
+            self.daemon_client,
+            job_id=self.job_id,
+        )
+        self.client = self.runtime_session
         self._layer_save_contexts: dict[str, _LayerSaveContext] = {}
-        self._backing_pool = TurboBusCPUBackingPool()
+        self._backing_pool = TurboBusCPUBackingPool(
+            job_id=self.job_id,
+            buffer_id_prefix=self.config.cpu_buffer_id,
+        )
         self._prefix_store = TurboBusPrefixStore(max_prefixes=self.max_saved_prefixes)
         _emit_event(
             "init",
@@ -601,6 +610,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 },
             ),
             groups,
+            runtime_session=self._adapter_runtime_session(),
         )
         return adapter
 
@@ -725,6 +735,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 },
             ),
             [group],
+            runtime_session=self._adapter_runtime_session(),
         )
         context.adapter_ms += (time.perf_counter() - adapter_start) * 1000.0
         refs_start = time.perf_counter()
@@ -903,7 +914,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         )
 
     def _allocate_cpu_backings(self, block_count: int, kv_caches: list[Any]) -> list[Any]:
-        return TurboBusCPUBackingPool._allocate(block_count, kv_caches)
+        return self._backing_pool._allocate_for_pool(block_count, kv_caches)
+
+    def _adapter_runtime_session(self):
+        if self.client is self.runtime_session:
+            return self.runtime_session
+        return None
 
     def _store_prefix(self, prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
         evicted = self._prefix_store.put(prefix)

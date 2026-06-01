@@ -38,13 +38,16 @@ tests, benchmarks, paper validation, or experiment tooling during this stage.
   cache hit, native CUDA profile on miss or force, daemon `put_profile` write.
 - Keep daemon and worker startup paths as socket services. Do not add dry-run
   startup wrappers or request-count test modes as production CLI behavior.
+- Keep offload and vLLM adapters on `TurboBusRuntimeSession`: adapters submit
+  `TransferIntent`, consume `TransferReceipt`, and receive buffer/session
+  registration from the runtime session.
 - Do not add mock profile data, fake correctness gates, benchmark helpers, or
   paper-validation code while validating this path.
-- The next code entry is connecting upper layers to `TurboBusRuntimeSession`
-  after startup cleanup is checked.
+- The next code entry is worker/runtime resource lifecycle hardening for shared
+  CPU buffers and CUDA IPC device buffers.
 
 ## Next Entry
 
-Start from `turbobus/offload_store.py` and
-`turbobus/adapters/vllm_kv_connector.py`. Connect upper layers to the runtime
-session API without letting them choose physical transfer routes.
+Start from `turbobus/runtime_session.py`, `turbobus/worker/resources.py`, and
+`turbobus/worker/lifecycle.py`. Check that shared CPU buffers, CUDA IPC device
+buffers, receipts, and cleanup stay consistent through H2D and D2H execution.

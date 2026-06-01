@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import math
 from typing import Iterable, Mapping
 
+from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..offload_store import AdapterTransferContext, TransferStats
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter
 
@@ -42,19 +43,35 @@ class VllmKVSlotAdapter:
         client,
         transfer_context: AdapterTransferContext,
         groups: Iterable[VllmKVGroup],
+        *,
+        runtime_session=None,
     ) -> None:
         self.client = client
         self.transfer_context = transfer_context
         self.groups: dict[int, VllmKVGroup] = {group.group_id: group for group in groups}
-        self.adapters = {
-            group.group_id: InferenceKVSlotAdapter(
-                client,
-                _group_transfer_context(transfer_context, group.group_id),
-                group.cpu_backing,
-                group.gpu_kv_backing,
-            )
-            for group in self.groups.values()
-        }
+        self.runtime_session = runtime_session
+        self.adapters = {}
+        for group in self.groups.values():
+            group_context = _group_transfer_context(transfer_context, group.group_id)
+            if runtime_session is None:
+                adapter = InferenceKVSlotAdapter(
+                    client,
+                    group_context,
+                    group.cpu_backing,
+                    group.gpu_kv_backing,
+                )
+            else:
+                adapter = InferenceKVSlotAdapter.from_runtime_session(
+                    runtime_session,
+                    _require_shared_cpu_buffer(group.cpu_backing),
+                    _cuda_buffer_for_group(
+                        runtime_session,
+                        group,
+                        buffer_id=f"{transfer_context.gpu_buffer_id}-g{group.group_id}",
+                    ),
+                    group_context,
+                )
+            self.adapters[group.group_id] = adapter
         self._registered_names: set[str] = set()
 
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
@@ -175,6 +192,54 @@ def _group_transfer_context(
         intent_prefix=f"{transfer_context.intent_prefix}-g{int(group_id)}",
         wait_timeout_seconds=transfer_context.wait_timeout_seconds,
     )
+
+
+def _require_shared_cpu_buffer(value) -> SharedPinnedCpuBuffer:
+    if not isinstance(value, SharedPinnedCpuBuffer):
+        raise TypeError(
+            "runtime session vLLM transfers require SharedPinnedCpuBuffer CPU backing"
+        )
+    return value
+
+
+def _cuda_buffer_for_group(
+    runtime_session,
+    group: VllmKVGroup,
+    *,
+    buffer_id: str,
+) -> CudaIpcDeviceBuffer:
+    value = group.gpu_kv_backing
+    if isinstance(value, CudaIpcDeviceBuffer):
+        return value
+    data_ptr = getattr(value, "data_ptr", None)
+    if not callable(data_ptr):
+        raise TypeError("runtime session vLLM transfers require CUDA tensor backings")
+    ptr = int(data_ptr())
+    return CudaIpcDeviceBuffer.from_device_pointer(
+        buffer_id=f"{buffer_id}-{ptr:x}",
+        job_id=runtime_session.job_id,
+        device_index=_tensor_device_index(value),
+        size_bytes=_tensor_nbytes(value),
+        device_ptr=ptr,
+    )
+
+
+def _tensor_device_index(tensor) -> int:
+    device = getattr(tensor, "device", None)
+    index = getattr(device, "index", None)
+    if index is not None:
+        return int(index)
+    getter = getattr(tensor, "get_device", None)
+    if callable(getter):
+        return int(getter())
+    return 0
+
+
+def _tensor_nbytes(tensor) -> int:
+    nbytes = getattr(tensor, "nbytes", None)
+    if nbytes is not None:
+        return int(nbytes)
+    return int(tensor.numel() * tensor.element_size())
 
 
 def vllm_block_name(ref: VllmKVBlockRef) -> str:

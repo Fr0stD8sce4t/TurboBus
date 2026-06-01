@@ -181,6 +181,32 @@ class TurboBusRuntimeSession:
             metadata=metadata,
         )
 
+    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+        if not isinstance(intent, TransferIntent):
+            raise TypeError("intent must be a TransferIntent")
+        if intent.job_id != self.job_id:
+            raise ValueError("intent job_id must match the runtime session job_id")
+        self.open_session()
+        if intent.session_id != self.session_id:
+            raise ValueError("intent session_id must match the runtime session_id")
+        if intent.source_buffer_id not in self._buffers:
+            raise ValueError("intent source buffer is not registered with the session")
+        if intent.destination_buffer_id not in self._buffers:
+            raise ValueError("intent destination buffer is not registered with the session")
+        self._register_pending_buffers()
+        self._bootstrap_profile_if_enabled()
+        return self._intent_client().submit_transfer_intent(intent)
+
+    def wait_transfer_receipt(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        return self._intent_client().wait_transfer_receipt(
+            str(intent_id),
+            timeout_seconds=timeout_seconds,
+        )
+
     def bootstrap_profile(self, *, force: bool = False):
         self.open_session()
         relays = self._relay_gpus_for_session()

@@ -93,6 +93,40 @@ class AdapterTransferContext:
                 raise ValueError("wait_timeout_seconds must be non-negative")
             object.__setattr__(self, "wait_timeout_seconds", timeout)
 
+    @classmethod
+    def from_runtime_session(
+        cls,
+        runtime_session,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ) -> "AdapterTransferContext":
+        register_cpu = getattr(runtime_session, "register_cpu_buffer", None)
+        register_gpu = getattr(runtime_session, "register_cuda_buffer", None)
+        if not callable(register_cpu) or not callable(register_gpu):
+            raise TypeError("runtime_session must register CPU and CUDA buffers")
+        cpu_buffer = register_cpu(cpu_buffer)
+        gpu_buffer = register_gpu(gpu_buffer)
+        session_id = runtime_session.open_session()
+        return cls(
+            job_id=runtime_session.job_id,
+            session_id=session_id,
+            cpu_buffer_id=cpu_buffer.buffer_id,
+            gpu_buffer_id=gpu_buffer.buffer_id,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints={} if policy_hints is None else policy_hints,
+            metadata={} if metadata is None else metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+
 
 @dataclass
 class ReceiptTransferHandle:
@@ -297,6 +331,33 @@ class OffloadStore:
         self.transfer_context = transfer_context
         self._blocks: dict[str, OffloadBlock] = {}
         self._intent_counter = 0
+
+    @classmethod
+    def from_runtime_session(
+        cls,
+        runtime_session,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ) -> "OffloadStore":
+        context = AdapterTransferContext.from_runtime_session(
+            runtime_session,
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return cls(runtime_session, context)
 
     def add(
         self,

@@ -33,6 +33,27 @@ class InferenceKVSlotAdapter(OffloadStore):
         self.cpu_backing = cpu_backing
         self.gpu_kv_backing = gpu_kv_backing
 
+    @classmethod
+    def from_runtime_session(
+        cls,
+        runtime_session,
+        cpu_backing,
+        gpu_kv_backing,
+        transfer_context: AdapterTransferContext,
+    ) -> "InferenceKVSlotAdapter":
+        context = AdapterTransferContext.from_runtime_session(
+            runtime_session,
+            cpu_backing,
+            gpu_kv_backing,
+            workload_kind=transfer_context.workload_kind,
+            priority=transfer_context.priority,
+            policy_hints=transfer_context.policy_hints,
+            metadata=transfer_context.metadata,
+            intent_prefix=transfer_context.intent_prefix,
+            wait_timeout_seconds=transfer_context.wait_timeout_seconds,
+        )
+        return cls(runtime_session, context, cpu_backing, gpu_kv_backing)
+
     def register_slots(self, slots: Iterable[InferenceKVSlot]) -> None:
         for slot in slots:
             self.add(

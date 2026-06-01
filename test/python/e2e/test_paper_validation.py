@@ -74,6 +74,16 @@ class PaperValidationEvidenceTest(unittest.TestCase):
             "incomplete",
         )
 
+    def test_dry_run_is_not_passing_paper_validation(self) -> None:
+        status = paper_validation.workload_status(
+            dry_run=True,
+            returncode=0,
+            validation_errors=[],
+        )
+
+        self.assertEqual(status, "dry-run")
+        self.assertTrue(paper_validation.workload_failed(status))
+
 
 if __name__ == "__main__":
     unittest.main()

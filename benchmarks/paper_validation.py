@@ -535,7 +535,7 @@ def workload_status(dry_run: bool, returncode: int, validation_errors: list[str]
 
 
 def workload_failed(status: str) -> bool:
-    return status not in ("ok", "dry-run")
+    return status != "ok"
 
 
 def metric_line(metric: dict) -> str:

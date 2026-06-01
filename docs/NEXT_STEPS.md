@@ -25,6 +25,7 @@ Real buffer correctness gate.
 - The old manual `turbobus.verification` helper-socket route selector has been
   removed from the active code path.
 - The old example-side physical GPU mapping helper has been removed.
+- Paper validation dry-run is treated as non-passing evidence.
 - Continue server-side real CUDA checks for public intent backend H2D/D2H and
   worker relay/pooled paths.
 - Do not add mock CUDA, fake correctness gates, or local-only replacement

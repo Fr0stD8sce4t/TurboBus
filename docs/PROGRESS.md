@@ -13,19 +13,21 @@ backend `verify_transfer` instead of stats-only evidence. The old manual
 helper-socket verification CLI has been removed so active validation stays on
 the public intent path, and the old example-side physical GPU mapping helper
 has also been removed. Paper validation dry-run no longer counts as a passing
-workload. Native direct H2D and D2H CUDA readback have been validated on the
-server. Public intent backend and relay/pool CUDA validation still need server
-runs.
+workload, and the old JSON-only benchmark summary command has been removed.
+Native direct H2D and D2H CUDA readback have been validated on the server.
+Public intent backend and relay/pool CUDA validation still need server runs.
 
 ## Completed This Round
 
-- Made `paper_validation` treat dry-run workloads as non-passing.
-- Added a focused e2e assertion that dry-run status exits the passing path.
+- Removed `benchmarks/summarize_result.py`, which summarized stored JSON
+  artifacts without running or validating real execution.
+- Removed the obsolete e2e test for that artifact-only command.
 
 ## Validation
 
-- `python -m unittest test.python.e2e.test_paper_validation`
+- `python -m unittest test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_paper_validation`
   passed.
+- `rg -n "summarize_result" benchmarks test\python -g "*.py"` found no active code references.
 - `git diff --check` passed.
 
 ## Remaining Risk

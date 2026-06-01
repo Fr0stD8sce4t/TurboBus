@@ -136,7 +136,15 @@ class BenchmarkDaemonSupportTest(unittest.TestCase):
                 {"kind": "direct", "bytes": 64, "chunk_count": 2},
                 {"kind": "relay", "bytes": 32, "chunk_count": 1},
             ),
-            metadata={"fallback_reason": "daemon profile miss"},
+            metadata={
+                "fallback_reason": "daemon profile miss",
+                "executed": True,
+                "verified": True,
+                "verified_bytes": 96,
+                "content_match": True,
+                "verification_source": "fixture_worker",
+                "verification_method": "fixture_compare",
+            },
         )
 
         trace = receipt_to_trace(receipt)

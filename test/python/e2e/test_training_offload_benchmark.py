@@ -80,6 +80,14 @@ class TrainingOffloadBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["summary"]["iterations"], 2)
         self.assertEqual(result["summary"]["prefetch"]["bytes"], 128)
         self.assertEqual(result["summary"]["offload"]["bytes"], 128)
+        self.assertTrue(result["summary"]["prefetch"]["executed"])
+        self.assertTrue(result["summary"]["offload"]["executed"])
+        self.assertTrue(result["summary"]["prefetch"]["verified"])
+        self.assertTrue(result["summary"]["offload"]["verified"])
+        self.assertEqual(result["summary"]["prefetch"]["verified_bytes"], 128)
+        self.assertEqual(result["summary"]["offload"]["verified_bytes"], 128)
+        self.assertTrue(result["summary"]["prefetch"]["content_match"])
+        self.assertTrue(result["summary"]["offload"]["content_match"])
         self.assertEqual(result["summary"]["prefetch"]["direct_bytes"], 64)
         self.assertEqual(result["summary"]["offload"]["relay_bytes"], 64)
         self.assertEqual(
@@ -268,7 +276,15 @@ def make_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
             {"kind": "direct", "bytes": direct_bytes, "chunk_count": 1},
             {"kind": "relay", "bytes": relay_bytes, "chunk_count": 1},
         ),
-        metadata={"fallback_reason": "daemon default"},
+        metadata={
+            "fallback_reason": "daemon default",
+            "executed": True,
+            "verified": True,
+            "verified_bytes": intent.total_bytes,
+            "content_match": True,
+            "verification_source": "fixture_worker",
+            "verification_method": "fixture_compare",
+        },
     )
 
 

@@ -272,6 +272,12 @@ def empty_transfer_summary() -> dict:
         "ticket_ids": [],
         "receipt_ids": [],
         "fallback_reasons": [],
+        "executed": False,
+        "verified": False,
+        "verified_bytes": 0,
+        "content_match": False,
+        "verification_sources": [],
+        "verification_methods": [],
     }
 
 
@@ -315,7 +321,45 @@ def summarize_transfer_side(samples: list[dict], operation: str) -> dict:
                 if sample[operation]["fallback_reason"]
             }
         ),
+        **summarize_receipt_evidence(samples, operation),
     }
+
+
+def summarize_receipt_evidence(samples: list[dict], operation: str) -> dict[str, object]:
+    metadata = [receipt_metadata(sample[operation]) for sample in samples]
+    return {
+        "executed": bool(metadata) and all(bool(item.get("executed")) for item in metadata),
+        "verified": bool(metadata) and all(bool(item.get("verified")) for item in metadata),
+        "verified_bytes": int(
+            statistics.median(int(item.get("verified_bytes", 0) or 0) for item in metadata)
+        ) if metadata else 0,
+        "content_match": bool(metadata)
+        and all(bool(item.get("content_match")) for item in metadata),
+        "verification_sources": sorted(
+            {
+                str(item.get("verification_source"))
+                for item in metadata
+                if item.get("verification_source")
+            }
+        ),
+        "verification_methods": sorted(
+            {
+                str(item.get("verification_method"))
+                for item in metadata
+                if item.get("verification_method")
+            }
+        ),
+    }
+
+
+def receipt_metadata(sample: dict) -> dict[str, object]:
+    receipt = sample.get("receipt", {})
+    if not isinstance(receipt, dict):
+        return {}
+    metadata = receipt.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+    return metadata
 
 
 def config_dict(args) -> dict[str, object]:

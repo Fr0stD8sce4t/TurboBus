@@ -47,6 +47,10 @@ REQUIRED_UNIFIED_METRIC_FIELDS = (
     "transfer_ms",
     "performance_ms",
     "fallback_reason",
+    "executed",
+    "verified",
+    "verified_bytes",
+    "content_match",
     "correctness_status",
 )
 
@@ -258,8 +262,22 @@ def fallback_reason_value(*values) -> str:
     return join_metric_values(*values) or "none"
 
 
-def correctness_status(transfer_bytes: int, bytes_completed: int) -> str:
-    if int(transfer_bytes) == int(bytes_completed):
+def correctness_status(
+    transfer_bytes: int,
+    bytes_completed: int,
+    *,
+    executed: bool,
+    verified: bool,
+    verified_bytes: int,
+    content_match: bool,
+) -> str:
+    if (
+        int(transfer_bytes) == int(bytes_completed)
+        and bool(executed)
+        and bool(verified)
+        and int(verified_bytes) == int(transfer_bytes)
+        and bool(content_match)
+    ):
         return "complete"
     return "incomplete"
 
@@ -277,6 +295,10 @@ def collect_model_metrics(result: dict) -> list[dict[str, object]]:
     config = result.get("config", {}) or {}
     transfer_bytes = as_int(summary.get("bytes"))
     bytes_completed = as_int(summary.get("bytes_completed"))
+    verified_bytes = as_int(summary.get("verified_bytes"))
+    executed = bool(summary.get("executed", False))
+    verified = bool(summary.get("verified", False))
+    content_match = bool(summary.get("content_match", False))
     transfer_ms = as_float(summary.get("median_load_ms"))
     return [
         {
@@ -306,7 +328,20 @@ def collect_model_metrics(result: dict) -> list[dict[str, object]]:
             "topology_snapshot_ids": join_values(summary.get("topology_snapshot_ids")),
             "ticket_ids": join_values(summary.get("ticket_ids")),
             "fallback_reason": fallback_reason_value(summary.get("fallback_reasons")),
-            "correctness_status": correctness_status(transfer_bytes, bytes_completed),
+            "executed": executed,
+            "verified": verified,
+            "verified_bytes": verified_bytes,
+            "content_match": content_match,
+            "verification_sources": join_values(summary.get("verification_sources")),
+            "verification_methods": join_values(summary.get("verification_methods")),
+            "correctness_status": correctness_status(
+                transfer_bytes,
+                bytes_completed,
+                executed=executed,
+                verified=verified,
+                verified_bytes=verified_bytes,
+                content_match=content_match,
+            ),
         }
     ]
 
@@ -332,6 +367,12 @@ def collect_training_metrics(
     relay_chunks = as_int(prefetch.get("relay_chunks")) + as_int(offload.get("relay_chunks"))
     transfer_bytes = as_int(prefetch.get("bytes")) + as_int(offload.get("bytes"))
     bytes_completed = as_int(prefetch.get("bytes_completed")) + as_int(offload.get("bytes_completed"))
+    verified_bytes = as_int(prefetch.get("verified_bytes")) + as_int(offload.get("verified_bytes"))
+    executed = bool(prefetch.get("executed", False)) and bool(offload.get("executed", False))
+    verified = bool(prefetch.get("verified", False)) and bool(offload.get("verified", False))
+    content_match = bool(prefetch.get("content_match", False)) and bool(
+        offload.get("content_match", False)
+    )
     transfer_ms = as_float(summary.get("median_transfer_ms"))
     return [
         {
@@ -380,7 +421,26 @@ def collect_training_metrics(
             "fallback_reason": fallback_reason_value(
                 [*prefetch.get("fallback_reasons", ()), *offload.get("fallback_reasons", ())]
             ),
-            "correctness_status": correctness_status(transfer_bytes, bytes_completed),
+            "executed": executed,
+            "verified": verified,
+            "verified_bytes": verified_bytes,
+            "content_match": content_match,
+            "verification_sources": join_metric_values(
+                prefetch.get("verification_sources"),
+                offload.get("verification_sources"),
+            ),
+            "verification_methods": join_metric_values(
+                prefetch.get("verification_methods"),
+                offload.get("verification_methods"),
+            ),
+            "correctness_status": correctness_status(
+                transfer_bytes,
+                bytes_completed,
+                executed=executed,
+                verified=verified,
+                verified_bytes=verified_bytes,
+                content_match=content_match,
+            ),
         }
     ]
 
@@ -422,6 +482,14 @@ def unified_report_validation_errors(metrics: list[dict]) -> list[str]:
                 errors.append(f"missing_{field}")
         if int(metric.get("bytes_completed", 0) or 0) != int(metric.get("transfer_bytes", 0) or 0):
             errors.append("bytes_not_fully_completed")
+        if not bool(metric.get("executed", False)):
+            errors.append("missing_execution_evidence")
+        if not bool(metric.get("verified", False)):
+            errors.append("missing_verification_evidence")
+        if int(metric.get("verified_bytes", 0) or 0) != int(metric.get("transfer_bytes", 0) or 0):
+            errors.append("verified_bytes_mismatch")
+        if not bool(metric.get("content_match", False)):
+            errors.append("missing_content_match")
         if metric.get("correctness_status") != "complete":
             errors.append("invalid_correctness_status")
     return sorted(set(errors), key=errors.index)
@@ -500,6 +568,12 @@ def metric_line(metric: dict) -> str:
         "decision_ids",
         "topology_snapshot_ids",
         "ticket_ids",
+        "executed",
+        "verified",
+        "verified_bytes",
+        "content_match",
+        "verification_sources",
+        "verification_methods",
         "prefetch_decision_ids",
         "prefetch_receipt_ids",
         "offload_decision_ids",

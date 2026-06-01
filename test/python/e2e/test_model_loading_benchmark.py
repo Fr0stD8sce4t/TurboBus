@@ -74,6 +74,10 @@ class ModelLoadingBenchmarkTest(unittest.TestCase):
         self.assertEqual(result["summary"]["iterations"], 2)
         self.assertEqual(result["summary"]["bytes"], 128)
         self.assertEqual(result["summary"]["bytes_completed"], 128)
+        self.assertTrue(result["summary"]["executed"])
+        self.assertTrue(result["summary"]["verified"])
+        self.assertEqual(result["summary"]["verified_bytes"], 128)
+        self.assertTrue(result["summary"]["content_match"])
         self.assertEqual(result["summary"]["direct_bytes"], 64)
         self.assertEqual(result["summary"]["relay_bytes"], 64)
         self.assertEqual(
@@ -179,7 +183,15 @@ def make_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
             {"kind": "direct", "bytes": direct_bytes, "chunk_count": 1},
             {"kind": "relay", "bytes": relay_bytes, "chunk_count": 1},
         ),
-        metadata={"fallback_reason": "daemon default"},
+        metadata={
+            "fallback_reason": "daemon default",
+            "executed": True,
+            "verified": True,
+            "verified_bytes": intent.total_bytes,
+            "content_match": True,
+            "verification_source": "fixture_worker",
+            "verification_method": "fixture_compare",
+        },
     )
 
 

@@ -1,46 +1,33 @@
 # TurboBus Next Steps
 
-This file is the only active forward plan. Keep it short and remove completed
-history instead of appending old plans.
+This is the only active forward plan. Keep it short and replace completed
+state instead of appending history.
 
 ## Current Main Target
 
 Real buffer correctness gate.
 
-Completed receipts for intent-backed transfers must prove executed and verified
-bytes. Status-only worker/backend completion is no longer enough.
-
-## Current Status
-
-- The daemon rejects intent completion without worker/backend source and
-  verified byte evidence.
-- Public intent worker and direct backend paths pass verification evidence into
-  daemon receipts.
-- The native extension now exposes CUDA readback comparison through
-  `verify_transfer`; Python backend, direct fallback, and worker CUDA executor
-  call that verifier after daemon-issued execution completes.
-- Local tests cover daemon receipt rejection for missing or mismatched evidence.
-  Real buffer correctness is not considered verified until CUDA server checks
-  run against real buffers.
-- CUDA server validation has confirmed native extension build, native direct
-  H2D correctness, and native direct D2H correctness on GPU 0.
-
-## Remaining Work For This Target
-
-- Run public intent H2D and D2H correctness checks against real GPU buffers for
-  backend execution.
-- Run worker relay and pooled correctness once GPU 5 and GPU 6 are idle; they
-  are the available NVLink pair for this machine.
-
 ## Exit Criteria
 
-- Public intent transfers verify destination bytes for worker and backend
-  execution paths on real CUDA buffers.
-- A completed receipt records executed and verified byte evidence.
-- Tests fail if worker/backend status reports completion without matching
-  buffer contents.
+- Public intent H2D and D2H verify destination bytes on real CUDA buffers.
+- Worker relay and pooled paths verify destination bytes on real CUDA buffers.
+- Completed receipts expose worker/backend execution source, verified bytes,
+  and content-match evidence.
+- Benchmark and paper validation reject receipts that only report scheduled or
+  completed intent without executed and verified byte evidence.
+
+## Current Code Work
+
+- Keep receipt evidence mandatory through daemon, worker, backend, benchmark,
+  and paper-validation paths.
+- Remove or tighten any path that can turn intent-only status into paper
+  evidence.
+- Do not add mock CUDA, fake correctness gates, or local-only replacement
+  validators.
 
 ## Next Step
 
-Run public intent backend H2D/D2H correctness checks on GPU 0. Do not move to
-benchmark repair until public intent receipts prove executed and verified bytes.
+Continue auditing public-client consumers for complete receipts that do not
+require `executed`, `verified`, matching `verified_bytes`, and `content_match`.
+Run real CUDA public intent H2D/D2H and relay/pool checks on the server when
+the required GPUs are available.

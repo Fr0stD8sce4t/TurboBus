@@ -19,14 +19,15 @@ Real buffer correctness gate.
 ## Current Code Work
 
 - Keep receipt evidence mandatory through daemon, worker, backend, public
-  client, benchmark, and paper-validation paths.
-- Remove or tighten any public-client consumer that can turn intent-only status
-  into successful workload completion.
+  client, adapter, benchmark, and paper-validation paths.
+- Remove or tighten any remaining workload boundary that can turn intent-only
+  status into successful workload completion.
 - Do not add mock CUDA, fake correctness gates, or local-only replacement
   validators.
 
 ## Next Step
 
-Continue auditing adapter workload boundaries that consume complete receipts.
-Run real CUDA public intent H2D/D2H and relay/pool checks on the server when
-the required GPUs are available.
+Continue real CUDA public intent H2D/D2H and relay/pool checks on the server
+when the required GPUs are available. If code must continue before that, audit
+remaining non-public receipt constructors for completed receipts without
+evidence.

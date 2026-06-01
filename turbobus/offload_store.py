@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Iterable, Mapping, Protocol
 import uuid
 
+from .api.receipts import require_complete_receipt_evidence
 from .schema import TransferIntent, TransferReceipt, TransferStatusState, WorkloadKind
 
 
@@ -117,6 +118,7 @@ class ReceiptTransferHandle:
             raise TypeError("wait_transfer_receipt must return a TransferReceipt")
         if self.receipt.intent_id != self.intent.intent_id:
             raise ValueError("receipt intent_id does not match transfer intent")
+        require_complete_receipt_evidence(self.receipt)
         self.wait_calls += 1
         self._waited = True
         state = TransferStatusState(self.receipt.state)
@@ -584,6 +586,7 @@ class OffloadStore:
             raise TypeError("submit_transfer_intent must return a TransferReceipt")
         if receipt.intent_id != intent.intent_id:
             raise ValueError("receipt intent_id does not match transfer intent")
+        require_complete_receipt_evidence(receipt)
         return ReceiptTransferHandle(
             client=self.client,
             intent=intent,

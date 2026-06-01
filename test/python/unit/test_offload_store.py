@@ -338,6 +338,25 @@ class OffloadStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "intent_id"):
             handle.wait()
 
+    def test_submit_rejects_complete_receipt_without_verified_evidence(self) -> None:
+        store = make_store(IntentOnlyCompleteClient())
+        store.add("kv0", FakeTensor(1), object())
+
+        with self.assertRaisesRegex(ValueError, "verification evidence"):
+            store.prefetch("kv0")
+
+        self.assertEqual(store.block("kv0").state, BlockState.CPU)
+
+    def test_wait_rejects_complete_receipt_without_verified_evidence(self) -> None:
+        store = make_store(PendingThenIntentOnlyCompleteClient())
+        store.add("kv0", FakeTensor(1), object())
+
+        store.prefetch("kv0")
+        with self.assertRaisesRegex(ValueError, "verification evidence"):
+            store.wait("kv0")
+
+        self.assertEqual(store.block("kv0").state, BlockState.PREFETCHING)
+
     def test_transfer_stats_from_receipt_counts_path_split(self) -> None:
         intent = make_intent("intent-1", total_bytes=96)
         receipt = TransferReceipt(
@@ -394,6 +413,35 @@ class MismatchedWaitClient(FakeClient):
         return make_receipt(make_intent("other-intent"), receipt_id="receipt-other")
 
 
+class IntentOnlyCompleteClient(FakeClient):
+    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+        self.submitted.append(intent)
+        return make_receipt(
+            intent,
+            receipt_id=f"submitted-{intent.intent_id}",
+            metadata=unverified_metadata(),
+        )
+
+
+class PendingThenIntentOnlyCompleteClient(FakeClient):
+    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+        self.submitted.append(intent)
+        return make_submitted_receipt(intent, receipt_id=f"submitted-{intent.intent_id}")
+
+    def wait_transfer_receipt(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        self.waited.append((str(intent_id), timeout_seconds))
+        intent = next(item for item in self.submitted if item.intent_id == intent_id)
+        return make_receipt(
+            intent,
+            receipt_id=f"receipt-{intent_id}",
+            metadata=unverified_metadata(),
+        )
+
+
 def make_context(**overrides) -> AdapterTransferContext:
     values = {
         "job_id": "job-1",
@@ -427,7 +475,12 @@ def make_intent(intent_id: str, *, total_bytes: int = 16) -> TransferIntent:
     )
 
 
-def make_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
+def make_receipt(
+    intent: TransferIntent,
+    *,
+    receipt_id: str,
+    metadata: dict[str, object] | None = None,
+) -> TransferReceipt:
     direct_bytes = intent.total_bytes // 2
     relay_bytes = intent.total_bytes - direct_bytes
     return TransferReceipt(
@@ -445,8 +498,48 @@ def make_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
             {"kind": "direct", "bytes": direct_bytes, "chunk_count": 1},
             {"kind": "relay", "bytes": relay_bytes, "chunk_count": 1},
         ),
+        metadata=verified_metadata(intent) if metadata is None else metadata,
+    )
+
+
+def make_submitted_receipt(intent: TransferIntent, *, receipt_id: str) -> TransferReceipt:
+    return TransferReceipt(
+        receipt_id=receipt_id,
+        ticket_id=f"ticket-{intent.intent_id}",
+        intent_id=intent.intent_id,
+        decision_id=f"decision-{intent.intent_id}",
+        topology_snapshot_id="topology-1",
+        job_id=intent.job_id,
+        session_id=intent.session_id,
+        state=TransferStatusState.SUBMITTED,
+        bytes_total=intent.total_bytes,
+        bytes_completed=0,
+        path_stats=(),
         metadata={"payload": asdict(intent)},
     )
+
+
+def verified_metadata(intent: TransferIntent) -> dict[str, object]:
+    return {
+        "payload": asdict(intent),
+        "completion_source": "worker",
+        "executed": True,
+        "verified": True,
+        "verified_bytes": intent.total_bytes,
+        "content_match": True,
+        "verification_source": "fixture_worker",
+        "verification_method": "fixture_compare",
+    }
+
+
+def unverified_metadata() -> dict[str, object]:
+    return {
+        "completion_source": "worker",
+        "executed": True,
+        "verified": False,
+        "verified_bytes": 0,
+        "content_match": False,
+    }
 
 
 if __name__ == "__main__":

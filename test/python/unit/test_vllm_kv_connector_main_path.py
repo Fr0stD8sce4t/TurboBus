@@ -8,6 +8,7 @@ from turbobus.adapters.vllm_kv_connector import (
     TurboBusConnector,
     TurboBusConnectorMetadata,
     TurboBusRequestMetadata,
+    _receipt_trace_from_receipts,
     clear_connector_events,
     clear_saved_prefixes,
     get_saved_prefix,
@@ -164,6 +165,13 @@ class TurboBusKVConnectorMainPathTest(unittest.TestCase):
         self.assertEqual(hit_events[0]["prefix_key"], "present")
         self.assertEqual(hit_events[0]["available_tokens"], 24)
 
+    def test_receipt_trace_rejects_unverified_complete_receipt(self) -> None:
+        intent = make_intent()
+        receipt = make_receipt(intent, metadata=unverified_metadata())
+
+        with self.assertRaisesRegex(ValueError, "verification evidence"):
+            _receipt_trace_from_receipts([receipt])
+
 
 def make_connector(client: "FakeTurboBusClient", *, restore_enabled: bool) -> TurboBusConnector:
     connector = TurboBusConnector(make_vllm_config(restore_enabled), KVConnectorRole.WORKER)
@@ -224,26 +232,12 @@ class FakeTurboBusClient:
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
         self.submitted.append(intent)
-        receipt = TransferReceipt(
+        receipt = make_receipt(
+            intent,
             receipt_id=f"receipt-{len(self.submitted)}",
             ticket_id=f"ticket-{len(self.submitted)}",
-            intent_id=intent.intent_id,
             decision_id=f"decision-{len(self.submitted)}",
             topology_snapshot_id=f"topology-{len(self.submitted)}",
-            job_id=intent.job_id,
-            session_id=intent.session_id,
-            state=TransferStatusState.COMPLETE,
-            bytes_total=intent.total_bytes,
-            bytes_completed=intent.total_bytes,
-            path_stats=(
-                {"kind": "direct", "bytes": intent.total_bytes // 2, "chunk_count": 1},
-                {
-                    "kind": "relay",
-                    "bytes": intent.total_bytes - intent.total_bytes // 2,
-                    "chunk_count": 1,
-                },
-            ),
-            metadata={"fallback_reason": "relay quota fallback"},
         )
         self.receipts[intent.intent_id] = receipt
         return receipt
@@ -302,6 +296,75 @@ class FakeTensor:
 
     def element_size(self) -> int:
         return self._itemsize
+
+
+def make_intent() -> TransferIntent:
+    return TransferIntent(
+        intent_id="intent-test",
+        job_id="job-vllm",
+        session_id="session-vllm",
+        source_buffer_id="cpu-buffer",
+        destination_buffer_id="gpu-buffer",
+        direction="h2d",
+        total_bytes=32,
+        ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 32},),
+        workload_kind="kv_cache",
+    )
+
+
+def make_receipt(
+    intent: TransferIntent,
+    *,
+    receipt_id: str = "receipt-1",
+    ticket_id: str = "ticket-1",
+    decision_id: str = "decision-1",
+    topology_snapshot_id: str = "topology-1",
+    metadata: dict[str, object] | None = None,
+) -> TransferReceipt:
+    return TransferReceipt(
+        receipt_id=receipt_id,
+        ticket_id=ticket_id,
+        intent_id=intent.intent_id,
+        decision_id=decision_id,
+        topology_snapshot_id=topology_snapshot_id,
+        job_id=intent.job_id,
+        session_id=intent.session_id,
+        state=TransferStatusState.COMPLETE,
+        bytes_total=intent.total_bytes,
+        bytes_completed=intent.total_bytes,
+        path_stats=(
+            {"kind": "direct", "bytes": intent.total_bytes // 2, "chunk_count": 1},
+            {
+                "kind": "relay",
+                "bytes": intent.total_bytes - intent.total_bytes // 2,
+                "chunk_count": 1,
+            },
+        ),
+        metadata=verified_metadata(intent) if metadata is None else metadata,
+    )
+
+
+def verified_metadata(intent: TransferIntent) -> dict[str, object]:
+    return {
+        "fallback_reason": "relay quota fallback",
+        "completion_source": "worker",
+        "executed": True,
+        "verified": True,
+        "verified_bytes": intent.total_bytes,
+        "content_match": True,
+        "verification_source": "fixture_worker",
+        "verification_method": "fixture_compare",
+    }
+
+
+def unverified_metadata() -> dict[str, object]:
+    return {
+        "completion_source": "worker",
+        "executed": True,
+        "verified": False,
+        "verified_bytes": 0,
+        "content_match": False,
+    }
 
 
 if __name__ == "__main__":

@@ -4,25 +4,23 @@
 
 Current main target: real buffer correctness gate.
 
-The daemon, worker, backend, public client, benchmarks, and paper-validation
-paths reject completed intent transfers that lack execution and verified-byte
-evidence. Native direct H2D and D2H CUDA readback have been validated on the
-server. Public intent backend and relay/pool CUDA validation still need server
-runs.
+The daemon, worker, backend, public client, adapter support, benchmarks, and
+paper-validation paths reject completed intent transfers that lack execution
+and verified-byte evidence. Native direct H2D and D2H CUDA readback have been
+validated on the server. Public intent backend and relay/pool CUDA validation
+still need server runs.
 
 ## Completed This Round
 
-- Added a public `TurboBusClient` gate that rejects `complete` receipts without
-  worker/backend source, `executed`, `verified`, matching `verified_bytes`, and
-  `content_match`.
-- Kept non-terminal and failed receipts pass-through so queued work and explicit
-  failure still surface normally.
-- Updated public client tests to cover rejection of intent-only complete
-  receipts.
+- Moved complete-receipt evidence validation into a shared API helper.
+- Applied the same gate to `OffloadStore` submit/wait and vLLM receipt tracing
+  so adapter boundaries cannot consume intent-only complete receipts.
+- Updated adapter tests so normal fixtures carry verified evidence and negative
+  cases assert rejection.
 
 ## Validation
 
-- `python -m unittest test.python.unit.test_public_client_api test.python.integration.test_paper_main_path`
+- `python -m unittest test.python.unit.test_offload_store test.python.unit.test_public_client_api test.python.unit.test_vllm_kv_connector_main_path test.python.unit.test_package_boundaries test.python.integration.test_paper_main_path`
   passed.
 - `git diff --check` passed.
 

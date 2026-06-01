@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from ..api import TurboBusClient
+from ..api.receipts import require_complete_receipt_evidence
 from ..offload_store import AdapterTransferContext, TransferStats, summarize_transfer_handles
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids
@@ -999,6 +1000,7 @@ def _receipt_trace_from_receipts(receipts: list[TransferReceipt]) -> dict[str, A
     ticket_ids: list[str] = []
     fallback_reasons: list[str] = []
     for receipt in receipts:
+        require_complete_receipt_evidence(receipt)
         receipt_ids.append(receipt.receipt_id)
         decision_ids.append(receipt.decision_id)
         topology_snapshot_ids.append(receipt.topology_snapshot_id)

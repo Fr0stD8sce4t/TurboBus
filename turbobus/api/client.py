@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import fields
 from typing import Protocol, runtime_checkable
 
 from ..daemon.client import TurboBusDaemonClient
-from ..schema import DaemonResponse, TransferIntent, TransferReceipt, TransferStatusState
+from ..schema import DaemonResponse, TransferIntent, TransferReceipt
+from .receipts import require_complete_receipt_evidence
 
 
 @runtime_checkable
@@ -69,7 +69,7 @@ class TurboBusClient:
                 raise TypeError("transfer executor must return a TransferReceipt")
             if receipt.intent_id != intent.intent_id:
                 raise ValueError("daemon receipt intent_id does not match request")
-            _require_complete_receipt_evidence(receipt)
+            require_complete_receipt_evidence(receipt)
             return receipt
         return _receipt_from_response(response, expected_intent_id=intent.intent_id)
 
@@ -108,7 +108,7 @@ def _receipt_from_response(
     receipt = _transfer_receipt_from_payload(receipt_payload)
     if receipt.intent_id != str(expected_intent_id):
         raise ValueError("daemon receipt intent_id does not match request")
-    _require_complete_receipt_evidence(receipt)
+    require_complete_receipt_evidence(receipt)
     return receipt
 
 
@@ -118,30 +118,6 @@ def _transfer_receipt_from_payload(payload: dict[str, object]) -> TransferReceip
     if unknown:
         raise ValueError("daemon receipt contains unknown fields: " + ", ".join(unknown))
     return TransferReceipt(**payload)
-
-
-def _require_complete_receipt_evidence(receipt: TransferReceipt) -> None:
-    if TransferStatusState(receipt.state) is not TransferStatusState.COMPLETE:
-        return
-    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
-    completion_source = str(metadata.get("completion_source", "")).lower()
-    if completion_source not in {"worker", "backend"}:
-        raise ValueError("complete daemon receipt missing worker/backend execution source")
-    if not bool(metadata.get("executed", False)):
-        raise ValueError("complete daemon receipt missing execution evidence")
-    if not bool(metadata.get("verified", False)):
-        raise ValueError("complete daemon receipt missing verification evidence")
-    try:
-        verified_bytes = int(metadata.get("verified_bytes", 0) or 0)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("complete daemon receipt has invalid verified bytes") from exc
-    if verified_bytes != int(receipt.bytes_total):
-        raise ValueError(
-            "complete daemon receipt verified byte mismatch: "
-            f"{verified_bytes} != {int(receipt.bytes_total)}"
-        )
-    if not bool(metadata.get("content_match", False)):
-        raise ValueError("complete daemon receipt missing content-match evidence")
 
 
 __all__ = [

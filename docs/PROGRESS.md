@@ -4,24 +4,25 @@
 
 Current main target: real buffer correctness gate.
 
-The daemon, worker, backend, and public intent paths require completion
-evidence for completed intent transfers. Native direct H2D and D2H CUDA
-readback have been validated on the server. Public intent backend and
-relay/pool CUDA validation still need server runs.
+The daemon, worker, backend, public client, benchmarks, and paper-validation
+paths reject completed intent transfers that lack execution and verified-byte
+evidence. Native direct H2D and D2H CUDA readback have been validated on the
+server. Public intent backend and relay/pool CUDA validation still need server
+runs.
 
 ## Completed This Round
 
-- Propagated receipt execution and verification evidence into model-loading and
-  training-offload benchmark summaries.
-- Made paper validation require `executed`, `verified`, matching
-  `verified_bytes`, and `content_match` before reporting correctness as
-  complete.
-- Updated benchmark tests so fixture receipts represent executed and verified
-  receipts instead of intent-only completion.
+- Added a public `TurboBusClient` gate that rejects `complete` receipts without
+  worker/backend source, `executed`, `verified`, matching `verified_bytes`, and
+  `content_match`.
+- Kept non-terminal and failed receipts pass-through so queued work and explicit
+  failure still surface normally.
+- Updated public client tests to cover rejection of intent-only complete
+  receipts.
 
 ## Validation
 
-- `python -m unittest test.python.e2e.test_model_loading_benchmark test.python.e2e.test_training_offload_benchmark test.python.e2e.test_benchmark_daemon_support test.python.e2e.test_paper_validation`
+- `python -m unittest test.python.unit.test_public_client_api test.python.integration.test_paper_main_path`
   passed.
 - `git diff --check` passed.
 

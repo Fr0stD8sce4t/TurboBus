@@ -58,6 +58,12 @@ class PublicClientApiTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "intent_id"):
             client.submit(make_intent())
 
+    def test_complete_receipt_without_verified_evidence_is_rejected(self) -> None:
+        client = TurboBusClient(daemon=IntentOnlyCompleteDaemon())
+
+        with self.assertRaisesRegex(ValueError, "verification evidence"):
+            client.submit(make_intent())
+
     def test_low_level_daemon_client_sends_intent_wire_request(self) -> None:
         daemon = RecordingDaemonClient()
         intent = make_intent()
@@ -137,6 +143,21 @@ class MismatchedReceiptDaemon(FakeDaemon):
         return DaemonResponse(ok=True, payload={"receipt": asdict(receipt)})
 
 
+class IntentOnlyCompleteDaemon(FakeDaemon):
+    def submit_transfer_intent(self, intent: TransferIntent) -> DaemonResponse:
+        receipt = make_receipt(
+            intent,
+            metadata={
+                "completion_source": "worker",
+                "executed": True,
+                "verified": False,
+                "verified_bytes": 0,
+                "content_match": False,
+            },
+        )
+        return DaemonResponse(ok=True, payload={"receipt": asdict(receipt)})
+
+
 class RecordingDaemonClient(TurboBusDaemonClient):
     def __init__(self) -> None:
         self.requests: list[DaemonRequest] = []
@@ -174,6 +195,7 @@ def make_receipt(
     intent: TransferIntent,
     *,
     receipt_id: str = "receipt-1",
+    metadata: dict[str, object] | None = None,
 ) -> TransferReceipt:
     return TransferReceipt(
         receipt_id=receipt_id,
@@ -187,6 +209,19 @@ def make_receipt(
         bytes_total=intent.total_bytes,
         bytes_completed=intent.total_bytes,
         path_stats=({"kind": "daemon_decision", "bytes": intent.total_bytes},),
+        metadata=(
+            {
+                "completion_source": "worker",
+                "executed": True,
+                "verified": True,
+                "verified_bytes": intent.total_bytes,
+                "content_match": True,
+                "verification_source": "fixture_worker",
+                "verification_method": "fixture_compare",
+            }
+            if metadata is None
+            else metadata
+        ),
     )
 
 

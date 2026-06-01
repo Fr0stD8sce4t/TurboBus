@@ -17,15 +17,15 @@ from turbobus.worker import (
     decode_worker_response_envelope,
 )
 from turbobus.worker.process import (
-    build_worker_helper_transport,
+    build_worker_service_transport,
     main,
-    run_worker_helper_process,
+    run_worker_service_process,
 )
 
 
 class WorkerProcessTest(unittest.TestCase):
-    def test_build_worker_helper_transport_wires_daemon_and_worker_sockets(self) -> None:
-        transport = build_worker_helper_transport(
+    def test_build_worker_service_transport_wires_daemon_and_worker_sockets(self) -> None:
+        transport = build_worker_service_transport(
             "/tmp/turbobusd.sock",
             "/tmp/turbobus-worker.sock",
         )
@@ -45,19 +45,18 @@ class WorkerProcessTest(unittest.TestCase):
             transport.endpoint.service.transfer_client.resource_binder,
         )
 
-    def test_run_worker_helper_process_uses_the_transport(self) -> None:
+    def test_run_worker_service_process_uses_the_transport(self) -> None:
         stop_event = Event()
         fake_transport = Mock()
 
         with patch(
-            "turbobus.worker.process.build_worker_helper_transport",
+            "turbobus.worker.process.build_worker_service_transport",
             return_value=fake_transport,
         ) as build:
-            run_worker_helper_process(
+            run_worker_service_process(
                 "/tmp/turbobusd.sock",
                 "/tmp/turbobus-worker.sock",
                 stop_event=stop_event,
-                max_requests=2,
             )
 
         build.assert_called_once_with(
@@ -66,19 +65,16 @@ class WorkerProcessTest(unittest.TestCase):
         )
         fake_transport.serve_forever.assert_called_once_with(
             stop_event=stop_event,
-            max_requests=2,
         )
 
-    def test_main_parses_args_and_runs_helper_process(self) -> None:
-        with patch("turbobus.worker.process.run_worker_helper_process") as run:
+    def test_main_parses_args_and_runs_service_process(self) -> None:
+        with patch("turbobus.worker.process.run_worker_service_process") as run:
             exit_code = main(
                 [
                     "--daemon-socket-path",
                     "/tmp/turbobusd.sock",
                     "--socket-path",
                     "/tmp/turbobus-worker.sock",
-                    "--max-requests",
-                    "2",
                 ]
             )
 
@@ -86,7 +82,6 @@ class WorkerProcessTest(unittest.TestCase):
         run.assert_called_once_with(
             "/tmp/turbobusd.sock",
             "/tmp/turbobus-worker.sock",
-            max_requests=2,
         )
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix domain sockets are unavailable")
@@ -103,8 +98,6 @@ class WorkerProcessTest(unittest.TestCase):
                     daemon_socket,
                     "--socket-path",
                     worker_socket,
-                    "--max-requests",
-                    "1",
                 ],
                 cwd=os.getcwd(),
                 stdout=subprocess.PIPE,
@@ -119,8 +112,9 @@ class WorkerProcessTest(unittest.TestCase):
                 self.assertFalse(worker_payload.ok)
                 self.assertEqual(worker_payload.final_state, "parse_failed")
 
+                process.terminate()
                 stdout, stderr = process.communicate(timeout=5)
-                self.assertEqual(process.returncode, 0, stderr)
+                self.assertIsNotNone(process.returncode, stderr)
                 self.assertEqual(stdout, "")
             finally:
                 if process.poll() is None:

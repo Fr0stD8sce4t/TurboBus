@@ -10,7 +10,7 @@ from .helper import WorkerTransferClient, WorkerTransferService
 from .transport import WorkerServiceUnixSocketTransport
 
 
-def build_worker_helper_transport(
+def build_worker_service_transport(
     daemon_socket_path: str,
     socket_path: str,
 ) -> WorkerServiceUnixSocketTransport:
@@ -28,19 +28,18 @@ def build_worker_helper_transport(
     )
 
 
-def run_worker_helper_process(
+def run_worker_service_process(
     daemon_socket_path: str,
     socket_path: str,
     stop_event: Event | None = None,
-    max_requests: int | None = None,
 ) -> None:
-    transport = build_worker_helper_transport(daemon_socket_path, socket_path)
-    transport.serve_forever(stop_event=stop_event, max_requests=max_requests)
+    transport = build_worker_service_transport(daemon_socket_path, socket_path)
+    transport.serve_forever(stop_event=stop_event)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="TurboBus worker helper process",
+        description="TurboBus worker socket service",
     )
     parser.add_argument(
         "--daemon-socket-path",
@@ -50,25 +49,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--socket-path",
         required=True,
-        help="Unix socket path for the worker helper service",
-    )
-    parser.add_argument(
-        "--max-requests",
-        type=int,
-        default=None,
-        help="Stop after this many requests; mainly useful for smoke tests",
+        help="Unix socket path for the worker socket service",
     )
     args = parser.parse_args(argv)
-    run_worker_helper_process(
+    run_worker_service_process(
         args.daemon_socket_path,
         args.socket_path,
-        max_requests=args.max_requests,
     )
     return 0
 
 
 __all__ = [
-    "build_worker_helper_transport",
+    "build_worker_service_transport",
     "main",
-    "run_worker_helper_process",
+    "run_worker_service_process",
 ]

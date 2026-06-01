@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 
 from .startup import DaemonStartupConfig, DaemonStartupError, create_production_daemon
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="TurboBus daemon state preview")
+    parser = argparse.ArgumentParser(description="TurboBus daemon socket service")
     parser.add_argument("--topology-provider", default="cuda-nvml")
-    parser.add_argument("--target-gpu", type=int, required=True)
+    parser.add_argument("--target-gpu", type=int, default=None)
     parser.add_argument("--min-relays", type=int, default=1)
     parser.add_argument(
         "--allow-missing-fabric",
@@ -27,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile-max-age-seconds", type=float, default=0.0)
     parser.add_argument(
         "--socket-path",
-        default=None,
-        help="Run the daemon server on this Unix socket path instead of printing state",
+        required=True,
+        help="Unix socket path for the daemon control plane",
     )
     return parser
 
@@ -54,10 +53,7 @@ def main() -> None:
         daemon = create_production_daemon(startup_config_from_args(args))
     except DaemonStartupError as exc:
         parser.exit(2, f"turbobus daemon startup failed: {exc}\n")
-    if args.socket_path:
-        daemon.serve_forever(args.socket_path)
-        return
-    print(json.dumps(daemon.describe().payload, indent=2))
+    daemon.serve_forever(args.socket_path)
 
 
 if __name__ == "__main__":

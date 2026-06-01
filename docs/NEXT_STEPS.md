@@ -27,6 +27,8 @@ tests, benchmarks, paper validation, or experiment tooling during this stage.
 - Direct, relay, and pooled execution stay daemon scheduling outcomes.
 - Completed receipts come from worker/backend completion or explicit failure,
   not synthetic local evidence.
+- Daemon and worker CLIs start production socket services instead of preview,
+  helper, or smoke-test-only modes.
 
 ## Current Code Work
 
@@ -34,13 +36,15 @@ tests, benchmarks, paper validation, or experiment tooling during this stage.
   compatibility export layer.
 - Keep profile bootstrap on the real native/runtime path: daemon `get_profile`
   cache hit, native CUDA profile on miss or force, daemon `put_profile` write.
+- Keep daemon and worker startup paths as socket services. Do not add dry-run
+  startup wrappers or request-count test modes as production CLI behavior.
 - Do not add mock profile data, fake correctness gates, benchmark helpers, or
   paper-validation code while validating this path.
-- The next code entry is production startup cleanup for daemon and worker
-  sockets after the profile bootstrap path is checked.
+- The next code entry is connecting upper layers to `TurboBusRuntimeSession`
+  after startup cleanup is checked.
 
 ## Next Entry
 
-Start from `turbobus/runtime_session.py`, `turbobus/backends/cuda.py`, and
-`turbobus/runtime_engine.py`. Verify that profile bootstrap is triggered by
-the runtime session without letting callers choose physical transfer routes.
+Start from `turbobus/offload_store.py` and
+`turbobus/adapters/vllm_kv_connector.py`. Connect upper layers to the runtime
+session API without letting them choose physical transfer routes.

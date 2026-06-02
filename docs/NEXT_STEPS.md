@@ -27,9 +27,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 - Continue from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
   `turbobus/worker/lifecycle.py`, and `turbobus/worker/validation.py`.
-- Focus the next pass on the worker socket envelope and production worker
-  service boundary, especially that cleanup targets cannot be widened beyond
-  daemon-issued ticket context.
+- Focus the next pass on daemon transfer status, cleanup, and release handling
+  after worker socket execution, especially that terminal state changes remain
+  tied to daemon-issued ticket evidence.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -37,5 +37,5 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Inspect worker socket lifecycle handling and daemon cleanup/release calls at
-the service boundary.
+Trace worker socket completion reports through daemon transfer status and
+reservation release.

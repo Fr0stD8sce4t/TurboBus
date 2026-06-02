@@ -2057,12 +2057,11 @@ class WorkerHelperTest(unittest.TestCase):
     def test_worker_service_request_envelope_serializes_payload(self) -> None:
         envelope = WorkerServiceRequestEnvelope(
             payload=authorization_request_payload(),
-            cleanup_target_kind="session",
         )
 
         payload = envelope.as_dict()
 
-        self.assertEqual(payload["cleanup_target_kind"], "session")
+        self.assertEqual(payload["cleanup_target_kind"], "reservation")
         self.assertEqual(payload["payload"]["transfer_id"], "transfer-1")
 
     def test_worker_service_request_envelope_rejects_invalid_cleanup_target(self) -> None:
@@ -2071,11 +2070,15 @@ class WorkerHelperTest(unittest.TestCase):
                 payload=authorization_request_payload(),
                 cleanup_target_kind="job",
             )
+        with self.assertRaisesRegex(ValueError, "cleanup_target_kind"):
+            WorkerServiceRequestEnvelope(
+                payload=authorization_request_payload(),
+                cleanup_target_kind="session",
+            )
 
     def test_worker_request_message_codec_round_trips_envelope(self) -> None:
         envelope = WorkerServiceRequestEnvelope(
             payload=authorization_request_payload(),
-            cleanup_target_kind="session",
         )
 
         message = encode_worker_request_envelope(envelope)

@@ -489,8 +489,8 @@ class WorkerServiceRequestEnvelope:
         if not isinstance(self.payload, Mapping):
             raise ValueError("worker service payload must be a mapping")
         cleanup_target_kind = str(self.cleanup_target_kind)
-        if cleanup_target_kind not in {"reservation", "session"}:
-            raise ValueError("cleanup_target_kind must be reservation or session")
+        if cleanup_target_kind != "reservation":
+            raise ValueError("cleanup_target_kind must be reservation")
         object.__setattr__(self, "payload", dict(self.payload))
         object.__setattr__(self, "cleanup_target_kind", cleanup_target_kind)
 

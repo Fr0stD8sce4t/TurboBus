@@ -670,6 +670,8 @@ class WorkerTransferService:
     ) -> WorkerTransferLifecycleRecord:
         if not isinstance(request, WorkerTransferAuthorizationRequest):
             raise TypeError("request must be a WorkerTransferAuthorizationRequest")
+        if str(cleanup_target_kind) != "reservation":
+            raise ValueError("worker service cleanup target must be reservation")
         return self.transfer_client.submit_report_cleanup_lifecycle(
             request,
             cleanup_target_kind=cleanup_target_kind,

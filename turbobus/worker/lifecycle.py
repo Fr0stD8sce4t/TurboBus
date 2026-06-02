@@ -3,7 +3,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict
 
-from ..schema import DaemonResponse, WorkerTransferAuthorizationRequest
+from ..schema import (
+    DaemonResponse,
+    ExecutionTicket,
+    WorkerTransferAuthorizationRequest,
+)
 from .models import (
     WorkerServiceRequestEnvelope,
     WorkerServiceResponseEnvelope,
@@ -23,7 +27,16 @@ from . import validation as worker_validation
 
 
 class WorkerAuthorizationError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        daemon_payload: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.daemon_payload = (
+            dict(daemon_payload) if isinstance(daemon_payload, Mapping) else None
+        )
 
 
 class WorkerStatusReportError(RuntimeError):
@@ -55,7 +68,10 @@ class WorkerTransferAuthorizer:
             return worker_request
         except (KeyError, TypeError, ValueError) as exc:
             raise WorkerAuthorizationError(
-                f"invalid worker authorization response: {exc}"
+                f"invalid worker authorization response: {exc}",
+                daemon_payload=(
+                    response.payload if isinstance(response.payload, Mapping) else None
+                ),
             ) from exc
 
 
@@ -118,22 +134,97 @@ class WorkerTransferCleanupCoordinator:
     def cleanup_authorization_failure(
         self,
         request: WorkerTransferAuthorizationRequest,
+        authorization_payload: Mapping[str, object] | None = None,
         target_kind: str = "reservation",
         reason: str = "worker_authorization_failed",
         force: bool = True,
     ) -> DaemonResponse:
         if not isinstance(request, WorkerTransferAuthorizationRequest):
             raise TypeError("request must be a WorkerTransferAuthorizationRequest")
-        return self._cleanup(
-            target_kind=target_kind,
-            target_id=cleanup_target_id(
+        try:
+            lease_ids, session_id = self._authorized_cleanup_targets(
+                request,
+                authorization_payload,
+            )
+        except WorkerCleanupError as exc:
+            return DaemonResponse(
+                ok=True,
+                payload={
+                    "cleanup_skipped": True,
+                    "cleanup_mode": "skipped_untrusted_authorization_failure",
+                    "target_kind": target_kind,
+                    "requested_lease_id": request.lease_id,
+                    "requested_session_id": request.session_id,
+                    "reason": reason,
+                    "skip_reason": str(exc),
+                },
+            )
+        if target_kind == "session":
+            return self._cleanup(
+                target_kind=target_kind,
+                target_id=session_id,
+                reason=reason,
+                force=force,
+            )
+        if len(lease_ids) == 1:
+            target_id = cleanup_target_id(
                 target_kind,
-                lease_id=request.lease_id,
-                session_id=request.session_id,
-            ),
+                lease_id=lease_ids[0],
+                session_id=session_id,
+            )
+            return self._cleanup(
+                target_kind=target_kind,
+                target_id=target_id,
+                reason=reason,
+                force=force,
+            )
+        return self._cleanup_lease_ids(
+            lease_ids=lease_ids,
+            target_kind=target_kind,
             reason=reason,
             force=force,
+            release_completed=False,
         )
+
+    def _authorized_cleanup_targets(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        authorization_payload: Mapping[str, object] | None,
+    ) -> tuple[tuple[str, ...], str]:
+        if authorization_payload is None:
+            raise WorkerCleanupError(
+                "authorization failure cleanup requires daemon-issued ticket payload"
+            )
+        if not isinstance(authorization_payload, Mapping):
+            raise WorkerCleanupError("authorization payload must be a mapping")
+        ticket_payload = authorization_payload.get("ticket")
+        if not isinstance(ticket_payload, Mapping):
+            raise WorkerCleanupError(
+                "authorization failure cleanup requires daemon-issued ticket"
+            )
+        try:
+            ticket = ExecutionTicket(**dict(ticket_payload))
+            worker_validation.validate_daemon_issued_ticket(
+                ticket,
+                plan_generation=authorization_payload.get("plan_generation"),
+            )
+            worker_validation.transfer_id_for_ticket(ticket, request.transfer_id)
+            if ticket.job_id != request.job_id:
+                raise ValueError("ticket job does not match authorization request")
+            if ticket.session_id != request.session_id:
+                raise ValueError("ticket session does not match authorization request")
+            lease_ids = worker_validation.lease_ids_for_ticket(
+                ticket,
+                lease_id=authorization_payload.get("lease_id"),
+                lease_ids=authorization_payload.get("lease_ids"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise WorkerCleanupError(
+                f"invalid daemon authorization cleanup payload: {exc}"
+            ) from exc
+        if not lease_ids:
+            raise WorkerCleanupError("daemon authorization cleanup has no lease ids")
+        return lease_ids, ticket.session_id
 
     def cleanup_execution_failure(
         self,
@@ -173,7 +264,6 @@ class WorkerTransferCleanupCoordinator:
                     )
                 return response
             return self._cleanup_worker_leases(
-                request,
                 lease_ids=lease_ids,
                 target_kind=target_kind,
                 reason=reason or "worker_complete",
@@ -192,7 +282,6 @@ class WorkerTransferCleanupCoordinator:
                 force=force,
             )
         return self._cleanup_worker_leases(
-            request,
             lease_ids=lease_ids,
             target_kind=target_kind,
             reason=reason or f"worker_{result.state.value}",
@@ -233,7 +322,6 @@ class WorkerTransferCleanupCoordinator:
                 force=force,
             )
         return self._cleanup_worker_leases(
-            request,
             lease_ids=lease_ids,
             target_kind=target_kind,
             reason=reason,
@@ -260,7 +348,23 @@ class WorkerTransferCleanupCoordinator:
 
     def _cleanup_worker_leases(
         self,
-        request: WorkerTransferRequest,
+        *,
+        lease_ids: tuple[str, ...],
+        target_kind: str,
+        reason: str,
+        force: bool,
+        release_completed: bool,
+    ) -> DaemonResponse:
+        return self._cleanup_lease_ids(
+            lease_ids=lease_ids,
+            target_kind=target_kind,
+            reason=reason,
+            force=force,
+            release_completed=release_completed,
+        )
+
+    def _cleanup_lease_ids(
+        self,
         *,
         lease_ids: tuple[str, ...],
         target_kind: str,
@@ -408,6 +512,7 @@ class WorkerTransferClient:
             try:
                 cleanup_response = self.cleanup_coordinator.cleanup_authorization_failure(
                     request,
+                    authorization_payload=exc.daemon_payload,
                     target_kind=cleanup_target_kind,
                 )
             except WorkerCleanupError as cleanup_exc:

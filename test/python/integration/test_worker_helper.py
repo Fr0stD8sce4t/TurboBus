@@ -832,7 +832,8 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertIsNone(lifecycle.staging_slot)
         self.assertIsNone(lifecycle.staging_release)
         self.assertEqual(staging_pool.describe(), {"active_slots": {}})
-        self.assertEqual(daemon_client.cleanup_requests[0]["target_id"], "lease-1")
+        self.assertEqual(daemon_client.cleanup_requests, [])
+        self.assertTrue(lifecycle.cleanup_response.payload["cleanup_skipped"])
 
     def test_worker_client_rejects_out_of_bounds_authorization_before_staging(
         self,
@@ -1059,23 +1060,18 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(len(daemon_client.status_updates), 1)
         self.assertEqual(daemon_client.status_updates[0]["state"], "failed")
 
-    def test_cleanup_coordinator_cleans_authorization_failure_reservation(self) -> None:
+    def test_cleanup_coordinator_skips_untrusted_authorization_failure(self) -> None:
         daemon_client = FakeDaemonClient(DaemonResponse(ok=False, error="denied"))
         coordinator = WorkerTransferCleanupCoordinator(daemon_client)
 
         response = coordinator.cleanup_authorization_failure(authorization_request())
 
         self.assertTrue(response.ok)
+        self.assertEqual(daemon_client.cleanup_requests, [])
+        self.assertTrue(response.payload["cleanup_skipped"])
         self.assertEqual(
-            daemon_client.cleanup_requests,
-            [
-                {
-                    "target_kind": "reservation",
-                    "target_id": "lease-1",
-                    "reason": "worker_authorization_failed",
-                    "force": True,
-                }
-            ],
+            response.payload["cleanup_mode"],
+            "skipped_untrusted_authorization_failure",
         )
 
     def test_cleanup_coordinator_cleans_failed_worker_session(self) -> None:
@@ -1228,7 +1224,10 @@ class WorkerHelperTest(unittest.TestCase):
         coordinator = WorkerTransferCleanupCoordinator(daemon_client)
 
         with self.assertRaisesRegex(WorkerCleanupError, "unknown reservation"):
-            coordinator.cleanup_authorization_failure(authorization_request())
+            coordinator.cleanup_authorization_failure(
+                authorization_request(),
+                authorization_payload=authorization_payload(),
+            )
 
     def test_worker_client_submit_report_and_cleanup_failed_result(self) -> None:
         daemon_client = FakeDaemonClient(
@@ -1252,7 +1251,7 @@ class WorkerHelperTest(unittest.TestCase):
             ],
         )
 
-    def test_worker_client_cleans_reservation_after_authorization_failure(self) -> None:
+    def test_worker_client_skips_cleanup_after_daemon_authorization_denial(self) -> None:
         daemon_client = FakeDaemonClient(DaemonResponse(ok=False, error="denied"))
         client = WorkerTransferClient(daemon_client)
 
@@ -1260,17 +1259,7 @@ class WorkerHelperTest(unittest.TestCase):
             client.submit_report_and_cleanup(authorization_request())
 
         self.assertEqual(daemon_client.status_updates, [])
-        self.assertEqual(
-            daemon_client.cleanup_requests,
-            [
-                {
-                    "target_kind": "reservation",
-                    "target_id": "lease-1",
-                    "reason": "worker_authorization_failed",
-                    "force": True,
-                }
-            ],
-        )
+        self.assertEqual(daemon_client.cleanup_requests, [])
 
     def test_worker_client_cleanup_releases_daemon_reservation(self) -> None:
         daemon, session_id = daemon_with_relay_transfer_path()
@@ -1917,7 +1906,8 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertIsNone(lifecycle.result)
         self.assertEqual(lifecycle.cleanup_target_kind, "reservation")
         self.assertEqual(lifecycle.cleanup_target_id, "lease-1")
-        self.assertEqual(daemon_client.cleanup_requests[0]["reason"], "worker_authorization_failed")
+        self.assertEqual(daemon_client.cleanup_requests, [])
+        self.assertTrue(lifecycle.cleanup_response.payload["cleanup_skipped"])
 
     def test_worker_service_returns_cuda_failure_completion_envelope(self) -> None:
         daemon_client = FakeDaemonClient(
@@ -1950,7 +1940,10 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertIn("denied", payload["error"])
         self.assertIsNone(payload["completion"]["worker_result"])
         self.assertIsNone(payload["completion"]["staging_slot"])
-        self.assertEqual(daemon_client.cleanup_requests[0]["reason"], "worker_authorization_failed")
+        self.assertEqual(daemon_client.cleanup_requests, [])
+        self.assertTrue(
+            payload["completion"]["daemon_cleanup_response"]["payload"]["cleanup_skipped"]
+        )
 
     def test_worker_service_returns_status_failure_completion_envelope(self) -> None:
         daemon_client = FakeDaemonClient(

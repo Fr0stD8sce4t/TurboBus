@@ -12,27 +12,29 @@ topology metadata beside runtime load metadata.
 
 ## Completed This Round
 
-- Daemon transfer planning now captures a single topology inventory snapshot
-  and reuses it for relay eligibility and the scheduling snapshot id.
-- Relay eligibility now records the topology snapshot id and topology version
-  that shaped planning.
-- Scheduler decisions now include normalized topology metadata, including
-  requested, eligible, and filtered relays, alongside runtime load policy
-  metadata.
+- Intent transfer completion now requires verified byte evidence bound to the
+  current daemon-issued `ExecutionTicket`.
+- Worker completion reporting now carries ticket id, transfer id, and plan
+  generation from the authorized worker request into completion evidence.
+- Direct backend fallback completion now reports the same ticket binding before
+  daemon receipt completion.
 
 ## Validation
 
-- `python -m py_compile turbobus\scheduler\daemon.py turbobus\daemon\server.py`
+- `python -m py_compile turbobus\daemon\server.py turbobus\worker\lifecycle.py turbobus\direct_fallback.py`
   passed.
-- `python -m unittest test.python.unit.test_daemon_scheduler` passed.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m unittest test.python.unit.test_worker_authorization test.python.integration.test_worker_helper`
+  passed.
+- `python -m unittest test.python.integration.test_paper_main_path` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer`
+  passed with one expected platform skip.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Peer isolation still needs a focused code pass across daemon and worker
-  socket execution.
+- Peer cleanup and release ownership still need a focused pass across daemon
+  and worker socket execution.
 
 ## Next Main Target
 

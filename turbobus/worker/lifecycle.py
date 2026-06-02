@@ -90,7 +90,11 @@ def _completion_evidence_for_result(
     metadata = dict(result.metadata)
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
-        return dict(evidence)
+        completion_evidence = dict(evidence)
+        for key in ("ticket_id", "transfer_id", "plan_generation"):
+            if key in metadata:
+                completion_evidence.setdefault(key, metadata[key])
+        return completion_evidence
     evidence_keys = {
         "verified_bytes",
         "content_match",
@@ -98,6 +102,9 @@ def _completion_evidence_for_result(
         "verification_method",
         "source_digest",
         "destination_digest",
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
     }
     if not any(key in metadata for key in evidence_keys):
         return None
@@ -636,7 +643,7 @@ def validate_worker_completion_bytes(
         return result
     expected_bytes = expected_worker_completion_bytes(request)
     if result.bytes_completed == expected_bytes:
-        return result
+        return _worker_result_with_ticket_binding(request, result)
     reported_bytes = int(result.bytes_completed)
     safe_completed = min(reported_bytes, expected_bytes)
     return WorkerTransferResult(
@@ -653,6 +660,34 @@ def validate_worker_completion_bytes(
             "expected_bytes": expected_bytes,
             "reported_bytes": reported_bytes,
         },
+    )
+
+
+def _worker_result_with_ticket_binding(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+) -> WorkerTransferResult:
+    metadata = dict(result.metadata)
+    metadata.setdefault("ticket_id", request.ticket.ticket_id)
+    transfer_id = request.ticket.metadata.get("transfer_id")
+    if transfer_id is not None:
+        metadata.setdefault("transfer_id", str(transfer_id))
+    plan_generation = request.ticket.metadata.get("plan_generation")
+    if plan_generation is not None:
+        metadata.setdefault("plan_generation", int(plan_generation))
+    evidence = metadata.get("completion_evidence")
+    if isinstance(evidence, Mapping):
+        completion_evidence = dict(evidence)
+        for key in ("ticket_id", "transfer_id", "plan_generation"):
+            if key in metadata:
+                completion_evidence.setdefault(key, metadata[key])
+        metadata["completion_evidence"] = completion_evidence
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
     )
 
 

@@ -25,9 +25,10 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Current Code Work
 
-- Start from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
-  `turbobus/worker/lifecycle.py`, `turbobus/worker/validation.py`, and
-  `turbobus/worker/cuda_executor.py`.
+- Continue from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
+  `turbobus/worker/lifecycle.py`, and `turbobus/worker/validation.py`.
+- Focus the next pass on peer ownership for cleanup, release, and stale
+  authorization cleanup across sessions, jobs, buffers, leases, and tickets.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -35,5 +36,5 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Trace peer identity, buffer ownership, lease validation, ticket validation, and
-cleanup from daemon request dispatch through worker execution.
+Trace cleanup and release requests from daemon request dispatch through
+reservation, staging, ticket, transfer, buffer, and job cleanup.

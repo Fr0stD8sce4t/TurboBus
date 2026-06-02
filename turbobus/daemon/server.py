@@ -654,10 +654,14 @@ class TurboBusDaemon:
                             ),
                         )
                     try:
+                        ticket = self._current_execution_ticket_for_transfer_locked(
+                            updated.transfer_id
+                        )
                         normalized_completion_evidence = _normalize_completion_evidence(
                             completion_evidence,
                             expected_bytes=updated.bytes_total,
                             completion_source=normalized_completion_source,
+                            expected_ticket=ticket,
                         )
                     except ValueError as exc:
                         return DaemonResponse(ok=False, error=str(exc))
@@ -1949,6 +1953,22 @@ class TurboBusDaemon:
         if ticket_id is None or ticket_id not in self._execution_tickets:
             return "intent transfer status update requires daemon-issued execution ticket"
         return None
+
+    def _current_execution_ticket_for_transfer_locked(
+        self,
+        transfer_id: str,
+    ) -> ExecutionTicket:
+        ticket_id = self._transfer_tickets.get(str(transfer_id))
+        if ticket_id is None:
+            raise ValueError(
+                "intent transfer completion requires daemon-issued execution ticket"
+            )
+        ticket = self._execution_tickets.get(str(ticket_id))
+        if ticket is None:
+            raise ValueError(
+                "intent transfer completion requires daemon-issued execution ticket"
+            )
+        return ticket
 
     def _commit_scheduler_leases_locked(
         self,
@@ -4089,6 +4109,7 @@ def _normalize_completion_evidence(
     *,
     expected_bytes: int,
     completion_source: str,
+    expected_ticket: ExecutionTicket | None = None,
 ) -> dict[str, object]:
     if not isinstance(evidence, Mapping):
         raise ValueError("complete intent transfer requires verified byte evidence")
@@ -4112,6 +4133,10 @@ def _normalize_completion_evidence(
         and str(source_digest) != str(destination_digest)
     ):
         raise ValueError("verified byte evidence digest mismatch")
+    ticket_binding = _normalize_completion_ticket_binding(
+        evidence,
+        expected_ticket=expected_ticket,
+    )
     return {
         "verified": True,
         "verified_bytes": verified_bytes,
@@ -4129,6 +4154,54 @@ def _normalize_completion_evidence(
             {}
             if destination_digest is None
             else {"destination_digest": str(destination_digest)}
+        ),
+        **ticket_binding,
+    }
+
+
+def _normalize_completion_ticket_binding(
+    evidence: Mapping[str, object],
+    *,
+    expected_ticket: ExecutionTicket | None,
+) -> dict[str, object]:
+    if expected_ticket is None:
+        return {}
+    evidence_ticket_id = evidence.get("ticket_id")
+    if evidence_ticket_id is None or str(evidence_ticket_id) != expected_ticket.ticket_id:
+        raise ValueError("completion evidence ticket_id does not match daemon ticket")
+    evidence_transfer_id = evidence.get("transfer_id")
+    expected_transfer_id = expected_ticket.metadata.get("transfer_id")
+    if (
+        expected_transfer_id is not None
+        and (
+            evidence_transfer_id is None
+            or str(evidence_transfer_id) != str(expected_transfer_id)
+        )
+    ):
+        raise ValueError("completion evidence transfer_id does not match daemon ticket")
+    evidence_generation = evidence.get("plan_generation")
+    expected_generation = expected_ticket.metadata.get("plan_generation")
+    if (
+        expected_generation is not None
+        and (
+            evidence_generation is None
+            or int(evidence_generation) != int(expected_generation)
+        )
+    ):
+        raise ValueError(
+            "completion evidence plan_generation does not match daemon ticket"
+        )
+    return {
+        "ticket_id": expected_ticket.ticket_id,
+        **(
+            {}
+            if expected_transfer_id is None
+            else {"transfer_id": str(expected_transfer_id)}
+        ),
+        **(
+            {}
+            if expected_generation is None
+            else {"plan_generation": int(expected_generation)}
         ),
     }
 

@@ -301,7 +301,12 @@ class PaperMainPathTest(unittest.TestCase):
             state="complete",
             bytes_completed=64,
             completion_source="worker",
-            completion_evidence=_verified_evidence(64, source="worker"),
+            completion_evidence={
+                **_verified_evidence(64, source="worker"),
+                "ticket_id": ticket["ticket_id"],
+                "transfer_id": submitted.payload["transfer_id"],
+                "plan_generation": ticket["metadata"]["plan_generation"],
+            },
         )
         self.assertTrue(completed.ok, completed.error)
         waited = daemon.wait_transfer_receipt(intent.intent_id)

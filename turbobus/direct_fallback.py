@@ -78,7 +78,10 @@ def execute_direct_fallback_transfer(
         state="complete",
         bytes_completed=bytes_completed,
         completion_source="backend",
-        completion_evidence=completion_evidence,
+        completion_evidence=_completion_evidence_with_ticket_binding(
+            completion_evidence,
+            ticket=ticket,
+        ),
     )
     if not completed.ok:
         daemon_client.transfer_status(
@@ -357,6 +360,22 @@ def _direct_plan_completion_evidence(
     )
     evidence.setdefault("expected_bytes", int(expected_bytes))
     return evidence
+
+
+def _completion_evidence_with_ticket_binding(
+    evidence: Mapping[str, object],
+    *,
+    ticket: ExecutionTicket,
+) -> dict[str, object]:
+    bound = dict(evidence)
+    bound.setdefault("ticket_id", ticket.ticket_id)
+    transfer_id = ticket.metadata.get("transfer_id")
+    if transfer_id is not None:
+        bound.setdefault("transfer_id", str(transfer_id))
+    plan_generation = ticket.metadata.get("plan_generation")
+    if plan_generation is not None:
+        bound.setdefault("plan_generation", int(plan_generation))
+    return bound
 
 
 def _plan_transfer_ranges(plan_payload: Mapping[str, object]) -> tuple[dict[str, int], ...]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Mapping
 
-from .helper import (
+from .models import (
     WorkerServiceRequestEnvelope,
     WorkerServiceResponseEnvelope,
 )

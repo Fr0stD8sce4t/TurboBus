@@ -36,8 +36,10 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Session, job, buffer, lease, and transfer cleanup now release staging records
   and drop daemon execution tickets when transfers end in failed or canceled
   states.
-- Continue the next pass on worker service and production process paths for
-  lifecycle bypasses.
+- Worker service and production worker process paths now route socket requests
+  through the standard authorization, execution, status, cleanup lifecycle.
+- The old `turbobus/worker/helper.py` export layer has been deleted; worker
+  modules import real implementation modules directly.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -45,6 +47,5 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Inspect worker service, worker process, and daemon socket process paths for any
-remaining way to bypass the standard authorization, execution, status, cleanup
-lifecycle.
+Stop local code work for this authority-hardening target until production
+daemon and worker socket startup can be validated on a Linux CUDA server.

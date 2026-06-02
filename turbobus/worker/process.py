@@ -6,7 +6,7 @@ from typing import Sequence
 
 from ..daemon import TurboBusDaemonClient
 from .endpoint import WorkerServiceEndpoint
-from .helper import WorkerTransferClient, WorkerTransferService
+from .lifecycle import WorkerTransferClient, WorkerTransferService
 from .transport import WorkerServiceUnixSocketTransport
 
 

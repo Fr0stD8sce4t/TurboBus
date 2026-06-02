@@ -21,35 +21,37 @@ unavailable. Intent transfer status updates from external request paths now
 require worker/backend execution evidence bound to the current daemon-issued
 `ExecutionTicket`, including failed and canceled reports. Failed and canceled
 terminal transfers now drop their daemon execution ticket mappings during
-cleanup or external status reporting.
+cleanup or external status reporting. Worker service and production process
+entry points now route requests through the standard lifecycle, and the old
+`turbobus/worker/helper.py` export layer has been removed.
 
 ## Completed This Round
 
-- Centralized removal of daemon execution ticket mappings for non-complete
-  terminal transfers.
-- Session, job, buffer, reservation, and transfer cleanup paths now cancel
-  transfers without leaving stale current-ticket mappings behind.
-- Complete transfers still retain their ticket mapping for receipt and release
-  evidence checks.
+- Repointed worker service, process, codec, socket client, CUDA executor, and
+  package exports to real implementation modules.
+- Deleted the old `turbobus/worker/helper.py` re-export layer.
+- Confirmed worker socket service requests still enter through
+  `submit_report_cleanup_lifecycle()` with reservation-scoped cleanup.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py` passed.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m py_compile turbobus\worker\__init__.py turbobus\worker\codec.py turbobus\worker\endpoint.py turbobus\worker\process.py turbobus\worker\socket_client.py turbobus\worker\cuda_executor.py turbobus\worker\lifecycle.py turbobus\worker\models.py` passed.
+- `python -m unittest test.python.integration.test_worker_transport` passed
+  with one expected platform skip.
+- `python -m unittest test.python.integration.test_worker_process` passed with
+  one expected platform skip.
 - `python -m unittest test.python.integration.test_client_worker_transfer`
   passed with one expected skip.
-- `python -m unittest test.python.integration.test_daemon_socket` passed with
-  expected platform skips.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
 - `git diff --check` passed.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- The current production peer credential implementation is Linux `SO_PEERCRED`
-  only; unsupported platforms now fail closed instead of weakening isolation.
-- Worker service and production process paths still need a focused pass for
-  lifecycle bypasses.
+- Production daemon and worker socket startup still need Linux CUDA server
+  validation with real Unix peer credentials and native CUDA resources.
 
 ## Next Main Target
 

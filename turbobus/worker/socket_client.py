@@ -4,7 +4,7 @@ import socket
 from dataclasses import dataclass
 
 from .codec import decode_worker_response_envelope, encode_worker_request_envelope
-from .helper import (
+from .models import (
     WorkerDataPlaneCompletionEnvelope,
     WorkerServiceRequestEnvelope,
 )

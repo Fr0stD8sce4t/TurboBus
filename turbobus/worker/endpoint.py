@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .codec import handle_worker_service_message
-from .helper import WorkerTransferService
+from .lifecycle import WorkerTransferService
 
 
 class WorkerServiceEndpoint:

@@ -1645,14 +1645,18 @@ class TurboBusDaemon:
             )
         if self._topology_provider is None:
             raise ValueError(_TOPOLOGY_UNAVAILABLE_ERROR)
-        snapshot_id = topology_snapshot_id or self._topology_snapshot_id_locked()
+        topology_inventory = self._topology_provider.snapshot()
+        snapshot_id = topology_snapshot_id or topology_inventory.topology_snapshot_id()
         plan_job_id = owner_job_id if owner_job_id is not None else job_id
         intent = (
             None
             if intent_id is None
             else self._transfer_intents.get(str(intent_id))
         )
-        relay_eligibility = self._relay_eligibility_for_session_locked(session)
+        relay_eligibility = self._relay_eligibility_for_session_locked(
+            session,
+            inventory=topology_inventory,
+        )
         planning_relays = tuple(
             item["relay_gpu"] for item in relay_eligibility["eligible_relays"]
         )
@@ -1706,6 +1710,7 @@ class TurboBusDaemon:
             job_id=plan_job_id,
             intent_id=intent_id,
             topology_snapshot_id=snapshot_id,
+            relay_eligibility=relay_eligibility,
             defer_relay_admission=defer_relay_admission,
         )
         return (
@@ -3366,10 +3371,15 @@ class TurboBusDaemon:
         relay_eligibility = self._relay_eligibility_for_session_locked(session)
         return tuple(item["relay_gpu"] for item in relay_eligibility["eligible_relays"])
 
-    def _relay_eligibility_for_session_locked(self, session: Session) -> dict[str, object]:
+    def _relay_eligibility_for_session_locked(
+        self,
+        session: Session,
+        inventory=None,
+    ) -> dict[str, object]:
         return self._relay_eligibility_for_target_locked(
             target_gpu=session.target_gpu,
             requested_relays=session.relay_gpus,
+            inventory=inventory,
         )
 
     def _relay_eligibility_for_target_locked(
@@ -3396,6 +3406,8 @@ class TurboBusDaemon:
                 )
         return {
             **relay_eligibility,
+            "topology_snapshot_id": inventory.topology_snapshot_id(),
+            "topology_version": inventory.version,
             "eligible_relays": eligible_relays,
             "filtered_relays": filtered_relays,
         }

@@ -4,37 +4,37 @@
 
 Current main target: system implementation before experiments.
 
-The active route is the system-level Python runtime path. The old
-`client_transfer.py` file remains deleted, transfers run through
-`TurboBusRuntimeSession`, profile bootstrap writes daemon profile data, daemon
-and worker CLIs run socket services, and upper adapters use the runtime session
-without application-side path selection.
+The system-level runtime path submits `TransferIntent`, uses daemon scheduling,
+issues `ExecutionTicket` plans, and keeps the old `client_transfer.py` file
+deleted. Daemon planning now uses one daemon-owned topology snapshot for both
+the scheduling snapshot id and relay eligibility, and scheduler decisions carry
+topology metadata beside runtime load metadata.
 
 ## Completed This Round
 
-- `CudaWorkerExecutor` now revalidates the current worker request against its
-  daemon-issued `ExecutionTicket` immediately before invoking the CUDA backend.
-- Direct fallback now executes through an internal ticket-only plan path instead
-  of exporting a bare direct-plan execution entry.
-- The old `client_transfer.py` file remains deleted and no compatibility
-  export layer was reintroduced.
+- Daemon transfer planning now captures a single topology inventory snapshot
+  and reuses it for relay eligibility and the scheduling snapshot id.
+- Relay eligibility now records the topology snapshot id and topology version
+  that shaped planning.
+- Scheduler decisions now include normalized topology metadata, including
+  requested, eligible, and filtered relays, alongside runtime load policy
+  metadata.
 
 ## Validation
 
-- `python -m py_compile turbobus/direct_fallback.py turbobus/worker/cuda_executor.py turbobus/runtime_session.py`
+- `python -m py_compile turbobus\scheduler\daemon.py turbobus\daemon\server.py`
   passed.
-- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one expected platform skip.
-- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m unittest test.python.unit.test_daemon_scheduler` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 
 ## Remaining Risk
 
-- Peer isolation has not yet been validated with separate OS users or
-  containers on the real daemon socket.
-- Runtime load feedback into scheduler decisions still needs a focused pass
-  before real CUDA multi-GPU validation.
+- Real CUDA/native multi-GPU execution has not been validated in this local
+  environment.
+- Peer isolation still needs a focused code pass across daemon and worker
+  socket execution.
 
 ## Next Main Target
 
-Wire runtime load and topology feedback into daemon-first scheduler decisions.
+Tighten cross-job isolation and daemon authority in the daemon/worker
+production path.

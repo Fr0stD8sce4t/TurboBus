@@ -7,27 +7,27 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The current task is to continue system implementation by tightening runtime
-load and topology feedback into daemon-first scheduling. Scheduler decisions
-should use daemon-owned topology/profile/load state, while applications and
-adapters continue to submit only `TransferIntent` and consume
-`TransferReceipt`.
+The next task is to tighten cross-job isolation and daemon authority in the
+daemon/worker production path. Workers and backends must continue to execute
+only daemon-issued `ExecutionTicket` plans, and application/runtime code must
+continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Exit Criteria
 
-- Daemon scheduling has a clear load/topology input path that does not depend
-  on application-side physical route choices.
-- Runtime load updates can influence direct, relay, pooled, or delayed
-  decisions without worker/backend code choosing paths.
-- Existing runtime/session/adapters continue to submit `TransferIntent` and
-  consume `TransferReceipt`.
-- No benchmark, paper-validation, experiment, or compatibility shim code is
-  added during this pass.
+- Daemon peer identity, job ownership, buffer ownership, lease, and ticket
+  checks are clearly enforced on the daemon/worker socket path.
+- Worker execution cannot proceed from application-selected physical paths or
+  stale ticket data.
+- Cleanup of jobs, buffers, leases, tickets, and transfer state preserves
+  isolation across sessions and jobs.
+- No benchmark, paper-validation, experiment, compatibility shim, or export
+  layer code is added during this pass.
 
 ## Current Code Work
 
-- Start from `turbobus/scheduler/daemon.py`, `turbobus/daemon/server.py`, and
-  daemon topology/profile/load helpers.
+- Start from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
+  `turbobus/worker/lifecycle.py`, `turbobus/worker/validation.py`, and
+  `turbobus/worker/cuda_executor.py`.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -35,5 +35,5 @@ adapters continue to submit only `TransferIntent` and consume
 
 ## Next Entry
 
-Trace how daemon-owned topology, cached profile, reservations, and runtime
-load feed scheduler decisions.
+Trace peer identity, buffer ownership, lease validation, ticket validation, and
+cleanup from daemon request dispatch through worker execution.

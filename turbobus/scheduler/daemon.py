@@ -121,6 +121,7 @@ class DaemonScheduler:
         job_id: str | None = None,
         intent_id: str | None = None,
         topology_snapshot_id: str | None = None,
+        relay_eligibility: Mapping[str, object] | None = None,
         defer_relay_admission: bool = False,
     ) -> SchedulingDecision:
         total_bytes = int(total_bytes)
@@ -231,6 +232,10 @@ class DaemonScheduler:
                 "leases": [lease.as_dict() for lease in leases],
                 "stats": stats.as_dict(),
                 "runtime_state": _runtime_state_metadata(runtime_state),
+                "topology": _topology_metadata(
+                    topology_snapshot_id=topology_snapshot_id,
+                    relay_eligibility=relay_eligibility,
+                ),
                 "policy": runtime_view.policy_metadata(),
                 "relay_policy": relay_policy.as_dict(),
             },
@@ -615,6 +620,39 @@ def _runtime_state_metadata(
             summary.get("queued_bytes_by_direction", {}) or {}
         ),
         "active_resource_usage": dict(summary.get("active_resource_usage", {}) or {}),
+    }
+
+
+def _topology_metadata(
+    *,
+    topology_snapshot_id: str | None,
+    relay_eligibility: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if not isinstance(relay_eligibility, Mapping):
+        return {
+            "topology_snapshot_id": topology_snapshot_id,
+            "requested_relays": (),
+            "eligible_relays": (),
+            "filtered_relays": (),
+        }
+    return {
+        "topology_snapshot_id": (
+            relay_eligibility.get("topology_snapshot_id") or topology_snapshot_id
+        ),
+        "topology_version": relay_eligibility.get("topology_version"),
+        "inventory_source": relay_eligibility.get("inventory_source"),
+        "inventory_discovered_at": relay_eligibility.get("inventory_discovered_at"),
+        "requested_relays": tuple(relay_eligibility.get("requested_relays", ()) or ()),
+        "eligible_relays": tuple(
+            dict(item)
+            for item in relay_eligibility.get("eligible_relays", ()) or ()
+            if isinstance(item, Mapping)
+        ),
+        "filtered_relays": tuple(
+            dict(item)
+            for item in relay_eligibility.get("filtered_relays", ()) or ()
+            if isinstance(item, Mapping)
+        ),
     }
 
 

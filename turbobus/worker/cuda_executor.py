@@ -5,6 +5,7 @@ from typing import Any
 
 from ..backends.cuda import default_cuda_backend
 from ..runtime_engine import RuntimeOptions
+from . import validation as worker_validation
 from .helper import (
     WorkerTransferRequest,
     WorkerTransferResult,
@@ -179,7 +180,21 @@ def _worker_plan_payload(
 ) -> dict[str, object]:
     if not request.data_plane.plan:
         raise ValueError("CUDA worker executor requires a daemon-issued transfer plan")
+    _require_ticket_authorizes_current_worker_plan(request)
     return _relay_scoped_daemon_plan_payload(request, int(target_device))
+
+
+def _require_ticket_authorizes_current_worker_plan(
+    request: WorkerTransferRequest,
+) -> None:
+    worker_validation.validate_daemon_issued_ticket(request.ticket)
+    worker_validation.validate_ticket_matches_worker_request(
+        request.ticket,
+        request.authorization,
+        request.data_plane,
+    )
+    if request.ticket.metadata.get("transfer_id") != request.transfer_id:
+        raise ValueError("execution ticket transfer_id does not match worker request")
 
 
 def _relay_scoped_daemon_plan_payload(

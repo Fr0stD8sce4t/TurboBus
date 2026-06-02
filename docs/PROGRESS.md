@@ -12,30 +12,29 @@ without application-side path selection.
 
 ## Completed This Round
 
-- Split native extension loading, native plan conversion, tensor validation,
-  and profile bootstrap into separate runtime/native boundary modules.
-- Reduced `runtime_engine.py` to runtime options and transfer-handle ownership.
-- Updated the CUDA backend to depend on the new native boundary modules instead
-  of reaching into `runtime_engine` private state.
-- Runtime session profile bootstrap now calls the profile module and still
-  writes daemon profile data through `put_profile`.
+- `CudaWorkerExecutor` now revalidates the current worker request against its
+  daemon-issued `ExecutionTicket` immediately before invoking the CUDA backend.
+- Direct fallback now executes through an internal ticket-only plan path instead
+  of exporting a bare direct-plan execution entry.
+- The old `client_transfer.py` file remains deleted and no compatibility
+  export layer was reintroduced.
 
 ## Validation
 
-- `python -m py_compile turbobus/runtime_engine.py turbobus/native_runtime.py turbobus/native_plan.py turbobus/tensor_validation.py turbobus/profile.py turbobus/backends/cuda.py turbobus/runtime_session.py turbobus/worker/cuda_executor.py turbobus/direct_fallback.py`
+- `python -m py_compile turbobus/direct_fallback.py turbobus/worker/cuda_executor.py turbobus/runtime_session.py`
   passed.
-- `python -m unittest test.python.unit.test_runtime_engine` passed.
-- `python -m unittest test.python.unit.test_backend_cuda` passed.
 - `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer`
+  passed with one expected platform skip.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
 
 ## Remaining Risk
 
 - Peer isolation has not yet been validated with separate OS users or
   containers on the real daemon socket.
-- Direct fallback and worker CUDA execution still need a focused ticket-path
-  pass before real CUDA multi-GPU validation.
+- Runtime load feedback into scheduler decisions still needs a focused pass
+  before real CUDA multi-GPU validation.
 
 ## Next Main Target
 
-Harden daemon-issued `ExecutionTicket` execution through direct fallback and
-CUDA worker paths.
+Wire runtime load and topology feedback into daemon-first scheduler decisions.

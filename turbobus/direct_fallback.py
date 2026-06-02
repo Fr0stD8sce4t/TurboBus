@@ -52,11 +52,11 @@ def execute_direct_fallback_transfer(
             source_buffer_id=source.buffer_id,
             target_buffer_id=target.buffer_id,
         )
-        bytes_completed, completion_evidence = execute_direct_plan(
+        bytes_completed, completion_evidence = _execute_direct_ticket_plan(
             backend=backend,
             runtime_options=runtime_options,
             direction=transfer_request.direction.value,
-            plan_payload=dict(ticket.plan),
+            ticket=ticket,
             source=source,
             target=target,
         )
@@ -111,15 +111,18 @@ def execute_direct_fallback_transfer(
     )
 
 
-def execute_direct_plan(
+def _execute_direct_ticket_plan(
     *,
     backend,
     runtime_options: RuntimeOptions,
     direction: str,
-    plan_payload: Mapping[str, object],
+    ticket: ExecutionTicket,
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
 ) -> tuple[int, dict[str, object]]:
+    if not isinstance(ticket, ExecutionTicket):
+        raise TypeError("direct fallback requires a daemon-issued ExecutionTicket")
+    plan_payload = dict(ticket.plan)
     if direction == "h2d":
         if not isinstance(source, SharedPinnedCpuBuffer):
             raise TypeError("direct h2d source must be a SharedPinnedCpuBuffer")
@@ -449,6 +452,5 @@ def _require_device_pointer(buffer: CudaIpcDeviceBuffer) -> None:
 
 __all__ = [
     "execute_direct_fallback_transfer",
-    "execute_direct_plan",
     "is_direct_only_worker_plan",
 ]

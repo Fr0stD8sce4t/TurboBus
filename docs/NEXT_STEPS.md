@@ -7,18 +7,18 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The current task is to continue hardening production data movement now that
-the runtime/native boundary has clear owning modules. The next pass should
-focus on the daemon-issued plan path from `TurboBusRuntimeSession` through
-direct fallback and `CudaWorkerExecutor`, making sure both paths execute only
-validated `ExecutionTicket` plans and report real backend completion evidence.
+The current task is to continue system implementation by tightening runtime
+load and topology feedback into daemon-first scheduling. Scheduler decisions
+should use daemon-owned topology/profile/load state, while applications and
+adapters continue to submit only `TransferIntent` and consume
+`TransferReceipt`.
 
 ## Exit Criteria
 
-- Direct fallback and `CudaWorkerExecutor` reject unticketed or mismatched
-  daemon plans before invoking the CUDA backend.
-- Runtime session profile bootstrap writes daemon profile data through
-  `put_profile` and does not create mock profile data.
+- Daemon scheduling has a clear load/topology input path that does not depend
+  on application-side physical route choices.
+- Runtime load updates can influence direct, relay, pooled, or delayed
+  decisions without worker/backend code choosing paths.
 - Existing runtime/session/adapters continue to submit `TransferIntent` and
   consume `TransferReceipt`.
 - No benchmark, paper-validation, experiment, or compatibility shim code is
@@ -26,8 +26,8 @@ validated `ExecutionTicket` plans and report real backend completion evidence.
 
 ## Current Code Work
 
-- Start from `turbobus/direct_fallback.py`, `turbobus/worker/cuda_executor.py`,
-  and `turbobus/runtime_session.py`.
+- Start from `turbobus/scheduler/daemon.py`, `turbobus/daemon/server.py`, and
+  daemon topology/profile/load helpers.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -35,5 +35,5 @@ validated `ExecutionTicket` plans and report real backend completion evidence.
 
 ## Next Entry
 
-Trace a daemon-issued `ExecutionTicket` from `TurboBusRuntimeSession` through
-direct fallback and worker CUDA execution.
+Trace how daemon-owned topology, cached profile, reservations, and runtime
+load feed scheduler decisions.

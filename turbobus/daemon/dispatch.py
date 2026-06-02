@@ -71,7 +71,10 @@ def handle_request(
     if request.request_type == RequestType.CLOSE_SESSION:
         if request.session_id is None:
             return DaemonResponse(ok=False, error="session_id is required")
-        return daemon.close_session(request.session_id)
+        return daemon.close_session(
+            request.session_id,
+            peer_identity=request.peer_identity,
+        )
     if request.request_type == RequestType.RESERVE_TRANSFER:
         if request.session_id is None:
             return DaemonResponse(ok=False, error="session_id is required")

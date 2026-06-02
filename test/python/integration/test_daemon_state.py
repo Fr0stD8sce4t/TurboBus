@@ -3627,6 +3627,9 @@ class DaemonStateTest(unittest.TestCase):
                     "content_match": True,
                     "verification_source": "daemon-state-test",
                     "verification_method": "fixture_compare",
+                    "ticket_id": ticket["ticket_id"],
+                    "transfer_id": transfer_id,
+                    "plan_generation": ticket["metadata"]["plan_generation"],
                 },
             ).ok
         )

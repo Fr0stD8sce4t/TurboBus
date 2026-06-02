@@ -449,9 +449,21 @@ class TurboBusDaemon:
                 payload={"cleanup": asdict(cleanup), "removed": removed},
             )
 
-    def close_session(self, session_id: str) -> DaemonResponse:
+    def close_session(
+        self,
+        session_id: str,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
         with self._lock:
             self._reap_stale_sessions_locked(time.time())
+            try:
+                if str(session_id) in self._sessions:
+                    self._validate_peer_owns_session_locked(
+                        session_id=str(session_id),
+                        peer_identity=peer_identity,
+                    )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             removed = _empty_removed_summary()
             session = self._close_session_locked(
                 session_id,

@@ -12,26 +12,26 @@ topology metadata beside runtime load metadata.
 
 ## Completed This Round
 
-- `CLOSE_SESSION` dispatch now passes the daemon-authenticated socket peer
-  identity into session close handling.
-- Direct `close_session()` now enforces the same authenticated session-owner
-  check as cleanup-based session removal.
-- Existing manual completion evidence fixtures now include ticket binding to
-  satisfy the current daemon receipt contract.
+- `RESERVE_TRANSFER` dispatch now passes the daemon-authenticated socket peer
+  identity into relay reservation handling.
+- Direct `reserve_transfer()` now enforces authenticated session ownership
+  before consuming relay quota for a session.
+- Existing direct daemon calls without an authenticated peer remain unchanged.
 
 ## Validation
 
 - `python -m py_compile turbobus\daemon\server.py turbobus\daemon\dispatch.py`
   passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   platform skips.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Peer release and stale worker cleanup ownership still need a focused pass
+- Peer stale worker cleanup ownership still needs a focused pass
   across daemon and worker socket execution.
 
 ## Next Main Target

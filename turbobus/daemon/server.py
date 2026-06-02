@@ -484,6 +484,7 @@ class TurboBusDaemon:
         chunks: int,
         bytes_: int = 0,
         direction: str = "unknown",
+        peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         chunks = int(chunks)
         relay_gpu = int(relay_gpu)
@@ -502,6 +503,13 @@ class TurboBusDaemon:
             session = self._sessions.get(session_id)
             if session is None or not session.active:
                 return DaemonResponse(ok=False, error="unknown session")
+            try:
+                self._validate_peer_owns_session_locked(
+                    session_id=session_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             if relay_gpu not in session.relay_gpus:
                 return DaemonResponse(ok=False, error="relay GPU is not assigned to this session")
             if chunks > session.max_inflight_chunks:

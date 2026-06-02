@@ -85,6 +85,7 @@ def handle_request(
             chunks=int(payload.get("chunks", 1)),
             bytes_=int(payload.get("bytes", 0)),
             direction=str(payload.get("direction", "unknown")),
+            peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.PLAN_TRANSFER:
         if request.session_id is None:

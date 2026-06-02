@@ -43,6 +43,7 @@ def execute_direct_fallback_transfer(
     result_factory: Callable[..., object],
 ):
     transfer_id = str(planned_payload["transfer_id"])
+    ticket: ExecutionTicket | None = None
     try:
         ticket = _direct_ticket_from_planned_payload(
             planned_payload,
@@ -66,11 +67,21 @@ def execute_direct_fallback_transfer(
                 f"{bytes_completed} of {ticket.total_bytes} daemon-ticketed bytes"
             )
     except Exception as exc:
+        failure_evidence = (
+            None
+            if ticket is None
+            else _completion_evidence_with_ticket_binding(
+                {"failure_source": "direct_fallback"},
+                ticket=ticket,
+            )
+        )
         daemon_client.transfer_status(
             transfer_id,
             state="failed",
             bytes_completed=0,
             error=str(exc) or exc.__class__.__name__,
+            completion_source=None if ticket is None else "backend",
+            completion_evidence=failure_evidence,
         )
         raise
     completed = daemon_client.transfer_status(
@@ -89,6 +100,11 @@ def execute_direct_fallback_transfer(
             state="failed",
             bytes_completed=0,
             error=completed.error or "backend verification failed",
+            completion_source="backend",
+            completion_evidence=_completion_evidence_with_ticket_binding(
+                {"failure_source": "direct_fallback"},
+                ticket=ticket,
+            ),
         )
     require_ok(completed, "daemon direct transfer completion update failed")
     status = daemon_client.transfer_status(transfer_id)

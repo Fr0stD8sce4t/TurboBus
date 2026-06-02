@@ -30,8 +30,11 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Production daemon startup now creates a daemon that requires authenticated
   socket peers, and the socket service fails before serving when the platform
   cannot provide supported Unix peer credentials.
-- Continue the next pass on cleanup, release, and transfer-status authority
-  after worker completion.
+- Intent transfer status updates now require worker/backend execution evidence
+  bound to the current daemon `ExecutionTicket`, including failed and canceled
+  external status reports.
+- Continue the next pass on daemon cleanup of sessions, jobs, buffers, leases,
+  tickets, and transfer state.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -39,5 +42,5 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Inspect cleanup, release, and transfer-status request handling for stale ticket
-or cross-job state changes on the daemon/worker production path.
+Inspect session/job/buffer cleanup paths for stale tickets, staging records, and
+cross-job state after cancellation or session close.

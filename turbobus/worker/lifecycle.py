@@ -89,7 +89,7 @@ class WorkerTransferStatusReporter:
             bytes_completed=status_update["bytes_completed"],
             error=status_update["error"],
             completion_source="worker",
-            completion_evidence=_completion_evidence_for_result(result),
+            completion_evidence=_status_evidence_for_result(result),
         )
         if not response.ok:
             raise WorkerStatusReportError(
@@ -98,12 +98,17 @@ class WorkerTransferStatusReporter:
         return response
 
 
-def _completion_evidence_for_result(
+def _status_evidence_for_result(
     result: WorkerTransferResult,
 ) -> dict[str, object] | None:
-    if result.state is not WorkerTransferState.COMPLETE:
-        return None
     metadata = dict(result.metadata)
+    if result.state is not WorkerTransferState.COMPLETE:
+        evidence = {
+            key: metadata[key]
+            for key in ("ticket_id", "transfer_id", "plan_generation")
+            if key in metadata
+        }
+        return evidence or None
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
@@ -747,13 +752,13 @@ def validate_worker_completion_bytes(
     if not isinstance(result, WorkerTransferResult):
         raise TypeError("result must be a WorkerTransferResult")
     if result.state != WorkerTransferState.COMPLETE:
-        return result
+        return _worker_result_with_ticket_binding(request, result)
     expected_bytes = expected_worker_completion_bytes(request)
     if result.bytes_completed == expected_bytes:
         return _worker_result_with_ticket_binding(request, result)
     reported_bytes = int(result.bytes_completed)
     safe_completed = min(reported_bytes, expected_bytes)
-    return WorkerTransferResult(
+    failed = WorkerTransferResult(
         transfer_id=result.transfer_id,
         state=WorkerTransferState.FAILED,
         error=(
@@ -768,6 +773,7 @@ def validate_worker_completion_bytes(
             "reported_bytes": reported_bytes,
         },
     )
+    return _worker_result_with_ticket_binding(request, failed)
 
 
 def _worker_result_with_ticket_binding(
@@ -883,18 +889,23 @@ def failed_worker_result_from_exception(
     staging_slot: WorkerStagingSlot,
     exc: Exception,
 ) -> WorkerTransferResult:
-    return WorkerTransferResult(
-        transfer_id=worker_request.transfer_id,
-        state=WorkerTransferState.FAILED,
-        error=str(exc) or exc.__class__.__name__,
-        bytes_completed=0,
-        metadata={
-            "relay_gpu": worker_request.authorization.relay_gpu,
-            "relay_gpus": worker_validation.authorized_relay_gpus_for_request(worker_request),
-            "src_buffer_id": worker_request.authorization.src_buffer.buffer_id,
-            "dst_buffer_id": worker_request.authorization.dst_buffer.buffer_id,
-            "staging_slot_id": staging_slot.slot_id,
-        },
+    return _worker_result_with_ticket_binding(
+        worker_request,
+        WorkerTransferResult(
+            transfer_id=worker_request.transfer_id,
+            state=WorkerTransferState.FAILED,
+            error=str(exc) or exc.__class__.__name__,
+            bytes_completed=0,
+            metadata={
+                "relay_gpu": worker_request.authorization.relay_gpu,
+                "relay_gpus": worker_validation.authorized_relay_gpus_for_request(
+                    worker_request
+                ),
+                "src_buffer_id": worker_request.authorization.src_buffer.buffer_id,
+                "dst_buffer_id": worker_request.authorization.dst_buffer.buffer_id,
+                "staging_slot_id": staging_slot.slot_id,
+            },
+        ),
     )
 
 

@@ -689,8 +689,11 @@ class TurboBusDaemon:
                 return DaemonResponse(ok=False, error=str(exc))
             normalized_completion_source = str(completion_source or "").lower()
             normalized_completion_evidence: dict[str, object] | None = None
+            requires_execution_evidence = (
+                self._intent_requires_execution_evidence_locked(updated.transfer_id)
+            )
             if updated.state is TransferStatusState.COMPLETE:
-                if self._intent_requires_execution_evidence_locked(updated.transfer_id):
+                if requires_execution_evidence:
                     if not _is_execution_completion_source(normalized_completion_source):
                         return DaemonResponse(
                             ok=False,
@@ -727,6 +730,35 @@ class TurboBusDaemon:
                         normalized_completion_evidence = {
                             "raw_completion_evidence": str(completion_evidence)
                         }
+            elif (
+                requires_execution_evidence
+                and updated.state
+                in {
+                    TransferStatusState.RUNNING,
+                    TransferStatusState.FAILED,
+                    TransferStatusState.CANCELED,
+                }
+            ):
+                if not _is_execution_completion_source(normalized_completion_source):
+                    return DaemonResponse(
+                        ok=False,
+                        error=(
+                            "intent transfer status update requires worker/backend "
+                            "execution evidence"
+                        ),
+                    )
+                try:
+                    ticket = self._current_execution_ticket_for_transfer_locked(
+                        updated.transfer_id
+                    )
+                    normalized_completion_evidence = (
+                        _normalize_status_ticket_evidence(
+                            completion_evidence,
+                            expected_ticket=ticket,
+                        )
+                    )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
             self._transfer_statuses[updated.transfer_id] = updated
             if updated.state in {
                 TransferStatusState.FAILED,
@@ -741,10 +773,13 @@ class TurboBusDaemon:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
                 )
-                if normalized_completion_evidence is not None:
-                    self._transfer_completion_evidence[updated.transfer_id] = (
-                        normalized_completion_evidence
-                    )
+            if normalized_completion_evidence is not None:
+                self._transfer_completion_sources[updated.transfer_id] = (
+                    normalized_completion_source
+                )
+                self._transfer_completion_evidence[updated.transfer_id] = (
+                    normalized_completion_evidence
+                )
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
             removed = _empty_removed_summary()
             if updated.state is TransferStatusState.COMPLETE:
@@ -4314,6 +4349,22 @@ def _normalize_completion_evidence(
     }
 
 
+def _normalize_status_ticket_evidence(
+    evidence: Mapping[str, object] | None,
+    *,
+    expected_ticket: ExecutionTicket,
+) -> dict[str, object]:
+    if not isinstance(evidence, Mapping):
+        raise ValueError(
+            "intent transfer status update requires daemon ticket evidence"
+        )
+    return _normalize_ticket_binding(
+        evidence,
+        expected_ticket=expected_ticket,
+        evidence_name="status evidence",
+    )
+
+
 def _normalize_completion_ticket_binding(
     evidence: Mapping[str, object],
     *,
@@ -4321,9 +4372,22 @@ def _normalize_completion_ticket_binding(
 ) -> dict[str, object]:
     if expected_ticket is None:
         return {}
+    return _normalize_ticket_binding(
+        evidence,
+        expected_ticket=expected_ticket,
+        evidence_name="completion evidence",
+    )
+
+
+def _normalize_ticket_binding(
+    evidence: Mapping[str, object],
+    *,
+    expected_ticket: ExecutionTicket,
+    evidence_name: str,
+) -> dict[str, object]:
     evidence_ticket_id = evidence.get("ticket_id")
     if evidence_ticket_id is None or str(evidence_ticket_id) != expected_ticket.ticket_id:
-        raise ValueError("completion evidence ticket_id does not match daemon ticket")
+        raise ValueError(f"{evidence_name} ticket_id does not match daemon ticket")
     evidence_transfer_id = evidence.get("transfer_id")
     expected_transfer_id = expected_ticket.metadata.get("transfer_id")
     if (
@@ -4333,7 +4397,7 @@ def _normalize_completion_ticket_binding(
             or str(evidence_transfer_id) != str(expected_transfer_id)
         )
     ):
-        raise ValueError("completion evidence transfer_id does not match daemon ticket")
+        raise ValueError(f"{evidence_name} transfer_id does not match daemon ticket")
     evidence_generation = evidence.get("plan_generation")
     expected_generation = expected_ticket.metadata.get("plan_generation")
     if (
@@ -4343,9 +4407,7 @@ def _normalize_completion_ticket_binding(
             or int(evidence_generation) != int(expected_generation)
         )
     ):
-        raise ValueError(
-            "completion evidence plan_generation does not match daemon ticket"
-        )
+        raise ValueError(f"{evidence_name} plan_generation does not match daemon ticket")
     return {
         "ticket_id": expected_ticket.ticket_id,
         **(

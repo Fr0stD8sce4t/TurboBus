@@ -17,29 +17,27 @@ Daemon and worker socket servers now create owner-only Unix socket files on
 POSIX platforms and refuse to unlink non-socket paths during startup.
 Production daemon instances now require authenticated socket peers and refuse
 to serve on platforms where the current Unix credential mechanism is
-unavailable.
+unavailable. Intent transfer status updates from external request paths now
+require worker/backend execution evidence bound to the current daemon-issued
+`ExecutionTicket`, including failed and canceled reports.
 
 ## Completed This Round
 
-- Added a production peer-authentication policy to `TurboBusDaemon`.
-- `create_production_daemon()` now enables authenticated peer requirements for
-  production daemon instances.
-- Daemon socket startup now fails before serving when Unix sockets or supported
-  peer credentials are unavailable.
-- Daemon request dispatch now rejects unauthenticated peers before ownership,
-  lease, ticket, or transfer-state handlers run.
+- Required current-ticket evidence for external intent transfer status updates
+  beyond read-only queries.
+- Kept complete reports on verified byte evidence and added ticket-bound
+  evidence for failed/canceled worker or backend reports.
+- Worker lifecycle failure results and direct fallback failure reports now carry
+  daemon ticket binding when a ticket exists.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\startup.py turbobus\daemon\__main__.py` passed.
+- `python -m py_compile turbobus\daemon\server.py turbobus\worker\lifecycle.py turbobus\direct_fallback.py` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer`
+  passed with one expected skip.
 - `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   expected platform skips.
-- `python -m unittest test.python.unit.test_topology_provider.TopologyProviderTest.test_production_startup_selects_eligible_relays_from_provider_inventory`
-  passed.
-- `python -m unittest test.python.unit.test_topology_provider` still fails in
-  the existing CLI parser test because that test omits the already-required
-  `--socket-path` argument; this was not changed in this round.
 - `git diff --check` passed.
 
 ## Remaining Risk
@@ -48,6 +46,8 @@ unavailable.
   environment.
 - The current production peer credential implementation is Linux `SO_PEERCRED`
   only; unsupported platforms now fail closed instead of weakening isolation.
+- Session/job/buffer cleanup still needs a focused pass to confirm ticket and
+  staging records cannot survive into cross-job state.
 
 ## Next Main Target
 

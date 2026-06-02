@@ -13,30 +13,33 @@ cleanup now requires daemon-issued ticket context before it can touch daemon
 reservation or session state. Worker socket/service envelopes can no longer
 request session-wide cleanup. Reservation release for intent transfers now
 rechecks stored completion evidence against the current daemon-issued ticket.
+Daemon and worker socket servers now create owner-only Unix socket files on
+POSIX platforms and refuse to unlink non-socket paths during startup.
 
 ## Completed This Round
 
-- `release_transfer()` now rejects reservation release for evidence-required
-  intent transfers unless stored completion evidence is present and still
-  matches the current daemon ticket.
-- Idempotent complete status updates for evidence-required transfers also
-  recheck the stored evidence before returning success.
+- Added shared socket security helpers for daemon and worker startup.
+- Daemon `serve_forever()` and `reserve_socket()` now unlink only stale socket
+  paths and set socket permissions to owner-only on POSIX platforms.
+- Worker socket transport now uses the same stale-socket and permission
+  handling.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\dispatch.py turbobus\daemon\client.py` passed.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one expected platform skip.
+- `python -m py_compile turbobus\socket_security.py turbobus\daemon\server.py turbobus\worker\transport.py turbobus\worker\process.py turbobus\daemon\__main__.py` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   expected platform skips.
+- `python -m unittest test.python.integration.test_worker_transport` passed
+  with one expected platform skip.
+- `python -m unittest test.python.integration.test_worker_process` passed with
+  one expected platform skip.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Daemon and worker production startup paths still need a focused pass for
-  socket permissions and peer identity assumptions.
+- Production daemon behavior on platforms without authenticated Unix peer
+  credentials still needs a focused pass.
 
 ## Next Main Target
 

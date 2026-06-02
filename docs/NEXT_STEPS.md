@@ -27,9 +27,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 - Continue from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
   `turbobus/worker/lifecycle.py`, and `turbobus/worker/validation.py`.
-- Focus the next pass on daemon/worker production startup and socket ownership,
-  especially how worker and daemon sockets are created, exposed, and bound to
-  the intended local privileged service boundary.
+- Focus the next pass on production peer identity assumptions, especially how
+  daemon startup should behave on platforms where authenticated Unix peer
+  credentials are unavailable.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -37,5 +37,5 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Inspect daemon and worker production startup paths, socket permissions, and
-peer identity assumptions.
+Inspect daemon startup and request handling when socket peer credentials are
+unsupported.

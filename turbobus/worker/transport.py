@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from threading import Event
 
+from ..socket_security import secure_unix_socket, unlink_stale_socket
 from .endpoint import WorkerServiceEndpoint
 
 
@@ -34,11 +35,11 @@ class WorkerServiceUnixSocketTransport:
             max_requests = int(max_requests)
             if max_requests <= 0:
                 raise ValueError("max_requests must be positive")
-        if os.path.exists(self.socket_path):
-            os.unlink(self.socket_path)
+        unlink_stale_socket(self.socket_path)
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(self.socket_path)
+        secure_unix_socket(self.socket_path)
         server.listen()
         server.settimeout(0.1)
 

@@ -32,6 +32,7 @@ from .protocol import (
     WorkerTransferAuthorizationRequest,
 )
 from ..schema import ExecutionTicket, TransferIntent, TransferReceipt
+from ..socket_security import secure_unix_socket, unlink_stale_socket
 from ..topology import TopologyProvider
 from ..scheduler import (
     DaemonScheduler,
@@ -3755,11 +3756,11 @@ class TurboBusDaemon:
         return sorted({int(gpu) for gpu in relay_gpus})
 
     def serve_forever(self, socket_path: str) -> None:
-        if os.path.exists(socket_path):
-            os.unlink(socket_path)
+        unlink_stale_socket(socket_path)
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(socket_path)
+        secure_unix_socket(socket_path)
         server.listen()
 
         try:
@@ -3805,8 +3806,10 @@ def socket_path_for_user(base_dir: str = "/tmp") -> str:
 
 
 def reserve_socket(path: str) -> socket.socket:
+    unlink_stale_socket(path)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(path)
+    secure_unix_socket(path)
     sock.listen()
     return sock
 

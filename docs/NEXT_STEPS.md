@@ -33,8 +33,11 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Intent transfer status updates now require worker/backend execution evidence
   bound to the current daemon `ExecutionTicket`, including failed and canceled
   external status reports.
-- Continue the next pass on daemon cleanup of sessions, jobs, buffers, leases,
-  tickets, and transfer state.
+- Session, job, buffer, lease, and transfer cleanup now release staging records
+  and drop daemon execution tickets when transfers end in failed or canceled
+  states.
+- Continue the next pass on worker service and production process paths for
+  lifecycle bypasses.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -42,5 +45,6 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Inspect session/job/buffer cleanup paths for stale tickets, staging records, and
-cross-job state after cancellation or session close.
+Inspect worker service, worker process, and daemon socket process paths for any
+remaining way to bypass the standard authorization, execution, status, cleanup
+lifecycle.

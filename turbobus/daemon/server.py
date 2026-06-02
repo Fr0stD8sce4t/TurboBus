@@ -769,6 +769,7 @@ class TurboBusDaemon:
                     updated.state,
                     reason=updated.error,
                 )
+                self._drop_execution_ticket_for_transfer_locked(updated.transfer_id)
             if updated.state is TransferStatusState.COMPLETE:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
@@ -3250,6 +3251,8 @@ class TurboBusDaemon:
             final_state,
             reason=error,
         )
+        if final_state is not TransferStatusState.COMPLETE:
+            self._drop_execution_ticket_for_transfer_locked(transfer_id)
         self._refresh_transfer_queue_record_locked(transfer_id)
 
     def _mark_transfer_terminal_locked(
@@ -3283,8 +3286,15 @@ class TurboBusDaemon:
             final_state,
             reason=error,
         )
+        if final_state is not TransferStatusState.COMPLETE:
+            self._drop_execution_ticket_for_transfer_locked(terminal.transfer_id)
         self._refresh_transfer_queue_record_locked(terminal.transfer_id)
         return terminal
+
+    def _drop_execution_ticket_for_transfer_locked(self, transfer_id: str) -> None:
+        ticket_id = self._transfer_tickets.pop(str(transfer_id), None)
+        if ticket_id is not None:
+            self._execution_tickets.pop(ticket_id, None)
 
     def _mark_transfer_admission_terminal_locked(
         self,

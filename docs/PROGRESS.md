@@ -19,23 +19,25 @@ Production daemon instances now require authenticated socket peers and refuse
 to serve on platforms where the current Unix credential mechanism is
 unavailable. Intent transfer status updates from external request paths now
 require worker/backend execution evidence bound to the current daemon-issued
-`ExecutionTicket`, including failed and canceled reports.
+`ExecutionTicket`, including failed and canceled reports. Failed and canceled
+terminal transfers now drop their daemon execution ticket mappings during
+cleanup or external status reporting.
 
 ## Completed This Round
 
-- Required current-ticket evidence for external intent transfer status updates
-  beyond read-only queries.
-- Kept complete reports on verified byte evidence and added ticket-bound
-  evidence for failed/canceled worker or backend reports.
-- Worker lifecycle failure results and direct fallback failure reports now carry
-  daemon ticket binding when a ticket exists.
+- Centralized removal of daemon execution ticket mappings for non-complete
+  terminal transfers.
+- Session, job, buffer, reservation, and transfer cleanup paths now cancel
+  transfers without leaving stale current-ticket mappings behind.
+- Complete transfers still retain their ticket mapping for receipt and release
+  evidence checks.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\worker\lifecycle.py turbobus\direct_fallback.py` passed.
+- `python -m py_compile turbobus\daemon\server.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_client_worker_transfer`
   passed with one expected skip.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   expected platform skips.
 - `git diff --check` passed.
@@ -46,8 +48,8 @@ require worker/backend execution evidence bound to the current daemon-issued
   environment.
 - The current production peer credential implementation is Linux `SO_PEERCRED`
   only; unsupported platforms now fail closed instead of weakening isolation.
-- Session/job/buffer cleanup still needs a focused pass to confirm ticket and
-  staging records cannot survive into cross-job state.
+- Worker service and production process paths still need a focused pass for
+  lifecycle bypasses.
 
 ## Next Main Target
 

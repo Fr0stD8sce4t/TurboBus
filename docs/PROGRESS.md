@@ -12,27 +12,27 @@ topology metadata beside runtime load metadata.
 
 ## Completed This Round
 
-- `RESERVE_TRANSFER` dispatch now passes the daemon-authenticated socket peer
-  identity into relay reservation handling.
-- Direct `reserve_transfer()` now enforces authenticated session ownership
-  before consuming relay quota for a session.
-- Existing direct daemon calls without an authenticated peer remain unchanged.
+- Reservation cleanup now validates authenticated peer ownership against stale
+  staging records when the lease/reservation record is already gone.
+- Orphan staging records are now actually removed by reservation cleanup rather
+  than only being counted in the removed summary.
+- Stale staging cleanup records audit and system cleanup events with the
+  original transfer, session, job, buffer, and ticket context when available.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\dispatch.py`
-  passed.
+- `python -m py_compile turbobus\daemon\server.py` passed.
 - `python -m unittest test.python.integration.test_daemon_state` passed.
-- `python -m unittest test.python.integration.test_daemon_socket` passed with
-  platform skips.
 - `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer`
+  passed with one expected platform skip.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Peer stale worker cleanup ownership still needs a focused pass
-  across daemon and worker socket execution.
+- Worker cleanup coordination after authorization and status-report failures
+  still needs a focused pass across daemon and worker socket execution.
 
 ## Next Main Target
 

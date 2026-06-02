@@ -427,8 +427,18 @@ class TurboBusDaemon:
                         peer_identity=peer_identity,
                     )
                 except ValueError as exc:
-                    if not cleanup.force or str(exc) != "unknown lease":
+                    if str(exc) != "unknown lease":
                         return DaemonResponse(ok=False, error=str(exc))
+                    staging_record = self._staging_records.get(cleanup.target_id)
+                    if staging_record is None or not cleanup.force:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    try:
+                        self._validate_peer_owns_staging_record_locked(
+                            staging_record=staging_record,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as staging_exc:
+                        return DaemonResponse(ok=False, error=str(staging_exc))
                 released = self._release_reservation_and_count_locked(
                     cleanup.target_id,
                     final_state=TransferStatusState.CANCELED,
@@ -1521,6 +1531,30 @@ class TurboBusDaemon:
         reservation_key = str(reservation_id)
         reservation = self._reservations.get(reservation_key)
         if reservation is None:
+            staging_record = self._staging_records.pop(reservation_key, None)
+            if staging_record is not None and cleanup_reason is not None:
+                self._append_audit_record_locked(
+                    event_type="cleanup",
+                    staging_record=staging_record,
+                    state=final_state,
+                    reason=cleanup_reason,
+                    failure_reason=(
+                        cleanup_reason
+                        if final_state
+                        in {TransferStatusState.FAILED, TransferStatusState.CANCELED}
+                        else None
+                    ),
+                    cleanup_kind="reservation",
+                    cleanup_target_id=reservation_key,
+                )
+                self._system_cleanup_events.append(
+                    CleanupRequest(
+                        target_kind="reservation",
+                        target_id=reservation_id,
+                        reason=cleanup_reason,
+                        force=True,
+                    )
+                )
             return None
         transfer_id = self._reservation_transfers.get(reservation_key)
         lease = self._lease_tokens.get(reservation_key)
@@ -3042,6 +3076,26 @@ class TurboBusDaemon:
         for buffer_id in lease.buffer_ids:
             self._validate_peer_owns_buffer_locked(
                 buffer_id=buffer_id,
+                peer_identity=peer_identity,
+            )
+
+    def _validate_peer_owns_staging_record_locked(
+        self,
+        *,
+        staging_record: Mapping[str, object],
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if peer_identity is None or not peer_identity.authenticated:
+            return
+        job_id = staging_record.get("job_id")
+        if job_id is not None:
+            self._validate_peer_owns_job_locked(
+                job_id=str(job_id),
+                peer_identity=peer_identity,
+            )
+        for buffer_id in staging_record.get("buffer_ids", ()) or ():
+            self._validate_peer_owns_buffer_locked(
+                buffer_id=str(buffer_id),
                 peer_identity=peer_identity,
             )
 

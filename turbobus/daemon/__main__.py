@@ -53,7 +53,10 @@ def main() -> None:
         daemon = create_production_daemon(startup_config_from_args(args))
     except DaemonStartupError as exc:
         parser.exit(2, f"turbobus daemon startup failed: {exc}\n")
-    daemon.serve_forever(args.socket_path)
+    try:
+        daemon.serve_forever(args.socket_path)
+    except RuntimeError as exc:
+        parser.exit(2, f"turbobus daemon startup failed: {exc}\n")
 
 
 if __name__ == "__main__":

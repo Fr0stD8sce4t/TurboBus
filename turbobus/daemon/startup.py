@@ -19,6 +19,7 @@ class DaemonStartupConfig:
     min_relay_count: int = 1
     require_fabric: bool = True
     require_pcie: bool = True
+    require_peer_credentials: bool = True
     max_sessions_per_relay: int = 1
     max_inflight_chunks_per_relay: int = 8
     session_timeout_seconds: float = 0.0
@@ -62,6 +63,7 @@ def create_production_daemon(
         session_timeout_seconds=config.session_timeout_seconds,
         profile_max_age_seconds=config.profile_max_age_seconds,
         topology_provider=provider,
+        require_authenticated_peers=config.require_peer_credentials,
     )
 
 

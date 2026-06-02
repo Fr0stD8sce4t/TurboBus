@@ -15,31 +15,39 @@ request session-wide cleanup. Reservation release for intent transfers now
 rechecks stored completion evidence against the current daemon-issued ticket.
 Daemon and worker socket servers now create owner-only Unix socket files on
 POSIX platforms and refuse to unlink non-socket paths during startup.
+Production daemon instances now require authenticated socket peers and refuse
+to serve on platforms where the current Unix credential mechanism is
+unavailable.
 
 ## Completed This Round
 
-- Added shared socket security helpers for daemon and worker startup.
-- Daemon `serve_forever()` and `reserve_socket()` now unlink only stale socket
-  paths and set socket permissions to owner-only on POSIX platforms.
-- Worker socket transport now uses the same stale-socket and permission
-  handling.
+- Added a production peer-authentication policy to `TurboBusDaemon`.
+- `create_production_daemon()` now enables authenticated peer requirements for
+  production daemon instances.
+- Daemon socket startup now fails before serving when Unix sockets or supported
+  peer credentials are unavailable.
+- Daemon request dispatch now rejects unauthenticated peers before ownership,
+  lease, ticket, or transfer-state handlers run.
 
 ## Validation
 
-- `python -m py_compile turbobus\socket_security.py turbobus\daemon\server.py turbobus\worker\transport.py turbobus\worker\process.py turbobus\daemon\__main__.py` passed.
+- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\startup.py turbobus\daemon\__main__.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
   expected platform skips.
-- `python -m unittest test.python.integration.test_worker_transport` passed
-  with one expected platform skip.
-- `python -m unittest test.python.integration.test_worker_process` passed with
-  one expected platform skip.
+- `python -m unittest test.python.unit.test_topology_provider.TopologyProviderTest.test_production_startup_selects_eligible_relays_from_provider_inventory`
+  passed.
+- `python -m unittest test.python.unit.test_topology_provider` still fails in
+  the existing CLI parser test because that test omits the already-required
+  `--socket-path` argument; this was not changed in this round.
+- `git diff --check` passed.
 
 ## Remaining Risk
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Production daemon behavior on platforms without authenticated Unix peer
-  credentials still needs a focused pass.
+- The current production peer credential implementation is Linux `SO_PEERCRED`
+  only; unsupported platforms now fail closed instead of weakening isolation.
 
 ## Next Main Target
 

@@ -73,6 +73,7 @@ class TurboBusDaemon:
         session_timeout_seconds: float = 0.0,
         profile_max_age_seconds: float = 0.0,
         topology_provider: TopologyProvider | None = None,
+        require_authenticated_peers: bool = False,
     ) -> None:
         relays = tuple(self._normalize_relays(relay_gpus))
         self._lock = threading.Lock()
@@ -112,6 +113,7 @@ class TurboBusDaemon:
         self._topology_provider = topology_provider
         self._session_timeout_seconds = max(0.0, float(session_timeout_seconds))
         self._profile_max_age_seconds = max(0.0, float(profile_max_age_seconds))
+        self._require_authenticated_peers = bool(require_authenticated_peers)
         self._relay_quotas = {
             int(gpu): RelayQuota(
                 relay_gpu=int(gpu),
@@ -3479,6 +3481,7 @@ class TurboBusDaemon:
                     "profile_cache": {
                         key: dict(value) for key, value in self._profile_cache.items()
                     },
+                    "require_authenticated_peers": self._require_authenticated_peers,
                 },
             )
 
@@ -3487,10 +3490,18 @@ class TurboBusDaemon:
         request: DaemonRequest,
         connection_id: str | None = None,
     ) -> DaemonResponse:
+        if self._requires_authenticated_peer_for_request(request):
+            return _authenticated_peer_required_response(request.peer_identity)
         try:
             return self._handle_request(request, connection_id=connection_id)
         except (KeyError, TypeError, ValueError) as exc:
             return DaemonResponse(ok=False, error=f"invalid request: {exc}")
+
+    def _requires_authenticated_peer_for_request(self, request: DaemonRequest) -> bool:
+        if not self._require_authenticated_peers:
+            return False
+        peer_identity = request.peer_identity
+        return peer_identity is None or not peer_identity.authenticated
 
     def _handle_request(
         self,
@@ -3756,6 +3767,9 @@ class TurboBusDaemon:
         return sorted({int(gpu) for gpu in relay_gpus})
 
     def serve_forever(self, socket_path: str) -> None:
+        _validate_unix_socket_support(
+            require_authenticated_peers=self._require_authenticated_peers
+        )
         unlink_stale_socket(socket_path)
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -3806,6 +3820,7 @@ def socket_path_for_user(base_dir: str = "/tmp") -> str:
 
 
 def reserve_socket(path: str) -> socket.socket:
+    _validate_unix_socket_support(require_authenticated_peers=False)
     unlink_stale_socket(path)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(path)
@@ -3818,6 +3833,28 @@ def _topology_unavailable_response() -> DaemonResponse:
     return DaemonResponse(
         ok=False,
         error=_TOPOLOGY_UNAVAILABLE_ERROR,
+    )
+
+
+def _validate_unix_socket_support(*, require_authenticated_peers: bool) -> None:
+    if not hasattr(socket, "AF_UNIX"):
+        raise RuntimeError("Unix domain sockets are unavailable on this platform")
+    if require_authenticated_peers and not hasattr(socket, "SO_PEERCRED"):
+        raise RuntimeError(
+            "authenticated Unix peer credentials are required but SO_PEERCRED "
+            "is unavailable on this platform"
+        )
+
+
+def _authenticated_peer_required_response(
+    peer_identity: PeerIdentity | None,
+) -> DaemonResponse:
+    reason = "peer identity is unavailable"
+    if peer_identity is not None:
+        reason = peer_identity.unsupported_reason or "peer identity is unauthenticated"
+    return DaemonResponse(
+        ok=False,
+        error=f"authenticated peer credentials are required: {reason}",
     )
 
 

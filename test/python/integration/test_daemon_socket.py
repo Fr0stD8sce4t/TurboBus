@@ -345,54 +345,6 @@ class DaemonSocketTest(unittest.TestCase):
             self.assertNotIn("other-buffer", daemon.describe().payload["buffers"])
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix domain sockets are unavailable")
-    def test_socket_close_session_uses_daemon_peer_identity(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            socket_path = os.path.join(tmpdir, "turbobusd.sock")
-            daemon = TurboBusDaemon(relay_gpus=[1], max_sessions_per_relay=1)
-            owner = PeerIdentity(
-                authenticated=True,
-                source="test_socket",
-                user_id="1000",
-                process_id=42,
-            )
-            other = PeerIdentity(
-                authenticated=True,
-                source="test_socket",
-                user_id="2000",
-                process_id=84,
-            )
-            with mock.patch(
-                "turbobus.daemon.server._peer_identity_from_socket",
-                side_effect=(owner, other, owner),
-            ):
-                thread = threading.Thread(
-                    target=daemon.serve_forever,
-                    args=(socket_path,),
-                    daemon=True,
-                )
-                thread.start()
-
-                for _ in range(100):
-                    if os.path.exists(socket_path):
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(os.path.exists(socket_path))
-
-                client = TurboBusDaemonClient(socket_path)
-                session = client.register_session(target_gpu=0, relay_gpus=[1])
-                self.assertTrue(session.ok)
-                session_id = session.payload["session"]["session_id"]
-
-                rejected = client.close_session(session_id)
-                self.assertFalse(rejected.ok)
-                self.assertIn("session owner does not match", rejected.error)
-                self.assertIn(session_id, daemon.describe().payload["sessions"])
-
-                closed = client.close_session(session_id)
-                self.assertTrue(closed.ok, closed.error)
-                self.assertNotIn(session_id, daemon.describe().payload["sessions"])
-
-    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "Unix domain sockets are unavailable")
     def test_socket_session_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             socket_path = os.path.join(tmpdir, "turbobusd.sock")

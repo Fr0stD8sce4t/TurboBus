@@ -11,20 +11,21 @@ the scheduling snapshot id and relay eligibility, and scheduler decisions carry
 topology metadata beside runtime load metadata. Worker authorization-failure
 cleanup now requires daemon-issued ticket context before it can touch daemon
 reservation or session state. Worker socket/service envelopes can no longer
-request session-wide cleanup.
+request session-wide cleanup. Reservation release for intent transfers now
+rechecks stored completion evidence against the current daemon-issued ticket.
 
 ## Completed This Round
 
-- Worker service lifecycle now rejects any socket/service cleanup target other
-  than `reservation`.
-- Worker service request envelopes no longer allow `session` cleanup targets.
-- Existing worker envelope checks now assert that socket requests cannot widen
-  cleanup scope beyond a reservation.
+- `release_transfer()` now rejects reservation release for evidence-required
+  intent transfers unless stored completion evidence is present and still
+  matches the current daemon ticket.
+- Idempotent complete status updates for evidence-required transfers also
+  recheck the stored evidence before returning success.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\models.py turbobus\worker\lifecycle.py turbobus\worker\codec.py turbobus\worker\endpoint.py turbobus\worker\process.py` passed.
-- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\dispatch.py turbobus\daemon\client.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `python -m unittest test.python.integration.test_client_worker_transfer`
   passed with one expected platform skip.
 - `python -m unittest test.python.integration.test_daemon_socket` passed with
@@ -34,8 +35,8 @@ request session-wide cleanup.
 
 - Real CUDA/native multi-GPU execution has not been validated in this local
   environment.
-- Daemon transfer status, cleanup, and release handling after worker socket
-  completion still needs a focused pass for ticket-evidence binding.
+- Daemon and worker production startup paths still need a focused pass for
+  socket permissions and peer identity assumptions.
 
 ## Next Main Target
 

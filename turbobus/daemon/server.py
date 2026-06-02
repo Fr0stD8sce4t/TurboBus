@@ -577,6 +577,11 @@ class TurboBusDaemon:
                     return DaemonResponse(ok=False, error="unknown transfer")
                 if status.state is not TransferStatusState.COMPLETE:
                     return DaemonResponse(ok=False, error="transfer is not complete")
+                evidence_error = (
+                    self._completion_release_blocked_reason_locked(transfer_id)
+                )
+                if evidence_error is not None:
+                    return DaemonResponse(ok=False, error=evidence_error)
             reservation = self._release_reservation_locked(reservation_id)
             if reservation is None:
                 return DaemonResponse(ok=False, error="unknown reservation")
@@ -617,6 +622,14 @@ class TurboBusDaemon:
                     and _status_bytes_match(status, bytes_completed)
                     and (error is None or error == status.error)
                 ):
+                    if status.state is TransferStatusState.COMPLETE:
+                        evidence_error = (
+                            self._completion_release_blocked_reason_locked(
+                                status.transfer_id
+                            )
+                        )
+                        if evidence_error is not None:
+                            return DaemonResponse(ok=False, error=evidence_error)
                     return DaemonResponse(ok=True, payload={"status": asdict(status)})
                 return DaemonResponse(
                     ok=False,
@@ -2023,6 +2036,34 @@ class TurboBusDaemon:
                 "intent transfer completion requires daemon-issued execution ticket"
             )
         return ticket
+
+    def _completion_release_blocked_reason_locked(self, transfer_id: str) -> str | None:
+        normalized_transfer_id = str(transfer_id)
+        if not self._intent_requires_execution_evidence_locked(normalized_transfer_id):
+            return None
+        status = self._transfer_statuses.get(normalized_transfer_id)
+        if status is None:
+            return "unknown transfer"
+        evidence = self._transfer_completion_evidence.get(normalized_transfer_id)
+        if not isinstance(evidence, Mapping):
+            return "intent transfer release requires verified completion evidence"
+        completion_source = self._transfer_completion_sources.get(
+            normalized_transfer_id,
+            "worker",
+        )
+        try:
+            ticket = self._current_execution_ticket_for_transfer_locked(
+                normalized_transfer_id
+            )
+            _normalize_completion_evidence(
+                evidence,
+                expected_bytes=status.bytes_total,
+                completion_source=str(completion_source or "worker"),
+                expected_ticket=ticket,
+            )
+        except ValueError as exc:
+            return str(exc)
+        return None
 
     def _commit_scheduler_leases_locked(
         self,

@@ -2,42 +2,50 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .. import runtime_engine
+from .. import native_plan, native_runtime, tensor_validation
 from ..schema import TransferMode
 
 
 class CudaNativeBackend:
     """Backend facade for the current CUDA native extension."""
 
-    def __init__(self, runtime_engine_module=runtime_engine) -> None:
-        self._runtime_engine = runtime_engine_module
+    def __init__(
+        self,
+        *,
+        native_runtime_module=native_runtime,
+        native_plan_module=native_plan,
+        tensor_validation_module=tensor_validation,
+    ) -> None:
+        self._native_runtime = native_runtime_module
+        self._native_plan = native_plan_module
+        self._tensor_validation = tensor_validation_module
 
     def bind_runtime(self, native_module: Any, torch_module: Any) -> None:
-        self._runtime_engine._turbobus = native_module
-        self._runtime_engine.torch = torch_module
+        self._native_runtime.bind_native_runtime(native_module)
+        self._tensor_validation.bind_torch(torch_module)
 
     def require_available(self) -> None:
-        self._runtime_engine._require_extension()
+        self._native_runtime.require_extension()
 
     def require_torch(self) -> None:
-        self._runtime_engine._require_torch()
+        self._tensor_validation.require_torch()
 
     def set_device(self, device_index: int) -> None:
         device = int(device_index)
         if device < 0:
             raise ValueError("device_index must be non-negative")
         self.require_available()
-        setter = getattr(self._runtime_engine._turbobus, "set_device", None)
+        setter = getattr(self._native_runtime.native_module(), "set_device", None)
         if not callable(setter):
             raise RuntimeError("native runtime does not support CUDA device selection")
         setter(device)
 
     def transfer_mode_value(self, mode: TransferMode | str) -> Any:
-        return self._runtime_engine._runtime_transfer_mode_value(mode)
+        return self._native_runtime.runtime_transfer_mode_value(mode)
 
     def create_runtime(self, options: Any) -> Any:
         self.require_available()
-        return self._runtime_engine._turbobus.Runtime(options.to_native())
+        return self._native_runtime.native_module().Runtime(options.to_native())
 
     def initialize_runtime(
         self,
@@ -77,10 +85,10 @@ class CudaNativeBackend:
         source_bytes: int,
         destination_bytes: int,
     ) -> list:
-        return self._runtime_engine._native_ranges(ranges, source_bytes, destination_bytes)
+        return self._native_plan.native_ranges(ranges, source_bytes, destination_bytes)
 
     def make_transfer_plan(self, plan: Any) -> Any:
-        return self._runtime_engine._native_transfer_plan(plan)
+        return self._native_plan.native_transfer_plan(plan)
 
     def register_host_memory(self, host_ptr: int, bytes_: int) -> None:
         ptr = int(host_ptr)
@@ -90,7 +98,11 @@ class CudaNativeBackend:
         if size_bytes <= 0:
             raise ValueError("bytes must be positive")
         self.require_available()
-        registrar = getattr(self._runtime_engine._turbobus, "register_host_memory", None)
+        registrar = getattr(
+            self._native_runtime.native_module(),
+            "register_host_memory",
+            None,
+        )
         if not callable(registrar):
             raise RuntimeError("native runtime does not support host memory registration")
         registrar(ptr, size_bytes)
@@ -101,7 +113,7 @@ class CudaNativeBackend:
             raise ValueError("host_ptr must be positive")
         self.require_available()
         unregister = getattr(
-            self._runtime_engine._turbobus,
+            self._native_runtime.native_module(),
             "unregister_host_memory",
             None,
         )
@@ -115,7 +127,7 @@ class CudaNativeBackend:
             raise ValueError("device_ptr must be positive")
         self.require_available()
         exporter = getattr(
-            self._runtime_engine._turbobus,
+            self._native_runtime.native_module(),
             "export_device_ipc_handle",
             None,
         )
@@ -127,7 +139,7 @@ class CudaNativeBackend:
         handle = _coerce_cuda_ipc_handle(cuda_ipc_handle)
         self.require_available()
         opener = getattr(
-            self._runtime_engine._turbobus,
+            self._native_runtime.native_module(),
             "open_device_ipc_handle",
             None,
         )
@@ -144,7 +156,7 @@ class CudaNativeBackend:
             raise ValueError("device_ptr must be positive")
         self.require_available()
         closer = getattr(
-            self._runtime_engine._turbobus,
+            self._native_runtime.native_module(),
             "close_device_ipc_handle",
             None,
         )
@@ -178,7 +190,7 @@ class CudaNativeBackend:
             destination_bytes=device_size if normalized_direction == "h2d" else host_size,
         )
         self.require_available()
-        verifier = getattr(self._runtime_engine._turbobus, "verify_transfer", None)
+        verifier = getattr(self._native_runtime.native_module(), "verify_transfer", None)
         if not callable(verifier):
             raise RuntimeError("native runtime does not support transfer verification")
         return dict(

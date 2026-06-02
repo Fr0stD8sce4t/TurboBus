@@ -46,31 +46,56 @@ class FakeHostRegisterNativeModule:
         self.close_device_ipc_handle_calls.append(device_ptr)
 
 
-class FakeRuntimeEngine:
+class FakeNativeRuntimeModule:
     def __init__(self) -> None:
         self._turbobus = None
-        self.torch = None
         self.require_extension_calls = 0
-        self.require_torch_calls = 0
+
+    def bind_native_runtime(self, native_module) -> None:
+        self._turbobus = native_module
+
+    def require_extension(self) -> None:
+        self.require_extension_calls += 1
+
+    def native_module(self):
+        return self._turbobus
+
+    def runtime_transfer_mode_value(self, mode):
+        return f"native:{TransferMode(mode).value}"
+
+
+class FakeNativePlanModule:
+    def __init__(self) -> None:
         self.range_calls = []
         self.plan_calls = []
 
-    def _require_extension(self) -> None:
-        self.require_extension_calls += 1
-
-    def _require_torch(self) -> None:
-        self.require_torch_calls += 1
-
-    def _runtime_transfer_mode_value(self, mode):
-        return f"native:{TransferMode(mode).value}"
-
-    def _native_ranges(self, ranges, source_bytes, destination_bytes):
+    def native_ranges(self, ranges, source_bytes, destination_bytes):
         self.range_calls.append((list(ranges), source_bytes, destination_bytes))
         return ["native-range"]
 
-    def _native_transfer_plan(self, plan):
+    def native_transfer_plan(self, plan):
         self.plan_calls.append(plan)
         return "native-plan"
+
+
+class FakeTensorValidationModule:
+    def __init__(self) -> None:
+        self.torch = None
+        self.require_torch_calls = 0
+
+    def bind_torch(self, torch_module) -> None:
+        self.torch = torch_module
+
+    def require_torch(self) -> None:
+        self.require_torch_calls += 1
+
+
+def make_backend(native_runtime_module=None, native_plan_module=None, tensor_validation_module=None):
+    return CudaNativeBackend(
+        native_runtime_module=native_runtime_module or FakeNativeRuntimeModule(),
+        native_plan_module=native_plan_module or FakeNativePlanModule(),
+        tensor_validation_module=tensor_validation_module or FakeTensorValidationModule(),
+    )
 
 
 class FakeExactPlanRuntime:
@@ -128,19 +153,27 @@ class FakeOptions:
 
 
 class CudaNativeBackendTest(unittest.TestCase):
-    def test_backend_binds_runtime_engine_modules(self) -> None:
-        engine = FakeRuntimeEngine()
-        backend = CudaNativeBackend(engine)
+    def test_backend_binds_native_boundary_modules(self) -> None:
+        native_runtime = FakeNativeRuntimeModule()
+        tensor_validation = FakeTensorValidationModule()
+        backend = make_backend(
+            native_runtime_module=native_runtime,
+            tensor_validation_module=tensor_validation,
+        )
         torch_module = object()
 
         backend.bind_runtime(FakeNativeModule, torch_module)
 
-        self.assertIs(engine._turbobus, FakeNativeModule)
-        self.assertIs(engine.torch, torch_module)
+        self.assertIs(native_runtime._turbobus, FakeNativeModule)
+        self.assertIs(tensor_validation.torch, torch_module)
 
     def test_backend_delegates_native_helpers(self) -> None:
-        engine = FakeRuntimeEngine()
-        backend = CudaNativeBackend(engine)
+        native_plan = FakeNativePlanModule()
+        tensor_validation = FakeTensorValidationModule()
+        backend = make_backend(
+            native_plan_module=native_plan,
+            tensor_validation_module=tensor_validation,
+        )
 
         self.assertEqual(backend.transfer_mode_value(TransferMode.POOL), "native:pool")
         self.assertEqual(
@@ -149,13 +182,13 @@ class CudaNativeBackendTest(unittest.TestCase):
         )
         backend.require_torch()
 
-        self.assertEqual(engine.range_calls, [([(0, 0, 16)], 32, 32)])
-        self.assertEqual(engine.require_torch_calls, 1)
+        self.assertEqual(native_plan.range_calls, [([(0, 0, 16)], 32, 32)])
+        self.assertEqual(tensor_validation.require_torch_calls, 1)
 
     def test_backend_creates_native_runtime_from_options(self) -> None:
-        engine = FakeRuntimeEngine()
-        engine._turbobus = FakeNativeModule
-        backend = CudaNativeBackend(engine)
+        native_runtime = FakeNativeRuntimeModule()
+        native_runtime._turbobus = FakeNativeModule
+        backend = make_backend(native_runtime_module=native_runtime)
         options = FakeOptions()
 
         runtime = backend.create_runtime(options)
@@ -163,11 +196,11 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertIsInstance(runtime, FakeNativeRuntime)
         self.assertEqual(runtime.options, "native-options")
         self.assertEqual(options.to_native_calls, 1)
-        self.assertEqual(engine.require_extension_calls, 1)
+        self.assertEqual(native_runtime.require_extension_calls, 1)
 
     def test_backend_converts_and_submits_exact_transfer_plans(self) -> None:
-        engine = FakeRuntimeEngine()
-        backend = CudaNativeBackend(engine)
+        native_plan = FakeNativePlanModule()
+        backend = make_backend(native_plan_module=native_plan)
         runtime = FakeExactPlanRuntime()
 
         plan_payload = {
@@ -204,7 +237,7 @@ class CudaNativeBackendTest(unittest.TestCase):
         )
 
         self.assertEqual(plan, "native-plan")
-        self.assertEqual(engine.plan_calls, [plan_payload])
+        self.assertEqual(native_plan.plan_calls, [plan_payload])
         self.assertEqual(fetch_handle, "fetch-handle")
         self.assertEqual(runtime.fetch_plan_calls, [(100, 16, 200, 32, "native-plan")])
         self.assertEqual(offload_handle, "offload-handle")
@@ -223,7 +256,7 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertEqual(stats, "stats")
 
     def test_backend_rejects_missing_exact_plan_submitter(self) -> None:
-        backend = CudaNativeBackend(FakeRuntimeEngine())
+        backend = make_backend()
 
         with self.assertRaisesRegex(RuntimeError, "exact transfer plans"):
             backend.fetch_plan_to_gpu(
@@ -236,31 +269,31 @@ class CudaNativeBackendTest(unittest.TestCase):
             )
 
     def test_backend_registers_host_memory_through_native_runtime(self) -> None:
-        engine = FakeRuntimeEngine()
+        native_runtime = FakeNativeRuntimeModule()
         native = FakeHostRegisterNativeModule()
-        engine._turbobus = native
-        backend = CudaNativeBackend(engine)
+        native_runtime._turbobus = native
+        backend = make_backend(native_runtime_module=native_runtime)
 
         backend.register_host_memory(100, 4096)
         backend.unregister_host_memory(100)
 
         self.assertEqual(native.register_host_memory_calls, [(100, 4096)])
         self.assertEqual(native.unregister_host_memory_calls, [100])
-        self.assertEqual(engine.require_extension_calls, 2)
+        self.assertEqual(native_runtime.require_extension_calls, 2)
 
     def test_backend_rejects_missing_host_memory_registration(self) -> None:
-        engine = FakeRuntimeEngine()
-        engine._turbobus = object()
-        backend = CudaNativeBackend(engine)
+        native_runtime = FakeNativeRuntimeModule()
+        native_runtime._turbobus = object()
+        backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(RuntimeError, "host memory registration"):
             backend.register_host_memory(100, 4096)
 
     def test_backend_exports_and_opens_cuda_ipc_handles(self) -> None:
-        engine = FakeRuntimeEngine()
+        native_runtime = FakeNativeRuntimeModule()
         native = FakeHostRegisterNativeModule()
-        engine._turbobus = native
-        backend = CudaNativeBackend(engine)
+        native_runtime._turbobus = native
+        backend = make_backend(native_runtime_module=native_runtime)
 
         backend.set_device(2)
         handle = backend.export_device_ipc_handle(100)
@@ -274,10 +307,10 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertEqual(native.close_device_ipc_handle_calls, [200])
 
     def test_backend_rejects_malformed_cuda_ipc_handles_before_native_open(self) -> None:
-        engine = FakeRuntimeEngine()
+        native_runtime = FakeNativeRuntimeModule()
         native = FakeHostRegisterNativeModule()
-        engine._turbobus = native
-        backend = CudaNativeBackend(engine)
+        native_runtime._turbobus = native
+        backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(ValueError, "hex encoded"):
             backend.open_device_ipc_handle("not-hex")
@@ -287,10 +320,10 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertEqual(native.open_device_ipc_handle_calls, [])
 
     def test_backend_rejects_malformed_exported_cuda_ipc_handles(self) -> None:
-        engine = FakeRuntimeEngine()
+        native_runtime = FakeNativeRuntimeModule()
         native = FakeHostRegisterNativeModule(exported_ipc_handle=b"short")
-        engine._turbobus = native
-        backend = CudaNativeBackend(engine)
+        native_runtime._turbobus = native
+        backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(ValueError, "64 bytes"):
             backend.export_device_ipc_handle(100)
@@ -298,9 +331,9 @@ class CudaNativeBackendTest(unittest.TestCase):
         self.assertEqual(native.export_device_ipc_handle_calls, [100])
 
     def test_backend_rejects_missing_cuda_ipc_support(self) -> None:
-        engine = FakeRuntimeEngine()
-        engine._turbobus = object()
-        backend = CudaNativeBackend(engine)
+        native_runtime = FakeNativeRuntimeModule()
+        native_runtime._turbobus = object()
+        backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(RuntimeError, "CUDA IPC handles"):
             backend.export_device_ipc_handle(100)

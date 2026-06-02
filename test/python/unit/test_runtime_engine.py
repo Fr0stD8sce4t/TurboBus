@@ -6,7 +6,8 @@ import tempfile
 import time
 import unittest
 
-from turbobus import runtime_engine
+from turbobus import native_plan, native_runtime, profile as runtime_profile
+from turbobus import tensor_validation
 from turbobus.planner_engine import PlannerEngine
 from turbobus.runtime_engine import RuntimeOptions, TransferHandle
 
@@ -99,7 +100,7 @@ class DaemonProfileTest(unittest.TestCase):
             relays=[relay],
         )
 
-        payload = runtime_engine._profile_to_daemon_dict(profile)
+        payload = runtime_profile.profile_to_daemon_dict(profile)
 
         self.assertEqual(payload["target_device"], 0)
         self.assertEqual(payload["direct_h2d_bw_gbps"], 7.5)
@@ -118,17 +119,17 @@ class DaemonProfileTest(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(ValueError, "direct_h2d"):
-            runtime_engine._profile_from_daemon_entry(entry, target_gpu=0)
+            runtime_profile.profile_from_daemon_entry(entry, target_gpu=0)
 
     def test_daemon_profile_freshness_uses_updated_at(self) -> None:
         self.assertTrue(
-            runtime_engine._daemon_profile_is_fresh(
+            runtime_profile.daemon_profile_is_fresh(
                 {"updated_at": time.time()},
                 max_age_seconds=60.0,
             )
         )
         self.assertFalse(
-            runtime_engine._daemon_profile_is_fresh(
+            runtime_profile.daemon_profile_is_fresh(
                 {"updated_at": time.time() - 3600.0},
                 max_age_seconds=60.0,
             )
@@ -138,12 +139,12 @@ class DaemonProfileTest(unittest.TestCase):
 class RangeAndPlanConversionTest(unittest.TestCase):
     def test_range_fields_accepts_dicts_tuples_and_objects(self) -> None:
         self.assertEqual(
-            runtime_engine._range_fields({"src_offset": 1, "dst_offset": 2, "bytes": 3}),
+            native_plan.range_fields({"src_offset": 1, "dst_offset": 2, "bytes": 3}),
             (1, 2, 3),
         )
-        self.assertEqual(runtime_engine._range_fields((4, 5, 6)), (4, 5, 6))
+        self.assertEqual(native_plan.range_fields((4, 5, 6)), (4, 5, 6))
         self.assertEqual(
-            runtime_engine._range_fields(
+            native_plan.range_fields(
                 SimpleNamespace(src_offset=7, dst_offset=8, bytes=9)
             ),
             (7, 8, 9),
@@ -156,10 +157,10 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                 self.dst_offset = 0
                 self.bytes = 0
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type("Ext", (), {"TransferRange": NativeRange})
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type("Ext", (), {"TransferRange": NativeRange})
         try:
-            ranges = runtime_engine._native_ranges(
+            ranges = native_plan.native_ranges(
                 [
                     {"src_offset": 0, "dst_offset": 16, "bytes": 8},
                     (32, 64, 8),
@@ -168,7 +169,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                 destination_bytes=128,
             )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
         self.assertEqual(len(ranges), 2)
         self.assertEqual(ranges[0].src_offset, 0)
@@ -180,17 +181,17 @@ class RangeAndPlanConversionTest(unittest.TestCase):
         class NativeRange:
             pass
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type("Ext", (), {"TransferRange": NativeRange})
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type("Ext", (), {"TransferRange": NativeRange})
         try:
             with self.assertRaises(ValueError):
-                runtime_engine._native_ranges(
+                native_plan.native_ranges(
                     [(120, 0, 16)],
                     source_bytes=128,
                     destination_bytes=128,
                 )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
     def test_native_transfer_plan_preserves_daemon_assignments(self) -> None:
         class NativePlan:
@@ -232,8 +233,8 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             H2D = "h2d"
             D2H = "d2h"
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type(
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type(
             "Ext",
             (),
             {
@@ -246,7 +247,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             },
         )
         try:
-            plan = runtime_engine._native_transfer_plan(
+            plan = native_plan.native_transfer_plan(
                 {
                     "total_bytes": 16,
                     "chunk_bytes": 16,
@@ -270,7 +271,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                 }
             )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
         self.assertEqual(plan.total_bytes, 16)
         self.assertEqual(plan.chunk_bytes, 16)
@@ -347,8 +348,8 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             mode="pool",
         )
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type(
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type(
             "Ext",
             (),
             {
@@ -361,9 +362,9 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             },
         )
         try:
-            native = runtime_engine._native_transfer_plan(planner_plan)
+            native = native_plan.native_transfer_plan(planner_plan)
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
         self.assertEqual(native.total_bytes, 64)
         self.assertEqual(native.chunk_bytes, 16)
@@ -404,8 +405,8 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             H2D = "h2d"
             D2H = "d2h"
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type(
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type(
             "Ext",
             (),
             {
@@ -422,7 +423,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                 ValueError,
                 "total_bytes must match assigned chunk bytes",
             ):
-                runtime_engine._native_transfer_plan(
+                native_plan.native_transfer_plan(
                     {
                         "total_bytes": 32,
                         "chunk_bytes": 16,
@@ -447,17 +448,17 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                     }
                 )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
     def test_native_transfer_plan_rejects_disabled_path(self) -> None:
         class NativePlan:
             pass
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type("Ext", (), {"TransferPlan": NativePlan})
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type("Ext", (), {"TransferPlan": NativePlan})
         try:
             with self.assertRaisesRegex(ValueError, "disabled path"):
-                runtime_engine._native_transfer_plan(
+                native_plan.native_transfer_plan(
                     {
                         "total_bytes": 16,
                         "chunk_bytes": 16,
@@ -470,7 +471,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                     }
                 )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
     def test_native_transfer_plan_rejects_invalid_chunk_range(self) -> None:
         class NativePlan:
@@ -498,8 +499,8 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             H2D = "h2d"
             D2H = "d2h"
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type(
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type(
             "Ext",
             (),
             {
@@ -513,7 +514,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
         )
         try:
             with self.assertRaisesRegex(ValueError, "chunk offsets"):
-                runtime_engine._native_transfer_plan(
+                native_plan.native_transfer_plan(
                     {
                         "total_bytes": 16,
                         "chunk_bytes": 16,
@@ -526,7 +527,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                     }
                 )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
     def test_native_transfer_plan_rejects_direction_kind_mismatch(self) -> None:
         class NativePlan:
@@ -554,8 +555,8 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             H2D = "h2d"
             D2H = "d2h"
 
-        old_extension = runtime_engine._turbobus
-        runtime_engine._turbobus = type(
+        old_extension = native_runtime._turbobus
+        native_runtime._turbobus = type(
             "Ext",
             (),
             {
@@ -569,7 +570,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
         )
         try:
             with self.assertRaisesRegex(ValueError, "unsupported transfer plan path"):
-                runtime_engine._native_transfer_plan(
+                native_plan.native_transfer_plan(
                     {
                         "total_bytes": 16,
                         "chunk_bytes": 16,
@@ -582,7 +583,7 @@ class RangeAndPlanConversionTest(unittest.TestCase):
                     }
                 )
         finally:
-            runtime_engine._turbobus = old_extension
+            native_runtime._turbobus = old_extension
 
     def test_range_tensor_validation_does_not_require_equal_sizes_for_d2h(self) -> None:
         class TensorType:
@@ -618,20 +619,20 @@ class RangeAndPlanConversionTest(unittest.TestCase):
             def is_contiguous(self) -> bool:
                 return True
 
-        old_torch = runtime_engine.torch
-        runtime_engine.torch = type("Torch", (), {"Tensor": TensorType})
+        old_torch = tensor_validation.torch
+        tensor_validation.torch = type("Torch", (), {"Tensor": TensorType})
         try:
             cpu = FakeTensor(128, device_type="cpu", pinned=True)
             gpu = FakeTensor(1024, device_type="cuda", device_index=6)
 
-            source_bytes, destination_bytes = runtime_engine._validate_range_tensors(
+            source_bytes, destination_bytes = tensor_validation.validate_range_tensors(
                 cpu,
                 gpu,
                 target_gpu=6,
                 direction="d2h",
             )
         finally:
-            runtime_engine.torch = old_torch
+            tensor_validation.torch = old_torch
 
         self.assertEqual(source_bytes, 1024)
         self.assertEqual(destination_bytes, 128)

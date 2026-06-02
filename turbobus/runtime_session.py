@@ -13,7 +13,7 @@ from .buffer_registration import (
 )
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .intent_executor import WorkerIntentTransferExecutor
-from . import runtime_engine
+from . import profile as runtime_profile
 from .runtime_engine import RuntimeOptions
 from .schema import (
     DaemonResponse,
@@ -215,7 +215,7 @@ class TurboBusRuntimeSession:
     def bootstrap_profile(self, *, force: bool = False):
         self.open_session()
         relays = self._relay_gpus_for_session()
-        profile, response = runtime_engine.bootstrap_daemon_profile(
+        profile, response = runtime_profile.bootstrap_daemon_profile(
             self.daemon_client,
             self.backend,
             self.runtime_options,

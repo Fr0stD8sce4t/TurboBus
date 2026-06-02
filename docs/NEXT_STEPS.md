@@ -7,18 +7,17 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The current task is to harden the runtime/native boundary for production data
-movement. Python runtime code should keep profile bootstrap, tensor validation,
-native plan conversion, and CUDA backend execution clearly separated so worker
-and runtime session paths execute only daemon-issued plans.
+The current task is to continue hardening production data movement now that
+the runtime/native boundary has clear owning modules. The next pass should
+focus on the daemon-issued plan path from `TurboBusRuntimeSession` through
+direct fallback and `CudaWorkerExecutor`, making sure both paths execute only
+validated `ExecutionTicket` plans and report real backend completion evidence.
 
 ## Exit Criteria
 
-- Native extension loading, profile conversion, tensor validation, and transfer
-  plan conversion have clear owning modules or helpers.
-- `CudaWorkerExecutor` and direct fallback execute daemon-issued
-  `ExecutionTicket` plans without choosing physical paths.
-- Runtime session profile bootstrap still writes daemon profile data through
+- Direct fallback and `CudaWorkerExecutor` reject unticketed or mismatched
+  daemon plans before invoking the CUDA backend.
+- Runtime session profile bootstrap writes daemon profile data through
   `put_profile` and does not create mock profile data.
 - Existing runtime/session/adapters continue to submit `TransferIntent` and
   consume `TransferReceipt`.
@@ -27,8 +26,8 @@ and runtime session paths execute only daemon-issued plans.
 
 ## Current Code Work
 
-- Start from `turbobus/runtime_engine.py`, `turbobus/backends/cuda.py`, and
-  `turbobus/worker/cuda_executor.py`.
+- Start from `turbobus/direct_fallback.py`, `turbobus/worker/cuda_executor.py`,
+  and `turbobus/runtime_session.py`.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
@@ -36,5 +35,5 @@ and runtime session paths execute only daemon-issued plans.
 
 ## Next Entry
 
-Trace native profile bootstrap and daemon-issued plan execution from
-`TurboBusRuntimeSession` through CUDA backend and worker executor code.
+Trace a daemon-issued `ExecutionTicket` from `TurboBusRuntimeSession` through
+direct fallback and worker CUDA execution.

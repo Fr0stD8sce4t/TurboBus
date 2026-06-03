@@ -25,8 +25,6 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Current Code Work
 
-- Continue from `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
-  `turbobus/worker/lifecycle.py`, and `turbobus/worker/validation.py`.
 - Production daemon startup now creates a daemon that requires authenticated
   socket peers, and the socket service fails before serving when the platform
   cannot provide supported Unix peer credentials.
@@ -42,10 +40,16 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   modules import real implementation modules directly.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
+- Linux server startup validation with `CUDA_VISIBLE_DEVICES=0,1`,
+  `--target-gpu 0`, `--min-relays 0`, and `--allow-missing-fabric` confirmed
+  that production daemon and worker sockets can start and listen with
+  owner-only socket files without occupying the busy NVLink pair on GPU5/GPU6.
 - Do not add mock native backends, fake correctness gates, benchmark helpers,
   or paper-validation code while validating this path.
 
 ## Next Entry
 
-Stop local code work for this authority-hardening target until production
-daemon and worker socket startup can be validated on a Linux CUDA server.
+For the next round, inspect the existing daemon and worker socket protocols and
+use only an existing minimal control-plane request to confirm that the running
+production services accept authenticated socket traffic. Do not add new test,
+benchmark, paper-validation, or fake request code.

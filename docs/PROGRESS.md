@@ -22,38 +22,43 @@ require worker/backend execution evidence bound to the current daemon-issued
 `ExecutionTicket`, including failed and canceled reports. Failed and canceled
 terminal transfers now drop their daemon execution ticket mappings during
 cleanup or external status reporting. Worker service and production process
-entry points now route requests through the standard lifecycle, and the old
-`turbobus/worker/helper.py` export layer has been removed.
+entry points now route requests through the standard lifecycle. The old
+`turbobus/worker/helper.py` export layer has been removed. Linux server
+startup validation confirmed that production daemon and worker socket services
+can start and listen with owner-only socket files while limited to the idle
+GPU0/GPU1 startup-validation scope.
 
 ## Completed This Round
 
-- Repointed worker service, process, codec, socket client, CUDA executor, and
-  package exports to real implementation modules.
-- Deleted the old `turbobus/worker/helper.py` re-export layer.
-- Confirmed worker socket service requests still enter through
-  `submit_report_cleanup_lifecycle()` with reservation-scoped cleanup.
+- Confirmed on the Linux CUDA server that the production daemon can start with
+  `CUDA_VISIBLE_DEVICES=0,1`, `--target-gpu 0`, `--min-relays 0`, and
+  `--allow-missing-fabric`.
+- Confirmed the production worker socket service can start against that daemon.
+- Confirmed both services create owner-only Unix socket files and do not add
+  TurboBus Python processes on the busy GPU5/GPU6 NVLink pair.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\__init__.py turbobus\worker\codec.py turbobus\worker\endpoint.py turbobus\worker\process.py turbobus\worker\socket_client.py turbobus\worker\cuda_executor.py turbobus\worker\lifecycle.py turbobus\worker\models.py` passed.
-- `python -m unittest test.python.integration.test_worker_transport` passed
-  with one expected platform skip.
-- `python -m unittest test.python.integration.test_worker_process` passed with
-  one expected platform skip.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one expected skip.
-- `python -m unittest test.python.integration.test_worker_helper` passed.
-- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
-- `git diff --check` passed.
+- Server command passed by entering the daemon accept loop:
+  `CUDA_VISIBLE_DEVICES=0,1 python -m turbobus.daemon --socket-path
+  /tmp/turbobusd-$USER.sock --target-gpu 0 --min-relays 0
+  --allow-missing-fabric`.
+- Server command passed by entering the worker accept loop:
+  `CUDA_VISIBLE_DEVICES=0,1 python -m turbobus.worker
+  --daemon-socket-path /tmp/turbobusd-$USER.sock --socket-path
+  /tmp/turbobus-worker-$USER.sock`.
+- Server inspection showed `srw-------` socket files at
+  `/tmp/turbobusd-sdu.sock` and `/tmp/turbobus-worker-sdu.sock`.
+- Server `nvidia-smi` showed no new TurboBus Python process on GPU5/GPU6.
 
 ## Remaining Risk
 
-- Real CUDA/native multi-GPU execution has not been validated in this local
-  environment.
-- Production daemon and worker socket startup still need Linux CUDA server
-  validation with real Unix peer credentials and native CUDA resources.
+- This startup pass did not send socket requests or execute transfers.
+- Relay and pooled execution still require the GPU5/GPU6 NVLink pair after it
+  is idle.
 
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path.
+production path by confirming an existing authenticated control-plane request
+against the running production socket services.

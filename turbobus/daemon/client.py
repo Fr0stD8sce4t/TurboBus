@@ -4,14 +4,14 @@ import json
 import socket
 from dataclasses import asdict
 
-from ..schema import TransferIntent
-from ..transfer import TransferRequest
-from .protocol import (
+from ..schema import (
     DaemonRequest,
     DaemonResponse,
     RequestType,
+    TransferIntent,
     WorkerTransferAuthorizationRequest,
 )
+from ..transfer import TransferRequest
 
 
 class TurboBusDaemonClient:

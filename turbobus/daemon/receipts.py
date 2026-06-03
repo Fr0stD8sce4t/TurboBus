@@ -2,14 +2,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from .protocol import (
+from ..schema import (
+    ExecutionTicket,
     LeaseToken,
     Session,
+    TransferIntent,
     TransferReservation,
+    TransferReceipt,
     TransferStatus,
     TransferStatusState,
 )
-from ..schema import ExecutionTicket, TransferIntent, TransferReceipt
 from ..scheduler import (
     SchedulingDecision,
     scheduling_decision_leases,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict
 
-from .protocol import JobIdentity, LeaseToken, RelayQuota, Session, TransferReservation
+from ..schema import JobIdentity, LeaseToken, RelayQuota, Session, TransferReservation
 
 
 def active_buffer_lease_ids(

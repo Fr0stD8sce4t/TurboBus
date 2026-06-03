@@ -11,16 +11,14 @@ import unittest
 
 from turbobus.api import TurboBusClient
 from turbobus.daemon import TurboBusDaemonClient
-from turbobus.daemon.protocol import (
-    DaemonResponse,
-    RequestType,
-    WorkerTransferAuthorizationRequest,
-)
 from turbobus.daemon.server import TurboBusDaemon
 from turbobus.schema import (
+    DaemonResponse,
     PeerIdentity,
+    RequestType,
     TransferIntent,
     TransferStatusState,
+    WorkerTransferAuthorizationRequest,
     WorkloadKind,
 )
 from turbobus.topology import (

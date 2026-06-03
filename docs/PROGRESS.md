@@ -25,20 +25,27 @@ cleanup or external status reporting. Worker service and production process
 entry points now route requests through the standard lifecycle. The old
 `turbobus/worker/helper.py` export layer has been removed. Server-only
 validation is now deferred until after the system implementation pass, so it no
-longer blocks code work in this stage.
+longer blocks code work in this stage. The old `turbobus/daemon/protocol.py`
+export layer has also been removed, and daemon imports now point at the real
+owning modules.
 
 ## Completed This Round
 
-- Removed the live Linux server socket request from the current forward plan
-  and recorded server-only checks as deferred validation risk.
-- Inspected the runtime session, profile bootstrap, offload store, and adapter
-  entry points to resume code-first system implementation.
-- Updated Python profile bootstrap so `RuntimeOptions.profile_cache_enabled`
-  controls whether daemon cached profiles are reused.
+- Removed the old `turbobus/daemon/protocol.py` pure export layer.
+- Updated daemon modules to import protocol dataclasses directly from
+  `turbobus.schema`.
+- Updated integration imports that still referenced the old daemon protocol
+  module.
 
 ## Validation
 
-- `python -m unittest test.python.unit.test_runtime_engine` passed.
+- `python -m py_compile turbobus\daemon\client.py
+  turbobus\daemon\dispatch.py turbobus\daemon\leases.py
+  turbobus\daemon\receipts.py turbobus\daemon\server.py
+  turbobus\daemon\startup.py turbobus\daemon\__main__.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m unittest test.python.integration.test_daemon_socket` passed with
+  expected platform skips.
 - `git diff --check` passed with only existing CRLF conversion warnings.
 
 ## Remaining Risk

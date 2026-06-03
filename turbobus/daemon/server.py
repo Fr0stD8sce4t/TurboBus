@@ -14,24 +14,26 @@ from . import dispatch as daemon_dispatch
 from . import leases as daemon_leases
 from . import profiles as daemon_profiles
 from . import receipts as daemon_receipts
-from .protocol import (
+from ..schema import (
     BufferRegistration,
     CleanupRequest,
     DaemonRequest,
     DaemonResponse,
+    ExecutionTicket,
     JobIdentity,
     LeaseToken,
     PeerIdentity,
     RelayQuota,
     RequestType,
     Session,
+    TransferIntent,
+    TransferReceipt,
     TransferReservation,
     TransferStatus,
     TransferStatusState,
     WorkerTransferAuthorization,
     WorkerTransferAuthorizationRequest,
 )
-from ..schema import ExecutionTicket, TransferIntent, TransferReceipt
 from ..socket_security import secure_unix_socket, unlink_stale_socket
 from ..topology import TopologyProvider
 from ..scheduler import (

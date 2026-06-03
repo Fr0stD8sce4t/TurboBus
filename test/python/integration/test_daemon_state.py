@@ -3,17 +3,15 @@ from __future__ import annotations
 import time
 import unittest
 
-from turbobus.daemon.protocol import (
-    DaemonRequest,
-    RequestType,
-    WorkerTransferAuthorizationRequest,
-)
 from turbobus.daemon.server import TurboBusDaemon
 from turbobus.schema import (
+    DaemonRequest,
     PeerIdentity,
+    RequestType,
     TransferIntent,
     TransferReceipt,
     TransferStatusState,
+    WorkerTransferAuthorizationRequest,
     WorkloadKind,
 )
 from turbobus.topology import (

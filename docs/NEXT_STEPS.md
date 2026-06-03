@@ -40,6 +40,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   modules import real implementation modules directly.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
+- The old `turbobus/daemon/protocol.py` export layer should remain deleted;
+  daemon modules and tests must import protocol dataclasses directly from
+  `turbobus.schema` and topology records directly from `turbobus.topology`.
 - Profile bootstrap should respect `RuntimeOptions.profile_cache_enabled`
   before reusing daemon cached profiles.
 - Continue code work on the system path; server validation is deferred until
@@ -53,5 +56,6 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 Continue the code implementation pass by inspecting `turbobus/runtime_session.py`,
 `turbobus/profile.py`, `turbobus/offload_store.py`, and the adapter entry
 points for remaining places where the unified runtime session path is not the
-default system entry. Keep server-only behavior as a deferred validation risk,
-not a blocker for this stage.
+default system entry. Also remove any old pure export layer that remains after
+refactoring. Keep server-only behavior as a deferred validation risk, not a
+blocker for this stage.

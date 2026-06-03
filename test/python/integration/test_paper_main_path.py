@@ -5,10 +5,15 @@ import unittest
 
 from turbobus.api import TurboBusClient
 from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBufferAllocator
-from turbobus.daemon.protocol import WorkerTransferAuthorizationRequest
 from turbobus.daemon.server import TurboBusDaemon
 from turbobus.intent_executor import WorkerIntentTransferExecutor
-from turbobus.schema import TransferIntent, TransferReceipt, TransferStatusState, WorkloadKind
+from turbobus.schema import (
+    TransferIntent,
+    TransferReceipt,
+    TransferStatusState,
+    WorkerTransferAuthorizationRequest,
+    WorkloadKind,
+)
 from turbobus.topology import DaemonResourceInventory, FabricLinkRecord, GpuInventoryRecord, PciePathRecord
 from turbobus.worker_managed import make_worker_managed_transfer_client
 from test.python.fixtures.topology import StaticTopologyProvider

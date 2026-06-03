@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from .protocol import (
+from ..schema import (
     DaemonRequest,
     DaemonResponse,
     RequestType,
+    TransferIntent,
     WorkerTransferAuthorizationRequest,
 )
-from ..schema import TransferIntent
 
 
 def handle_request(

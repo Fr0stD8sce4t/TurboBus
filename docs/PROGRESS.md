@@ -39,28 +39,28 @@ Model loading, training offload, inference KV, vLLM KV, vLLM connector
 save/restore, and lower-level vLLM integration paths now construct their
 workload adapters from `TurboBusRuntimeSession` instead of requiring
 application code to assemble daemon clients or adapter transfer contexts.
+`OffloadStore` now accepts only runtime-session-owned clients whose job and
+session identity match the adapter context, and closed runtime sessions reject
+later buffer registration, transfer submission, receipt wait, and profile
+bootstrap calls.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Changed public workload adapter constructors for model loading, training
-  offload, inference KV, and vLLM KV to derive their transfer context from
-  `TurboBusRuntimeSession`.
-- Kept only an internal protected inference adapter path for already-derived
-  group contexts, and removed offload context/receipt re-exports from the
-  adapter package.
-- Updated lower-level vLLM integration CPU backing allocation to create
-  `SharedPinnedCpuBuffer` objects for the runtime-session path.
+- Restricted `OffloadStore` construction to runtime-session-owned clients with
+  matching job and session identity.
+- Made `TurboBusRuntimeSession.close()` terminal for later registration,
+  submission, receipt wait, and profile bootstrap attempts.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\model_loading.py
+- `python -m py_compile turbobus\runtime_session.py
+  turbobus\offload_store.py turbobus\adapters\model_loading.py
   turbobus\adapters\training_offload.py turbobus\adapters\inference.py
   turbobus\adapters\vllm.py turbobus\adapters\vllm_integration.py
-  turbobus\adapters\vllm_kv_connector.py turbobus\adapters\__init__.py`
-  passed.
+  turbobus\adapters\vllm_kv_connector.py` passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -72,7 +72,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting `OffloadStore` and the runtime-session transfer
-lifecycle for any remaining bypass of session-owned buffer registration,
-daemon scheduling, ticket execution, or receipt cleanup while keeping server
-validation deferred.
+production path by inspecting daemon receipt wait, reschedule, direct fallback,
+and worker backend execution for stale ticket, stale lease, or cleaned-transfer
+reuse while keeping server validation deferred.

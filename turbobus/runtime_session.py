@@ -59,6 +59,7 @@ class TurboBusRuntimeSession:
     )
     _client: TurboBusClient | None = field(default=None, init=False, repr=False)
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
     @classmethod
     def open(
@@ -97,7 +98,12 @@ class TurboBusRuntimeSession:
     def relay_gpus(self) -> Sequence[int] | None:
         return self._relay_gpus
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def open_session(self) -> str:
+        self._require_open()
         if self._session_id is not None:
             return self._session_id
         if self._target_gpu is None:
@@ -128,6 +134,7 @@ class TurboBusRuntimeSession:
         self,
         buffer: SharedPinnedCpuBuffer,
     ) -> SharedPinnedCpuBuffer:
+        self._require_open()
         if not isinstance(buffer, SharedPinnedCpuBuffer):
             raise TypeError("buffer must be a SharedPinnedCpuBuffer")
         self._register_buffer(buffer)
@@ -137,6 +144,7 @@ class TurboBusRuntimeSession:
         self,
         buffer: CudaIpcDeviceBuffer,
     ) -> CudaIpcDeviceBuffer:
+        self._require_open()
         if not isinstance(buffer, CudaIpcDeviceBuffer):
             raise TypeError("buffer must be a CudaIpcDeviceBuffer")
         self._register_buffer(buffer)
@@ -187,6 +195,7 @@ class TurboBusRuntimeSession:
         )
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+        self._require_open()
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")
         if intent.job_id != self.job_id:
@@ -207,12 +216,14 @@ class TurboBusRuntimeSession:
         intent_id: str,
         timeout_seconds: float | None = None,
     ) -> TransferReceipt:
+        self._require_open()
         return self._intent_client().wait_transfer_receipt(
             str(intent_id),
             timeout_seconds=timeout_seconds,
         )
 
     def bootstrap_profile(self, *, force: bool = False):
+        self._require_open()
         self.open_session()
         relays = self._relay_gpus_for_session()
         profile, response = runtime_profile.bootstrap_daemon_profile(
@@ -227,21 +238,30 @@ class TurboBusRuntimeSession:
         return response
 
     def close(self) -> DaemonResponse:
+        if self._closed:
+            return DaemonResponse(
+                ok=True,
+                payload={"closed": False, "already_closed": True},
+            )
         if self._session_id is None:
             self._clear_local_session_state()
+            self._closed = True
             return DaemonResponse(ok=True, payload={"closed": False})
         response = self.daemon_client.close_session(self._session_id)
         if response.ok:
             self._clear_local_session_state()
+            self._closed = True
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":
+        self._require_open()
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
     def _register_buffer(self, buffer: ExecutableBuffer) -> None:
+        self._require_open()
         if buffer.job_id != self.job_id:
             raise ValueError("buffer job_id must match the runtime session job_id")
         if isinstance(buffer, CudaIpcDeviceBuffer):
@@ -264,6 +284,7 @@ class TurboBusRuntimeSession:
         priority: int,
         metadata: Mapping[str, object] | None,
     ) -> TransferReceipt:
+        self._require_open()
         self._ensure_transfer_buffers(source, target)
         self._bootstrap_profile_if_enabled()
         normalized_ranges = tuple(
@@ -292,6 +313,7 @@ class TurboBusRuntimeSession:
         source: ExecutableBuffer,
         target: ExecutableBuffer,
     ) -> None:
+        self._require_open()
         if source.job_id != self.job_id or target.job_id != self.job_id:
             raise ValueError("transfer buffers must match the runtime session job_id")
         if source.buffer_id not in self._buffers:
@@ -302,6 +324,7 @@ class TurboBusRuntimeSession:
         self._register_pending_buffers()
 
     def _intent_client(self) -> TurboBusClient:
+        self._require_open()
         if self._client is not None:
             return self._client
         worker_client = self.worker_client or WorkerTransferClient(
@@ -326,6 +349,7 @@ class TurboBusRuntimeSession:
         return self._client
 
     def _register_pending_buffers(self) -> None:
+        self._require_open()
         self.session_id
         for buffer_id, buffer in tuple(self._buffers.items()):
             fingerprint = _buffer_registration_fingerprint(buffer)
@@ -346,6 +370,7 @@ class TurboBusRuntimeSession:
         self._registered_buffer_fingerprints.clear()
 
     def _bind_target_gpu(self, device_index: int) -> None:
+        self._require_open()
         device = int(device_index)
         if self._target_gpu is None:
             self._target_gpu = device
@@ -354,6 +379,7 @@ class TurboBusRuntimeSession:
             raise ValueError("CUDA buffer device_index must match runtime target_gpu")
 
     def _relay_gpus_for_session(self) -> tuple[int, ...]:
+        self._require_open()
         if self._relay_gpus is not None:
             return self._relay_gpus
         discovery = getattr(self.daemon_client, "discover_relays", None)
@@ -378,11 +404,16 @@ class TurboBusRuntimeSession:
         return relays
 
     def _bootstrap_profile_if_enabled(self) -> None:
+        self._require_open()
         if self._profile_bootstrapped:
             return
         if not bool(self.runtime_options.profile_on_first_transfer):
             return
         self.bootstrap_profile(force=False)
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("TurboBus runtime session is closed")
 
 
 __all__ = ["TurboBusRuntimeSession"]

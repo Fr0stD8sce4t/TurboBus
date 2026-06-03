@@ -327,6 +327,7 @@ class OffloadStore:
     ) -> None:
         if not isinstance(transfer_context, AdapterTransferContext):
             raise TypeError("transfer_context must be an AdapterTransferContext")
+        _require_runtime_session_client(client, transfer_context)
         self.client = client
         self.transfer_context = transfer_context
         self._blocks: dict[str, OffloadBlock] = {}
@@ -689,6 +690,44 @@ def _require_non_empty(value: object, field_name: str) -> str:
     if not normalized.strip():
         raise ValueError(f"{field_name} must be non-empty")
     return normalized
+
+
+def _require_runtime_session_client(
+    client: TransferIntentClient,
+    transfer_context: AdapterTransferContext,
+) -> None:
+    required_methods = (
+        "open_session",
+        "register_cpu_buffer",
+        "register_cuda_buffer",
+        "submit_transfer_intent",
+        "wait_transfer_receipt",
+    )
+    missing = [
+        name for name in required_methods if not callable(getattr(client, name, None))
+    ]
+    if missing:
+        raise TypeError(
+            "OffloadStore requires a TurboBusRuntimeSession-owned client; "
+            f"missing {', '.join(missing)}"
+        )
+    if not hasattr(client, "job_id"):
+        raise TypeError("OffloadStore client must expose a runtime session job_id")
+    job_id = getattr(client, "job_id", None)
+    if str(job_id) != transfer_context.job_id:
+        raise ValueError("offload context job_id must match the runtime session job_id")
+    try:
+        session_id = getattr(client, "session_id")
+    except RuntimeError:
+        session_id = client.open_session()
+    except AttributeError as exc:
+        raise TypeError(
+            "OffloadStore client must expose a runtime session session_id"
+        ) from exc
+    if str(session_id) != transfer_context.session_id:
+        raise ValueError(
+            "offload context session_id must match the runtime session session_id"
+        )
 
 
 def _validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str, object]:

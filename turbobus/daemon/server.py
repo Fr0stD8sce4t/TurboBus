@@ -100,6 +100,7 @@ class TurboBusDaemon:
         self._scheduling_decisions: dict[str, SchedulingDecision] = {}
         self._execution_tickets: dict[str, ExecutionTicket] = {}
         self._transfer_tickets: dict[str, str] = {}
+        self._transfer_completion_tickets: dict[str, ExecutionTicket] = {}
         self._lease_tokens: dict[str, LeaseToken] = {}
         self._transfer_statuses: dict[str, TransferStatus] = {}
         self._transfer_completion_sources: dict[str, str] = {}
@@ -694,6 +695,7 @@ class TurboBusDaemon:
                 return DaemonResponse(ok=False, error=str(exc))
             normalized_completion_source = str(completion_source or "").lower()
             normalized_completion_evidence: dict[str, object] | None = None
+            completion_ticket: ExecutionTicket | None = None
             requires_execution_evidence = (
                 self._intent_requires_execution_evidence_locked(updated.transfer_id)
             )
@@ -711,6 +713,7 @@ class TurboBusDaemon:
                         ticket = self._current_execution_ticket_for_transfer_locked(
                             updated.transfer_id
                         )
+                        completion_ticket = ticket
                         normalized_completion_evidence = _normalize_completion_evidence(
                             completion_evidence,
                             expected_bytes=updated.bytes_total,
@@ -779,6 +782,11 @@ class TurboBusDaemon:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
                 )
+                if completion_ticket is not None:
+                    self._transfer_completion_tickets[updated.transfer_id] = (
+                        completion_ticket
+                    )
+                    self._drop_execution_ticket_for_transfer_locked(updated.transfer_id)
             if normalized_completion_evidence is not None:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
@@ -2095,6 +2103,28 @@ class TurboBusDaemon:
             )
         return ticket
 
+    def _completion_ticket_for_transfer_locked(
+        self,
+        transfer_id: str,
+    ) -> ExecutionTicket:
+        ticket = self._transfer_completion_tickets.get(str(transfer_id))
+        if ticket is None:
+            raise ValueError(
+                "intent transfer completion requires archived execution ticket"
+            )
+        return ticket
+
+    def _receipt_execution_ticket_for_transfer_locked(
+        self,
+        transfer_id: str,
+    ) -> ExecutionTicket | None:
+        normalized_transfer_id = str(transfer_id)
+        completion_ticket = self._transfer_completion_tickets.get(normalized_transfer_id)
+        if completion_ticket is not None:
+            return completion_ticket
+        ticket_id = self._transfer_tickets.get(normalized_transfer_id)
+        return None if ticket_id is None else self._execution_tickets.get(ticket_id)
+
     def _completion_release_blocked_reason_locked(self, transfer_id: str) -> str | None:
         normalized_transfer_id = str(transfer_id)
         if not self._intent_requires_execution_evidence_locked(normalized_transfer_id):
@@ -2110,7 +2140,7 @@ class TurboBusDaemon:
             "worker",
         )
         try:
-            ticket = self._current_execution_ticket_for_transfer_locked(
+            ticket = self._completion_ticket_for_transfer_locked(
                 normalized_transfer_id
             )
             _normalize_completion_evidence(
@@ -2722,14 +2752,13 @@ class TurboBusDaemon:
         intent = self._transfer_intents.get(normalized_intent_id)
         status = self._transfer_statuses.get(transfer_id)
         decision = self._scheduling_decisions.get(transfer_id)
-        ticket_id = self._transfer_tickets.get(transfer_id)
         if intent is None:
             raise ValueError("transfer intent is unavailable")
         if status is None:
             raise ValueError("transfer status is unavailable")
         if decision is None:
             raise ValueError("scheduling decision is unavailable")
-        ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
+        ticket = self._receipt_execution_ticket_for_transfer_locked(transfer_id)
         admission = dict(self._transfer_admissions.get(transfer_id, {}))
         completion_source = self._transfer_completion_sources.get(transfer_id)
         completion_evidence = self._transfer_completion_evidence.get(transfer_id)

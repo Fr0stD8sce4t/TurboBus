@@ -35,6 +35,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep daemon receipt wait, reschedule, direct fallback, and worker backend
   execution bound to daemon-issued, fresh `ExecutionTicket` data with ticket
   evidence in status updates.
+- Keep completed transfer tickets archived only for receipt/release evidence,
+  not available as active execution tickets after backend or worker completion.
 - Keep `OffloadStore` bound to runtime-session-owned clients, and keep closed
   runtime sessions from accepting later buffer registration, transfer submit,
   receipt wait, or profile bootstrap calls.
@@ -51,9 +53,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon receipt wait,
-reschedule, direct fallback, and worker backend execution for any remaining
-places where stale tickets, stale leases, or cleaned transfers can be reused
-after cleanup. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+Continue the code implementation pass by inspecting worker status reporting and
+cleanup envelopes for any remaining places where stale leases, stale staging
+records, or cleaned transfers can be reported after cleanup. Also remove any
+old pure export layer that remains after refactoring. Keep server-only behavior
+as a deferred validation risk, not a blocker for this stage.

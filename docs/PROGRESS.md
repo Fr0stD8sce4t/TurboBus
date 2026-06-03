@@ -43,24 +43,27 @@ application code to assemble daemon clients or adapter transfer contexts.
 session identity match the adapter context, and closed runtime sessions reject
 later buffer registration, transfer submission, receipt wait, and profile
 bootstrap calls.
+Completed intent transfers now archive the execution ticket used for verified
+worker/backend completion, then remove it from the active ticket map so it
+cannot be reused for later execution while receipts and release checks still
+have ticket evidence.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Restricted `OffloadStore` construction to runtime-session-owned clients with
-  matching job and session identity.
-- Made `TurboBusRuntimeSession.close()` terminal for later registration,
-  submission, receipt wait, and profile bootstrap attempts.
+- Added a daemon completion-ticket archive for verified worker/backend
+  completion evidence.
+- Dropped active execution tickets after complete status updates while keeping
+  archived ticket evidence available to receipts and release checks.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py
-  turbobus\offload_store.py turbobus\adapters\model_loading.py
-  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
-  turbobus\adapters\vllm.py turbobus\adapters\vllm_integration.py
-  turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\daemon\receipts.py turbobus\direct_fallback.py
+  turbobus\transfer_execution.py turbobus\worker\lifecycle.py
+  turbobus\worker\cuda_executor.py turbobus\intent_executor.py` passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -72,6 +75,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting daemon receipt wait, reschedule, direct fallback,
-and worker backend execution for stale ticket, stale lease, or cleaned-transfer
-reuse while keeping server validation deferred.
+production path by inspecting worker status reporting and cleanup envelopes for
+stale lease, stale staging-record, or cleaned-transfer reporting while keeping
+server validation deferred.

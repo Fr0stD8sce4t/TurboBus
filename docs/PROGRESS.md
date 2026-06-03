@@ -36,26 +36,24 @@ Daemon job, buffer, and session cleanup now retires the affected transfer from
 the runtime scheduling queue after canceling any non-terminal state, while
 leaving terminal status and audit data available for control-plane inspection.
 Inference KV adapters can now derive their transfer context directly from a
-`TurboBusRuntimeSession`, and the vLLM connector save/restore paths construct
-their KV adapters from the runtime session instead of manually assembling
-adapter contexts.
+`TurboBusRuntimeSession`, and the vLLM connector save/restore plus lower-level
+vLLM integration paths construct their KV adapters from the runtime session
+instead of manually assembling adapter contexts.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added direct runtime-session construction for inference KV slot adapters.
-- Added `VllmKVSlotAdapter.from_runtime_session()` and routed vLLM connector
-  restore/save adapter creation through it.
-- Removed manual `AdapterTransferContext` construction from the vLLM connector
-  save/restore path.
+- Routed `VllmTurboBusIntegration` through `TurboBusRuntimeSession` instead of
+  requiring callers to provide a daemon client and `AdapterTransferContext`.
+- Updated lower-level vLLM adapter refresh to call
+  `VllmKVSlotAdapter.from_runtime_session()`.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\inference.py
-  turbobus\adapters\vllm.py turbobus\adapters\vllm_kv_connector.py` passed.
-- `python -m unittest test.python.unit.test_offload_store` passed.
+- `python -m py_compile turbobus\adapters\vllm_integration.py
+  turbobus\adapters\vllm.py` passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -67,6 +65,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting the lower-level vLLM integration hook for any
-remaining manual transfer-context construction while keeping server validation
-deferred.
+production path by inspecting remaining adapter and offload entry points that
+still expose manual daemon-client or `AdapterTransferContext` assembly while
+keeping server validation deferred.

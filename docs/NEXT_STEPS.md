@@ -28,11 +28,10 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep `TurboBusRuntimeSession.open()` as the public system entry without
   application-side relay selection; it must register session, job, and buffers
   before submitting `TransferIntent`.
-- Keep model loading, training offload, inference KV, and vLLM paths on the
-  runtime-session API so callers do not assemble daemon clients, transfer
-  contexts, or buffer registration manually.
-- Keep vLLM connector save/restore paths constructing KV adapters from
-  `TurboBusRuntimeSession`, not from manually assembled adapter contexts.
+- Keep model loading, training offload, inference KV, vLLM connector, and
+  lower-level vLLM integration paths on the runtime-session API so callers do
+  not assemble daemon clients, transfer contexts, or buffer registration
+  manually.
 - Keep daemon receipt wait, reschedule, direct fallback, and worker backend
   execution bound to daemon-issued, fresh `ExecutionTicket` data with ticket
   evidence in status updates.
@@ -49,8 +48,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting the lower-level vLLM
-integration hook for any remaining manual transfer-context construction and
-adding a runtime-session entry point if needed. Also remove any old pure export
-layer that remains after refactoring. Keep server-only behavior as a deferred
+Continue the code implementation pass by inspecting the remaining adapter and
+offload entry points that still expose manual daemon-client or
+`AdapterTransferContext` assembly, and move public workload construction onto
+`TurboBusRuntimeSession` where needed. Also remove any old pure export layer
+that remains after refactoring. Keep server-only behavior as a deferred
 validation risk, not a blocker for this stage.

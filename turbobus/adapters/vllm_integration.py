@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
-from ..offload_store import AdapterTransferContext, TransferIntentClient
+from ..schema import WorkloadKind
 from .vllm import (
     VllmKVBlockRef,
     VllmKVSlotAdapter,
@@ -89,15 +89,60 @@ class VllmTurboBusIntegration:
 
     def __init__(
         self,
-        client: TransferIntentClient,
-        transfer_context: AdapterTransferContext,
+        runtime_session,
         cpu_backings: Iterable | None = None,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        cpu_buffer_id: str = "vllm-kv-cpu",
+        gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> None:
-        self.client = client
-        self.transfer_context = transfer_context
+        self.runtime_session = runtime_session
         self.state = VllmIntegrationState()
         self._cpu_backings = list(cpu_backings) if cpu_backings is not None else None
+        self._runtime_adapter_options = {
+            "workload_kind": workload_kind,
+            "priority": int(priority),
+            "policy_hints": {} if policy_hints is None else dict(policy_hints),
+            "metadata": {} if metadata is None else dict(metadata),
+            "intent_prefix": intent_prefix,
+            "wait_timeout_seconds": wait_timeout_seconds,
+            "cpu_buffer_id": str(cpu_buffer_id),
+            "gpu_buffer_id": str(gpu_buffer_id),
+        }
         self._allocation_callback: AllocationCallback | None = None
+
+    @classmethod
+    def from_runtime_session(
+        cls,
+        runtime_session,
+        cpu_backings: Iterable | None = None,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        cpu_buffer_id: str = "vllm-kv-cpu",
+        gpu_buffer_id: str = "vllm-kv-gpu",
+    ) -> "VllmTurboBusIntegration":
+        return cls(
+            runtime_session,
+            cpu_backings,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+            cpu_buffer_id=cpu_buffer_id,
+            gpu_buffer_id=gpu_buffer_id,
+        )
 
     def install(self) -> None:
         """Install hooks into the imported vLLM V1 classes."""
@@ -243,10 +288,10 @@ class VllmTurboBusIntegration:
             self._cpu_backings,
             self.state.kv_caches,
         )
-        self.state.adapter = VllmKVSlotAdapter(
-            self.client,
-            self.transfer_context,
+        self.state.adapter = VllmKVSlotAdapter.from_runtime_session(
+            self.runtime_session,
             groups,
+            **self._runtime_adapter_options,
         )
 
     def require_adapter(self) -> VllmKVSlotAdapter:

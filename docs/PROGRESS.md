@@ -12,26 +12,25 @@ buffers and relay eligibility is discovered from the daemon before session
 registration and profile bootstrap. Model loading, training offload, and
 inference KV adapters now have runtime-session entry points. Worker service and
 production process entry points route requests through the standard lifecycle.
+vLLM connector save/restore tracing now requires real `TransferReceipt` handles
+before it records receipt, decision, topology, or ticket ids.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added runtime-session constructors to `ModelWeightLoader` and
-  `TrainingOffloadManager`.
-- These constructors register CPU/GPU buffers through `TurboBusRuntimeSession`
-  and create `AdapterTransferContext` without physical route controls.
-- Confirmed the existing inference KV adapter already has a matching
-  runtime-session constructor.
+- Tightened vLLM connector receipt tracing so save/restore transfers fail when
+  handles are missing or do not expose a `TransferReceipt`.
+- Kept existing receipt evidence validation before connector events or saved
+  prefixes record receipt and ticket metadata.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\model_loading.py
-  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
-  turbobus\offload_store.py` passed.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one existing skip.
+- `python -m py_compile turbobus\adapters\vllm_kv_connector.py
+  turbobus\adapters\vllm.py turbobus\offload_store.py` passed.
+- `python -m unittest test.python.unit.test_vllm_kv_connector_main_path`
+  passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk

@@ -996,14 +996,22 @@ def _adapter_transfer_stats(adapter, refs, handles) -> TransferStats:
 def _receipt_trace_from_handles(handles) -> dict[str, Any]:
     receipts: list[TransferReceipt] = []
     seen = set()
-    for handle in handles:
+    handles = list(handles)
+    if not handles:
+        raise RuntimeError("vLLM TurboBus transfer produced no handles")
+    for index, handle in enumerate(handles):
         receipt = getattr(handle, "receipt", None)
         if not isinstance(receipt, TransferReceipt):
-            continue
+            raise TypeError(
+                "vLLM TurboBus transfer handle "
+                f"{index} did not expose a TransferReceipt"
+            )
         if receipt.receipt_id in seen:
             continue
         seen.add(receipt.receipt_id)
         receipts.append(receipt)
+    if not receipts:
+        raise RuntimeError("vLLM TurboBus transfer produced no receipts")
     return _receipt_trace_from_receipts(receipts)
 
 

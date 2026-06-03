@@ -34,6 +34,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Model loading, training offload, and inference KV adapters should provide
   runtime-session constructors so callers do not manually assemble daemon
   clients, transfer contexts, or buffer registration.
+- vLLM connector save/restore paths must record receipt traces only from real
+  `TransferReceipt` handles and must fail if a transfer returns no receipt
+  evidence.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -46,7 +49,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 ## Next Entry
 
 Continue the code implementation pass by inspecting vLLM/offload adapter buffer
-lifecycle and receipt handling for remaining places where callers can bypass
-the unified runtime session path. Also remove any old pure export layer that
-remains after refactoring. Keep server-only behavior as a deferred validation
-risk, not a blocker for this stage.
+lifecycle for remaining places where callers can bypass the unified runtime
+session path. Also remove any old pure export layer that remains after
+refactoring. Keep server-only behavior as a deferred validation risk, not a
+blocker for this stage.

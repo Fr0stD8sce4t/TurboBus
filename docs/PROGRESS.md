@@ -23,40 +23,32 @@ require worker/backend execution evidence bound to the current daemon-issued
 terminal transfers now drop their daemon execution ticket mappings during
 cleanup or external status reporting. Worker service and production process
 entry points now route requests through the standard lifecycle. The old
-`turbobus/worker/helper.py` export layer has been removed. Linux server
-startup validation confirmed that production daemon and worker socket services
-can start and listen with owner-only socket files while limited to the idle
-GPU0/GPU1 startup-validation scope.
+`turbobus/worker/helper.py` export layer has been removed. Server-only
+validation is now deferred until after the system implementation pass, so it no
+longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Inspected the existing daemon and worker socket protocols for a minimal
-  production request validation path.
-- Selected `TurboBusDaemonClient.get_inventory()` as the daemon control-plane
-  request because it uses the existing daemon socket client and does not submit
-  transfers.
-- Selected `WorkerServiceSocketClient.submit_envelope()` with an unauthorized
-  worker envelope as the worker request because the existing lifecycle returns
-  `authorization_failed` before staging allocation or CUDA execution.
+- Removed the live Linux server socket request from the current forward plan
+  and recorded server-only checks as deferred validation risk.
+- Inspected the runtime session, profile bootstrap, offload store, and adapter
+  entry points to resume code-first system implementation.
+- Updated Python profile bootstrap so `RuntimeOptions.profile_cache_enabled`
+  controls whether daemon cached profiles are reused.
 
 ## Validation
 
-- Code inspection confirmed daemon `GET_INVENTORY` is routed through
-  `TurboBusDaemonClient.send()` and the production daemon socket server.
-- Code inspection confirmed worker authorization failure returns a completion
-  envelope without a staging slot or worker result.
-- The existing production services still need the selected requests run from
-  the Linux CUDA server; no local substitute validation was added.
+- `python -m unittest test.python.unit.test_runtime_engine` passed.
+- `git diff --check` passed with only existing CRLF conversion warnings.
 
 ## Remaining Risk
 
-- The selected daemon and worker socket requests have not yet been run against
-  the live Linux server services.
-- Relay and pooled execution still require the GPU5/GPU6 NVLink pair after it
-  is idle.
+- Server-only daemon/worker socket behavior, CUDA/native execution, and
+  relay/pooled execution remain deferred until the full system implementation
+  pass is complete.
 
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by confirming an existing authenticated control-plane request
-against the running production socket services.
+production path while continuing code-first system implementation and keeping
+server validation deferred.

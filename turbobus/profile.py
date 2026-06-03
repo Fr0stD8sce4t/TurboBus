@@ -182,7 +182,7 @@ def bootstrap_daemon_profile(
     force: bool = False,
 ):
     relays = tuple(int(gpu) for gpu in relay_gpus)
-    if not force:
+    if not force and bool(options.profile_cache_enabled):
         reader = getattr(daemon_client, "get_profile", None)
         if callable(reader):
             cached = reader(int(target_gpu), list(relays))

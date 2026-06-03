@@ -40,22 +40,18 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   modules import real implementation modules directly.
 - Keep the old `client_transfer.py` file deleted. Do not recreate it as a
   compatibility export layer.
-- Linux server startup validation with `CUDA_VISIBLE_DEVICES=0,1`,
-  `--target-gpu 0`, `--min-relays 0`, and `--allow-missing-fabric` confirmed
-  that production daemon and worker sockets can start and listen with
-  owner-only socket files without occupying the busy NVLink pair on GPU5/GPU6.
-- Do not add mock native backends, fake correctness gates, benchmark helpers,
-  or paper-validation code while validating this path.
+- Profile bootstrap should respect `RuntimeOptions.profile_cache_enabled`
+  before reusing daemon cached profiles.
+- Continue code work on the system path; server validation is deferred until
+  after the complete system implementation pass.
+- Do not add mock native backends, fake correctness gates, server-validation
+  gates, benchmark helpers, or paper-validation code while validating this
+  path.
 
 ## Next Entry
 
-With the production daemon and worker still running on the Linux server, run
-only existing client APIs from a third shell:
-
-- `TurboBusDaemonClient(...).get_inventory()` against the daemon socket.
-- `WorkerServiceSocketClient(...).submit_envelope(...)` with a structurally
-  valid but unauthorized worker envelope, expecting `authorization_failed`
-  before staging allocation or CUDA execution.
-
-Record the real responses, then update this file and `docs/PROGRESS.md`. Do not
-add new test, benchmark, paper-validation, or fake request code.
+Continue the code implementation pass by inspecting `turbobus/runtime_session.py`,
+`turbobus/profile.py`, `turbobus/offload_store.py`, and the adapter entry
+points for remaining places where the unified runtime session path is not the
+default system entry. Keep server-only behavior as a deferred validation risk,
+not a blocker for this stage.

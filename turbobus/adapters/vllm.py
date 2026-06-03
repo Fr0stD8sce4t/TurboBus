@@ -41,41 +41,56 @@ class VllmKVSlotAdapter:
 
     def __init__(
         self,
-        client,
-        transfer_context: AdapterTransferContext,
+        runtime_session,
         groups: Iterable[VllmKVGroup],
         *,
-        runtime_session=None,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> None:
-        self.client = client
-        self.transfer_context = transfer_context
+        self.client = runtime_session
         self.groups: dict[int, VllmKVGroup] = {group.group_id: group for group in groups}
         self.runtime_session = runtime_session
         self.adapters = {}
+        self.transfer_context: AdapterTransferContext | None = None
         for group in self.groups.values():
-            group_context = _group_transfer_context(transfer_context, group.group_id)
-            if runtime_session is None:
-                adapter = InferenceKVSlotAdapter(
-                    client,
-                    group_context,
-                    group.cpu_backing,
-                    group.gpu_kv_backing,
-                )
-            else:
-                adapter = InferenceKVSlotAdapter.from_runtime_session(
+            cpu_buffer = runtime_session.register_cpu_buffer(
+                _require_shared_cpu_buffer(group.cpu_backing)
+            )
+            gpu_buffer = runtime_session.register_cuda_buffer(
+                _cuda_buffer_for_group(
                     runtime_session,
-                    _require_shared_cpu_buffer(group.cpu_backing),
-                    _cuda_buffer_for_group(
-                        runtime_session,
-                        group,
-                        buffer_id=_group_gpu_buffer_id(
-                            transfer_context.gpu_buffer_id,
-                            group,
-                        ),
-                    ),
-                    group_context,
+                    group,
+                    buffer_id=_group_gpu_buffer_id(gpu_buffer_id, group),
                 )
+            )
+            group_context = AdapterTransferContext(
+                job_id=runtime_session.job_id,
+                session_id=runtime_session.open_session(),
+                cpu_buffer_id=cpu_buffer.buffer_id,
+                gpu_buffer_id=gpu_buffer.buffer_id,
+                workload_kind=workload_kind,
+                priority=priority,
+                policy_hints={} if policy_hints is None else policy_hints,
+                metadata=_group_metadata(metadata, group.group_id),
+                intent_prefix=_group_intent_prefix(intent_prefix, group.group_id),
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+            adapter = InferenceKVSlotAdapter._from_transfer_context(
+                runtime_session,
+                group_context,
+                cpu_buffer,
+                gpu_buffer,
+            )
+            if self.transfer_context is None:
+                self.transfer_context = group_context
             self.adapters[group.group_id] = adapter
+        if self.transfer_context is None:
+            raise ValueError("vLLM adapter requires at least one group")
         self._registered_names: set[str] = set()
 
     @classmethod
@@ -90,40 +105,21 @@ class VllmKVSlotAdapter:
         metadata: Mapping[str, object] | None = None,
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
-        cpu_buffer_id: str = "vllm-kv-cpu",
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> "VllmKVSlotAdapter":
         resolved_groups = tuple(groups)
         if not resolved_groups:
             raise ValueError("vLLM runtime session adapter requires at least one group")
-        first_group = resolved_groups[0]
-        runtime_session.register_cpu_buffer(
-            _require_shared_cpu_buffer(first_group.cpu_backing)
-        )
-        runtime_session.register_cuda_buffer(
-            _cuda_buffer_for_group(
-                runtime_session,
-                first_group,
-                buffer_id=_group_gpu_buffer_id(gpu_buffer_id, first_group),
-            )
-        )
-        context = AdapterTransferContext(
-            job_id=runtime_session.job_id,
-            session_id=runtime_session.open_session(),
-            cpu_buffer_id=str(cpu_buffer_id),
-            gpu_buffer_id=str(gpu_buffer_id),
-            workload_kind=workload_kind,
-            priority=priority,
-            policy_hints={} if policy_hints is None else policy_hints,
-            metadata={} if metadata is None else metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
         return cls(
             runtime_session,
-            context,
             resolved_groups,
-            runtime_session=runtime_session,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+            gpu_buffer_id=gpu_buffer_id,
         )
 
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
@@ -226,24 +222,19 @@ class VllmKVSlotAdapter:
             total_chunks += max(1, math.ceil(int(byte_count) / chunk_bytes))
         return total_bytes, total_chunks
 
-def _group_transfer_context(
-    transfer_context: AdapterTransferContext,
+def _group_metadata(
+    metadata: Mapping[str, object] | None,
     group_id: int,
-) -> AdapterTransferContext:
-    metadata = dict(transfer_context.metadata)
+) -> dict[str, object]:
+    metadata = {} if metadata is None else dict(metadata)
     metadata["group_id"] = int(group_id)
-    return AdapterTransferContext(
-        job_id=transfer_context.job_id,
-        session_id=transfer_context.session_id,
-        cpu_buffer_id=transfer_context.cpu_buffer_id,
-        gpu_buffer_id=transfer_context.gpu_buffer_id,
-        workload_kind=transfer_context.workload_kind,
-        priority=transfer_context.priority,
-        policy_hints=transfer_context.policy_hints,
-        metadata=metadata,
-        intent_prefix=f"{transfer_context.intent_prefix}-g{int(group_id)}",
-        wait_timeout_seconds=transfer_context.wait_timeout_seconds,
-    )
+    return metadata
+
+
+def _group_intent_prefix(intent_prefix: str | None, group_id: int) -> str | None:
+    if intent_prefix is None:
+        return None
+    return f"{intent_prefix}-g{int(group_id)}"
 
 
 def _group_gpu_buffer_id(prefix: str, group: VllmKVGroup) -> str:

@@ -18,10 +18,28 @@ class ModelWeightLoader(OffloadStore):
 
     def __init__(
         self,
-        client,
-        transfer_context: AdapterTransferContext,
+        runtime_session,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
     ) -> None:
-        super().__init__(client, transfer_context)
+        context = AdapterTransferContext.from_runtime_session(
+            runtime_session,
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=WorkloadKind.MODEL_WEIGHTS,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        super().__init__(runtime_session, context)
 
     @classmethod
     def from_runtime_session(
@@ -36,18 +54,16 @@ class ModelWeightLoader(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> "ModelWeightLoader":
-        context = AdapterTransferContext.from_runtime_session(
+        return cls(
             runtime_session,
             cpu_buffer,
             gpu_buffer,
-            workload_kind=WorkloadKind.MODEL_WEIGHTS,
             priority=priority,
             policy_hints=policy_hints,
             metadata=metadata,
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
-        return cls(runtime_session, context)
 
     def add_bucket(
         self,

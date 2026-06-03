@@ -652,7 +652,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             ),
             intent_prefix=f"vllm-kv-restore-{saved.key}",
             wait_timeout_seconds=self.config.wait_timeout_seconds,
-            cpu_buffer_id=self.config.cpu_buffer_id,
             gpu_buffer_id=self.config.gpu_buffer_id,
         )
         return adapter
@@ -784,7 +783,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             ),
             intent_prefix=f"vllm-kv-save-{request.prefix_key}-layer{layer_index}",
             wait_timeout_seconds=self.config.wait_timeout_seconds,
-            cpu_buffer_id=self.config.cpu_buffer_id,
             gpu_buffer_id=self.config.gpu_buffer_id,
         )
         context.adapter_ms += (time.perf_counter() - adapter_start) * 1000.0

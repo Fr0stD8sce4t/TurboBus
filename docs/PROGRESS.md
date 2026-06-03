@@ -35,25 +35,32 @@ into a native backend plan.
 Daemon job, buffer, and session cleanup now retires the affected transfer from
 the runtime scheduling queue after canceling any non-terminal state, while
 leaving terminal status and audit data available for control-plane inspection.
-Inference KV adapters can now derive their transfer context directly from a
-`TurboBusRuntimeSession`, and the vLLM connector save/restore plus lower-level
-vLLM integration paths construct their KV adapters from the runtime session
-instead of manually assembling adapter contexts.
+Model loading, training offload, inference KV, vLLM KV, vLLM connector
+save/restore, and lower-level vLLM integration paths now construct their
+workload adapters from `TurboBusRuntimeSession` instead of requiring
+application code to assemble daemon clients or adapter transfer contexts.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Routed `VllmTurboBusIntegration` through `TurboBusRuntimeSession` instead of
-  requiring callers to provide a daemon client and `AdapterTransferContext`.
-- Updated lower-level vLLM adapter refresh to call
-  `VllmKVSlotAdapter.from_runtime_session()`.
+- Changed public workload adapter constructors for model loading, training
+  offload, inference KV, and vLLM KV to derive their transfer context from
+  `TurboBusRuntimeSession`.
+- Kept only an internal protected inference adapter path for already-derived
+  group contexts, and removed offload context/receipt re-exports from the
+  adapter package.
+- Updated lower-level vLLM integration CPU backing allocation to create
+  `SharedPinnedCpuBuffer` objects for the runtime-session path.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\vllm_integration.py
-  turbobus\adapters\vllm.py` passed.
+- `python -m py_compile turbobus\adapters\model_loading.py
+  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
+  turbobus\adapters\vllm.py turbobus\adapters\vllm_integration.py
+  turbobus\adapters\vllm_kv_connector.py turbobus\adapters\__init__.py`
+  passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -65,6 +72,7 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting remaining adapter and offload entry points that
-still expose manual daemon-client or `AdapterTransferContext` assembly while
-keeping server validation deferred.
+production path by inspecting `OffloadStore` and the runtime-session transfer
+lifecycle for any remaining bypass of session-owned buffer registration,
+daemon scheduling, ticket execution, or receipt cleanup while keeping server
+validation deferred.

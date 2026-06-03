@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import functools
+import itertools
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping
 
+from ..client import SharedPinnedCpuBuffer
 from ..schema import WorkloadKind
 from .vllm import (
     VllmKVBlockRef,
@@ -104,6 +106,8 @@ class VllmTurboBusIntegration:
         self.runtime_session = runtime_session
         self.state = VllmIntegrationState()
         self._cpu_backings = list(cpu_backings) if cpu_backings is not None else None
+        self._next_cpu_backing_id = itertools.count(1)
+        self._cpu_buffer_id_prefix = str(cpu_buffer_id)
         self._runtime_adapter_options = {
             "workload_kind": workload_kind,
             "priority": int(priority),
@@ -111,7 +115,6 @@ class VllmTurboBusIntegration:
             "metadata": {} if metadata is None else dict(metadata),
             "intent_prefix": intent_prefix,
             "wait_timeout_seconds": wait_timeout_seconds,
-            "cpu_buffer_id": str(cpu_buffer_id),
             "gpu_buffer_id": str(gpu_buffer_id),
         }
         self._allocation_callback: AllocationCallback | None = None
@@ -210,21 +213,23 @@ class VllmTurboBusIntegration:
         self._allocation_callback = callback
 
     def allocate_cpu_backings(self, slots_per_layer: int, *, pin_memory: bool = True) -> list:
-        """Allocate pinned CPU byte buffers for the observed vLLM layer caches."""
+        """Allocate shared CPU buffers for the observed vLLM layer caches."""
 
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover - import-time convenience only
-            raise RuntimeError("PyTorch is required to allocate vLLM CPU backings") from exc
+        if not pin_memory:
+            raise ValueError("runtime session vLLM backings must be shared pinned buffers")
 
         backings = []
         for kv_cache in self.state.kv_caches:
             block_bytes = block_bytes_from_vllm_kv_tensor(kv_cache)
             backings.append(
-                torch.empty(
-                    slots_per_layer * block_bytes,
-                    dtype=torch.uint8,
-                    pin_memory=pin_memory,
+                SharedPinnedCpuBuffer.allocate(
+                    buffer_id=(
+                        f"{self._cpu_buffer_id_prefix}-"
+                        f"{next(self._next_cpu_backing_id)}"
+                    ),
+                    job_id=self.runtime_session.job_id,
+                    size_bytes=slots_per_layer * block_bytes,
+                    name_prefix="turbobus-vllm",
                 )
             )
         self.set_cpu_backings(backings)

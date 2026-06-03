@@ -6,7 +6,6 @@ from .inference import (
     InferenceKVSlotAdapter,
     make_contiguous_kv_slots,
 )
-from ..offload_store import AdapterTransferContext, ReceiptTransferHandle
 from .model_loading import ModelLoader, ModelWeightLoader
 from .training_offload import TrainingOffloadManager, TrainingOffloadStore
 from .vllm import (
@@ -42,7 +41,6 @@ __all__ = [
     "FrameworkAdapter",
     "FrameworkKVSlot",
     "FrameworkKVSlotAdapter",
-    "AdapterTransferContext",
     "InferenceKVSlot",
     "InferenceKVSlotAdapter",
     "ModelLoader",
@@ -60,7 +58,6 @@ __all__ = [
     "TurboBusConnectorMetadata",
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
-    "ReceiptTransferHandle",
     "block_bytes_from_vllm_kv_tensor",
     "clear_connector_events",
     "clear_saved_prefixes",

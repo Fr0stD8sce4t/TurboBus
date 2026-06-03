@@ -6,7 +6,7 @@ from typing import Any
 
 from ..api.receipts import require_complete_receipt_evidence
 from ..daemon import TurboBusDaemonClient
-from ..offload_store import AdapterTransferContext, TransferStats, summarize_transfer_handles
+from ..offload_store import TransferStats, summarize_transfer_handles
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids
@@ -170,7 +170,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             self.daemon_client,
             job_id=self.job_id,
         )
-        self.client = self.runtime_session
         self._layer_save_contexts: dict[str, _LayerSaveContext] = {}
         self._backing_pool = TurboBusCPUBackingPool(
             job_id=self.job_id,
@@ -635,11 +634,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 f"but vLLM registered {len(kv_caches)} KV cache tensors"
             )
         groups = make_vllm_layer_groups_from_kv_caches(saved.cpu_backings, kv_caches)
-        adapter = VllmKVSlotAdapter(
-            self.client,
-            self._adapter_context(
-                intent_prefix=f"vllm-kv-restore-{saved.key}",
-                metadata={
+        adapter = VllmKVSlotAdapter.from_runtime_session(
+            self.runtime_session,
+            groups,
+            workload_kind=WorkloadKind.KV_CACHE,
+            metadata=self._adapter_metadata(
+                {
                     "prefix_key": saved.key,
                     "request_id": request.request_id,
                     "vllm_operation": "restore",
@@ -648,10 +648,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "block_count": request.block_count,
                     "block_ids": list(request.block_ids),
                     "source_request_id": saved.source_request_id,
-                },
+                }
             ),
-            groups,
-            runtime_session=self._adapter_runtime_session(),
+            intent_prefix=f"vllm-kv-restore-{saved.key}",
+            wait_timeout_seconds=self.config.wait_timeout_seconds,
+            cpu_buffer_id=self.config.cpu_buffer_id,
+            gpu_buffer_id=self.config.gpu_buffer_id,
         )
         return adapter
 
@@ -763,11 +765,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         )
         context.group_ms += (time.perf_counter() - group_start) * 1000.0
         adapter_start = time.perf_counter()
-        adapter = VllmKVSlotAdapter(
-            self.client,
-            self._adapter_context(
-                intent_prefix=f"vllm-kv-save-{request.prefix_key}-layer{layer_index}",
-                metadata={
+        adapter = VllmKVSlotAdapter.from_runtime_session(
+            self.runtime_session,
+            [group],
+            workload_kind=WorkloadKind.KV_CACHE,
+            metadata=self._adapter_metadata(
+                {
                     "prefix_key": request.prefix_key,
                     "request_id": request.request_id,
                     "vllm_operation": "save",
@@ -777,10 +780,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "matched_tokens": request.matched_tokens,
                     "block_count": request.block_count,
                     "block_ids": list(request.block_ids),
-                },
+                }
             ),
-            [group],
-            runtime_session=self._adapter_runtime_session(),
+            intent_prefix=f"vllm-kv-save-{request.prefix_key}-layer{layer_index}",
+            wait_timeout_seconds=self.config.wait_timeout_seconds,
+            cpu_buffer_id=self.config.cpu_buffer_id,
+            gpu_buffer_id=self.config.gpu_buffer_id,
         )
         context.adapter_ms += (time.perf_counter() - adapter_start) * 1000.0
         refs_start = time.perf_counter()
@@ -970,11 +975,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
     def _allocate_cpu_backings(self, block_count: int, kv_caches: list[Any]) -> list[Any]:
         return self._backing_pool._allocate_for_pool(block_count, kv_caches)
 
-    def _adapter_runtime_session(self):
-        if self.client is self.runtime_session:
-            return self.runtime_session
-        return None
-
     def _store_prefix(self, prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
         if prefix.job_id == "default":
             prefix.job_id = self.job_id
@@ -1018,26 +1018,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             self._backing_pool.close_backings(context.cpu_backings)
         return len(contexts)
 
-    def _adapter_context(
-        self,
-        *,
-        intent_prefix: str,
-        metadata: dict[str, Any],
-    ) -> AdapterTransferContext:
-        return AdapterTransferContext(
-            job_id=self.config.job_id,
-            session_id=self.config.session_id,
-            cpu_buffer_id=self.config.cpu_buffer_id,
-            gpu_buffer_id=self.config.gpu_buffer_id,
-            workload_kind=WorkloadKind.KV_CACHE,
-            metadata={
-                **metadata,
-                "connector": "vllm_kv",
-                "chunk_bytes": self.config.chunk_bytes,
-            },
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=self.config.wait_timeout_seconds,
-        )
+    def _adapter_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **metadata,
+            "connector": "vllm_kv",
+            "chunk_bytes": self.config.chunk_bytes,
+        }
 
 
 def _request_params(request) -> dict[str, Any]:

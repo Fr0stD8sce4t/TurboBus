@@ -35,23 +35,27 @@ into a native backend plan.
 Daemon job, buffer, and session cleanup now retires the affected transfer from
 the runtime scheduling queue after canceling any non-terminal state, while
 leaving terminal status and audit data available for control-plane inspection.
+Inference KV adapters can now derive their transfer context directly from a
+`TurboBusRuntimeSession`, and the vLLM connector save/restore paths construct
+their KV adapters from the runtime session instead of manually assembling
+adapter contexts.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added daemon cleanup retirement for job, buffer, and session transfers so
-  cleaned jobs or sessions no longer appear in runtime scheduling state.
-- Preserved terminal `transfer_status` and cleanup audit visibility after
-  runtime queue retirement.
+- Added direct runtime-session construction for inference KV slot adapters.
+- Added `VllmKVSlotAdapter.from_runtime_session()` and routed vLLM connector
+  restore/save adapter creation through it.
+- Removed manual `AdapterTransferContext` construction from the vLLM connector
+  save/restore path.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py` passed.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
-- `python -m unittest test.python.integration.test_daemon_socket` passed with
-  seventeen existing skips.
+- `python -m py_compile turbobus\adapters\inference.py
+  turbobus\adapters\vllm.py turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m unittest test.python.unit.test_offload_store` passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -63,6 +67,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting upper adapter entry points for remaining manual
-daemon client assembly, transfer context assembly, or application-side physical
-path control while keeping server validation deferred.
+production path by inspecting the lower-level vLLM integration hook for any
+remaining manual transfer-context construction while keeping server validation
+deferred.

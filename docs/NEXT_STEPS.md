@@ -31,6 +31,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep model loading, training offload, inference KV, and vLLM paths on the
   runtime-session API so callers do not assemble daemon clients, transfer
   contexts, or buffer registration manually.
+- Keep vLLM connector save/restore paths constructing KV adapters from
+  `TurboBusRuntimeSession`, not from manually assembled adapter contexts.
 - Keep daemon receipt wait, reschedule, direct fallback, and worker backend
   execution bound to daemon-issued, fresh `ExecutionTicket` data with ticket
   evidence in status updates.
@@ -47,9 +49,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting model loading, training
-offload, inference KV, and vLLM adapter entry points for any remaining manual
-daemon client assembly, transfer context assembly, or application-side physical
-path control. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+Continue the code implementation pass by inspecting the lower-level vLLM
+integration hook for any remaining manual transfer-context construction and
+adding a runtime-session entry point if needed. Also remove any old pure export
+layer that remains after refactoring. Keep server-only behavior as a deferred
+validation risk, not a blocker for this stage.

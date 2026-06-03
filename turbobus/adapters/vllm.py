@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..offload_store import AdapterTransferContext, TransferStats
+from ..schema import WorkloadKind
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter
 
 
@@ -67,12 +68,63 @@ class VllmKVSlotAdapter:
                     _cuda_buffer_for_group(
                         runtime_session,
                         group,
-                        buffer_id=f"{transfer_context.gpu_buffer_id}-g{group.group_id}",
+                        buffer_id=_group_gpu_buffer_id(
+                            transfer_context.gpu_buffer_id,
+                            group,
+                        ),
                     ),
                     group_context,
                 )
             self.adapters[group.group_id] = adapter
         self._registered_names: set[str] = set()
+
+    @classmethod
+    def from_runtime_session(
+        cls,
+        runtime_session,
+        groups: Iterable[VllmKVGroup],
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        cpu_buffer_id: str = "vllm-kv-cpu",
+        gpu_buffer_id: str = "vllm-kv-gpu",
+    ) -> "VllmKVSlotAdapter":
+        resolved_groups = tuple(groups)
+        if not resolved_groups:
+            raise ValueError("vLLM runtime session adapter requires at least one group")
+        first_group = resolved_groups[0]
+        runtime_session.register_cpu_buffer(
+            _require_shared_cpu_buffer(first_group.cpu_backing)
+        )
+        runtime_session.register_cuda_buffer(
+            _cuda_buffer_for_group(
+                runtime_session,
+                first_group,
+                buffer_id=_group_gpu_buffer_id(gpu_buffer_id, first_group),
+            )
+        )
+        context = AdapterTransferContext(
+            job_id=runtime_session.job_id,
+            session_id=runtime_session.open_session(),
+            cpu_buffer_id=str(cpu_buffer_id),
+            gpu_buffer_id=str(gpu_buffer_id),
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints={} if policy_hints is None else policy_hints,
+            metadata={} if metadata is None else metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return cls(
+            runtime_session,
+            context,
+            resolved_groups,
+            runtime_session=runtime_session,
+        )
 
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         slots_by_group: dict[int, list[InferenceKVSlot]] = {}
@@ -192,6 +244,10 @@ def _group_transfer_context(
         intent_prefix=f"{transfer_context.intent_prefix}-g{int(group_id)}",
         wait_timeout_seconds=transfer_context.wait_timeout_seconds,
     )
+
+
+def _group_gpu_buffer_id(prefix: str, group: VllmKVGroup) -> str:
+    return f"{prefix}-g{int(group.group_id)}"
 
 
 def _require_shared_cpu_buffer(value) -> SharedPinnedCpuBuffer:

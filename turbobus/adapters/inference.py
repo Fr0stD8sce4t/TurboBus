@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from ..offload_store import AdapterTransferContext, OffloadBatch, OffloadStore, TransferStats
+from ..schema import WorkloadKind
 
 
 @dataclass(frozen=True)
@@ -39,18 +40,32 @@ class InferenceKVSlotAdapter(OffloadStore):
         runtime_session,
         cpu_backing,
         gpu_kv_backing,
-        transfer_context: AdapterTransferContext,
+        transfer_context: AdapterTransferContext | None = None,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
     ) -> "InferenceKVSlotAdapter":
+        if transfer_context is not None:
+            workload_kind = transfer_context.workload_kind
+            priority = transfer_context.priority
+            policy_hints = transfer_context.policy_hints
+            metadata = transfer_context.metadata
+            intent_prefix = transfer_context.intent_prefix
+            wait_timeout_seconds = transfer_context.wait_timeout_seconds
         context = AdapterTransferContext.from_runtime_session(
             runtime_session,
             cpu_backing,
             gpu_kv_backing,
-            workload_kind=transfer_context.workload_kind,
-            priority=transfer_context.priority,
-            policy_hints=transfer_context.policy_hints,
-            metadata=transfer_context.metadata,
-            intent_prefix=transfer_context.intent_prefix,
-            wait_timeout_seconds=transfer_context.wait_timeout_seconds,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
         )
         return cls(runtime_session, context, cpu_backing, gpu_kv_backing)
 

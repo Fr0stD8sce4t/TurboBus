@@ -177,6 +177,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             buffer_id_prefix=self.config.cpu_buffer_id,
         )
         self._prefix_store = TurboBusPrefixStore(max_prefixes=self.max_saved_prefixes)
+        self._closed = False
         _emit_event(
             "init",
             role=str(role),
@@ -186,6 +187,46 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             restore_block_limit=self.restore_block_limit,
             max_saved_prefixes=self.max_saved_prefixes,
         )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        closed_prefixes = self._close_saved_prefixes()
+        closed_pending_saves = self._close_pending_save_contexts()
+        self._backing_pool.close()
+        clear_saved_prefixes(self.session_id, job_id=self.job_id)
+        clear_metadata = getattr(self, "clear_connector_metadata", None)
+        if callable(clear_metadata):
+            clear_metadata()
+        events = list(self.state.events)
+        events.append(
+            {
+                "event": "close",
+                "job_id": self.job_id,
+                "session_id": self.session_id,
+                "prefixes": closed_prefixes,
+                "pending_saves": closed_pending_saves,
+            }
+        )
+        self.state = TurboBusKVConnectorState(events=events)
+        _emit_event(
+            "close",
+            job_id=self.job_id,
+            session_id=self.session_id,
+            prefixes=closed_prefixes,
+            pending_saves=closed_pending_saves,
+        )
+        self.runtime_session.close()
+
+    def shutdown(self) -> None:
+        self.close()
+
+    def __enter__(self) -> "TurboBusConnector":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def register_kv_caches(self, kv_caches: dict[str, Any]) -> None:
         self.state.kv_caches = dict(kv_caches)
@@ -960,6 +1001,22 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 source_request_id=removed.source_request_id,
             )
         return evicted
+
+    def _close_saved_prefixes(self) -> int:
+        prefixes = self._prefix_store.drain(
+            session_id=self.session_id,
+            job_id=self.job_id,
+        )
+        for prefix in prefixes:
+            self._backing_pool.close_prefix(prefix)
+        return len(prefixes)
+
+    def _close_pending_save_contexts(self) -> int:
+        contexts = list(self._layer_save_contexts.values())
+        self._layer_save_contexts.clear()
+        for context in contexts:
+            self._backing_pool.close_backings(context.cpu_backings)
+        return len(contexts)
 
     def _adapter_context(
         self,

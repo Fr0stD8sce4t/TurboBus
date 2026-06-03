@@ -103,20 +103,32 @@ class TurboBusPrefixStore:
         return None
 
     def clear(self, session_id: str | None = None, job_id: str | None = None) -> None:
+        self.drain(session_id=session_id, job_id=job_id)
+
+    def drain(
+        self,
+        session_id: str | None = None,
+        job_id: str | None = None,
+    ) -> list[TurboBusSavedPrefix]:
+        removed: list[TurboBusSavedPrefix] = []
         if session_id is None:
             if job_id is None:
+                removed = list(self._prefixes.values())
                 self._prefixes.clear()
-                return
-            for key in list(self._prefixes):
+                return removed
+            for key, prefix in list(self._prefixes.items()):
                 if key.startswith(f"{str(job_id)}\0"):
+                    removed.append(prefix)
                     self._prefixes.pop(key)
-            return
+            return removed
         for key, prefix in list(self._prefixes.items()):
             if prefix.session_id != str(session_id):
                 continue
             if job_id is not None and prefix.job_id != str(job_id):
                 continue
+            removed.append(prefix)
             self._prefixes.pop(key)
+        return removed
 
     def __len__(self) -> int:
         return len(self._prefixes)

@@ -20,23 +20,30 @@ them.
 Runtime session close now clears local buffer, target, relay, client, profile,
 and registered-buffer state after daemon close succeeds, and also clears local
 pending state when no daemon session was opened.
+vLLM connector close now releases connector-owned saved prefixes, pending save
+contexts, pooled CPU backings, connector metadata, global prefix-store entries
+for the connector job/session, and its runtime session.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Updated `TurboBusRuntimeSession.close()` to clear all local session-owned
-  state after successful daemon close.
-- Closed sessions no longer retain registered buffers, target GPU, relay cache,
-  profile bootstrap state, or cached intent client.
-- Closing before daemon session open now clears pending local buffers.
+- Added a vLLM connector lifecycle close path that releases saved prefixes,
+  pending save contexts, CPU backing pool entries, connector metadata, and the
+  runtime session.
+- Added final-release helpers to the vLLM CPU backing pool while keeping evicted
+  prefixes reusable before connector close.
+- Added prefix-store drain support so owner cleanup can remove and release the
+  exact saved prefixes it owned.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py` passed.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one existing skip.
+- `python -m py_compile turbobus\adapters\vllm_backing_pool.py
+  turbobus\adapters\vllm_prefix_store.py
+  turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m unittest test.python.unit.test_vllm_kv_connector_main_path`
+  passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -48,5 +55,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
 production path while continuing code-first system implementation through
-adapter-owned prefix backing and connector lifecycle cleanup while keeping
-server validation deferred.
+daemon/worker socket-path identity, lease, ticket, and cleanup enforcement
+while keeping server validation deferred.

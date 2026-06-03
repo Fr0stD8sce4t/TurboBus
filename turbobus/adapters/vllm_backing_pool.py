@@ -33,6 +33,19 @@ class TurboBusCPUBackingPool:
     def release_prefix(self, prefix: TurboBusSavedPrefix, kv_caches: list[Any]) -> None:
         self.release(prefix.block_count, kv_caches, prefix.cpu_backings)
 
+    def close_backings(self, cpu_backings: list[Any]) -> None:
+        for backing in cpu_backings:
+            _close_backing(backing)
+
+    def close_prefix(self, prefix: TurboBusSavedPrefix) -> None:
+        self.close_backings(prefix.cpu_backings)
+
+    def close(self) -> None:
+        for groups in self._free_by_shape.values():
+            for cpu_backings in groups:
+                self.close_backings(cpu_backings)
+        self._free_by_shape.clear()
+
     @staticmethod
     def _allocate(
         block_count: int,
@@ -124,6 +137,16 @@ def backing_signature(block_count: int, kv_caches: list[Any]) -> tuple[tuple[int
         (slots_per_layer, block_bytes_from_vllm_kv_tensor(kv_cache))
         for kv_cache in kv_caches
     )
+
+
+def _close_backing(backing: Any) -> None:
+    release = getattr(backing, "release", None)
+    if callable(release):
+        release()
+        return
+    close = getattr(backing, "close", None)
+    if callable(close):
+        close()
 
 
 __all__ = [

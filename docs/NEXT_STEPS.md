@@ -42,6 +42,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Runtime session close must clear local buffer, target, relay, profile, and
   registered-buffer state so closed sessions cannot carry stale adapter buffers
   into a new daemon session.
+- vLLM connector close must release connector-owned saved prefixes, pending save
+  contexts, pooled CPU backings, connector metadata, and the runtime session.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -53,8 +55,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting adapter-owned prefix
-backings and connector lifecycle for remaining places where CPU/GPU resources
-can outlive their owning job or session. Also remove any old pure export layer
-that remains after refactoring. Keep server-only behavior as a deferred
-validation risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting daemon/worker socket-path
+identity, lease, ticket, and cleanup enforcement for stale or cross-job
+execution state. Also remove any old pure export layer that remains after
+refactoring. Keep server-only behavior as a deferred validation risk, not a
+blocker for this stage.

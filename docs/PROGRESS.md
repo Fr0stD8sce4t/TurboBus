@@ -23,27 +23,30 @@ pending state when no daemon session was opened.
 vLLM connector close now releases connector-owned saved prefixes, pending save
 contexts, pooled CPU backings, connector metadata, global prefix-store entries
 for the connector job/session, and its runtime session.
+Daemon socket receipt wait and transfer reschedule paths now enforce
+authenticated peer ownership before returning receipt state or replacing a
+daemon-issued plan.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added a vLLM connector lifecycle close path that releases saved prefixes,
-  pending save contexts, CPU backing pool entries, connector metadata, and the
-  runtime session.
-- Added final-release helpers to the vLLM CPU backing pool while keeping evicted
-  prefixes reusable before connector close.
-- Added prefix-store drain support so owner cleanup can remove and release the
-  exact saved prefixes it owned.
+- Added peer-ownership enforcement to `wait_transfer_receipt()` so one
+  authenticated job peer cannot read another job's receipt by guessing an
+  intent id.
+- Added peer-ownership enforcement to `reschedule_transfer()` before stale
+  leases/tickets are cleared and before a replacement daemon plan is produced.
+- Kept reschedule replanning under the same peer identity so scheduler buffer
+  and job checks still apply after the old plan is released.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\vllm_backing_pool.py
-  turbobus\adapters\vllm_prefix_store.py
-  turbobus\adapters\vllm_kv_connector.py` passed.
-- `python -m unittest test.python.unit.test_vllm_kv_connector_main_path`
-  passed.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\daemon\dispatch.py` passed.
+- `python -m unittest test.python.integration.test_daemon_socket` passed with
+  existing skips.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -55,5 +58,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
 production path while continuing code-first system implementation through
-daemon/worker socket-path identity, lease, ticket, and cleanup enforcement
-while keeping server validation deferred.
+worker-side stale ticket, lease, status evidence, and cleanup enforcement while
+keeping server validation deferred.

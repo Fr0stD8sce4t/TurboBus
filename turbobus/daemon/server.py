@@ -937,6 +937,7 @@ class TurboBusDaemon:
         self,
         intent_id: str,
         timeout_seconds: float | None = None,
+        peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         normalized_intent_id = str(intent_id)
         timeout = 0.0 if timeout_seconds is None else max(0.0, float(timeout_seconds))
@@ -945,6 +946,10 @@ class TurboBusDaemon:
             with self._lock:
                 try:
                     receipt = self._receipt_for_intent_locked(normalized_intent_id)
+                    self._validate_peer_owns_job_locked(
+                        job_id=receipt.job_id,
+                        peer_identity=peer_identity,
+                    )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
                 if receipt.state in _TERMINAL_TRANSFER_STATES or timeout_seconds is None:
@@ -1386,6 +1391,7 @@ class TurboBusDaemon:
         self,
         transfer_id: str,
         now: float | None = None,
+        peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         checked_at = time.time() if now is None else float(now)
         with self._lock:
@@ -1396,6 +1402,13 @@ class TurboBusDaemon:
             status = self._transfer_statuses.get(normalized_transfer_id)
             if status is None:
                 return DaemonResponse(ok=False, error="unknown transfer")
+            try:
+                self._validate_peer_owns_job_locked(
+                    job_id=status.job_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             if status.state in _TERMINAL_TRANSFER_STATES:
                 return DaemonResponse(ok=False, error="transfer is terminal")
             request = self._transfer_plan_requests.get(normalized_transfer_id)
@@ -1441,7 +1454,7 @@ class TurboBusDaemon:
                     topology_snapshot_id=request.get("topology_snapshot_id"),
                     workload_kind=str(request.get("workload_kind", "generic")),
                     priority=int(request.get("priority", 0) or 0),
-                    peer_identity=None,
+                    peer_identity=peer_identity,
                     now=checked_at,
                     exclude_transfer_id=normalized_transfer_id,
                     defer_relay_admission=True,

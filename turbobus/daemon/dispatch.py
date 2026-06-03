@@ -121,12 +121,14 @@ def handle_request(
         return daemon.wait_transfer_receipt(
             intent_id=str(payload["intent_id"]),
             timeout_seconds=payload.get("timeout_seconds"),
+            peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.RESCHEDULE_TRANSFER:
         payload = request.payload
         return daemon.reschedule_transfer(
             transfer_id=str(payload["transfer_id"]),
             now=payload.get("now"),
+            peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.RELEASE_TRANSFER:
         payload = request.payload

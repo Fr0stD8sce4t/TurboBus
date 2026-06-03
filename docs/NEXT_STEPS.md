@@ -44,6 +44,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   into a new daemon session.
 - vLLM connector close must release connector-owned saved prefixes, pending save
   contexts, pooled CPU backings, connector metadata, and the runtime session.
+- Daemon socket receipt wait and reschedule paths must enforce authenticated
+  peer ownership before exposing receipt state or replacing daemon plans.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -56,7 +58,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 ## Next Entry
 
 Continue the code implementation pass by inspecting daemon/worker socket-path
-identity, lease, ticket, and cleanup enforcement for stale or cross-job
-execution state. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+worker-side stale ticket, lease, status evidence, and cleanup enforcement for
+cross-job execution state. Also remove any old pure export layer that remains
+after refactoring. Keep server-only behavior as a deferred validation risk, not
+a blocker for this stage.

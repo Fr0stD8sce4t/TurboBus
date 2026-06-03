@@ -220,7 +220,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             )
             return 0, False
         prefix_key = _request_prefix_key(params)
-        saved = get_saved_prefix(prefix_key, self.session_id)
+        saved = get_saved_prefix(prefix_key, self.session_id, job_id=self.job_id)
         if saved is None:
             self.state.events.append(
                 {
@@ -275,7 +275,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         if num_external_tokens <= 0:
             return
         prefix_key = _request_prefix_key(params)
-        saved = get_saved_prefix(prefix_key, self.session_id)
+        saved = get_saved_prefix(prefix_key, self.session_id, job_id=self.job_id)
         if saved is None:
             _emit_event(
                 "alloc_miss",
@@ -616,7 +616,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
 
     def _restore_request(self, request: TurboBusRequestMetadata) -> None:
         total_start = time.perf_counter()
-        saved = get_saved_prefix(request.prefix_key, self.session_id)
+        saved = get_saved_prefix(
+            request.prefix_key,
+            self.session_id,
+            job_id=self.job_id,
+        )
         if saved is None:
             raise RuntimeError(f"saved prefix {request.prefix_key!r} is not registered")
         prepare_start = time.perf_counter()
@@ -800,6 +804,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             cpu_backings=context.cpu_backings,
             block_count=request.block_count,
             matched_tokens=request.matched_tokens,
+            job_id=self.job_id,
             session_id=self.session_id,
             source_request_id=request.request_id,
             elapsed_ms=context.transfer_ms,
@@ -833,7 +838,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         _store_saved_prefix(prefix)
         for removed in evicted:
             if removed.key != prefix.key:
-                _remove_saved_prefix(removed.key, removed.session_id)
+                _remove_saved_prefix(
+                    removed.key,
+                    removed.session_id,
+                    job_id=removed.job_id,
+                )
         _emit_event(
             "register_saved_prefix",
             prefix_key=request.prefix_key,
@@ -846,7 +855,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.state.saved_request_ids.add(request.request_id)
         register_ms = (time.perf_counter() - register_start) * 1000.0
         total_ms = (time.perf_counter() - context.total_start) * 1000.0
-        saved = get_saved_prefix(request.prefix_key, self.session_id)
+        saved = get_saved_prefix(
+            request.prefix_key,
+            self.session_id,
+            job_id=self.job_id,
+        )
         if saved is not None:
             saved.register_ms = register_ms
             saved.total_ms = total_ms
@@ -922,6 +935,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         return None
 
     def _store_prefix(self, prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
+        if prefix.job_id == "default":
+            prefix.job_id = self.job_id
+        elif prefix.job_id != self.job_id:
+            raise ValueError("saved prefix job_id must match connector job_id")
         evicted = self._prefix_store.put(prefix)
         kv_caches = list(self.state.kv_caches.values())
         for removed in evicted:

@@ -14,21 +14,24 @@ inference KV adapters now have runtime-session entry points. Worker service and
 production process entry points route requests through the standard lifecycle.
 vLLM connector save/restore tracing now requires real `TransferReceipt` handles
 before it records receipt, decision, topology, or ticket ids.
+vLLM saved prefixes are keyed by job id, session id, and prefix key, and the
+connector binds externally created saved prefixes to its own job before storing
+them.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Tightened vLLM connector receipt tracing so save/restore transfers fail when
-  handles are missing or do not expose a `TransferReceipt`.
-- Kept existing receipt evidence validation before connector events or saved
-  prefixes record receipt and ticket metadata.
+- Added job-aware saved-prefix keys to `TurboBusPrefixStore`.
+- Updated `TurboBusConnector` save, restore, match, eviction, and removal paths
+  to pass the connector job id when accessing saved prefixes.
+- Rejected saved prefixes whose job id does not match the connector job id.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\vllm_kv_connector.py
-  turbobus\adapters\vllm.py turbobus\offload_store.py` passed.
+- `python -m py_compile turbobus\adapters\vllm_prefix_store.py
+  turbobus\adapters\vllm_kv_connector.py` passed.
 - `python -m unittest test.python.unit.test_vllm_kv_connector_main_path`
   passed.
 - `git diff --check` passed with only CRLF conversion warnings.
@@ -42,4 +45,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
 production path while continuing code-first system implementation through
-vLLM/offload adapter buffer lifecycle and keeping server validation deferred.
+runtime-session close and adapter buffer lifecycle while keeping server
+validation deferred.

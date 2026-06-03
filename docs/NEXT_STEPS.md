@@ -37,6 +37,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - vLLM connector save/restore paths must record receipt traces only from real
   `TransferReceipt` handles and must fail if a transfer returns no receipt
   evidence.
+- vLLM saved-prefix lookup must be isolated by job and session so one job cannot
+  restore another job's prefix when vLLM session ids collide.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -48,8 +50,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting vLLM/offload adapter buffer
-lifecycle for remaining places where callers can bypass the unified runtime
-session path. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+Continue the code implementation pass by inspecting runtime-session close and
+adapter buffer lifecycle for remaining places where registered buffers or
+prefix backings can outlive their owning session. Also remove any old pure
+export layer that remains after refactoring. Keep server-only behavior as a
+deferred validation risk, not a blocker for this stage.

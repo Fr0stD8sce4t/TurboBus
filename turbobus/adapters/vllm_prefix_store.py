@@ -20,6 +20,7 @@ class TurboBusSavedPrefix:
     cpu_backings: list[Any]
     block_count: int
     matched_tokens: int
+    job_id: str = "default"
     session_id: str = "default"
     source_request_id: str = ""
     bytes: int = 0
@@ -56,7 +57,7 @@ class TurboBusPrefixStore:
         if not prefix.key:
             raise ValueError("prefix key must not be empty")
         evicted = []
-        store_key = self._store_key(prefix.key, prefix.session_id)
+        store_key = self._store_key(prefix.key, prefix.session_id, prefix.job_id)
         previous = self._prefixes.pop(store_key, None)
         if previous is not None:
             evicted.append(previous)
@@ -67,38 +68,84 @@ class TurboBusPrefixStore:
             evicted.append(removed)
         return evicted
 
-    def get(self, key: str, session_id: str = "default") -> TurboBusSavedPrefix | None:
-        return self._prefixes.get(self._store_key(key, session_id))
+    def get(
+        self,
+        key: str,
+        session_id: str = "default",
+        job_id: str | None = None,
+    ) -> TurboBusSavedPrefix | None:
+        if job_id is not None:
+            return self._prefixes.get(self._store_key(key, session_id, job_id))
+        matches = [
+            prefix
+            for prefix in self._prefixes.values()
+            if prefix.key == str(key) and prefix.session_id == str(session_id)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None
 
-    def remove(self, key: str, session_id: str = "default") -> TurboBusSavedPrefix | None:
-        return self._prefixes.pop(self._store_key(key, session_id), None)
+    def remove(
+        self,
+        key: str,
+        session_id: str = "default",
+        job_id: str | None = None,
+    ) -> TurboBusSavedPrefix | None:
+        if job_id is not None:
+            return self._prefixes.pop(self._store_key(key, session_id, job_id), None)
+        matches = [
+            store_key
+            for store_key, prefix in self._prefixes.items()
+            if prefix.key == str(key) and prefix.session_id == str(session_id)
+        ]
+        if len(matches) == 1:
+            return self._prefixes.pop(matches[0])
+        return None
 
-    def clear(self, session_id: str | None = None) -> None:
+    def clear(self, session_id: str | None = None, job_id: str | None = None) -> None:
         if session_id is None:
-            self._prefixes.clear()
+            if job_id is None:
+                self._prefixes.clear()
+                return
+            for key in list(self._prefixes):
+                if key.startswith(f"{str(job_id)}\0"):
+                    self._prefixes.pop(key)
             return
-        prefix = f"{str(session_id)}\0"
-        for key in list(self._prefixes):
-            if key.startswith(prefix):
-                self._prefixes.pop(key)
+        for key, prefix in list(self._prefixes.items()):
+            if prefix.session_id != str(session_id):
+                continue
+            if job_id is not None and prefix.job_id != str(job_id):
+                continue
+            self._prefixes.pop(key)
 
     def __len__(self) -> int:
         return len(self._prefixes)
 
     @staticmethod
-    def _store_key(key: str, session_id: str = "default") -> str:
-        return f"{str(session_id)}\0{str(key)}"
+    def _store_key(
+        key: str,
+        session_id: str = "default",
+        job_id: str = "default",
+    ) -> str:
+        return f"{str(job_id)}\0{str(session_id)}\0{str(key)}"
 
 
 _PREFIX_STORE = TurboBusPrefixStore()
 
 
-def clear_saved_prefixes(session_id: str | None = None) -> None:
-    _PREFIX_STORE.clear(session_id)
+def clear_saved_prefixes(
+    session_id: str | None = None,
+    job_id: str | None = None,
+) -> None:
+    _PREFIX_STORE.clear(session_id, job_id=job_id)
 
 
-def get_saved_prefix(key: str, session_id: str = "default") -> TurboBusSavedPrefix | None:
-    return _PREFIX_STORE.get(str(key), str(session_id))
+def get_saved_prefix(
+    key: str,
+    session_id: str = "default",
+    job_id: str | None = None,
+) -> TurboBusSavedPrefix | None:
+    return _PREFIX_STORE.get(str(key), str(session_id), job_id=job_id)
 
 
 def store_saved_prefix(prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
@@ -108,8 +155,9 @@ def store_saved_prefix(prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]
 def remove_saved_prefix(
     key: str,
     session_id: str = "default",
+    job_id: str | None = None,
 ) -> TurboBusSavedPrefix | None:
-    return _PREFIX_STORE.remove(key, session_id)
+    return _PREFIX_STORE.remove(key, session_id, job_id=job_id)
 
 
 __all__ = [

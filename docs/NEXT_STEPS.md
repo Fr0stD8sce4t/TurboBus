@@ -34,8 +34,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep daemon receipt wait, reschedule, direct fallback, and worker backend
   execution bound to daemon-issued, fresh `ExecutionTicket` data with ticket
   evidence in status updates.
-- Finish inspecting daemon cleanup paths for stale transfer, ticket, lease,
-  buffer, and session state that could survive across jobs or sessions.
+- Keep daemon cleanup paths from leaving cleaned job, buffer, or session
+  transfers in the runtime scheduling view.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -47,7 +47,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon cleanup enforcement
-for stale transfer, ticket, lease, buffer, and session state. Also remove any
-old pure export layer that remains after refactoring. Keep server-only behavior
-as a deferred validation risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting model loading, training
+offload, inference KV, and vLLM adapter entry points for any remaining manual
+daemon client assembly, transfer context assembly, or application-side physical
+path control. Also remove any old pure export layer that remains after
+refactoring. Keep server-only behavior as a deferred validation risk, not a
+blocker for this stage.

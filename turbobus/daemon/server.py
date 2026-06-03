@@ -401,14 +401,17 @@ class TurboBusDaemon:
                     removed["buffers"] = int(removed["buffers"]) + 1
                 for transfer_id in transfer_ids:
                     status = self._transfer_statuses.get(transfer_id)
-                    if status is None or status.state in _TERMINAL_TRANSFER_STATES:
-                        continue
-                    self._mark_transfer_terminal_locked(
-                        transfer_id,
-                        TransferStatusState.CANCELED,
-                        error=cleanup.reason,
-                    )
-                    removed["transfers"] = int(removed["transfers"]) + 1
+                    if (
+                        status is not None
+                        and status.state not in _TERMINAL_TRANSFER_STATES
+                    ):
+                        self._mark_transfer_terminal_locked(
+                            transfer_id,
+                            TransferStatusState.CANCELED,
+                            error=cleanup.reason,
+                        )
+                        removed["transfers"] = int(removed["transfers"]) + 1
+                    self._retire_transfer_runtime_state_locked(transfer_id)
             elif cleanup.target_kind == "session":
                 try:
                     if cleanup.target_id in self._sessions:
@@ -3031,14 +3034,14 @@ class TurboBusDaemon:
                 )
         for transfer_id in transfer_ids:
             status = self._transfer_statuses.get(transfer_id)
-            if status is None or status.state in _TERMINAL_TRANSFER_STATES:
-                continue
-            self._mark_transfer_terminal_locked(
-                transfer_id,
-                TransferStatusState.CANCELED,
-                error=reason,
-            )
-            removed["transfers"] += 1
+            if status is not None and status.state not in _TERMINAL_TRANSFER_STATES:
+                self._mark_transfer_terminal_locked(
+                    transfer_id,
+                    TransferStatusState.CANCELED,
+                    error=reason,
+                )
+                removed["transfers"] += 1
+            self._retire_transfer_runtime_state_locked(transfer_id)
         for buffer_id, buffer in list(self._buffers.items()):
             if buffer.job_id == str(job_id):
                 self._buffers.pop(buffer_id, None)
@@ -3312,6 +3315,22 @@ class TurboBusDaemon:
         if ticket_id is not None:
             self._execution_tickets.pop(ticket_id, None)
 
+    def _retire_transfer_runtime_state_locked(self, transfer_id: str) -> None:
+        normalized = str(transfer_id)
+        removed = False
+        if normalized in self._transfer_queue_records:
+            self._transfer_queue_records.pop(normalized, None)
+            removed = True
+        if normalized in self._transfer_queue:
+            self._transfer_queue = [
+                queued_id
+                for queued_id in self._transfer_queue
+                if queued_id != normalized
+            ]
+            removed = True
+        if removed:
+            self._runtime_state_version += 1
+
     def _mark_transfer_admission_terminal_locked(
         self,
         transfer_id: str,
@@ -3377,15 +3396,15 @@ class TurboBusDaemon:
                 )
         for transfer_id in transfer_ids:
             status = self._transfer_statuses.get(transfer_id)
-            if status is None or status.state in _TERMINAL_TRANSFER_STATES:
-                continue
-            self._mark_transfer_terminal_locked(
-                transfer_id,
-                TransferStatusState.CANCELED,
-                error=reason,
-            )
-            if removed is not None:
-                removed["transfers"] = int(removed["transfers"]) + 1
+            if status is not None and status.state not in _TERMINAL_TRANSFER_STATES:
+                self._mark_transfer_terminal_locked(
+                    transfer_id,
+                    TransferStatusState.CANCELED,
+                    error=reason,
+                )
+                if removed is not None:
+                    removed["transfers"] = int(removed["transfers"]) + 1
+            self._retire_transfer_runtime_state_locked(transfer_id)
         for gpu in session.relay_gpus:
             quota = self._relay_quotas.get(gpu)
             if quota is not None:

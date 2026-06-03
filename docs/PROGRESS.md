@@ -32,26 +32,26 @@ execution can start. Direct fallback also rejects expired or malformed
 daemon-issued tickets before invoking the backend, and the CUDA worker executor
 re-checks daemon-authorized ticket freshness before converting a daemon plan
 into a native backend plan.
+Daemon job, buffer, and session cleanup now retires the affected transfer from
+the runtime scheduling queue after canceling any non-terminal state, while
+leaving terminal status and audit data available for control-plane inspection.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added direct fallback validation for daemon-issued ticket expiration and
-  missing or non-positive plan generation before backend execution.
-- Added CUDA worker executor ticket freshness validation for daemon-authorized
-  requests even when the executor is called directly.
-- Added ticket id, transfer id, and plan generation metadata to CUDA worker
-  executor completion and failure results.
+- Added daemon cleanup retirement for job, buffer, and session transfers so
+  cleaned jobs or sessions no longer appear in runtime scheduling state.
+- Preserved terminal `transfer_status` and cleanup audit visibility after
+  runtime queue retirement.
 
 ## Validation
 
-- `python -m py_compile turbobus\direct_fallback.py
-  turbobus\worker\cuda_executor.py` passed.
-- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
-- `python -m unittest test.python.integration.test_client_worker_transfer`
-  passed with one existing skip.
+- `python -m py_compile turbobus\daemon\server.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m unittest test.python.integration.test_daemon_socket` passed with
+  seventeen existing skips.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -63,5 +63,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path by inspecting cleanup enforcement for stale transfer, ticket,
-lease, buffer, and session state while keeping server validation deferred.
+production path by inspecting upper adapter entry points for remaining manual
+daemon client assembly, transfer context assembly, or application-side physical
+path control while keeping server validation deferred.

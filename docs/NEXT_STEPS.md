@@ -49,7 +49,13 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-For the next round, inspect the existing daemon and worker socket protocols and
-use only an existing minimal control-plane request to confirm that the running
-production services accept authenticated socket traffic. Do not add new test,
-benchmark, paper-validation, or fake request code.
+With the production daemon and worker still running on the Linux server, run
+only existing client APIs from a third shell:
+
+- `TurboBusDaemonClient(...).get_inventory()` against the daemon socket.
+- `WorkerServiceSocketClient(...).submit_envelope(...)` with a structurally
+  valid but unauthorized worker envelope, expecting `authorization_failed`
+  before staging allocation or CUDA execution.
+
+Record the real responses, then update this file and `docs/PROGRESS.md`. Do not
+add new test, benchmark, paper-validation, or fake request code.

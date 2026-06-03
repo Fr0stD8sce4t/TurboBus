@@ -30,30 +30,28 @@ GPU0/GPU1 startup-validation scope.
 
 ## Completed This Round
 
-- Confirmed on the Linux CUDA server that the production daemon can start with
-  `CUDA_VISIBLE_DEVICES=0,1`, `--target-gpu 0`, `--min-relays 0`, and
-  `--allow-missing-fabric`.
-- Confirmed the production worker socket service can start against that daemon.
-- Confirmed both services create owner-only Unix socket files and do not add
-  TurboBus Python processes on the busy GPU5/GPU6 NVLink pair.
+- Inspected the existing daemon and worker socket protocols for a minimal
+  production request validation path.
+- Selected `TurboBusDaemonClient.get_inventory()` as the daemon control-plane
+  request because it uses the existing daemon socket client and does not submit
+  transfers.
+- Selected `WorkerServiceSocketClient.submit_envelope()` with an unauthorized
+  worker envelope as the worker request because the existing lifecycle returns
+  `authorization_failed` before staging allocation or CUDA execution.
 
 ## Validation
 
-- Server command passed by entering the daemon accept loop:
-  `CUDA_VISIBLE_DEVICES=0,1 python -m turbobus.daemon --socket-path
-  /tmp/turbobusd-$USER.sock --target-gpu 0 --min-relays 0
-  --allow-missing-fabric`.
-- Server command passed by entering the worker accept loop:
-  `CUDA_VISIBLE_DEVICES=0,1 python -m turbobus.worker
-  --daemon-socket-path /tmp/turbobusd-$USER.sock --socket-path
-  /tmp/turbobus-worker-$USER.sock`.
-- Server inspection showed `srw-------` socket files at
-  `/tmp/turbobusd-sdu.sock` and `/tmp/turbobus-worker-sdu.sock`.
-- Server `nvidia-smi` showed no new TurboBus Python process on GPU5/GPU6.
+- Code inspection confirmed daemon `GET_INVENTORY` is routed through
+  `TurboBusDaemonClient.send()` and the production daemon socket server.
+- Code inspection confirmed worker authorization failure returns a completion
+  envelope without a staging slot or worker result.
+- The existing production services still need the selected requests run from
+  the Linux CUDA server; no local substitute validation was added.
 
 ## Remaining Risk
 
-- This startup pass did not send socket requests or execute transfers.
+- The selected daemon and worker socket requests have not yet been run against
+  the live Linux server services.
 - Relay and pooled execution still require the GPU5/GPU6 NVLink pair after it
   is idle.
 

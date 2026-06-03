@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 from .api import TurboBusClient
@@ -34,13 +34,13 @@ from .worker import (
 class TurboBusRuntimeSession:
     daemon_client: object
     job_id: str
-    target_gpu: int | None = None
-    relay_gpus: Iterable[int] | None = None
     user_id: str | None = None
     worker_client: object | None = None
     max_inflight_chunks: int = 8
     backend: object = default_cuda_backend
     runtime_options: RuntimeOptions = field(default_factory=RuntimeOptions)
+    _target_gpu: int | None = field(default=None, init=False, repr=False)
+    _relay_gpus: tuple[int, ...] | None = field(default=None, init=False, repr=False)
     _session_id: str | None = field(default=None, init=False, repr=False)
     _buffers: dict[str, ExecutableBuffer] = field(
         default_factory=dict,
@@ -66,8 +66,6 @@ class TurboBusRuntimeSession:
         daemon_client,
         *,
         job_id: str,
-        target_gpu: int | None = None,
-        relay_gpus: Iterable[int] | None = None,
         user_id: str | None = None,
         worker_client: object | None = None,
         max_inflight_chunks: int = 8,
@@ -77,18 +75,12 @@ class TurboBusRuntimeSession:
         session = cls(
             daemon_client=daemon_client,
             job_id=str(job_id),
-            target_gpu=None if target_gpu is None else int(target_gpu),
-            relay_gpus=(
-                None if relay_gpus is None else tuple(int(gpu) for gpu in relay_gpus)
-            ),
             user_id=user_id,
             worker_client=worker_client,
             max_inflight_chunks=int(max_inflight_chunks),
             backend=backend,
             runtime_options=runtime_options or RuntimeOptions(),
         )
-        if session.target_gpu is not None:
-            session.open_session()
         return session
 
     @property
@@ -97,17 +89,25 @@ class TurboBusRuntimeSession:
             raise RuntimeError("TurboBus runtime session is not open")
         return self._session_id
 
+    @property
+    def target_gpu(self) -> int | None:
+        return self._target_gpu
+
+    @property
+    def relay_gpus(self) -> Sequence[int] | None:
+        return self._relay_gpus
+
     def open_session(self) -> str:
         if self._session_id is not None:
             return self._session_id
-        if self.target_gpu is None:
+        if self._target_gpu is None:
             raise RuntimeError(
-                "target_gpu is not known; register a CUDA buffer before opening "
+                "target GPU is not known; register a CUDA buffer before opening "
                 "the daemon session"
             )
         relay_gpus = self._relay_gpus_for_session()
         response = self.daemon_client.register_session(
-            int(self.target_gpu),
+            int(self._target_gpu),
             list(relay_gpus),
             int(self.max_inflight_chunks),
         )
@@ -219,7 +219,7 @@ class TurboBusRuntimeSession:
             self.daemon_client,
             self.backend,
             self.runtime_options,
-            target_gpu=int(self.target_gpu),
+            target_gpu=int(self._target_gpu),
             relay_gpus=relays,
             force=force,
         )
@@ -238,7 +238,6 @@ class TurboBusRuntimeSession:
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":
-        self.open_session()
         return self
 
     def __exit__(self, exc_type, exc, traceback) -> None:
@@ -250,7 +249,7 @@ class TurboBusRuntimeSession:
         if isinstance(buffer, CudaIpcDeviceBuffer):
             self._bind_target_gpu(buffer.device_index)
         self._buffers[buffer.buffer_id] = buffer
-        if self.target_gpu is None:
+        if self._target_gpu is None:
             return
         self.open_session()
         self._register_pending_buffers()
@@ -340,22 +339,21 @@ class TurboBusRuntimeSession:
 
     def _bind_target_gpu(self, device_index: int) -> None:
         device = int(device_index)
-        if self.target_gpu is None:
-            self.target_gpu = device
+        if self._target_gpu is None:
+            self._target_gpu = device
             return
-        if int(self.target_gpu) != device:
+        if int(self._target_gpu) != device:
             raise ValueError("CUDA buffer device_index must match runtime target_gpu")
 
     def _relay_gpus_for_session(self) -> tuple[int, ...]:
-        if self.relay_gpus is not None:
-            return tuple(int(gpu) for gpu in self.relay_gpus)
+        if self._relay_gpus is not None:
+            return self._relay_gpus
         discovery = getattr(self.daemon_client, "discover_relays", None)
         if not callable(discovery):
             raise RuntimeError(
-                "relay_gpus were not provided and daemon client does not support "
-                "relay discovery"
+                "daemon client must support relay discovery for runtime sessions"
             )
-        response = discovery(target_gpu=int(self.target_gpu))
+        response = discovery(target_gpu=int(self._target_gpu))
         require_ok(response, "daemon relay discovery failed")
         payload = response.payload.get("relay_discovery")
         if not isinstance(payload, Mapping):
@@ -368,7 +366,7 @@ class TurboBusRuntimeSession:
             for item in eligibility.get("eligible_relays", ()) or ()
             if isinstance(item, Mapping)
         )
-        self.relay_gpus = relays
+        self._relay_gpus = relays
         return relays
 
     def _bootstrap_profile_if_enabled(self) -> None:

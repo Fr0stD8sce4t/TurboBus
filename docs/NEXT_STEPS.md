@@ -25,37 +25,25 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Current Code Work
 
-- Production daemon startup now creates a daemon that requires authenticated
-  socket peers, and the socket service fails before serving when the platform
-  cannot provide supported Unix peer credentials.
-- Intent transfer status updates now require worker/backend execution evidence
-  bound to the current daemon `ExecutionTicket`, including failed and canceled
-  external status reports.
-- Session, job, buffer, lease, and transfer cleanup now release staging records
-  and drop daemon execution tickets when transfers end in failed or canceled
-  states.
-- Worker service and production worker process paths now route socket requests
-  through the standard authorization, execution, status, cleanup lifecycle.
-- The old `turbobus/worker/helper.py` export layer has been deleted; worker
-  modules import real implementation modules directly.
-- Keep the old `client_transfer.py` file deleted. Do not recreate it as a
-  compatibility export layer.
-- The old `turbobus/daemon/protocol.py` export layer should remain deleted;
-  daemon modules and tests must import protocol dataclasses directly from
-  `turbobus.schema` and topology records directly from `turbobus.topology`.
-- Profile bootstrap should respect `RuntimeOptions.profile_cache_enabled`
-  before reusing daemon cached profiles.
-- Continue code work on the system path; server validation is deferred until
-  after the complete system implementation pass.
+- `TurboBusRuntimeSession.open()` is the public system entry and must not expose
+  application-side relay selection. It should bind the target GPU from the
+  registered CUDA buffer and obtain relay eligibility from daemon discovery.
+- Runtime session should keep registering session, job, and buffers before
+  submitting `TransferIntent`, then execute through `WorkerIntentTransferExecutor`
+  and consume `TransferReceipt`.
+- Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
+  `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
+  compatibility export layers.
+- Continue code work on the system path; server-only validation is deferred
+  until after the complete system implementation pass.
 - Do not add mock native backends, fake correctness gates, server-validation
   gates, benchmark helpers, or paper-validation code while validating this
   path.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting `turbobus/runtime_session.py`,
-`turbobus/profile.py`, `turbobus/offload_store.py`, and the adapter entry
-points for remaining places where the unified runtime session path is not the
-default system entry. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+Continue the code implementation pass by inspecting `turbobus/offload_store.py`
+and adapter entry points for remaining places where the unified runtime session
+path is not the default system entry. Also remove any old pure export layer
+that remains after refactoring. Keep server-only behavior as a deferred
+validation risk, not a blocker for this stage.

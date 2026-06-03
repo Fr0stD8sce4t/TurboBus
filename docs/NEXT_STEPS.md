@@ -37,6 +37,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   evidence in status updates.
 - Keep completed transfer tickets archived only for receipt/release evidence,
   not available as active execution tickets after backend or worker completion.
+- Keep successful worker completion cleanup bound to daemon release evidence:
+  completed worker envelopes must show a real reservation release, not a
+  generic cleanup or skipped cleanup response.
 - Keep `OffloadStore` bound to runtime-session-owned clients, and keep closed
   runtime sessions from accepting later buffer registration, transfer submit,
   receipt wait, or profile bootstrap calls.
@@ -53,8 +56,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting worker status reporting and
-cleanup envelopes for any remaining places where stale leases, stale staging
-records, or cleaned transfers can be reported after cleanup. Also remove any
-old pure export layer that remains after refactoring. Keep server-only behavior
-as a deferred validation risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting daemon receipt wait,
+reschedule, and cleanup state after job/session/buffer teardown. Cleaned or
+retired transfers must not re-enter scheduling or execution, while terminal
+receipt evidence remains available for the owning job/session. Keep
+server-only behavior as a deferred runtime risk, not a blocker for this stage.

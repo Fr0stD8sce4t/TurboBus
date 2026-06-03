@@ -594,7 +594,16 @@ class TurboBusDaemon:
             reservation = self._release_reservation_locked(reservation_id)
             if reservation is None:
                 return DaemonResponse(ok=False, error="unknown reservation")
-            return DaemonResponse(ok=True, payload={"reservation_id": reservation_id})
+            released_reservation_id = reservation.reservation_id
+            return DaemonResponse(
+                ok=True,
+                payload={
+                    "reservation_id": released_reservation_id,
+                    "released_reservation_ids": (released_reservation_id,),
+                    "cleanup_kind": "reservation",
+                    "cleanup_mode": "release",
+                },
+            )
 
     def transfer_status(
         self,

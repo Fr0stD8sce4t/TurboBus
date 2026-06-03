@@ -31,6 +31,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Runtime session should keep registering session, job, and buffers before
   submitting `TransferIntent`, then execute through `WorkerIntentTransferExecutor`
   and consume `TransferReceipt`.
+- Model loading, training offload, and inference KV adapters should provide
+  runtime-session constructors so callers do not manually assemble daemon
+  clients, transfer contexts, or buffer registration.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -42,8 +45,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting `turbobus/offload_store.py`
-and adapter entry points for remaining places where the unified runtime session
-path is not the default system entry. Also remove any old pure export layer
-that remains after refactoring. Keep server-only behavior as a deferred
-validation risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting vLLM/offload adapter buffer
+lifecycle and receipt handling for remaining places where callers can bypass
+the unified runtime session path. Also remove any old pure export layer that
+remains after refactoring. Keep server-only behavior as a deferred validation
+risk, not a blocker for this stage.

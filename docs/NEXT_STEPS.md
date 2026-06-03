@@ -39,6 +39,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   evidence.
 - vLLM saved-prefix lookup must be isolated by job and session so one job cannot
   restore another job's prefix when vLLM session ids collide.
+- Runtime session close must clear local buffer, target, relay, profile, and
+  registered-buffer state so closed sessions cannot carry stale adapter buffers
+  into a new daemon session.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -50,8 +53,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting runtime-session close and
-adapter buffer lifecycle for remaining places where registered buffers or
-prefix backings can outlive their owning session. Also remove any old pure
-export layer that remains after refactoring. Keep server-only behavior as a
-deferred validation risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting adapter-owned prefix
+backings and connector lifecycle for remaining places where CPU/GPU resources
+can outlive their owning job or session. Also remove any old pure export layer
+that remains after refactoring. Keep server-only behavior as a deferred
+validation risk, not a blocker for this stage.

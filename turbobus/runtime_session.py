@@ -228,13 +228,11 @@ class TurboBusRuntimeSession:
 
     def close(self) -> DaemonResponse:
         if self._session_id is None:
+            self._clear_local_session_state()
             return DaemonResponse(ok=True, payload={"closed": False})
         response = self.daemon_client.close_session(self._session_id)
         if response.ok:
-            self._session_id = None
-            self._client = None
-            self._registered_buffer_ids.clear()
-            self._registered_buffer_fingerprints.clear()
+            self._clear_local_session_state()
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":
@@ -336,6 +334,16 @@ class TurboBusRuntimeSession:
             register_executable_buffer(self.daemon_client, buffer)
             self._registered_buffer_ids.add(buffer_id)
             self._registered_buffer_fingerprints[buffer_id] = fingerprint
+
+    def _clear_local_session_state(self) -> None:
+        self._session_id = None
+        self._target_gpu = None
+        self._relay_gpus = None
+        self._client = None
+        self._profile_bootstrapped = False
+        self._buffers.clear()
+        self._registered_buffer_ids.clear()
+        self._registered_buffer_fingerprints.clear()
 
     def _bind_target_gpu(self, device_index: int) -> None:
         device = int(device_index)

@@ -28,38 +28,40 @@ authenticated peer ownership before returning receipt state or replacing a
 daemon-issued plan.
 Daemon worker authorization responses now include an authorization timestamp,
 and worker authorization rejects expired `ExecutionTicket` data before worker
-execution can start.
+execution can start. Direct fallback also rejects expired or malformed
+daemon-issued tickets before invoking the backend, and the CUDA worker executor
+re-checks daemon-authorized ticket freshness before converting a daemon plan
+into a native backend plan.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added `authorized_at` to daemon-issued worker authorization responses.
-- Added explicit ticket expiration validation for worker authorization payloads
-  that came from the daemon socket path.
-- Added a second freshness check immediately before the worker executor starts
-  on authorization payloads that carried daemon authorization timing.
+- Added direct fallback validation for daemon-issued ticket expiration and
+  missing or non-positive plan generation before backend execution.
+- Added CUDA worker executor ticket freshness validation for daemon-authorized
+  requests even when the executor is called directly.
+- Added ticket id, transfer id, and plan generation metadata to CUDA worker
+  executor completion and failure results.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\worker\validation.py turbobus\worker\models.py
-  turbobus\worker\lifecycle.py` passed.
-- `python -m unittest test.python.unit.test_worker_authorization` passed.
-- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m py_compile turbobus\direct_fallback.py
+  turbobus\worker\cuda_executor.py` passed.
+- `python -m unittest test.python.unit.test_worker_cuda_executor` passed.
 - `python -m unittest test.python.integration.test_client_worker_transfer`
   passed with one existing skip.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
 
-- CUDA/native execution, vLLM integration behavior, and relay/pooled execution
-  remain deferred until the full system implementation pass is complete.
+- CUDA/native execution, vLLM integration behavior, relay/pooled execution, and
+  server-only behavior remain deferred until the full system implementation
+  pass is complete.
 
 ## Next Main Target
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
-production path while continuing code-first system implementation through
-direct/backend ticket freshness, status evidence, and cleanup enforcement while
-keeping server validation deferred.
+production path by inspecting cleanup enforcement for stale transfer, ticket,
+lease, buffer, and session state while keeping server validation deferred.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable, Mapping
 
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
@@ -263,6 +264,13 @@ def _direct_ticket_from_planned_payload(
         and int(ticket.metadata.get("plan_generation", 0)) != int(plan_generation)
     ):
         raise RuntimeError("daemon direct ticket plan generation mismatch")
+    ticket_generation = ticket.metadata.get("plan_generation")
+    if ticket_generation is None:
+        raise RuntimeError("daemon direct ticket missing plan generation")
+    if int(ticket_generation) <= 0:
+        raise RuntimeError("daemon direct ticket plan generation must be positive")
+    if time.time() > float(ticket.expires_at):
+        raise RuntimeError("daemon direct ticket expired")
     if ticket.metadata.get("transfer_id") != str(transfer_id):
         raise RuntimeError("daemon direct ticket transfer mismatch")
     if ticket.job_id != str(job_id):

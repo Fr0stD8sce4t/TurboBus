@@ -25,30 +25,17 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Current Code Work
 
-- `TurboBusRuntimeSession.open()` is the public system entry and must not expose
-  application-side relay selection. It should bind the target GPU from the
-  registered CUDA buffer and obtain relay eligibility from daemon discovery.
-- Runtime session should keep registering session, job, and buffers before
-  submitting `TransferIntent`, then execute through `WorkerIntentTransferExecutor`
-  and consume `TransferReceipt`.
-- Model loading, training offload, and inference KV adapters should provide
-  runtime-session constructors so callers do not manually assemble daemon
-  clients, transfer contexts, or buffer registration.
-- vLLM connector save/restore paths must record receipt traces only from real
-  `TransferReceipt` handles and must fail if a transfer returns no receipt
-  evidence.
-- vLLM saved-prefix lookup must be isolated by job and session so one job cannot
-  restore another job's prefix when vLLM session ids collide.
-- Runtime session close must clear local buffer, target, relay, profile, and
-  registered-buffer state so closed sessions cannot carry stale adapter buffers
-  into a new daemon session.
-- vLLM connector close must release connector-owned saved prefixes, pending save
-  contexts, pooled CPU backings, connector metadata, and the runtime session.
-- Daemon socket receipt wait and reschedule paths must enforce authenticated
-  peer ownership before exposing receipt state or replacing daemon plans.
-- Worker authorization must reject daemon responses whose `ExecutionTicket` is
-  already expired and must re-check ticket freshness immediately before worker
-  execution starts.
+- Keep `TurboBusRuntimeSession.open()` as the public system entry without
+  application-side relay selection; it must register session, job, and buffers
+  before submitting `TransferIntent`.
+- Keep model loading, training offload, inference KV, and vLLM paths on the
+  runtime-session API so callers do not assemble daemon clients, transfer
+  contexts, or buffer registration manually.
+- Keep daemon receipt wait, reschedule, direct fallback, and worker backend
+  execution bound to daemon-issued, fresh `ExecutionTicket` data with ticket
+  evidence in status updates.
+- Finish inspecting daemon cleanup paths for stale transfer, ticket, lease,
+  buffer, and session state that could survive across jobs or sessions.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -60,8 +47,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon/worker socket-path
-direct/backend ticket freshness, status evidence, and cleanup enforcement for
-stale execution state. Also remove any old pure export layer that remains after
-refactoring. Keep server-only behavior as a deferred validation risk, not a
-blocker for this stage.
+Continue the code implementation pass by inspecting daemon cleanup enforcement
+for stale transfer, ticket, lease, buffer, and session state. Also remove any
+old pure export layer that remains after refactoring. Keep server-only behavior
+as a deferred validation risk, not a blocker for this stage.

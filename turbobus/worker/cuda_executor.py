@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from typing import Any
 
@@ -150,6 +151,7 @@ class CudaWorkerExecutor:
                 ),
                 "relay_chunks": relay_chunks,
                 **completion_evidence,
+                **_ticket_binding_metadata(request),
             },
         )
 
@@ -187,7 +189,10 @@ def _worker_plan_payload(
 def _require_ticket_authorizes_current_worker_plan(
     request: WorkerTransferRequest,
 ) -> None:
-    worker_validation.validate_daemon_issued_ticket(request.ticket)
+    worker_validation.validate_daemon_issued_ticket(
+        request.ticket,
+        now=_ticket_validation_time(request),
+    )
     worker_validation.validate_ticket_matches_worker_request(
         request.ticket,
         request.authorization,
@@ -348,8 +353,28 @@ def _failed_result(
             "src_buffer_id": request.authorization.src_buffer.buffer_id,
             "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
             "staging_slot_id": staging_slot.slot_id,
+            **_ticket_binding_metadata(request),
         },
     )
+
+
+def _ticket_validation_time(request: WorkerTransferRequest) -> float | None:
+    if "ticket_authorized_at" not in request.data_plane.metadata:
+        return None
+    return time.time()
+
+
+def _ticket_binding_metadata(
+    request: WorkerTransferRequest,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"ticket_id": request.ticket.ticket_id}
+    transfer_id = request.ticket.metadata.get("transfer_id")
+    if transfer_id is not None:
+        metadata["transfer_id"] = str(transfer_id)
+    plan_generation = request.ticket.metadata.get("plan_generation")
+    if plan_generation is not None:
+        metadata["plan_generation"] = int(plan_generation)
+    return metadata
 
 
 def _stats_int(stats: Any, field_name: str, default: int) -> int:

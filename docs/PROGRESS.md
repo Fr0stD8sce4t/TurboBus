@@ -26,27 +26,30 @@ for the connector job/session, and its runtime session.
 Daemon socket receipt wait and transfer reschedule paths now enforce
 authenticated peer ownership before returning receipt state or replacing a
 daemon-issued plan.
+Daemon worker authorization responses now include an authorization timestamp,
+and worker authorization rejects expired `ExecutionTicket` data before worker
+execution can start.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added peer-ownership enforcement to `wait_transfer_receipt()` so one
-  authenticated job peer cannot read another job's receipt by guessing an
-  intent id.
-- Added peer-ownership enforcement to `reschedule_transfer()` before stale
-  leases/tickets are cleared and before a replacement daemon plan is produced.
-- Kept reschedule replanning under the same peer identity so scheduler buffer
-  and job checks still apply after the old plan is released.
+- Added `authorized_at` to daemon-issued worker authorization responses.
+- Added explicit ticket expiration validation for worker authorization payloads
+  that came from the daemon socket path.
+- Added a second freshness check immediately before the worker executor starts
+  on authorization payloads that carried daemon authorization timing.
 
 ## Validation
 
 - `python -m py_compile turbobus\daemon\server.py
-  turbobus\daemon\dispatch.py` passed.
-- `python -m unittest test.python.integration.test_daemon_socket` passed with
-  existing skips.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
+  turbobus\worker\validation.py turbobus\worker\models.py
+  turbobus\worker\lifecycle.py` passed.
+- `python -m unittest test.python.unit.test_worker_authorization` passed.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m unittest test.python.integration.test_client_worker_transfer`
+  passed with one existing skip.
 - `git diff --check` passed with only CRLF conversion warnings.
 
 ## Remaining Risk
@@ -58,5 +61,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 Tighten cross-job isolation and daemon authority in the daemon/worker
 production path while continuing code-first system implementation through
-worker-side stale ticket, lease, status evidence, and cleanup enforcement while
+direct/backend ticket freshness, status evidence, and cleanup enforcement while
 keeping server validation deferred.

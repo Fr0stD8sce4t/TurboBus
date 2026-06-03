@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict
+import time
 
 from ..schema import (
     DaemonResponse,
@@ -61,8 +62,15 @@ class WorkerTransferAuthorizer:
                 response.error or "worker transfer authorization failed"
             )
         try:
+            validate_at = (
+                time.time()
+                if isinstance(response.payload, Mapping)
+                and response.payload.get("authorized_at") is not None
+                else None
+            )
             worker_request = WorkerTransferRequest.from_authorization_payload(
-                response.payload
+                response.payload,
+                now=validate_at,
             )
             require_daemon_worker_plan(worker_request)
             return worker_request
@@ -649,6 +657,11 @@ class WorkerTransferClient:
         worker_request: WorkerTransferRequest,
         staging_slot: WorkerStagingSlot,
     ) -> WorkerTransferResult:
+        if "ticket_authorized_at" in worker_request.data_plane.metadata:
+            worker_validation.validate_daemon_issued_ticket(
+                worker_request.ticket,
+                now=time.time(),
+            )
         if self.resource_binder is None:
             return self.executor.execute(worker_request, staging_slot)
         with self.resource_binder.bind(worker_request.data_plane) as resources:

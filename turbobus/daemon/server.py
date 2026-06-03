@@ -1220,6 +1220,7 @@ class TurboBusDaemon:
                     "lease_id": request.lease_id,
                     "lease_ids": tuple(item.lease_id for item in related_leases),
                     "transfer_id": request.transfer_id,
+                    "authorized_at": now,
                     "plan_generation": self._transfer_plan_generations.get(
                         request.transfer_id,
                         0,

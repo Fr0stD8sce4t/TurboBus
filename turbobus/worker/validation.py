@@ -60,6 +60,7 @@ def validate_daemon_issued_ticket(
     ticket: ExecutionTicket,
     *,
     plan_generation: object | None = None,
+    now: float | None = None,
 ) -> None:
     if not isinstance(ticket, ExecutionTicket):
         raise TypeError("ticket must be an ExecutionTicket")
@@ -73,6 +74,8 @@ def validate_daemon_issued_ticket(
         raise ValueError("execution ticket plan_generation must be positive")
     if plan_generation is not None and int(plan_generation) != int(generation):
         raise ValueError("execution ticket plan_generation is stale")
+    if now is not None and float(now) > float(ticket.expires_at):
+        raise ValueError("execution ticket expired")
     transfer_id = ticket.metadata.get("transfer_id")
     if transfer_id is None or not str(transfer_id).strip():
         raise ValueError("execution ticket missing transfer_id")

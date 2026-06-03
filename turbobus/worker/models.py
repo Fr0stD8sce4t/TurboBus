@@ -34,6 +34,8 @@ class WorkerTransferRequest:
     def from_authorization_payload(
         cls,
         payload: Mapping[str, object],
+        *,
+        now: float | None = None,
     ) -> "WorkerTransferRequest":
         if not isinstance(payload, Mapping):
             raise ValueError("authorization payload must be a mapping")
@@ -41,12 +43,14 @@ class WorkerTransferRequest:
             raise ValueError(
                 "daemon worker authorization response must include execution ticket"
             )
-        return cls.from_execution_ticket_payload(payload)
+        return cls.from_execution_ticket_payload(payload, now=now)
 
     @classmethod
     def from_execution_ticket_payload(
         cls,
         payload: Mapping[str, object],
+        *,
+        now: float | None = None,
     ) -> "WorkerTransferRequest":
         if not isinstance(payload, Mapping):
             raise ValueError("execution ticket payload must be a mapping")
@@ -69,6 +73,7 @@ class WorkerTransferRequest:
                 else SchedulingDecision(**dict(decision_payload))
             ),
             plan_generation=payload.get("plan_generation"),
+            now=now,
         )
 
     @classmethod
@@ -95,11 +100,13 @@ class WorkerTransferRequest:
         transfer_id: str | None = None,
         decision: SchedulingDecision | None = None,
         plan_generation: object | None = None,
+        now: float | None = None,
     ) -> "WorkerTransferRequest":
         worker_validation.validate_ticket_matches_buffers(ticket, src_buffer, dst_buffer)
         worker_validation.validate_daemon_issued_ticket(
             ticket,
             plan_generation=plan_generation,
+            now=now,
         )
         if decision is not None:
             worker_validation.validate_ticket_matches_decision(ticket, decision)
@@ -139,18 +146,21 @@ class WorkerTransferRequest:
             relay_gpu=relay,
             plan=dict(ticket.plan),
         )
+        metadata = {
+            "relay_gpus": resolved_relays,
+            "lease_ids": resolved_lease_ids,
+            "primary_relay_gpu": relay,
+            "primary_lease_id": resolved_lease_id,
+            "relay_ranges_by_gpu": worker_validation.relay_ranges_by_gpu_for_ticket(
+                ticket,
+                relay_gpus=resolved_relays,
+            ),
+        }
+        if now is not None:
+            metadata["ticket_authorized_at"] = float(now)
         data_plane = WorkerDataPlaneRequest.from_authorization(
             authorization,
-            metadata={
-                "relay_gpus": resolved_relays,
-                "lease_ids": resolved_lease_ids,
-                "primary_relay_gpu": relay,
-                "primary_lease_id": resolved_lease_id,
-                "relay_ranges_by_gpu": worker_validation.relay_ranges_by_gpu_for_ticket(
-                    ticket,
-                    relay_gpus=resolved_relays,
-                ),
-            },
+            metadata=metadata,
         )
         return cls(
             authorization=authorization,

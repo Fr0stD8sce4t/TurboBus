@@ -46,6 +46,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   contexts, pooled CPU backings, connector metadata, and the runtime session.
 - Daemon socket receipt wait and reschedule paths must enforce authenticated
   peer ownership before exposing receipt state or replacing daemon plans.
+- Worker authorization must reject daemon responses whose `ExecutionTicket` is
+  already expired and must re-check ticket freshness immediately before worker
+  execution starts.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -58,7 +61,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 ## Next Entry
 
 Continue the code implementation pass by inspecting daemon/worker socket-path
-worker-side stale ticket, lease, status evidence, and cleanup enforcement for
-cross-job execution state. Also remove any old pure export layer that remains
-after refactoring. Keep server-only behavior as a deferred validation risk, not
-a blocker for this stage.
+direct/backend ticket freshness, status evidence, and cleanup enforcement for
+stale execution state. Also remove any old pure export layer that remains after
+refactoring. Keep server-only behavior as a deferred validation risk, not a
+blocker for this stage.

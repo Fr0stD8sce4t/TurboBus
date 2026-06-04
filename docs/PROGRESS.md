@@ -15,15 +15,15 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Offload adapter submissions now re-confirm the runtime session and pending
-  buffer registrations before submitting a transfer intent, so the adapter
-  path stays tied to the live runtime session.
+- Runtime-session buffer registration now rolls back the newly added local
+  buffer entry if submit-time daemon registration fails, so the session does
+  not keep a buffer that never made it onto the daemon.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/offload/store.py` passed.
+- `python -m py_compile turbobus/runtime_session.py` passed.
 - `git diff --check` passed.
 
 ## Remaining Risk

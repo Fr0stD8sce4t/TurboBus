@@ -8,9 +8,9 @@ state instead of appending history.
 System implementation before experiments.
 
 Current code target: session/job/buffer registration into the TransferIntent
-execution path. Adapter submissions now need to re-confirm the runtime
-session and pending buffer registrations at submit time, not only when the
-context is created.
+execution path. Runtime-session buffer registration now needs to roll back
+its local state if daemon registration fails after a buffer has already been
+added.
 
 ## Exit Criteria
 
@@ -23,8 +23,8 @@ context is created.
 
 ## Current Code Work
 
-`turbobus/offload/store.py` should refresh the runtime session and pending
-buffer registrations before it submits a transfer intent.
+`turbobus/runtime_session.py` should remove the newly added buffer from its
+local registry when submit-time daemon registration fails.
 
 ## Next Entry
 

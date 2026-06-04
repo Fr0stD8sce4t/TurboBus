@@ -273,9 +273,16 @@ class TurboBusRuntimeSession:
             raise TypeError("buffer must be a SharedPinnedCpuBuffer")
         if runtime_owned and not buffer.owner:
             raise ValueError("runtime-owned CPU buffers must own their shared memory")
+        owned_added = False
         if runtime_owned:
+            owned_added = buffer.buffer_id not in self._owned_cpu_buffer_ids
             self._owned_cpu_buffer_ids.add(buffer.buffer_id)
-        self._register_buffer(buffer)
+        try:
+            self._register_buffer(buffer)
+        except Exception:
+            if owned_added:
+                self._owned_cpu_buffer_ids.discard(buffer.buffer_id)
+            raise
         return buffer
 
     def allocate_cpu_buffer(
@@ -464,10 +471,17 @@ class TurboBusRuntimeSession:
         if isinstance(buffer, CudaIpcDeviceBuffer):
             self._bind_target_gpu(buffer.device_index)
         self._buffers[buffer.buffer_id] = buffer
-        if self._target_gpu is None:
-            return
-        self.open_session()
-        self._register_pending_buffers()
+        try:
+            if self._target_gpu is None:
+                return
+            self.open_session()
+            self._register_pending_buffers()
+        except Exception:
+            if existing is None:
+                self._buffers.pop(buffer.buffer_id, None)
+            else:
+                self._buffers[buffer.buffer_id] = existing
+            raise
 
     def _submit_transfer_intent(
         self,

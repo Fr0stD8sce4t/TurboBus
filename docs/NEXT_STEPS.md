@@ -19,13 +19,14 @@ submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
   static plan output.
 - Offload adapter submissions use the public runtime session H2D / D2H methods
   with preserved intent identity and adapter metadata.
+- Adapter transfer context creation is owned by `TurboBusRuntimeSession`.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py` and `turbobus/offload/store.py` should carry the
-offload adapter transfer path through `fetch_h2d()` / `offload_d2h()`.
+`turbobus/runtime_session.py` and `turbobus/offload/context.py` should own the
+adapter transfer context setup that feeds `fetch_h2d()` / `offload_d2h()`.
 
 ## Next Entry
 

@@ -551,6 +551,44 @@ class TurboBusRuntimeSession:
         self._submitted_intent_ids.add(intent.intent_id)
         return receipt
 
+    def make_adapter_transfer_context(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        self._require_open()
+        from .offload.context import AdapterTransferContext
+
+        cpu_buffer = self.register_cpu_buffer(cpu_buffer)
+        gpu_buffer = self.register_cuda_buffer(gpu_buffer)
+        session_id = self.open_session()
+        resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
+        if "chunk_bytes" not in resolved_policy_hints:
+            resolved_policy_hints["chunk_bytes"] = int(
+                getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
+            )
+        return AdapterTransferContext(
+            job_id=self.job_id,
+            session_id=session_id,
+            cpu_buffer_id=cpu_buffer.buffer_id,
+            gpu_buffer_id=gpu_buffer.buffer_id,
+            cpu_buffer=cpu_buffer,
+            gpu_buffer=gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=resolved_policy_hints,
+            metadata={} if metadata is None else metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+
     def _ensure_transfer_buffers(
         self,
         source: ExecutableBuffer,

@@ -14,9 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Offload adapter submissions now go through `TurboBusRuntimeSession`
-  `fetch_h2d()` / `offload_d2h()` instead of rebuilding the submission around
-  raw intent submission.
+- `TurboBusRuntimeSession` now owns adapter transfer context creation for the
+  offload and inference adapters that feed `fetch_h2d()` / `offload_d2h()`.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

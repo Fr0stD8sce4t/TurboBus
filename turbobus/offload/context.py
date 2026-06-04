@@ -76,6 +76,23 @@ class AdapterTransferContext:
         wait_timeout_seconds: float | None = None,
     ) -> "AdapterTransferContext":
         require_runtime_session_open(runtime_session)
+        context_builder = getattr(runtime_session, "make_adapter_transfer_context", None)
+        if callable(context_builder):
+            context = context_builder(
+                cpu_buffer,
+                gpu_buffer,
+                workload_kind=workload_kind,
+                priority=priority,
+                policy_hints=policy_hints,
+                metadata=metadata,
+                intent_prefix=intent_prefix,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+            if not isinstance(context, cls):
+                raise TypeError(
+                    "runtime session adapter context builder must return an AdapterTransferContext"
+                )
+            return context
         cpu_buffer = runtime_session.register_cpu_buffer(cpu_buffer)
         gpu_buffer = runtime_session.register_cuda_buffer(gpu_buffer)
         session_id = runtime_session.open_session()

@@ -9,7 +9,8 @@ System implementation before experiments.
 
 Current code target: H2D/D2H system main path closure. `fetch_h2d()` and
 `offload_d2h()` should drive daemon-issued direct, relay, and pooled execution
-through `TurboBusRuntimeSession` without application route selection.
+through `TurboBusRuntimeSession` without application route selection, while
+keeping chunk sizing on the same runtime-configured path.
 
 ## Exit Criteria
 
@@ -24,8 +25,9 @@ through `TurboBusRuntimeSession` without application route selection.
 
 ## Current Code Work
 
-Close H2D/D2H runtime execution gaps in the system production path without
-adding benchmark, paper-validation, or server-validation entry points.
+Close H2D/D2H runtime execution and chunk-size propagation gaps in the system
+production path without adding benchmark, paper-validation, or server-validation
+entry points.
 
 ## Next Entry
 

@@ -304,7 +304,7 @@ class TurboBusRuntimeSession:
         target: CudaIpcDeviceBuffer,
         *,
         ranges: Iterable[TransferRange | tuple[int, int, int] | dict] | None = None,
-        chunk_bytes: int = 16 * 1024 * 1024,
+        chunk_bytes: int | None = None,
         workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
         priority: int = 0,
         metadata: Mapping[str, object] | None = None,
@@ -326,7 +326,7 @@ class TurboBusRuntimeSession:
         target: SharedPinnedCpuBuffer,
         *,
         ranges: Iterable[TransferRange | tuple[int, int, int] | dict] | None = None,
-        chunk_bytes: int = 16 * 1024 * 1024,
+        chunk_bytes: int | None = None,
         workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
         priority: int = 0,
         metadata: Mapping[str, object] | None = None,
@@ -466,7 +466,7 @@ class TurboBusRuntimeSession:
         *,
         direction: str,
         ranges: Iterable[TransferRange | tuple[int, int, int] | dict] | None,
-        chunk_bytes: int,
+        chunk_bytes: int | None,
         workload_kind: WorkloadKind | str,
         priority: int,
         metadata: Mapping[str, object] | None,
@@ -479,6 +479,11 @@ class TurboBusRuntimeSession:
             for item in ranges_or_full_buffer(ranges, source.size_bytes, target.size_bytes)
         )
         total_bytes = sum(int(item["bytes"]) for item in normalized_ranges)
+        resolved_chunk_bytes = (
+            int(self.runtime_options.chunk_bytes)
+            if chunk_bytes is None
+            else int(chunk_bytes)
+        )
         intent = TransferIntent(
             intent_id=f"intent-{uuid.uuid4().hex}",
             job_id=self.job_id,
@@ -490,7 +495,7 @@ class TurboBusRuntimeSession:
             ranges=normalized_ranges,
             workload_kind=workload_kind,
             priority=int(priority),
-            policy_hints={"chunk_bytes": int(chunk_bytes)},
+            policy_hints={"chunk_bytes": resolved_chunk_bytes},
             metadata={} if metadata is None else dict(metadata),
         )
         self._validate_intent_uses_runtime_buffers(intent)

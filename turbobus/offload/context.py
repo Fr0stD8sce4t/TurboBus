@@ -76,6 +76,11 @@ class AdapterTransferContext:
         cpu_buffer = runtime_session.register_cpu_buffer(cpu_buffer)
         gpu_buffer = runtime_session.register_cuda_buffer(gpu_buffer)
         session_id = runtime_session.open_session()
+        resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
+        if "chunk_bytes" not in resolved_policy_hints:
+            resolved_policy_hints["chunk_bytes"] = int(
+                getattr(runtime_session.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
+            )
         return cls(
             job_id=runtime_session.job_id,
             session_id=session_id,
@@ -83,7 +88,7 @@ class AdapterTransferContext:
             gpu_buffer_id=gpu_buffer.buffer_id,
             workload_kind=workload_kind,
             priority=priority,
-            policy_hints={} if policy_hints is None else policy_hints,
+            policy_hints=resolved_policy_hints,
             metadata={} if metadata is None else metadata,
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,

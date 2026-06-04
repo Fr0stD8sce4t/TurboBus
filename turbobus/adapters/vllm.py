@@ -77,6 +77,9 @@ class VllmKVSlotAdapter:
                 gpu_buffer_id=gpu_buffer.buffer_id,
                 workload_kind=workload_kind,
                 priority=priority,
+                policy_hints={
+                    "chunk_bytes": int(runtime_session.runtime_options.chunk_bytes),
+                },
                 metadata=_group_metadata(metadata, group.group_id),
                 intent_prefix=_group_intent_prefix(intent_prefix, group.group_id),
                 wait_timeout_seconds=wait_timeout_seconds,

@@ -23,25 +23,27 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited daemon and scheduler planning ownership during the daemon-first
+- Audited workload adapter scheduling controls during the daemon-first
   closure pass.
-- Removed the public `TurboBusDaemon.plan_transfer()` method name by making the
-  existing planning implementation daemon-internal as `_plan_transfer()`.
-- Kept `submit_transfer_intent()` on the daemon as the production planning
-  entry; it calls `_plan_transfer()` with daemon-owned `mode="auto"`.
-- Confirmed production API, runtime session, offload store, and adapters do
-  not expose `PLAN_TRANSFER` or manual `plan_transfer` entry points.
+- Removed application-facing `policy_hints` parameters from model-loading,
+  training-offload, inference KV, vLLM KV slot, and vLLM integration adapters.
+- Kept adapter submissions on workload metadata, priority, intent prefix, and
+  runtime-session-owned buffer registration rather than application-provided
+  scheduling hints.
+- Left schema and offload-store policy hint validation in place so any
+  lower-level `TransferIntent` path still rejects physical route keys.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\daemon\dispatch.py turbobus\scheduler\daemon.py` passed.
-- `rg -n "\.plan_transfer\(|def plan_transfer\(|self\.plan_transfer\("
-  turbobus` found only daemon-internal scheduler calls and the scheduler
-  method itself.
-- `rg -n PLAN_TRANSFER turbobus\daemon turbobus\api
-  turbobus\runtime_session.py turbobus\offload_store.py turbobus\adapters`
-  found no production external plan request entry.
+- `python -m py_compile turbobus\adapters\model_loading.py
+  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
+  turbobus\adapters\vllm.py turbobus\adapters\vllm_integration.py
+  turbobus\offload_store.py turbobus\schema.py` passed.
+- `rg -n "policy_hints" turbobus\adapters` found no adapter-level
+  application-facing policy hint entry.
+- `rg -n "def _normalize_policy_hints|def _validate_policy_hints_no_physical|policy_hints must not choose physical paths"
+  turbobus\schema.py turbobus\offload_store.py` confirmed lower-level
+  physical route key rejection remains in schema and offload-store validation.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -51,9 +53,9 @@ commands or making server validation a current entry point.
   pass is complete.
 - Existing tests still contain old production-path assumptions such as removed
   transfer request, manual reservation, worker shortcut, broad daemon client,
-  manual daemon planning, and compatibility entry points. Current-stage
-  constraints defer test migration until the system implementation pass is
-  complete.
+  manual daemon planning, adapter policy hints, and compatibility entry
+  points. Current-stage constraints defer test migration until the system
+  implementation pass is complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

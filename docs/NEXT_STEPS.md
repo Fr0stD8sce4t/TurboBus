@@ -7,14 +7,14 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete worker/backend completion evidence cleanup.
-Production transfer completion must keep using daemon-issued plans and
-receipt-oriented public APIs.
+Current code target: complete profile bootstrap closure. Runtime bootstrap
+must feed daemon scheduling and worker/backend execution without application
+route selection.
 
 ## Exit Criteria
 
-- Worker completion, cleanup, and receipt evidence remain bound to daemon
-  tickets and daemon-issued transfer ids.
+- Runtime profile bootstrap installs profile data into daemon scheduling and
+  daemon-issued worker/backend execution payloads.
 - Public client and runtime-session consumers still submit `TransferIntent`
   and consume `TransferReceipt` without route selection.
 - No test, experiment, benchmark, paper-validation, or server-validation code
@@ -22,10 +22,10 @@ receipt-oriented public APIs.
 
 ## Current Code Work
 
-Tighten worker/backend completion evidence and cleanup flow without restoring
-old direct client paths.
+Close remaining profile bootstrap gaps without restoring old runtime or planner
+entry points.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: profile bootstrap closure or shared buffer lifecycle cleanup.
+boundary: shared buffer lifecycle cleanup or daemon/worker production startup.

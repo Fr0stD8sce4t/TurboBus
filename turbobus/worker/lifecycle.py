@@ -638,6 +638,12 @@ class WorkerTransferClient:
                 final_state="cleanup_failed",
                 error=str(exc),
             )
+        status_response = self._report_cleanup_evidence(
+            worker_request,
+            result,
+            cleanup_response,
+            current_status_response=status_response,
+        )
         staging_release = self._staging_pool.release(
             staging_slot.slot_id,
             worker_request.data_plane,
@@ -658,6 +664,36 @@ class WorkerTransferClient:
             final_state=result.state.value,
             error=result.error,
         )
+
+    def _report_cleanup_evidence(
+        self,
+        worker_request: WorkerTransferRequest,
+        result: WorkerTransferResult,
+        cleanup_response: DaemonResponse,
+        *,
+        current_status_response: DaemonResponse,
+    ) -> DaemonResponse:
+        if result.state not in {WorkerTransferState.COMPLETE, WorkerTransferState.FAILED}:
+            return current_status_response
+        evidence = _cleanup_completion_evidence(
+            worker_request,
+            result,
+            cleanup_response,
+        )
+        status_update = daemon_status_update_for_result(result)
+        try:
+            return self._status_reporter.daemon_client.transfer_status(
+                result.transfer_id,
+                state=status_update["state"],
+                bytes_completed=status_update["bytes_completed"],
+                error=status_update["error"],
+                completion_source="worker",
+                completion_evidence=evidence,
+            )
+        except WorkerStatusReportError:
+            raise
+        except Exception as exc:
+            raise WorkerStatusReportError(str(exc)) from exc
 
     def _execute(
         self,
@@ -845,6 +881,51 @@ def _worker_result_with_ticket_binding(
         bytes_completed=result.bytes_completed,
         metadata=metadata,
     )
+
+
+def _cleanup_completion_evidence(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+    cleanup_response: DaemonResponse,
+) -> dict[str, object]:
+    metadata = dict(result.metadata)
+    evidence = dict(metadata.get("completion_evidence") or {})
+    for key in (
+        "verified_bytes",
+        "content_match",
+        "verification_source",
+        "verification_method",
+        "source_digest",
+        "destination_digest",
+        "resource_evidence",
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
+    ):
+        if key in metadata:
+            evidence.setdefault(key, metadata[key])
+    evidence.setdefault("ticket_id", request.ticket.ticket_id)
+    transfer_id = request.ticket.metadata.get("transfer_id")
+    if transfer_id is not None:
+        evidence.setdefault("transfer_id", str(transfer_id))
+    plan_generation = request.ticket.metadata.get("plan_generation")
+    if plan_generation is not None:
+        evidence.setdefault("plan_generation", int(plan_generation))
+    payload = cleanup_response.payload if isinstance(cleanup_response.payload, Mapping) else {}
+    cleanup_payload = dict(payload)
+    evidence["cleanup"] = {
+        "ok": bool(cleanup_response.ok),
+        "target_kind": cleanup_payload.get("cleanup_kind"),
+        "target_id": cleanup_payload.get("reservation_id"),
+        "mode": cleanup_payload.get("cleanup_mode"),
+        "reason": cleanup_payload.get("reason"),
+        "lease_ids": tuple(str(item) for item in cleanup_payload.get("lease_ids", ()) or ()),
+        "cleaned_reservation_ids": tuple(
+            str(item)
+            for item in cleanup_payload.get("cleaned_reservation_ids", ()) or ()
+        ),
+    }
+    return evidence
 
 
 def expected_worker_completion_bytes(request: WorkerTransferRequest) -> int:

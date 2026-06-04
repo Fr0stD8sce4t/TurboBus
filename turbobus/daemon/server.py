@@ -566,6 +566,13 @@ class TurboBusDaemon:
                     and _status_bytes_match(status, bytes_completed)
                     and (error is None or error == status.error)
                 ):
+                    supplemental = self._supplement_terminal_completion_evidence_locked(
+                        status,
+                        completion_source=completion_source,
+                        completion_evidence=completion_evidence,
+                    )
+                    if not supplemental.ok:
+                        return supplemental
                     if status.state is TransferStatusState.COMPLETE:
                         evidence_error = (
                             self._completion_release_blocked_reason_locked(
@@ -792,6 +799,50 @@ class TurboBusDaemon:
                     "promoted_transfers": promoted,
                 },
             )
+
+    def _supplement_terminal_completion_evidence_locked(
+        self,
+        status: TransferStatus,
+        *,
+        completion_source: str | None,
+        completion_evidence: Mapping[str, object] | None,
+    ) -> DaemonResponse:
+        if completion_evidence is None:
+            return DaemonResponse(ok=True)
+        normalized_completion_source = str(completion_source or "").lower()
+        if not _is_execution_completion_source(normalized_completion_source):
+            return DaemonResponse(
+                ok=False,
+                error="terminal evidence update requires worker/backend source",
+            )
+        if not self._intent_requires_execution_evidence_locked(status.transfer_id):
+            return DaemonResponse(ok=True)
+        ticket = self._completion_ticket_for_transfer_locked(status.transfer_id)
+        if ticket is None:
+            return DaemonResponse(
+                ok=False,
+                error="terminal evidence update requires daemon ticket",
+            )
+        try:
+            if status.state is TransferStatusState.COMPLETE:
+                supplemental = _normalize_completion_evidence(
+                    completion_evidence,
+                    expected_bytes=status.bytes_total,
+                    completion_source=normalized_completion_source,
+                    expected_ticket=ticket,
+                )
+            else:
+                supplemental = _normalize_status_ticket_evidence(
+                    completion_evidence,
+                    expected_ticket=ticket,
+                )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        existing = dict(self._transfer_completion_evidence.get(status.transfer_id, {}))
+        existing.update(supplemental)
+        self._transfer_completion_sources[status.transfer_id] = normalized_completion_source
+        self._transfer_completion_evidence[status.transfer_id] = existing
+        return DaemonResponse(ok=True)
 
     def submit_transfer_intent(
         self,

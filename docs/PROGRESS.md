@@ -14,18 +14,19 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Restored a public `TurboBusClient` entry point that submits intents, waits
-  for receipts, and validates receipt evidence on completion.
-- Exported `TurboBusClient` from the package root so public callers can import
-  the client contract directly.
+- Worker cleanup completion now reports supplemental, ticket-bound evidence
+  back to the daemon after cleanup succeeds.
+- Daemon terminal status updates can merge same-state supplemental evidence
+  without reopening terminal transfers.
+- Transfer receipts now expose cleanup evidence alongside worker/backend
+  verification evidence.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/api.py turbobus/__init__.py` passed.
-- A small inline Python check confirmed `TurboBusClient` can submit a
-  receipt-backed intent and returns the expected receipt.
+- `python -m py_compile turbobus/daemon/server.py
+  turbobus/daemon/receipts.py turbobus/worker/lifecycle.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -39,5 +40,4 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker/backend completion
-evidence cleanup.
+Continue with one concrete implementation boundary: profile bootstrap closure.

@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Scheduler policy metadata now carries live daemon runtime summary state,
-  including active resource usage and completion-source counts.
+- Scheduler fairness now uses live runtime pressure from active transfers,
+  relay staging, and busy relay state.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 

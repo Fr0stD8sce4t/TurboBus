@@ -15,6 +15,7 @@ class RuntimeLoadView:
     priority: int
     busy_relays: frozenset[int]
     runtime_state: dict[str, object]
+    resource_pressure: float
     job_weight: float
     total_weight: float
     current_job_active_bytes: int
@@ -39,6 +40,7 @@ class RuntimeLoadView:
             "workload_kind": self.workload_kind,
             "priority": self.priority,
             "request_charge_bytes": self.request_charge_bytes,
+            "resource_pressure": self.resource_pressure,
             "current_job_active_bytes": self.current_job_active_bytes,
             "total_active_bytes": self.total_active_bytes,
             "current_weighted_active_bytes": self.current_weighted_active_bytes,
@@ -198,6 +200,32 @@ def runtime_view(
     request_charge = float(total_bytes) * workload_charge_multiplier(workload)
     if int(priority) > 0:
         request_charge = request_charge / (1.0 + min(int(priority), 9) * 0.1)
+    active_reservation_count = int(
+        runtime_state_snapshot.get("active_reservation_count", 0) or 0
+    )
+    active_lease_count = int(runtime_state_snapshot.get("active_lease_count", 0) or 0)
+    relay_staging_count = int(runtime_state_snapshot.get("relay_staging_count", 0) or 0)
+    relay_path_bytes_total = int(
+        runtime_state_snapshot.get("relay_path_bytes_total", 0) or 0
+    )
+    p2p_bytes_total = 0
+    active_resource_usage = runtime_state_snapshot.get("active_resource_usage", {})
+    if isinstance(active_resource_usage, Mapping):
+        p2p_usage = active_resource_usage.get("p2p", {})
+        if isinstance(p2p_usage, Mapping):
+            p2p_bytes_total = int(p2p_usage.get("bytes_total", 0) or 0)
+    resource_pressure = 0.0
+    resource_pressure += min(int(active_transfer_count), 8) * 0.02
+    resource_pressure += min(int(running_transfer_count), 8) * 0.05
+    resource_pressure += min(active_reservation_count, 8) * 0.03
+    resource_pressure += min(active_lease_count, 8) * 0.03
+    resource_pressure += min(relay_staging_count, 8) * 0.04
+    resource_pressure += min(len(busy_relays), 8) * 0.02
+    if total_active_bytes > 0:
+        resource_pressure += min(
+            (relay_path_bytes_total + p2p_bytes_total) / max(total_active_bytes, 1),
+            4.0,
+        ) * 0.03
     current_weighted = current_job_active_bytes / max(job_weight, 1e-12)
     projected_weighted = (current_job_active_bytes + request_charge) / max(
         job_weight,
@@ -212,6 +240,7 @@ def runtime_view(
         priority=int(priority),
         busy_relays=frozenset(busy_relays),
         runtime_state=runtime_state_snapshot,
+        resource_pressure=resource_pressure,
         job_weight=job_weight,
         total_weight=total_weight,
         current_job_active_bytes=current_job_active_bytes,
@@ -248,8 +277,9 @@ def fairness_fallback_for_plan(
         return None
     if runtime_view.total_active_bytes <= 0:
         return None
-    running_pressure = min(runtime_view.running_transfer_count, 8) * 0.05
-    effective_threshold = runtime_view.fairness_threshold_bytes / (1.0 + running_pressure)
+    effective_threshold = runtime_view.fairness_threshold_bytes / (
+        1.0 + runtime_view.resource_pressure
+    )
     if runtime_view.projected_weighted_active_bytes <= effective_threshold:
         return None
     return "weighted fairness limit prefers direct fallback"

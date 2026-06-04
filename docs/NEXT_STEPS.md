@@ -7,9 +7,8 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: runtime load feedback. Scheduler load metadata should
-carry live daemon runtime summary state, including active resource usage and
-completion-source counts, instead of only the minimal count set.
+Current code target: runtime load feedback. Scheduler fairness fallback
+should use live daemon runtime pressure, not just a transfer-count snapshot.
 
 ## Exit Criteria
 
@@ -17,15 +16,15 @@ completion-source counts, instead of only the minimal count set.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Scheduler decision metadata exposes live runtime resource usage and
-  completion-source counts.
+- Scheduler fairness reacts to live runtime pressure from active transfers,
+  relay staging, and relay busy state.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/scheduler/load_feedback.py` should surface daemon runtime summary
-state in the scheduler policy metadata.
+`turbobus/scheduler/load_feedback.py` should feed live runtime pressure into
+fairness fallback and policy metadata.
 
 ## Next Entry
 

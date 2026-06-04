@@ -433,22 +433,22 @@ class WorkerTransferClient:
             executor = default_worker_executor()
             if resource_binder is None:
                 resource_binder = WorkerDataPlaneResourceBinder()
-        self.authorizer = _WorkerTransferAuthorizer(daemon_client)
-        self.executor = executor
-        self.status_reporter = status_reporter or _WorkerTransferStatusReporter(
+        self._authorizer = _WorkerTransferAuthorizer(daemon_client)
+        self._executor = executor
+        self._status_reporter = status_reporter or _WorkerTransferStatusReporter(
             daemon_client
         )
-        self.cleanup_coordinator = cleanup_coordinator or _WorkerTransferCleanupCoordinator(
+        self._cleanup_coordinator = cleanup_coordinator or _WorkerTransferCleanupCoordinator(
             daemon_client
         )
-        self.staging_pool = staging_pool or WorkerStagingPool()
-        self.resource_binder = resource_binder
+        self._staging_pool = staging_pool or WorkerStagingPool()
+        self._resource_binder = resource_binder
 
     def _authorize(
         self,
         request: WorkerTransferAuthorizationRequest,
     ) -> WorkerTransferRequest:
-        return self.authorizer._authorize(request)
+        return self._authorizer._authorize(request)
 
     def submit_report_cleanup_lifecycle(
         self,
@@ -463,7 +463,7 @@ class WorkerTransferClient:
                 request,
             )
             try:
-                cleanup_response = self.cleanup_coordinator.cleanup_authorization_failure(
+                cleanup_response = self._cleanup_coordinator.cleanup_authorization_failure(
                     request,
                     authorization_payload=exc.daemon_payload,
                     target_kind=cleanup_target_kind,
@@ -484,7 +484,7 @@ class WorkerTransferClient:
                 final_state="authorization_failed",
                 error=str(exc),
             )
-        staging_slot = self.staging_pool.allocate(worker_request.data_plane)
+        staging_slot = self._staging_pool.allocate(worker_request.data_plane)
         try:
             result = validate_worker_completion_bytes(
                 worker_request,
@@ -498,9 +498,9 @@ class WorkerTransferClient:
             )
         status_update = daemon_status_update_for_result(result)
         try:
-            status_response = self.status_reporter.report(result)
+            status_response = self._status_reporter.report(result)
         except WorkerStatusReportError as exc:
-            staging_release = self.staging_pool.release(
+            staging_release = self._staging_pool.release(
                 staging_slot.slot_id,
                 worker_request.data_plane,
             )
@@ -510,7 +510,7 @@ class WorkerTransferClient:
             )
             try:
                 cleanup_response = (
-                    self.cleanup_coordinator.cleanup_status_report_failure(
+                    self._cleanup_coordinator.cleanup_status_report_failure(
                         worker_request,
                         target_kind=cleanup_target_kind,
                     )
@@ -550,13 +550,13 @@ class WorkerTransferClient:
             )
         )
         try:
-            cleanup_response = self.cleanup_coordinator.cleanup_execution_failure(
+            cleanup_response = self._cleanup_coordinator.cleanup_execution_failure(
                 worker_request,
                 result,
                 target_kind=cleanup_target_kind,
             )
         except WorkerCleanupError as exc:
-            staging_release = self.staging_pool.release(
+            staging_release = self._staging_pool.release(
                 staging_slot.slot_id,
                 worker_request.data_plane,
             )
@@ -573,7 +573,7 @@ class WorkerTransferClient:
                 final_state="cleanup_failed",
                 error=str(exc),
             )
-        staging_release = self.staging_pool.release(
+        staging_release = self._staging_pool.release(
             staging_slot.slot_id,
             worker_request.data_plane,
         )
@@ -602,11 +602,11 @@ class WorkerTransferClient:
                 worker_request.ticket,
                 now=time.time(),
             )
-        if self.resource_binder is None:
-            return self.executor.execute(worker_request, staging_slot)
-        with self.resource_binder.bind(worker_request) as resources:
+        if self._resource_binder is None:
+            return self._executor.execute(worker_request, staging_slot)
+        with self._resource_binder.bind(worker_request) as resources:
             return execute_worker_transfer(
-                self.executor,
+                self._executor,
                 worker_request,
                 staging_slot,
                 resources,

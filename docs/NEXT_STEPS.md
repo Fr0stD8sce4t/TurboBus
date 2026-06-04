@@ -68,6 +68,10 @@ experiment work is planned.
   `runtime_engine.py` as a compatibility export layer after moving
   `RuntimeOptions`; import it from `turbobus.runtime_options` or the top-level
   package.
+- Keep worker lifecycle internals private. `WorkerTransferClient` may own
+  authorizer, executor, status reporter, cleanup coordinator, staging pool,
+  and resource binder objects, but external code should use the complete
+  authorize-execute-status-cleanup lifecycle entry rather than those internals.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

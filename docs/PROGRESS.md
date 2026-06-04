@@ -14,9 +14,10 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Runtime-session startup now rolls back a partially registered daemon session
-  if job registration fails, so the public session API does not leak a half-
-  open session on startup errors.
+- Worker lifecycle status-report failure now returns the real worker terminal
+  state after cleanup and cleanup-evidence retry succeeds, so the lifecycle
+  envelope no longer stays pinned to `status_failed` after the daemon has the
+  terminal receipt evidence.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -37,5 +38,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker/backend failure
-cleanup and terminal receipt closure.
+Continue with one concrete implementation boundary: runtime-session startup
+rollback hardening.

@@ -625,7 +625,7 @@ class WorkerTransferClient:
                 cleanup_target_kind=cleanup_target_kind,
                 cleanup_target_id=cleanup_target_id,
                 cleanup_response=cleanup_response,
-                final_state="status_failed",
+                final_state=result.state.value,
                 error=str(exc),
             )
         cleanup_target_id = (

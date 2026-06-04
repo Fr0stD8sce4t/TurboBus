@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..offload_store import AdapterTransferContext, TransferStats
+from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter
 
@@ -287,6 +288,8 @@ def _tensor_nbytes(tensor) -> int:
 
 
 def _require_runtime_session_open(runtime_session) -> None:
+    if not isinstance(runtime_session, TurboBusRuntimeSession):
+        raise TypeError("vLLM adapter requires a TurboBusRuntimeSession")
     if bool(getattr(runtime_session, "closed", False)):
         raise RuntimeError("runtime session is closed")
 

@@ -23,27 +23,31 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited `TurboBusRuntimeSession` daemon role-client wiring during the
+- Audited offload and framework adapter runtime-session ownership during the
   daemon-first closure pass.
-- Moved runtime, profile, and execution daemon-client resolution into
-  `TurboBusRuntimeSession.__post_init__()` so the rule applies to direct
-  construction as well as factory helpers.
-- Kept socket-backed sessions able to derive role clients from the socket path.
-- Kept custom object sessions required to provide explicit runtime, profile,
-  and execution daemon clients instead of falling back to a broad daemon
-  object.
+- Removed the duck-typed `TransferIntentClient` adapter boundary from
+  `OffloadStore`.
+- Required `OffloadStore` and its receipt handles to use real
+  `TurboBusRuntimeSession` instances.
+- Required vLLM slot and vLLM integration adapters to reject non-runtime-session
+  objects before they register buffers or submit transfers.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py
-  turbobus\intent_executor.py turbobus\buffer_registration.py
-  turbobus\profile.py turbobus\__init__.py` passed.
-- `rg -n "TurboBusRuntimeSession\(" turbobus benchmarks examples docs` found
-  no production direct construction sites that would be broken by the stricter
-  initialization boundary.
-- `rg -n "runtime_daemon_client is required without socket_path|execution_daemon_client is required without socket_path|profile_daemon_client is required without socket_path|__post_init__"
-  turbobus\runtime_session.py` confirmed role-client enforcement now lives in
-  runtime-session initialization.
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
+  turbobus\adapters\inference.py turbobus\adapters\vllm.py
+  turbobus\adapters\vllm_integration.py
+  turbobus\adapters\vllm_kv_connector.py turbobus\runtime_session.py`
+  passed.
+- `rg -n "TransferIntentClient|Protocol" turbobus\offload_store.py` found no
+  old duck-typed adapter client boundary.
+- `rg -n "hasattr\(runtime_session" turbobus\adapters\vllm.py
+  turbobus\adapters\vllm_integration.py` found no remaining vLLM
+  runtime-session duck typing.
+- `rg -n "TurboBusClient|DaemonIntentClient" turbobus\adapters
+  turbobus\offload_store.py` found no adapter/offload dependency on the old
+  public client path.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -55,8 +59,9 @@ commands or making server validation a current entry point.
   transfer request, manual reservation, worker shortcut, broad daemon client,
   manual daemon planning, adapter policy hints, old `runtime_engine` imports,
   public worker internals, package-level worker data-plane exports, and
-  compatibility entry points. Current-stage constraints defer test migration
-  until the system implementation pass is complete.
+  duck-typed offload clients, and compatibility entry points. Current-stage
+  constraints defer test migration until the system implementation pass is
+  complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

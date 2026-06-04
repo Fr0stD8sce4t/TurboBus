@@ -45,6 +45,11 @@ experiment work is planned.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.
+- Keep offload and framework adapters bound to real `TurboBusRuntimeSession`
+  instances. Do not accept duck-typed clients that merely implement
+  `submit_transfer_intent()` and `wait_transfer_receipt()`, because that can
+  bypass runtime-owned buffer registration, profile bootstrap, worker
+  execution, and cleanup wiring.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, `turbobus/worker_managed.py`, and old
   route-shaped transfer request, manual relay reservation, or session relay

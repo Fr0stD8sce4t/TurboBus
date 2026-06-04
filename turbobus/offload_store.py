@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, Mapping, Protocol
+from typing import Iterable, Mapping
 import uuid
 
 from .api.receipts import require_complete_receipt_evidence
+from .runtime_session import TurboBusRuntimeSession
 from .schema import TransferIntent, TransferReceipt, TransferStatusState, WorkloadKind
 
 
@@ -29,18 +30,6 @@ class TransferStats:
             "direct_chunks": self.direct_chunks,
             "relay_chunks": self.relay_chunks,
         }
-
-
-class TransferIntentClient(Protocol):
-    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
-        ...
-
-    def wait_transfer_receipt(
-        self,
-        intent_id: str,
-        timeout_seconds: float | None = None,
-    ) -> TransferReceipt:
-        ...
 
 
 @dataclass(frozen=True)
@@ -131,7 +120,7 @@ class AdapterTransferContext:
 
 @dataclass
 class ReceiptTransferHandle:
-    client: TransferIntentClient
+    client: TurboBusRuntimeSession
     intent: TransferIntent
     receipt: TransferReceipt
     transfer_context: AdapterTransferContext | None = None
@@ -377,7 +366,7 @@ class OffloadStore:
 
     def __init__(
         self,
-        client: TransferIntentClient,
+        client: TurboBusRuntimeSession,
         transfer_context: AdapterTransferContext,
     ) -> None:
         if not isinstance(transfer_context, AdapterTransferContext):
@@ -727,28 +716,13 @@ def _optional_str(value: object | None) -> str | None:
 
 
 def _require_runtime_session_client(
-    client: TransferIntentClient,
+    client: TurboBusRuntimeSession,
     transfer_context: AdapterTransferContext,
 ) -> None:
     _require_runtime_session_open(client)
-    required_methods = (
-        "open_session",
-        "register_cpu_buffer",
-        "register_cuda_buffer",
-        "submit_transfer_intent",
-        "wait_transfer_receipt",
-    )
-    missing = [
-        name for name in required_methods if not callable(getattr(client, name, None))
-    ]
-    if missing:
-        raise TypeError(
-            "OffloadStore requires a TurboBusRuntimeSession-owned client; "
-            f"missing {', '.join(missing)}"
-        )
-    if not hasattr(client, "job_id"):
-        raise TypeError("OffloadStore client must expose a runtime session job_id")
-    job_id = getattr(client, "job_id", None)
+    if not isinstance(client, TurboBusRuntimeSession):
+        raise TypeError("OffloadStore requires a TurboBusRuntimeSession")
+    job_id = client.job_id
     if str(job_id) != transfer_context.job_id:
         raise ValueError("offload context job_id must match the runtime session job_id")
     try:

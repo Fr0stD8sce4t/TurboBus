@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Mapping
 
 from ..client import SharedPinnedCpuBuffer
+from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .vllm import (
     VllmKVBlockRef,
@@ -103,8 +104,6 @@ class VllmTurboBusIntegration:
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> None:
         _require_runtime_session_open(runtime_session)
-        if not hasattr(runtime_session, "job_id"):
-            raise TypeError("vLLM integration requires a TurboBusRuntimeSession")
         self.runtime_session = runtime_session
         self.state = VllmIntegrationState()
         self._cpu_backings = list(cpu_backings) if cpu_backings is not None else None
@@ -342,3 +341,10 @@ def _normalize_block_id_group(group) -> tuple[int, ...]:
     if isinstance(group, int):
         return (int(group),)
     return tuple(int(block_id) for block_id in group if block_id is not None)
+
+
+def _require_runtime_session_open(runtime_session) -> None:
+    if not isinstance(runtime_session, TurboBusRuntimeSession):
+        raise TypeError("vLLM integration requires a TurboBusRuntimeSession")
+    if bool(getattr(runtime_session, "closed", False)):
+        raise RuntimeError("runtime session is closed")

@@ -2,37 +2,20 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 
-from . import native_runtime
-from .runtime_options import RuntimeOptions
-
-
-@dataclass(frozen=True)
-class SimpleProfileRelay:
-    relay_device: int
-    target_device: int
-    h2d_bw_gbps: float
-    d2h_bw_gbps: float
-    p2p_bw_gbps: float
-    effective_bw_gbps: float
-    effective_d2h_bw_gbps: float
-    p2p_enabled: bool
-
-
-@dataclass(frozen=True)
-class SimpleProfileResult:
-    target_device: int
-    direct_h2d_bw_gbps: float
-    direct_d2h_bw_gbps: float
-    relays: list[SimpleProfileRelay]
+from .. import native_runtime
+from .models import SimpleProfileRelay, SimpleProfileResult
 
 
 def profile_to_daemon_dict(profile) -> dict[str, object]:
     return {
         "target_device": int(getattr(profile, "target_device", 0)),
-        "direct_h2d_bw_gbps": float(getattr(profile, "direct_h2d_bw_gbps", 0.0) or 0.0),
-        "direct_d2h_bw_gbps": float(getattr(profile, "direct_d2h_bw_gbps", 0.0) or 0.0),
+        "direct_h2d_bw_gbps": float(
+            getattr(profile, "direct_h2d_bw_gbps", 0.0) or 0.0
+        ),
+        "direct_d2h_bw_gbps": float(
+            getattr(profile, "direct_d2h_bw_gbps", 0.0) or 0.0
+        ),
         "relays": [
             {
                 "relay_device": int(getattr(relay, "relay_device")),
@@ -104,7 +87,9 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
         profile_obj = native.ProfileResult()
         profile_obj.target_device = int(profile.get("target_device", target_gpu))
         profile_obj.direct_h2d_bw_gbps = direct_h2d
-        profile_obj.direct_d2h_bw_gbps = float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0)
+        profile_obj.direct_d2h_bw_gbps = float(
+            profile.get("direct_d2h_bw_gbps", 0.0) or 0.0
+        )
         profile_relays = []
     else:
         profile_relays = []
@@ -117,8 +102,12 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
             "h2d_bw_gbps": float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
             "d2h_bw_gbps": float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
             "p2p_bw_gbps": float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
-            "effective_bw_gbps": float(relay.get("effective_bw_gbps", 0.0) or 0.0),
-            "effective_d2h_bw_gbps": float(relay.get("effective_d2h_bw_gbps", 0.0) or 0.0),
+            "effective_bw_gbps": float(
+                relay.get("effective_bw_gbps", 0.0) or 0.0
+            ),
+            "effective_d2h_bw_gbps": float(
+                relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
+            ),
             "p2p_enabled": bool(relay.get("p2p_enabled", False)),
         }
         if use_native_profile:
@@ -133,18 +122,7 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
             native_relay.p2p_enabled = relay_obj["p2p_enabled"]
             profile_relays.append(native_relay)
         else:
-            profile_relays.append(
-                SimpleProfileRelay(
-                    relay_device=relay_obj["relay_device"],
-                    target_device=relay_obj["target_device"],
-                    h2d_bw_gbps=relay_obj["h2d_bw_gbps"],
-                    d2h_bw_gbps=relay_obj["d2h_bw_gbps"],
-                    p2p_bw_gbps=relay_obj["p2p_bw_gbps"],
-                    effective_bw_gbps=relay_obj["effective_bw_gbps"],
-                    effective_d2h_bw_gbps=relay_obj["effective_d2h_bw_gbps"],
-                    p2p_enabled=relay_obj["p2p_enabled"],
-                )
-            )
+            profile_relays.append(SimpleProfileRelay(**relay_obj))
     if use_native_profile:
         profile_obj.relays = profile_relays
         return profile_obj
@@ -165,90 +143,9 @@ def daemon_profile_is_fresh(entry: Mapping, max_age_seconds: float) -> bool:
     return (time.time() - updated_at) <= float(max_age_seconds)
 
 
-def collect_cuda_profile(
-    backend,
-    options: RuntimeOptions,
-    target_gpu: int,
-    relay_gpus: Iterable[int],
-    *,
-    profile_bytes: int | None = None,
-    force: bool = False,
-):
-    runtime = backend.create_runtime(options)
-    backend.initialize_runtime(
-        runtime,
-        int(target_gpu),
-        [int(gpu) for gpu in relay_gpus],
-    )
-    return backend.profile(
-        runtime,
-        int(options.profile_bytes if profile_bytes is None else profile_bytes),
-        force=force,
-    )
-
-
-def install_daemon_profile(
-    daemon_client,
-    *,
-    target_gpu: int,
-    relay_gpus: Iterable[int],
-    profile,
-    profile_bytes: int,
-):
-    writer = getattr(daemon_client, "put_profile", None)
-    if not callable(writer):
-        raise TypeError("daemon client must support put_profile")
-    response = writer(
-        int(target_gpu),
-        [int(gpu) for gpu in relay_gpus],
-        validate_daemon_profile_dict(
-            profile_to_daemon_dict(profile),
-            target_gpu=int(target_gpu),
-            relay_gpus=relay_gpus,
-        ),
-        profile_bytes=int(profile_bytes),
-    )
-    if not getattr(response, "ok", False):
-        error = getattr(response, "error", None)
-        raise RuntimeError(error or "daemon profile bootstrap failed")
-    return response
-
-
-def bootstrap_daemon_profile(
-    daemon_client,
-    backend,
-    options: RuntimeOptions,
-    *,
-    target_gpu: int,
-    relay_gpus: Iterable[int],
-    force: bool = False,
-):
-    relays = tuple(int(gpu) for gpu in relay_gpus)
-    if not force and bool(options.profile_cache_enabled):
-        reader = getattr(daemon_client, "get_profile", None)
-        if callable(reader):
-            cached = reader(int(target_gpu), list(relays))
-            if getattr(cached, "ok", False):
-                entry = cached.payload.get("profile")
-                if isinstance(entry, Mapping) and daemon_profile_is_fresh(
-                    entry,
-                    float(options.daemon_profile_max_age_seconds),
-                ):
-                    return profile_from_daemon_entry(entry, int(target_gpu)), cached
-    profile_bytes = int(options.profile_bytes)
-    profile = collect_cuda_profile(
-        backend,
-        options,
-        int(target_gpu),
-        relays,
-        profile_bytes=profile_bytes,
-        force=force,
-    )
-    response = install_daemon_profile(
-        daemon_client,
-        target_gpu=int(target_gpu),
-        relay_gpus=relays,
-        profile=profile,
-        profile_bytes=profile_bytes,
-    )
-    return profile, response
+__all__ = [
+    "daemon_profile_is_fresh",
+    "profile_from_daemon_entry",
+    "profile_to_daemon_dict",
+    "validate_daemon_profile_dict",
+]

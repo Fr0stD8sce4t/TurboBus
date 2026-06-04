@@ -20,8 +20,8 @@ from .daemon.client import (
 )
 from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
-from . import profile as runtime_profile
 from .ranges import TransferRange, range_as_dict
+from .profiling.bootstrap import bootstrap_daemon_profile
 from .runtime.buffers import (
     buffer_registration_fingerprint,
     validate_intent_uses_runtime_buffers,
@@ -328,7 +328,7 @@ class TurboBusRuntimeSession:
         self._require_open()
         self.open_session()
         relays = self._relay_gpus_for_session()
-        profile, response = runtime_profile.bootstrap_daemon_profile(
+        profile, response = bootstrap_daemon_profile(
             self._profile_daemon_client(),
             self.backend,
             self.runtime_options,

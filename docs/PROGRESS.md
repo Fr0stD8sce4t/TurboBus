@@ -16,27 +16,24 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Tightened public worker and daemon package boundaries as one system API pass.
-- Removed worker lifecycle client, service, error, and authorization parser
-  exports from `turbobus.worker`; those remain in their owning lifecycle module.
-- Kept worker package-level access focused on service process, socket client,
-  endpoint, and transport entry points.
-- Removed daemon role-client and manual daemon constructor exports from
-  `turbobus.daemon`; production owners now import daemon role clients directly
-  from `turbobus.daemon.client`.
-- Kept `TurboBusRuntimeSession` and worker process startup wired to the owning
-  daemon-client module rather than package-level shortcuts.
+- Split profile bootstrap support as one runtime/backend boundary.
+- Moved simple profile result models to `turbobus/profiling/models.py`.
+- Moved daemon profile serialization, cache freshness, validation, and
+  daemon-entry reconstruction to `turbobus/profiling/daemon_format.py`.
+- Moved CUDA profile collection, daemon `put_profile`, and bootstrap cache
+  flow to `turbobus/profiling/bootstrap.py`.
+- Updated `TurboBusRuntimeSession` to call the owning bootstrap module.
+- Deleted `turbobus/profile.py` instead of keeping a compatibility export
+  layer.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated daemon, worker, runtime
-  session, and top-level import modules.
-- Searches found no production import from `turbobus.worker` package-level
-  worker internals.
-- Searches found no production daemon role-client import through
-  `turbobus.daemon` package-level shortcuts.
+- `python -m py_compile` passed for the new profiling modules and directly
+  related runtime/backend modules.
+- Searches found no production reference to the removed `turbobus.profile`
+  module.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -52,6 +49,8 @@ code remain deferred until the full system implementation pass is complete.
   bypasses.
 - Tests still import old worker and daemon package-level internals; current
   constraints defer test migration until system implementation is complete.
+- Tests still import old `turbobus.profile` helpers; current constraints defer
+  test migration until system implementation is complete.
 
 ## Next Main Target
 

@@ -34,6 +34,10 @@ worker/backend completion, and `TransferReceipt`.
 - Keep socket-backed runtime sessions deriving daemon role clients from the
   socket path, while direct object construction without a daemon socket must
   provide explicit runtime, profile, and execution daemon clients.
+- Keep profile bootstrap split by real ownership under `turbobus/profiling/`:
+  profile data models, daemon profile format/cache handling, and daemon
+  bootstrap/install logic should live in separate modules. Do not recreate
+  `turbobus/profile.py` as a compatibility export layer.
 - Keep worker/backend transfer executors owned by `TurboBusRuntimeSession`.
   `TurboBusClient` should submit intents and wait for receipts only.
 - Keep `turbobus.worker` package-level exports limited to worker service,

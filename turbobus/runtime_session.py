@@ -24,6 +24,7 @@ from .profiling.bootstrap import bootstrap_daemon_profile
 from .runtime.buffers import (
     buffer_registration_fingerprint,
     runtime_session_buffer_metadata,
+    validate_runtime_buffer_backing,
     validate_intent_uses_runtime_buffers,
 )
 from .runtime.daemon_view import RuntimeExecutionDaemonView
@@ -457,6 +458,7 @@ class TurboBusRuntimeSession:
 
     def _register_buffer(self, buffer: ExecutableBuffer) -> None:
         self._require_open()
+        validate_runtime_buffer_backing(buffer)
         if buffer.job_id != self.job_id:
             raise ValueError("buffer job_id must match the runtime session job_id")
         existing = self._buffers.get(buffer.buffer_id)

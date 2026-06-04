@@ -7,10 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: worker/backend execution status into daemon runtime
-feedback. Daemon runtime summary data should keep worker/backend completion
-source counts current after transfer retirement, and scheduler runtime
-metadata should expose those counts directly.
+Current code target: real buffer correctness gate. Runtime session buffer
+registration should only accept live shared pinned CPU buffers and live CUDA
+IPC GPU buffers, not synthetic backing objects.
 
 ## Exit Criteria
 
@@ -18,16 +17,17 @@ metadata should expose those counts directly.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
+- Runtime session buffer registration rejects stale or synthetic buffer
+  backing before it can be used in an intent.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/daemon/server.py` should keep completion-source counts aligned with
-retired transfer state, and `turbobus/scheduler/load_feedback.py` should
-surface those counts in runtime metadata.
+`turbobus/runtime_session.py` should validate real shared-memory and CUDA IPC
+buffer backing before buffers enter the runtime session registry.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: real buffer correctness gate.
+boundary: benchmark data-plane repair.

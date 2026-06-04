@@ -38,6 +38,20 @@ def runtime_session_buffer_metadata(
     return metadata
 
 
+def validate_runtime_buffer_backing(buffer: ExecutableBuffer) -> None:
+    if isinstance(buffer, SharedPinnedCpuBuffer):
+        if buffer.closed:
+            raise ValueError("shared CPU buffer is closed")
+        _ = buffer.address
+        return
+    if isinstance(buffer, CudaIpcDeviceBuffer):
+        device_ptr = buffer.device_ptr
+        if device_ptr is None or int(device_ptr) <= 0:
+            raise ValueError("CUDA buffer must have a live device_ptr")
+        return
+    raise TypeError("buffer must be a SharedPinnedCpuBuffer or CudaIpcDeviceBuffer")
+
+
 def validate_intent_uses_runtime_buffers(
     intent: TransferIntent,
     *,
@@ -75,5 +89,6 @@ def _runtime_buffer_kind(buffer: ExecutableBuffer) -> str:
 __all__ = [
     "buffer_registration_fingerprint",
     "runtime_session_buffer_metadata",
+    "validate_runtime_buffer_backing",
     "validate_intent_uses_runtime_buffers",
 ]

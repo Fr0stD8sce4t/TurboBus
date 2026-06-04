@@ -58,24 +58,31 @@ builds its scheduling policy view from daemon-owned runtime resource state,
 and daemon relay admission uses the same busy-relay parser when checking
 active relay paths, reservations, leases, and staging records.
 
+Worker data-plane resource binding now requires the full daemon-authorized
+`WorkerTransferRequest` instead of a standalone `WorkerDataPlaneRequest`.
+Opening shared pinned CPU buffers and CUDA IPC device handles revalidates the
+daemon-issued `ExecutionTicket`, worker authorization, data-plane request,
+ticket id, transfer id, and plan generation before touching resources.
+
 ## Completed This Round
 
-- Split runtime load feedback out of `turbobus/scheduler/daemon.py` into
-  `turbobus/scheduler/load_feedback.py`.
-- Kept scheduler decisions consuming daemon-owned active transfer, job,
-  reservation, lease, path, and staging state through that module.
-- Reused the same busy-relay parser in daemon relay admission and runtime
-  state summaries, so scheduler policy and admission checks interpret active
-  relay load consistently.
+- Tightened worker resource binding so `WorkerDataPlaneResourceBinder.bind()`
+  accepts only a full `WorkerTransferRequest`, not a bare data-plane request.
+- Revalidated daemon-issued ticket ownership before binding shared pinned CPU
+  buffers and CUDA IPC GPU handles.
+- Added ticket id, plan generation, session id, and job id to worker resource
+  evidence emitted by bound resources.
 - Kept the old compatibility/export-layer files deleted and left server
   validation deferred.
 - Updated the active plan files to move the next implementation entry to
-  isolation and authority hardening.
+  real workload closure through the unified runtime session.
 
 ## Validation
 
-- `python -m py_compile turbobus\scheduler\load_feedback.py
-  turbobus\scheduler\daemon.py turbobus\daemon\server.py` passed.
+- `python -m py_compile turbobus\worker\resources.py
+  turbobus\worker\lifecycle.py turbobus\worker\models.py
+  turbobus\worker\validation.py turbobus\worker\cuda_executor.py
+  turbobus\runtime_session.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -83,11 +90,11 @@ active relay paths, reservations, leases, and staging records.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Isolation and authority hardening still needs inspection to ensure worker and
-  data-plane execution cannot drift from daemon-issued tickets.
+- Real workload closure still needs inspection so every adapter path stays on
+  the unified runtime session and consumes real receipts.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting isolation and authority
-hardening while keeping server validation deferred until the full system
-implementation pass is complete.
+Continue the code implementation pass by inspecting real workload closure
+through the unified runtime session while keeping server validation deferred
+until the full system implementation pass is complete.

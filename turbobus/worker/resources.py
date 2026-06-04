@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from ..backends.cuda import default_cuda_backend
 from ..client import SharedPinnedCpuBuffer
 from ..schema import BufferRegistration, WorkerBufferHandle, WorkerDataPlaneRequest
+from . import validation as worker_validation
+from .models import WorkerTransferRequest
 
 
 class WorkerDataPlaneResourceError(RuntimeError):
@@ -17,6 +19,8 @@ class WorkerDataPlaneResources:
     cpu_buffer: SharedPinnedCpuBuffer
     device_ptr: int
     device_bytes: int
+    ticket_id: str
+    plan_generation: int
     cuda_host_registered: bool = False
     cuda_backend: object | None = field(default=None, repr=False, compare=False)
     device_index: int | None = None
@@ -108,6 +112,10 @@ class WorkerDataPlaneResources:
         return {
             "transfer_id": self.request.transfer_id,
             "lease_id": self.request.lease_id,
+            "ticket_id": self.ticket_id,
+            "plan_generation": self.plan_generation,
+            "session_id": self.request.session_id,
+            "job_id": self.request.job_id,
             "direction": self.request.direction,
             "src_buffer_id": self.request.src_handle.buffer_id,
             "src_handle_type": self.request.src_handle.handle_type,
@@ -137,14 +145,21 @@ class WorkerDataPlaneResources:
 class WorkerDataPlaneResourceBinding:
     def __init__(
         self,
-        request: WorkerDataPlaneRequest,
+        worker_request: WorkerTransferRequest,
         *,
         backend=default_cuda_backend,
         register_cuda_host: bool = True,
     ) -> None:
-        if not isinstance(request, WorkerDataPlaneRequest):
-            raise TypeError("request must be a WorkerDataPlaneRequest")
-        self.request = request
+        if not isinstance(worker_request, WorkerTransferRequest):
+            raise TypeError("worker_request must be a WorkerTransferRequest")
+        worker_validation.validate_daemon_issued_ticket(worker_request.ticket)
+        worker_validation.validate_ticket_matches_worker_request(
+            worker_request.ticket,
+            worker_request.authorization,
+            worker_request.data_plane,
+        )
+        self.worker_request = worker_request
+        self.request = worker_request.data_plane
         self.backend = backend
         self.register_cuda_host = bool(register_cuda_host)
         self._resources: WorkerDataPlaneResources | None = None
@@ -174,6 +189,10 @@ class WorkerDataPlaneResourceBinding:
                 cpu_buffer=cpu_buffer,
                 device_ptr=self._device_ptr,
                 device_bytes=device_handle.size_bytes,
+                ticket_id=self.worker_request.ticket.ticket_id,
+                plan_generation=int(
+                    self.worker_request.ticket.metadata["plan_generation"]
+                ),
                 cuda_host_registered=self.register_cuda_host,
                 cuda_backend=self.backend,
                 device_index=self._device_index,
@@ -222,10 +241,10 @@ class WorkerDataPlaneResourceBinder:
 
     def bind(
         self,
-        request: WorkerDataPlaneRequest,
+        worker_request: WorkerTransferRequest,
     ) -> WorkerDataPlaneResourceBinding:
         return WorkerDataPlaneResourceBinding(
-            request,
+            worker_request,
             backend=self.backend,
             register_cuda_host=self.register_cuda_host,
         )

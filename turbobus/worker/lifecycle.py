@@ -678,7 +678,7 @@ class WorkerTransferClient:
             )
         if self.resource_binder is None:
             return self.executor.execute(worker_request, staging_slot)
-        with self.resource_binder.bind(worker_request.data_plane) as resources:
+        with self.resource_binder.bind(worker_request) as resources:
             return execute_worker_transfer(
                 self.executor,
                 worker_request,

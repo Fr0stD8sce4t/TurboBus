@@ -7,16 +7,17 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten isolation and authority boundaries around
-daemon-issued `ExecutionTicket` execution and transfer cleanup after runtime
-load feedback has been split into scheduler-owned code.
+The next task is to inspect real workload closure so model-loading, training
+offload, inference KV, vLLM KV, and lower-level vLLM paths keep using the
+unified runtime session without application-side physical route control.
 
 ## Exit Criteria
 
-- Workers and data-plane code execute only daemon-issued `ExecutionTicket`
-  plans with matching job, session, buffer, ticket, and plan-generation data.
-- Daemon release and cleanup keep completed receipts consumable while retiring
-  lease, ticket, admission, peer, and runtime state consistently.
+- Workload adapters construct transfer work through `TurboBusRuntimeSession`
+  and `OffloadStore` intent submission instead of daemon, worker, or backend
+  shortcuts.
+- Adapter state keys, handles, and events preserve daemon runtime session,
+  job, intent, ticket, and receipt identity.
 - Applications and adapters still submit only `TransferIntent` and consume
   `TransferReceipt`.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
@@ -24,9 +25,11 @@ load feedback has been split into scheduler-owned code.
 
 ## Current Code Work
 
-- Inspect `turbobus/daemon/server.py`, `turbobus/worker/lifecycle.py`,
-  `turbobus/worker/validation.py`, `turbobus/worker/resources.py`, and
-  `turbobus/worker/cuda_executor.py` for authority and cleanup boundaries.
+- Inspect `turbobus/offload_store.py`, `turbobus/adapters/model_loading.py`,
+  `turbobus/adapters/training_offload.py`,
+  `turbobus/adapters/inference.py`, `turbobus/adapters/vllm.py`,
+  `turbobus/adapters/vllm_integration.py`, and
+  `turbobus/adapters/vllm_kv_connector.py` for runtime-session handoff.
 - Keep offload and vLLM adapter handoff owned by `TurboBusRuntimeSession`; vLLM
   connector prefix state uses the daemon runtime session id while preserving
   the connector engine id only as metadata.
@@ -38,7 +41,7 @@ load feedback has been split into scheduler-owned code.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting isolation and authority
-hardening in daemon-issued ticket execution and cleanup. Keep the work focused
-on system code; defer tests, benchmarks, paper-validation, experiments, and
-server validation until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting real workload closure
+through the unified runtime session. Keep the work focused on system code;
+defer tests, benchmarks, paper-validation, experiments, and server validation
+until the full system implementation pass is complete.

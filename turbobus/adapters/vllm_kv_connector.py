@@ -164,7 +164,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.connector_session_id = self.config.session_id
         self.job_id = self.config.job_id
         self.max_saved_prefixes = self.config.max_saved_prefixes
-        self.runtime_session = TurboBusRuntimeSession.open_socket(
+        self.runtime_session = TurboBusRuntimeSession.open_production_socket(
             daemon_socket_path=self.config.daemon_socket_path,
             worker_socket_path=self.config.worker_socket_path,
             job_id=self.job_id,

@@ -161,6 +161,30 @@ class TurboBusRuntimeSession:
             runtime_options=runtime_options,
         )
 
+    @classmethod
+    def open_production_socket(
+        cls,
+        *,
+        daemon_socket_path: str,
+        worker_socket_path: str,
+        job_id: str,
+        user_id: str | None = None,
+        max_inflight_chunks: int = 8,
+        backend=default_cuda_backend,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> "TurboBusRuntimeSession":
+        if not str(worker_socket_path).strip():
+            raise ValueError("worker_socket_path must be non-empty")
+        return cls.open_socket(
+            daemon_socket_path=daemon_socket_path,
+            worker_socket_path=worker_socket_path,
+            job_id=job_id,
+            user_id=user_id,
+            max_inflight_chunks=max_inflight_chunks,
+            backend=backend,
+            runtime_options=runtime_options,
+        )
+
     @property
     def session_id(self) -> str:
         if self._session_id is None:

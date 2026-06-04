@@ -7,29 +7,27 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete runtime receipt validation for daemon-issued
-execution. `TurboBusRuntimeSession` must only return receipts whose identity,
-ticket binding, execution source, and terminal evidence match the submitted
-intent.
+Current code target: complete the socket-backed production runtime session
+entry. Production adapters must connect to both daemon and worker socket
+services so worker/backend execution remains on daemon-issued plans.
 
 ## Exit Criteria
 
-- Runtime receipt validation checks intent, job, session, ticket, transfer, and
-  plan-generation binding.
-- Complete receipts still require worker/backend execution and verified byte
-  evidence.
-- Failed or canceled receipts require worker/backend execution source, error,
-  ticket evidence, transfer evidence, and plan-generation evidence.
+- `TurboBusRuntimeSession` exposes a production socket opener that requires
+  daemon and worker socket paths.
+- vLLM KV connector uses the production socket opener and cannot silently fall
+  back to an in-process worker client.
+- vLLM TurboBus config requires non-empty daemon and worker socket paths.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-Finish runtime receipt validation so complete and failed daemon receipts are
-consumed through one checked `TurboBusRuntimeSession` path.
+Finish the production runtime session startup path from socket configuration to
+daemon role clients and worker socket client.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: runtime session production startup or adapter submission/receipt
-consumption through `TurboBusRuntimeSession`.
+boundary: adapter submission/receipt consumption through
+`TurboBusRuntimeSession` or profile bootstrap closure.

@@ -54,6 +54,10 @@ Failed or canceled intent transfers that come from worker/backend status
 updates now also archive the daemon-issued ticket used by the terminal status
 evidence, so their receipts keep ticket, transfer, and plan-generation binding
 without leaving the ticket active for later execution.
+Forced cleanup of missing job, buffer, or session targets now requires residual
+transfer ownership evidence when the daemon has an authenticated peer. Unknown
+cleanup targets cannot produce successful ownerless cleanup records on the
+daemon socket path.
 Successful worker completion cleanup now requires daemon release evidence:
 daemon `release_transfer()` returns an explicit release payload, and worker
 completion envelope validation rejects skipped cleanup, generic cleanup, or
@@ -77,15 +81,14 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Archived daemon-issued tickets for worker/backend failed or canceled terminal
-  status updates after validating their ticket evidence.
-- Added receipt metadata that exposes execution-ticket id, evidence-ticket id,
-  evidence transfer id, and evidence plan generation for terminal receipts.
+- Tightened forced cleanup for missing job, buffer, and session targets so
+  authenticated peers must still match residual transfer ownership evidence.
+- Kept socket cleanup on daemon-owned peer identity and did not add benchmark,
+  paper-validation, server-validation, or compatibility entry points.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\receipts.py`
-  passed.
+- `python -m py_compile turbobus\daemon\server.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -96,6 +99,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon peer identity,
-cleanup ownership, and socket request handling while keeping server validation
-deferred until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting worker cleanup envelopes
+and daemon release responses while keeping server validation deferred until the
+full system implementation pass is complete.

@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon peer identity,
-cleanup ownership, and socket request handling. Cleanup and receipt access
-should remain tied to the authenticated transfer owner without restoring
+Continue the code implementation pass by inspecting worker cleanup envelopes
+and daemon release responses. Worker cleanup should remain tied to
+daemon-issued lease, ticket, staging, and release evidence without restoring
 application-side route controls, compatibility export layers, benchmark hooks,
 or server-validation gates.

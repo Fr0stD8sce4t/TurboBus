@@ -368,6 +368,12 @@ class TurboBusDaemon:
                             job_id=cleanup.target_id,
                             peer_identity=peer_identity,
                         )
+                    else:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
                 _merge_removed(
@@ -384,6 +390,12 @@ class TurboBusDaemon:
                     if cleanup.target_id in self._buffers:
                         self._validate_peer_owns_buffer_locked(
                             buffer_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    else:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
                             peer_identity=peer_identity,
                         )
                 except ValueError as exc:
@@ -419,6 +431,12 @@ class TurboBusDaemon:
                     if cleanup.target_id in self._sessions:
                         self._validate_peer_owns_session_locked(
                             session_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    elif cleanup.force:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
                             peer_identity=peer_identity,
                         )
                 except ValueError as exc:
@@ -3473,6 +3491,59 @@ class TurboBusDaemon:
                 buffer_id=str(buffer_id),
                 peer_identity=peer_identity,
             )
+
+    def _validate_peer_owns_missing_cleanup_target_locked(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if peer_identity is None or not peer_identity.authenticated:
+            return
+        transfer_ids = self._residual_transfer_ids_for_cleanup_target_locked(
+            target_kind=target_kind,
+            target_id=target_id,
+        )
+        if not transfer_ids:
+            raise ValueError(f"unknown {target_kind}")
+        for transfer_id in transfer_ids:
+            status = self._transfer_statuses.get(transfer_id)
+            if status is not None:
+                self._validate_peer_owns_receipt_transfer_locked(
+                    transfer_id=transfer_id,
+                    job_id=status.job_id,
+                    peer_identity=peer_identity,
+                )
+                continue
+            transfer_peer = self._transfer_peer_identities.get(transfer_id)
+            if transfer_peer is None or not transfer_peer.authenticated:
+                raise ValueError("transfer owner identity is unavailable")
+            _validate_peer_owner_match(
+                expected=transfer_peer,
+                actual=peer_identity,
+                owner_name="transfer",
+            )
+
+    def _residual_transfer_ids_for_cleanup_target_locked(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+    ) -> tuple[str, ...]:
+        normalized = str(target_id)
+        if target_kind == "job":
+            return self._transfer_ids_for_job_locked(normalized)
+        if target_kind == "buffer":
+            transfer_ids = set(self._transfer_ids_for_buffer_locked(normalized))
+            for lease_id in self._active_buffer_lease_ids_locked(normalized):
+                transfer_id = self._reservation_transfers.get(lease_id)
+                if transfer_id is not None:
+                    transfer_ids.add(transfer_id)
+            return tuple(sorted(transfer_ids))
+        if target_kind == "session":
+            return self._transfer_ids_for_session_locked(normalized)
+        return ()
 
     def _validate_transfer_buffers_locked(
         self,

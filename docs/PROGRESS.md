@@ -89,26 +89,34 @@ eligible relay GPUs from its configured relay pool and topology inventory, then
 returns the selected relay set in the session record for profile bootstrap and
 receipt identity.
 
+Worker execution is now exposed through the full daemon-authorized lifecycle.
+The worker client no longer has public execute-only or execute-and-status
+shortcuts that can skip lease cleanup; runtime and worker socket paths use the
+authorize, execute, status report, and cleanup lifecycle.
+
 ## Completed This Round
 
-- Removed `relay_gpus` from the daemon client `register_session` call.
-- Removed session relay selection from the daemon socket `REGISTER_SESSION`
-  payload path.
-- Changed daemon `register_session` to derive relays from daemon topology and
-  relay quotas, while returning the selected set in the session payload.
-- Changed runtime session startup to consume daemon-selected relays from the
-  registered session record instead of discovering and resubmitting them.
-- Removed caller-provided relay candidates from daemon relay discovery.
+- Removed `WorkerTransferClient.submit`, which executed daemon-authorized work
+  without reporting status or cleaning up leases.
+- Removed `WorkerTransferClient.submit_and_report`, which reported status but
+  could still skip cleanup.
+- Removed `WorkerTransferClient.submit_report_and_cleanup`, leaving
+  `submit_report_cleanup_lifecycle` as the single local worker execution
+  entry.
+- Confirmed runtime session and worker socket paths already use the full worker
+  lifecycle.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py
-  turbobus\daemon\client.py turbobus\daemon\dispatch.py
-  turbobus\daemon\server.py` passed.
-- `rg -n "requested_relays=payload|payload\.get\(\"relay_gpus\"|payload\[\"relay_gpus\"\]|register_session\([^\n]*relay|discover_relays\([^\n]*relay"
-  turbobus` found no old relay-selection payload path.
+- `python -m py_compile turbobus\worker\lifecycle.py
+  turbobus\worker\process.py turbobus\intent_execution_support.py
+  turbobus\intent_executor.py turbobus\runtime_session.py` passed.
+- `rg -n "def submit\(|submit_and_report\(|submit_report_and_cleanup\("
+  turbobus\worker turbobus\intent_execution_support.py
+  turbobus\intent_executor.py turbobus\runtime_session.py` found no worker
+  shortcut execution methods.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -123,6 +131,9 @@ receipt identity.
 - Existing tests may also still expect session registration to accept
   caller-provided relay lists; current-stage constraints defer test migration
   until the system implementation pass is complete.
+- Existing tests may still call removed worker shortcut methods; current-stage
+  constraints defer test migration until the system implementation pass is
+  complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

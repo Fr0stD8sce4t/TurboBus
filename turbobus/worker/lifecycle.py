@@ -474,56 +474,6 @@ class WorkerTransferClient:
     ) -> WorkerTransferRequest:
         return self.authorizer.authorize(request)
 
-    def submit(
-        self,
-        request: WorkerTransferAuthorizationRequest,
-    ) -> WorkerTransferResult:
-        worker_request = self.authorize(request)
-        staging_slot = self.staging_pool.allocate(worker_request.data_plane)
-        try:
-            try:
-                result = self._execute(worker_request, staging_slot)
-            except Exception as exc:
-                result = failed_worker_result_from_exception(
-                    worker_request,
-                    staging_slot,
-                    exc,
-                )
-            return validate_worker_completion_bytes(worker_request, result)
-        finally:
-            self.staging_pool.release(staging_slot.slot_id, worker_request.data_plane)
-
-    def submit_and_report(
-        self,
-        request: WorkerTransferAuthorizationRequest,
-    ) -> WorkerTransferResult:
-        result = self.submit(request)
-        self.status_reporter.report(result)
-        return result
-
-    def submit_report_and_cleanup(
-        self,
-        request: WorkerTransferAuthorizationRequest,
-        cleanup_target_kind: str = "reservation",
-    ) -> WorkerTransferResult:
-        lifecycle = self.submit_report_cleanup_lifecycle(
-            request,
-            cleanup_target_kind=cleanup_target_kind,
-        )
-        if lifecycle.final_state == "authorization_failed":
-            raise WorkerAuthorizationError(
-                lifecycle.error or "worker transfer authorization failed"
-            )
-        if lifecycle.final_state == "status_failed":
-            raise WorkerStatusReportError(
-                lifecycle.error or "worker transfer status report failed"
-            )
-        if lifecycle.final_state == "cleanup_failed":
-            raise WorkerCleanupError(lifecycle.error or "worker cleanup failed")
-        if lifecycle.result is None:
-            raise RuntimeError("worker lifecycle completed without a result")
-        return lifecycle.result
-
     def submit_report_cleanup_lifecycle(
         self,
         request: WorkerTransferAuthorizationRequest,

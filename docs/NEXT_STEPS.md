@@ -37,7 +37,9 @@ experiment work is planned.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, `turbobus/worker_managed.py`, and old
   route-shaped transfer request, manual relay reservation, or session relay
-  selection entry files deleted. Do not recreate compatibility export layers.
+  selection entry files deleted. Worker execution entry points must keep the
+  full authorize-execute-status-cleanup lifecycle. Do not recreate
+  compatibility export layers.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

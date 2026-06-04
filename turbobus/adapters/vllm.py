@@ -5,7 +5,6 @@ import math
 from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from ..offload.context import AdapterTransferContext
 from ..offload.stats import TransferStats
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
@@ -70,11 +69,9 @@ class VllmKVSlotAdapter:
                     buffer_id=_group_gpu_buffer_id(gpu_buffer_id, group),
                 )
             )
-            group_context = AdapterTransferContext(
-                job_id=runtime_session.job_id,
-                session_id=runtime_session.open_session(),
-                cpu_buffer_id=cpu_buffer.buffer_id,
-                gpu_buffer_id=gpu_buffer.buffer_id,
+            group_context = runtime_session.make_adapter_transfer_context(
+                cpu_buffer,
+                gpu_buffer,
                 workload_kind=workload_kind,
                 priority=priority,
                 policy_hints={

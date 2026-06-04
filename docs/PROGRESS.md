@@ -2,8 +2,8 @@
 
 ## Current State
 
-Current main target: session/job/buffer registration into the TransferIntent
-execution path.
+Current main target: worker/backend failure cleanup and terminal receipt
+closure.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -15,15 +15,18 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Runtime-session buffer registration now rolls back the newly added local
-  buffer entry if submit-time daemon registration fails, so the session does
-  not keep a buffer that never made it onto the daemon.
+- Worker authorization failures are now validated as explicit cleanup-only
+  failure envelopes instead of leaking through the executor as an
+  unclassified state.
+- The worker intent executor now handles `authorization_failed` explicitly
+  and exits through the failure path.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/runtime_session.py` passed.
+- `python -m py_compile turbobus/intent_execution_support.py
+  turbobus/intent_executor.py` passed.
 - `git diff --check` passed.
 
 ## Remaining Risk
@@ -37,5 +40,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: `WorkerIntentTransferExecutor`
-and the daemon-issued worker path.
+Continue with one concrete implementation boundary: worker/backend execution
+status into daemon runtime feedback.

@@ -7,10 +7,10 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: session/job/buffer registration into the TransferIntent
-execution path. Runtime-session buffer registration now needs to roll back
-its local state if daemon registration fails after a buffer has already been
-added.
+Current code target: worker/backend failure cleanup and terminal receipt
+closure. Worker authorization failures now need to be treated as explicit
+cleanup-only failures instead of leaking through the worker executor as an
+unclassified state.
 
 ## Exit Criteria
 
@@ -23,10 +23,10 @@ added.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py` should remove the newly added buffer from its
-local registry when submit-time daemon registration fails.
+`turbobus/intent_execution_support.py` and `turbobus/intent_executor.py`
+should handle `authorization_failed` as a terminal worker failure path.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: `WorkerIntentTransferExecutor` and the daemon-issued worker path.
+boundary: worker/backend execution status into daemon runtime feedback.

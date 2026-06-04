@@ -7,30 +7,28 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten the unified runtime session handoff to upper
-system components so offload and adapter paths keep using `TransferIntent` and
-`TransferReceipt` without reopening physical route choices.
+The next task is to tighten runtime load feedback into daemon scheduling so
+the scheduler can reason about active transfer state without applications or
+adapters choosing physical routes.
 
 ## Exit Criteria
 
-- Offload and adapter-facing runtime entry points submit intent through
-  `TurboBusRuntimeSession` and consume daemon receipts.
-- No upper layer chooses direct, relay, pool, target GPU, or relay GPU outside
-  daemon/session setup.
-- Runtime session ownership of submitted intents and closed-session rejection
-  remains enforced.
+- Daemon scheduling consumes runtime resource state for active transfers and
+  relay load.
+- Runtime state is derived from daemon-owned transfer, lease, ticket, and
+  cleanup records rather than adapter or benchmark hints.
+- Applications and adapters still submit only `TransferIntent` and consume
+  `TransferReceipt`.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
   shim, or export layer code is added during this pass.
 
 ## Current Code Work
 
-- Inspect `turbobus/offload_store.py`, `turbobus/adapters/vllm_kv_connector.py`,
-  lower-level vLLM adapter code, and `turbobus/runtime_session.py` for any
-  remaining application-side physical route control or daemon-bypass transfer
-  construction.
-- Keep daemon ticket, receipt, and cleanup state consistent: worker lease
-  release keeps completed receipts available, while session/job/buffer cleanup
-  retires the full transfer record.
+- Inspect `turbobus/daemon/server.py`, `turbobus/scheduler/daemon.py`, and
+  `turbobus/scheduler/load_feedback.py` for runtime-state scheduling inputs.
+- Keep offload and vLLM adapter handoff owned by `TurboBusRuntimeSession`; vLLM
+  connector prefix state uses the daemon runtime session id while preserving
+  the connector engine id only as metadata.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
   deleted. Do not recreate compatibility export layers.
@@ -39,7 +37,7 @@ system components so offload and adapter paths keep using `TransferIntent` and
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting offload and adapter runtime
-session handoff. Keep the work focused on system code; defer tests, benchmarks,
-paper-validation, experiments, and server validation until the full system
-implementation pass is complete.
+Continue the code implementation pass by inspecting runtime load feedback into
+daemon scheduling. Keep the work focused on system code; defer tests,
+benchmarks, paper-validation, experiments, and server validation until the full
+system implementation pass is complete.

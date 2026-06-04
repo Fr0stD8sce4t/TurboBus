@@ -161,7 +161,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.config = TurboBusConnectorConfig.from_vllm_config(vllm_config)
         self.restore_block_limit = self.config.restore_block_limit
         self.restore_enabled = self.config.restore_enabled
-        self.session_id = self.config.session_id
+        self.connector_session_id = self.config.session_id
         self.job_id = self.config.job_id
         self.max_saved_prefixes = self.config.max_saved_prefixes
         self.runtime_session = TurboBusRuntimeSession.open_socket(
@@ -169,7 +169,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             worker_socket_path=self.config.worker_socket_path,
             job_id=self.job_id,
         )
-        self.daemon_client = self.runtime_session.daemon_client
+        self.session_id = self.runtime_session.open_session()
         self._layer_save_contexts: dict[str, _LayerSaveContext] = {}
         self._backing_pool = TurboBusCPUBackingPool(
             job_id=self.job_id,
@@ -182,6 +182,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             role=str(role),
             job_id=self.job_id,
             session_id=self.session_id,
+            connector_session_id=self.connector_session_id,
             restore_enabled=self.restore_enabled,
             restore_block_limit=self.restore_block_limit,
             max_saved_prefixes=self.max_saved_prefixes,
@@ -205,6 +206,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "event": "close",
                 "job_id": self.job_id,
                 "session_id": self.session_id,
+                "connector_session_id": self.connector_session_id,
                 "prefixes": closed_prefixes,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
@@ -215,6 +217,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             "close",
             job_id=self.job_id,
             session_id=self.session_id,
+            connector_session_id=self.connector_session_id,
             prefixes=closed_prefixes,
             pending_saves=closed_pending_saves,
             **closed_pending_metadata,
@@ -1042,6 +1045,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         return {
             **metadata,
             "connector": "vllm_kv",
+            "connector_session_id": self.connector_session_id,
             "chunk_bytes": self.config.chunk_bytes,
         }
 

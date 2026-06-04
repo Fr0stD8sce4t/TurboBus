@@ -42,6 +42,12 @@ retires the full transfer record, including active tickets, archived
 completion tickets, completion source/evidence, planning state, admission
 state, queue records, peer identity, intent mappings, and terminal status.
 
+Offload, model-loading, training-offload, inference KV, vLLM slot adapter, vLLM
+integration, and vLLM connector paths hand off through `TurboBusRuntimeSession`
+and `OffloadStore` intent submission. vLLM connector prefix state now uses the
+daemon runtime session id for saved-prefix lookup, storage, events, and cleanup;
+the vLLM connector engine id is preserved only as connector metadata.
+
 Server-only validation remains deferred until after the full system
 implementation pass. Current code work should continue through code reading,
 implementation, refactoring, and existing minimal local checks without adding
@@ -49,24 +55,24 @@ server test commands or server-validation gates.
 
 ## Completed This Round
 
-- Split completed reservation release from full transfer cleanup: release now
-  clears lease-side runtime state but keeps completed receipt evidence available
-  for the runtime session.
-- Full session, job, or buffer cleanup retires transfer records together with
-  active tickets, archived completion tickets, completion evidence, planning
-  state, admission state, queue records, peer identity, intent mappings, and
-  terminal status.
-- Preserved daemon release ordering so completion evidence and archived ticket
-  are verified before lease state is retired.
+- Inspected offload and adapter-facing runtime handoff for daemon bypass and
+  application-side physical route choice.
+- Bound vLLM connector prefix identity to the daemon runtime session id instead
+  of the connector config engine id, so saved prefixes and events share the
+  same session identity as submitted `TransferIntent` receipts.
+- Removed the vLLM connector's stored daemon-client shortcut so the adapter path
+  remains visibly owned by `TurboBusRuntimeSession`.
 - Kept the old compatibility/export-layer files deleted and left server
   validation deferred.
 - Updated the active plan files to move the next implementation entry to
-  offload and adapter runtime-session handoff.
+  runtime load feedback into daemon scheduling.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\daemon\dispatch.py turbobus\transfer_execution.py
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\vllm_kv_connector.py turbobus\adapters\vllm.py
+  turbobus\adapters\vllm_integration.py turbobus\adapters\model_loading.py
+  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
   turbobus\runtime_session.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
@@ -75,11 +81,11 @@ server test commands or server-validation gates.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Offload and adapter-facing runtime session handoff still needs inspection for
-  any remaining daemon bypass or application-side route choice.
+- Runtime load feedback still needs inspection to ensure scheduler decisions
+  consume daemon-owned active transfer state.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting offload and adapter runtime
-session handoff while keeping server validation deferred until the full system
-implementation pass is complete.
+Continue the code implementation pass by inspecting runtime load feedback into
+daemon scheduling while keeping server validation deferred until the full
+system implementation pass is complete.

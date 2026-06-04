@@ -7,17 +7,15 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: shared buffer lifecycle cleanup. Runtime-owned CPU and GPU
-buffer registration must carry enough daemon/worker lifecycle state for
-daemon-issued H2D, D2H, direct, relay, and pooled execution without
-application route selection.
+Current code target: daemon/worker production startup. Runtime sessions should
+be able to drive daemon and worker socket clients on the production path
+without restoring old runtime or planner entry points.
 
 ## Exit Criteria
 
-- Runtime session buffer registration records daemon-visible ownership and
-  worker-usable buffer state before transfer intent submission.
-- Shared pinned CPU buffers and CUDA IPC GPU buffers have one clear cleanup path
-  after worker/backend completion or failure.
+- Production socket setup wires runtime, execution, profile, and worker clients
+  into one `TurboBusRuntimeSession`.
+- Worker execution still consumes only daemon-issued `ExecutionTicket` payloads.
 - Public client and runtime-session consumers still submit `TransferIntent`
   and consume `TransferReceipt` without route selection.
 - No test, experiment, benchmark, paper-validation, or server-validation code
@@ -25,10 +23,10 @@ application route selection.
 
 ## Current Code Work
 
-Close buffer lifecycle gaps in the runtime/daemon/worker production path
-without restoring old runtime or planner entry points.
+Close daemon/worker startup gaps in the runtime production path without adding
+server validation wrappers or compatibility APIs.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: daemon/worker production startup.
+boundary: H2D/D2H system main path closure.

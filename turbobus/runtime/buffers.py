@@ -24,6 +24,20 @@ def buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, .
     )
 
 
+def runtime_session_buffer_metadata(
+    buffer: ExecutableBuffer,
+    *,
+    session_id: str,
+    runtime_owned: bool,
+) -> dict[str, object]:
+    registration = buffer.buffer_registration()
+    metadata = dict(registration.metadata)
+    metadata["runtime_session_id"] = str(session_id)
+    metadata["runtime_owned"] = bool(runtime_owned)
+    metadata["runtime_buffer_kind"] = _runtime_buffer_kind(buffer)
+    return metadata
+
+
 def validate_intent_uses_runtime_buffers(
     intent: TransferIntent,
     *,
@@ -50,7 +64,16 @@ def validate_intent_uses_runtime_buffers(
     )
 
 
+def _runtime_buffer_kind(buffer: ExecutableBuffer) -> str:
+    if isinstance(buffer, SharedPinnedCpuBuffer):
+        return "shared_pinned_cpu"
+    if isinstance(buffer, CudaIpcDeviceBuffer):
+        return "cuda_ipc_device"
+    return "executable_buffer"
+
+
 __all__ = [
     "buffer_registration_fingerprint",
+    "runtime_session_buffer_metadata",
     "validate_intent_uses_runtime_buffers",
 ]

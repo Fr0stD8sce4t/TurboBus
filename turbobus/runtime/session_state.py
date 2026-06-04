@@ -51,6 +51,7 @@ def clear_runtime_session_state(session) -> None:
     session._buffers.clear()
     session._registered_buffer_ids.clear()
     session._registered_buffer_fingerprints.clear()
+    session._owned_cpu_buffer_ids.clear()
     session._submitted_intent_ids.clear()
 
 

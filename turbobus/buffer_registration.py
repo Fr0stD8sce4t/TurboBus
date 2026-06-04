@@ -29,8 +29,22 @@ def register_buffer(daemon_client, registration: BufferRegistration) -> None:
 def register_executable_buffer(
     daemon_client,
     buffer: ExecutableBuffer,
+    *,
+    metadata: dict[str, object] | None = None,
 ) -> BufferRegistration:
     registration = buffer.buffer_registration()
+    if metadata is not None:
+        registration = BufferRegistration(
+            buffer_id=registration.buffer_id,
+            job_id=registration.job_id,
+            kind=registration.kind,
+            size_bytes=registration.size_bytes,
+            device_index=registration.device_index,
+            address=registration.address,
+            pinned=registration.pinned,
+            handle_type=registration.handle_type,
+            metadata=dict(metadata),
+        )
     register_buffer(daemon_client, registration)
     return registration
 

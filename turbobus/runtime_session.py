@@ -23,6 +23,7 @@ from .ranges import TransferRange, range_as_dict
 from .profiling.bootstrap import bootstrap_daemon_profile
 from .runtime.buffers import (
     buffer_registration_fingerprint,
+    runtime_session_buffer_metadata,
     validate_intent_uses_runtime_buffers,
 )
 from .runtime.daemon_view import RuntimeExecutionDaemonView
@@ -72,6 +73,11 @@ class TurboBusRuntimeSession:
     )
     _registered_buffer_fingerprints: dict[str, tuple[object, ...]] = field(
         default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _owned_cpu_buffer_ids: set[str] = field(
+        default_factory=set,
         init=False,
         repr=False,
     )
@@ -236,12 +242,38 @@ class TurboBusRuntimeSession:
     def register_cpu_buffer(
         self,
         buffer: SharedPinnedCpuBuffer,
+        *,
+        runtime_owned: bool = False,
     ) -> SharedPinnedCpuBuffer:
         self._require_open()
         if not isinstance(buffer, SharedPinnedCpuBuffer):
             raise TypeError("buffer must be a SharedPinnedCpuBuffer")
+        if runtime_owned and not buffer.owner:
+            raise ValueError("runtime-owned CPU buffers must own their shared memory")
+        if runtime_owned:
+            self._owned_cpu_buffer_ids.add(buffer.buffer_id)
         self._register_buffer(buffer)
         return buffer
+
+    def allocate_cpu_buffer(
+        self,
+        buffer_id: str,
+        size_bytes: int,
+        *,
+        name_prefix: str = "turbobus-runtime",
+    ) -> SharedPinnedCpuBuffer:
+        self._require_open()
+        buffer = SharedPinnedCpuBuffer.allocate(
+            buffer_id=str(buffer_id),
+            job_id=self.job_id,
+            size_bytes=int(size_bytes),
+            name_prefix=str(name_prefix),
+        )
+        try:
+            return self.register_cpu_buffer(buffer, runtime_owned=True)
+        except Exception:
+            buffer.release()
+            raise
 
     def register_cuda_buffer(
         self,
@@ -375,11 +407,13 @@ class TurboBusRuntimeSession:
                 payload={"closed": False, "already_closed": True},
             )
         if self._session_id is None:
+            self._release_owned_cpu_buffers()
             clear_runtime_session_state(self)
             self._closed = True
             return DaemonResponse(ok=True, payload={"closed": False})
         response = self._runtime_daemon_client().close_session(self._session_id)
         if response.ok:
+            self._release_owned_cpu_buffers()
             clear_runtime_session_state(self)
             self._closed = True
         return response
@@ -395,6 +429,15 @@ class TurboBusRuntimeSession:
         self._require_open()
         if buffer.job_id != self.job_id:
             raise ValueError("buffer job_id must match the runtime session job_id")
+        existing = self._buffers.get(buffer.buffer_id)
+        if (
+            existing is not None
+            and existing is not buffer
+            and buffer.buffer_id in self._owned_cpu_buffer_ids
+        ):
+            raise ValueError(
+                "runtime-owned CPU buffer must be cleaned up before reusing buffer_id"
+            )
         if isinstance(buffer, CudaIpcDeviceBuffer):
             self._bind_target_gpu(buffer.device_index)
         self._buffers[buffer.buffer_id] = buffer
@@ -502,12 +545,61 @@ class TurboBusRuntimeSession:
         self._require_open()
         self.session_id
         for buffer_id, buffer in tuple(self._buffers.items()):
-            fingerprint = buffer_registration_fingerprint(buffer)
+            runtime_owned = buffer_id in self._owned_cpu_buffer_ids
+            fingerprint = (
+                buffer_registration_fingerprint(buffer),
+                self.session_id,
+                runtime_owned,
+            )
             if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
                 continue
-            register_executable_buffer(self._runtime_daemon_client(), buffer)
+            metadata = runtime_session_buffer_metadata(
+                buffer,
+                session_id=self.session_id,
+                runtime_owned=runtime_owned,
+            )
+            register_executable_buffer(
+                self._runtime_daemon_client(),
+                buffer,
+                metadata=metadata,
+            )
             self._registered_buffer_ids.add(buffer_id)
             self._registered_buffer_fingerprints[buffer_id] = fingerprint
+
+    def cleanup_buffer(
+        self,
+        buffer_id: str,
+        *,
+        reason: str = "runtime_buffer_released",
+        force: bool = False,
+    ) -> DaemonResponse:
+        self._require_open()
+        normalized_id = str(buffer_id)
+        buffer = self._buffers.get(normalized_id)
+        response = DaemonResponse(ok=True, payload={"cleanup_skipped": True})
+        if normalized_id in self._registered_buffer_ids:
+            response = self._execution_daemon_client().cleanup(
+                target_kind="buffer",
+                target_id=normalized_id,
+                reason=reason,
+                force=force,
+            )
+            require_ok(response, "daemon buffer cleanup failed")
+        self._registered_buffer_ids.discard(normalized_id)
+        self._registered_buffer_fingerprints.pop(normalized_id, None)
+        self._buffers.pop(normalized_id, None)
+        if normalized_id in self._owned_cpu_buffer_ids:
+            self._owned_cpu_buffer_ids.discard(normalized_id)
+            if isinstance(buffer, SharedPinnedCpuBuffer):
+                buffer.release()
+        return response
+
+    def _release_owned_cpu_buffers(self) -> None:
+        for buffer_id in tuple(self._owned_cpu_buffer_ids):
+            buffer = self._buffers.get(buffer_id)
+            self._owned_cpu_buffer_ids.discard(buffer_id)
+            if isinstance(buffer, SharedPinnedCpuBuffer):
+                buffer.release()
 
     def _runtime_daemon_client(self):
         self._require_open()

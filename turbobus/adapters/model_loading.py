@@ -58,23 +58,7 @@ class ModelWeightLoader(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> "ModelWeightLoader":
-        factory = getattr(runtime_session, "make_model_weight_loader", None)
-        if callable(factory):
-            loader = factory(
-                cpu_buffer,
-                gpu_buffer,
-                priority=priority,
-                metadata=metadata,
-                intent_prefix=intent_prefix,
-                wait_timeout_seconds=wait_timeout_seconds,
-            )
-            if not isinstance(loader, cls):
-                raise TypeError(
-                    "runtime session model weight factory must return a ModelWeightLoader"
-                )
-            return loader
-        return cls(
-            runtime_session,
+        loader = runtime_session.make_model_weight_loader(
             cpu_buffer,
             gpu_buffer,
             priority=priority,
@@ -82,6 +66,11 @@ class ModelWeightLoader(OffloadStore):
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
+        if not isinstance(loader, cls):
+            raise TypeError(
+                "runtime session model weight factory must return a ModelWeightLoader"
+            )
+        return loader
 
     def add_bucket(
         self,

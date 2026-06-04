@@ -133,25 +133,7 @@ class VllmTurboBusIntegration:
         cpu_buffer_id: str = "vllm-kv-cpu",
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> "VllmTurboBusIntegration":
-        factory = getattr(runtime_session, "make_vllm_turbobus_integration", None)
-        if callable(factory):
-            integration = factory(
-                cpu_backings,
-                workload_kind=workload_kind,
-                priority=priority,
-                metadata=metadata,
-                intent_prefix=intent_prefix,
-                wait_timeout_seconds=wait_timeout_seconds,
-                cpu_buffer_id=cpu_buffer_id,
-                gpu_buffer_id=gpu_buffer_id,
-            )
-            if not isinstance(integration, cls):
-                raise TypeError(
-                    "runtime session vLLM integration factory must return a VllmTurboBusIntegration"
-                )
-            return integration
-        return cls(
-            runtime_session,
+        integration = runtime_session.make_vllm_turbobus_integration(
             cpu_backings,
             workload_kind=workload_kind,
             priority=priority,
@@ -161,6 +143,11 @@ class VllmTurboBusIntegration:
             cpu_buffer_id=cpu_buffer_id,
             gpu_buffer_id=gpu_buffer_id,
         )
+        if not isinstance(integration, cls):
+            raise TypeError(
+                "runtime session vLLM integration factory must return a VllmTurboBusIntegration"
+            )
+        return integration
 
     def install(self) -> None:
         """Install hooks into the imported vLLM V1 classes."""
@@ -308,17 +295,7 @@ class VllmTurboBusIntegration:
             self._cpu_backings,
             self.state.kv_caches,
         )
-        factory = getattr(self.runtime_session, "make_vllm_kv_slot_adapter", None)
-        if callable(factory):
-            adapter = factory(groups, **self._runtime_adapter_options)
-            if not isinstance(adapter, VllmKVSlotAdapter):
-                raise TypeError(
-                    "runtime session vLLM adapter factory must return a VllmKVSlotAdapter"
-                )
-            self.state.adapter = adapter
-            return
-        self.state.adapter = VllmKVSlotAdapter.from_runtime_session(
-            self.runtime_session,
+        self.state.adapter = self.runtime_session.make_vllm_kv_slot_adapter(
             groups,
             **self._runtime_adapter_options,
         )

@@ -20,14 +20,14 @@ submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
 - Offload adapter submissions use the public runtime session H2D / D2H methods
   with preserved intent identity and adapter metadata.
 - Adapter transfer context and offload / inference / vLLM adapter creation are
-  owned by `TurboBusRuntimeSession`.
+  owned solely by `TurboBusRuntimeSession`.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py` should own the adapter construction path that
-feeds `fetch_h2d()` / `offload_d2h()` and the offload / inference / vLLM
+`turbobus/runtime_session.py` should own the sole adapter construction path
+that feeds `fetch_h2d()` / `offload_d2h()` and the offload / inference / vLLM
 adapters.
 
 ## Next Entry

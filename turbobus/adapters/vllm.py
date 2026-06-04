@@ -110,27 +110,10 @@ class VllmKVSlotAdapter:
         wait_timeout_seconds: float | None = None,
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> "VllmKVSlotAdapter":
-        factory = getattr(runtime_session, "make_vllm_kv_slot_adapter", None)
-        if callable(factory):
-            adapter = factory(
-                groups,
-                workload_kind=workload_kind,
-                priority=priority,
-                metadata=metadata,
-                intent_prefix=intent_prefix,
-                wait_timeout_seconds=wait_timeout_seconds,
-                gpu_buffer_id=gpu_buffer_id,
-            )
-            if not isinstance(adapter, cls):
-                raise TypeError(
-                    "runtime session vLLM factory must return a VllmKVSlotAdapter"
-                )
-            return adapter
         resolved_groups = tuple(groups)
         if not resolved_groups:
             raise ValueError("vLLM runtime session adapter requires at least one group")
-        return cls(
-            runtime_session,
+        adapter = runtime_session.make_vllm_kv_slot_adapter(
             resolved_groups,
             workload_kind=workload_kind,
             priority=priority,
@@ -139,6 +122,11 @@ class VllmKVSlotAdapter:
             wait_timeout_seconds=wait_timeout_seconds,
             gpu_buffer_id=gpu_buffer_id,
         )
+        if not isinstance(adapter, cls):
+            raise TypeError(
+                "runtime session vLLM factory must return a VllmKVSlotAdapter"
+            )
+        return adapter
 
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         slots_by_group: dict[int, list[InferenceKVSlot]] = {}

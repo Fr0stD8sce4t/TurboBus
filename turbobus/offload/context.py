@@ -76,45 +76,21 @@ class AdapterTransferContext:
         wait_timeout_seconds: float | None = None,
     ) -> "AdapterTransferContext":
         require_runtime_session_open(runtime_session)
-        context_builder = getattr(runtime_session, "make_adapter_transfer_context", None)
-        if callable(context_builder):
-            context = context_builder(
-                cpu_buffer,
-                gpu_buffer,
-                workload_kind=workload_kind,
-                priority=priority,
-                policy_hints=policy_hints,
-                metadata=metadata,
-                intent_prefix=intent_prefix,
-                wait_timeout_seconds=wait_timeout_seconds,
-            )
-            if not isinstance(context, cls):
-                raise TypeError(
-                    "runtime session adapter context builder must return an AdapterTransferContext"
-                )
-            return context
-        cpu_buffer = runtime_session.register_cpu_buffer(cpu_buffer)
-        gpu_buffer = runtime_session.register_cuda_buffer(gpu_buffer)
-        session_id = runtime_session.open_session()
-        resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
-        if "chunk_bytes" not in resolved_policy_hints:
-            resolved_policy_hints["chunk_bytes"] = int(
-                getattr(runtime_session.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
-            )
-        return cls(
-            job_id=runtime_session.job_id,
-            session_id=session_id,
-            cpu_buffer_id=cpu_buffer.buffer_id,
-            gpu_buffer_id=gpu_buffer.buffer_id,
-            cpu_buffer=cpu_buffer,
-            gpu_buffer=gpu_buffer,
+        context = runtime_session.make_adapter_transfer_context(
+            cpu_buffer,
+            gpu_buffer,
             workload_kind=workload_kind,
             priority=priority,
-            policy_hints=resolved_policy_hints,
-            metadata={} if metadata is None else metadata,
+            policy_hints=policy_hints,
+            metadata=metadata,
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
+        if not isinstance(context, cls):
+            raise TypeError(
+                "runtime session adapter context builder must return an AdapterTransferContext"
+            )
+        return context
 
 
 def require_runtime_session_open(runtime_session) -> None:

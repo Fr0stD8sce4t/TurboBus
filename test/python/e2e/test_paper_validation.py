@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 from pathlib import Path
 import sys
 import unittest
@@ -74,15 +76,21 @@ class PaperValidationEvidenceTest(unittest.TestCase):
             "incomplete",
         )
 
-    def test_dry_run_is_not_passing_paper_validation(self) -> None:
-        status = paper_validation.workload_status(
-            dry_run=True,
-            returncode=0,
-            validation_errors=[],
-        )
+    def test_parser_rejects_dry_run(self) -> None:
+        parser = paper_validation.build_parser()
 
-        self.assertEqual(status, "dry-run")
-        self.assertTrue(paper_validation.workload_failed(status))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(
+                [
+                    "--session-id",
+                    "session-1",
+                    "--cpu-buffer-id",
+                    "cpu-buffer",
+                    "--gpu-buffer-id",
+                    "gpu-buffer",
+                    "--dry-run",
+                ]
+            )
 
 
 if __name__ == "__main__":

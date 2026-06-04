@@ -520,9 +520,7 @@ def phase6_workload_validation_errors(workload: str, data_path: Path, metrics: l
     return sorted(set(errors), key=errors.index)
 
 
-def workload_status(dry_run: bool, returncode: int, validation_errors: list[str]) -> str:
-    if dry_run:
-        return "dry-run"
+def workload_status(returncode: int, validation_errors: list[str]) -> str:
     if returncode != 0:
         return "failed"
     if "invalid_output" in validation_errors:
@@ -616,7 +614,7 @@ def compact_summary(result: dict) -> str:
             f"gpu_buffer_id={config['gpu_buffer_id']} "
             f"workloads={','.join(config['workloads'])} "
             f"policy={config['policy']} "
-            f"dry_run={config.get('dry_run', False)} output_dir={config['output_dir']}"
+            f"output_dir={config['output_dir']}"
         ),
     ]
     for workload in result["workloads"]:
@@ -660,7 +658,6 @@ def run_validation(args) -> dict:
             "policy": args.policy,
             "run_id": args.run_id,
             "output_dir": str(output_dir),
-            "dry_run": bool(args.dry_run),
             "daemon_socket_path": args.daemon_socket_path,
             "daemon_max_inflight_chunks": args.daemon_max_inflight_chunks,
             "daemon_profile_max_age_seconds": args.daemon_profile_max_age_seconds,
@@ -673,29 +670,18 @@ def run_validation(args) -> dict:
         command = build_workload_command(args, workload, paths)
         data_path = paths["json"]
         validation_errors = []
-        if args.dry_run:
-            print(
-                "paper_validation_dry_run",
-                f"workload={workload}",
-                " ".join(command),
-                flush=True,
-            )
-            completed = subprocess.CompletedProcess(command, 0, "", "")
+        clear_workload_outputs(paths)
+        print("paper_validation_run", f"workload={workload}", " ".join(command), flush=True)
+        completed = run_command(command)
+        try:
+            data, metrics = collect_workload_metrics(workload, paths)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             data = {}
             metrics = []
-        else:
-            clear_workload_outputs(paths)
-            print("paper_validation_run", f"workload={workload}", " ".join(command), flush=True)
-            completed = run_command(command)
-            try:
-                data, metrics = collect_workload_metrics(workload, paths)
-            except (OSError, ValueError, json.JSONDecodeError) as exc:
-                data = {}
-                metrics = []
-                validation_errors.append("invalid_output")
-                validation_errors.append(type(exc).__name__)
-            validation_errors.extend(phase6_workload_validation_errors(workload, data_path, metrics))
-        status = workload_status(args.dry_run, completed.returncode, validation_errors)
+            validation_errors.append("invalid_output")
+            validation_errors.append(type(exc).__name__)
+        validation_errors.extend(phase6_workload_validation_errors(workload, data_path, metrics))
+        status = workload_status(completed.returncode, validation_errors)
         result["workloads"].append(
             {
                 "workload": workload,
@@ -737,7 +723,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bucket-bytes", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--storage-layout", choices=["packed", "separate"], default="packed")
     parser.add_argument("--compute-delay-ms", type=float, default=0.0)
-    parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--output-dir", default="benchmarks/results/paper_validation")
     parser.add_argument("--json-output")

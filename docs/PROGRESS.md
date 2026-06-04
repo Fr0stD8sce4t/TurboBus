@@ -14,20 +14,20 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Added a production socket opener on `TurboBusRuntimeSession` that requires
-  both daemon and worker socket paths.
-- vLLM KV connector now uses the production socket opener, so it does not
-  silently fall back to the in-process worker path.
-- vLLM TurboBus config now requires non-empty daemon and worker socket paths.
+- Daemon plan and authorization payloads now carry the cached profile entry
+  used for that session's execution path.
+- Worker request parsing preserves the daemon profile entry in data-plane
+  metadata.
+- CUDA worker execution and direct fallback now install the daemon profile
+  into the backend runtime before data movement.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for runtime session, vLLM config, vLLM KV
-  connector, worker socket/process modules, and daemon startup modules.
-- Searches confirmed the production socket opener is defined and vLLM KV
-  connector uses it with a required worker socket path.
+- `python -m py_compile turbobus/daemon/receipts.py turbobus/daemon/server.py
+  turbobus/worker/models.py turbobus/worker/cuda_executor.py
+  turbobus/direct_fallback.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -41,5 +41,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: adapter submission/receipt
-consumption through `TurboBusRuntimeSession` or profile bootstrap closure.
+Continue with one concrete implementation boundary: adapter
+submission/receipt consumption through `TurboBusRuntimeSession`.

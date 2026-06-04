@@ -7,27 +7,28 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete the socket-backed production runtime session
-entry. Production adapters must connect to both daemon and worker socket
-services so worker/backend execution remains on daemon-issued plans.
+Current code target: complete adapter submission/receipt consumption through
+`TurboBusRuntimeSession`. Production adapters must stay on the public runtime
+session path while worker/backend execution remains on daemon-issued plans.
 
 ## Exit Criteria
 
-- `TurboBusRuntimeSession` exposes a production socket opener that requires
-  daemon and worker socket paths.
-- vLLM KV connector uses the production socket opener and cannot silently fall
-  back to an in-process worker client.
-- vLLM TurboBus config requires non-empty daemon and worker socket paths.
+- Offload and vLLM adapters submit `TransferIntent` through
+  `TurboBusRuntimeSession` and consume `TransferReceipt` from the same session.
+- Adapter-side code does not choose physical routes or bypass daemon-issued
+  execution tickets.
+- Runtime session receipt waiting remains the production path for completion
+  consumption.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-Finish the production runtime session startup path from socket configuration to
-daemon role clients and worker socket client.
+Route adapter submission and receipt waiting through
+`TurboBusRuntimeSession` without restoring old direct client paths.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: adapter submission/receipt consumption through
-`TurboBusRuntimeSession` or profile bootstrap closure.
+boundary: worker/backend completion evidence cleanup or profile bootstrap
+closure.

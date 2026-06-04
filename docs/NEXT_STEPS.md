@@ -7,40 +7,38 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten daemon/worker production startup and socket
-ownership so the runtime session, daemon socket client, worker socket service,
-and worker lifecycle keep using the same daemon-issued `ExecutionTicket`
-contract without application-side physical route control.
+The next task is to tighten profile bootstrap and runtime/native profile
+ownership so `TurboBusRuntimeSession` can populate daemon profile state without
+applications selecting physical routes or assembling profile control-plane
+calls manually.
 
 ## Exit Criteria
 
-- Daemon and worker socket entry points expose the production runtime path
-  without restoring old single-process or manual-relay APIs.
-- Worker socket requests continue through the standard worker lifecycle and
-  cannot execute stale, application-selected, or non-daemon-issued plans.
-- Runtime-session `open_socket()` remains the public socket entry for
-  applications and adapters.
+- Runtime profile bootstrap remains owned by `TurboBusRuntimeSession` and the
+  daemon profile API.
+- Profile conversion keeps target/relay data tied to daemon-discovered session
+  relays, not application-provided route choices.
+- Native profile helpers expose only the capabilities needed by the unified
+  runtime session path.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
   shim, or export layer code is added during this pass.
 
 ## Current Code Work
 
-- Inspect `turbobus/daemon/__main__.py`, `turbobus/daemon/startup.py`,
-  `turbobus/worker/__main__.py`, `turbobus/worker/process.py`, and
-  `turbobus/worker/transport.py` for production startup consistency.
-- Inspect `TurboBusRuntimeSession.open_socket()` and worker socket clients for
-  route-selection or stale-ticket bypasses.
-- Keep daemon cleanup and release paths retired from active scheduling state
-  after terminal or cleaned transfers.
-- Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
-  `turbobus/daemon/protocol.py` files deleted. Do not recreate compatibility
-  export layers.
+- Inspect `turbobus/runtime_session.py`, `turbobus/profile.py`,
+  `turbobus/runtime_engine.py`, and `turbobus/backends/cuda.py` for profile
+  bootstrap ownership and native profile conversion.
+- Keep `TurboBusRuntimeSession.open_socket()` as the public socket entry; the
+  old worker-managed manual target/relay client path has been removed.
+- Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
+  `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
+  deleted. Do not recreate compatibility export layers.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon and worker
-production startup/socket paths. Keep the work focused on system code; defer
+Continue the code implementation pass by inspecting profile bootstrap and
+runtime/native profile ownership. Keep the work focused on system code; defer
 tests, benchmarks, paper-validation, experiments, and server validation until
 the full system implementation pass is complete.

@@ -12,22 +12,23 @@ session/job/buffer registration, profile bootstrap, intent submission, and
 receipt waits without application-side relay selection.
 
 Model loading, training offload, inference KV, vLLM KV, vLLM connector, and
-lower-level vLLM integration paths now construct their workload adapters from
+lower-level vLLM integration paths construct their workload adapters from
 `TurboBusRuntimeSession`. Adapter-owned offload handles verify receipt
 job/session/intent/ticket ownership before consuming `TransferReceipt`
 objects, and closed runtime sessions reject later adapter submit or wait calls.
+
+Daemon and worker production startup paths are aligned with the unified
+runtime-session route. The daemon startup path rejects synthetic topology
+fixtures for production startup, the worker socket service routes envelopes
+through the standard worker lifecycle, and the old worker-managed manual
+target/relay client entry has been removed instead of kept as a compatibility
+layer.
 
 Daemon, scheduler, worker, and backend paths keep execution bound to
 daemon-issued tickets. Completed transfer tickets are archived for receipt and
 release evidence, removed from active execution-ticket state, and cleanup paths
 retire affected transfers from runtime scheduling while keeping terminal
 receipt data available to authenticated owners.
-
-Reservation release, reservation cleanup, expired leases, job cleanup, buffer
-cleanup, and session cleanup now share active-transfer retirement behavior:
-once a transfer is terminal and has no remaining reservations, the daemon drops
-active execution tickets, clears admission lease ids, removes queue records,
-and prevents delayed admission from promoting stale transfer state.
 
 Server-only validation remains deferred until after the full system
 implementation pass. Current code work should continue through code reading,
@@ -36,19 +37,25 @@ server test commands or server-validation gates.
 
 ## Completed This Round
 
-- Extended daemon active-transfer retirement so cleaned or terminal transfers
-  drop active execution tickets and clear admission lease ids instead of only
-  leaving the runtime queue.
-- Linked reservation release/cleanup to active-transfer retirement after the
-  last reservation is gone, while preserving status, intent, scheduling
-  decision, completion evidence, and archived completion tickets for receipts.
-- Updated the active plan files to keep the next entry on production
-  daemon/worker startup and socket paths, with server validation deferred.
+- Removed the old `turbobus/worker_managed.py` manual target/relay client path
+  instead of preserving it as a compatibility entry.
+- Moved the direct-fallback result shape into `turbobus/intent_executor.py` as
+  `WorkerIntentTransferResult`, keeping it internal to daemon-issued
+  `TransferIntent` execution.
+- Inspected daemon and worker socket startup paths and kept worker socket
+  execution routed through daemon authorization, standard lifecycle, status
+  reporting, and cleanup.
+- Updated active plan files and project guidance to remove the deleted
+  worker-managed module from the current code path.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\worker\lifecycle.py turbobus\worker\models.py` passed.
+- `python -m py_compile turbobus\intent_executor.py
+  turbobus\runtime_session.py turbobus\worker\process.py
+  turbobus\worker\transport.py turbobus\worker\socket_client.py
+  turbobus\worker\lifecycle.py turbobus\worker\validation.py
+  turbobus\worker\cuda_executor.py turbobus\daemon\__main__.py
+  turbobus\daemon\startup.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -56,12 +63,12 @@ server test commands or server-validation gates.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Production daemon/worker startup and socket ownership still need inspection
-  to ensure they expose the unified runtime-session path without old manual
-  relay or compatibility entry points.
+- Profile bootstrap and runtime/native profile ownership still need inspection
+  to keep profile collection and daemon `put_profile` on the unified runtime
+  session path.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon and worker
-production startup/socket paths while keeping server validation deferred until
+Continue the code implementation pass by inspecting profile bootstrap and
+runtime/native profile ownership while keeping server validation deferred until
 the full system implementation pass is complete.

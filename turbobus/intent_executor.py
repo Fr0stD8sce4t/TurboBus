@@ -26,7 +26,32 @@ from .transfer_execution import (
     wait_for_intent_receipt,
     worker_lease_tokens,
 )
-from .worker_managed import WorkerManagedTransferResult
+from .worker import WorkerDataPlaneCompletionEnvelope, WorkerTransferLifecycleRecord
+
+
+@dataclass(frozen=True)
+class WorkerIntentTransferResult:
+    transfer_id: str
+    session_id: str
+    job_id: str
+    source_buffer_id: str
+    target_buffer_id: str
+    plan: Mapping[str, object]
+    lease_token: Mapping[str, object] | None
+    authorization_request: WorkerTransferAuthorizationRequest | None
+    worker_lifecycle: WorkerTransferLifecycleRecord | None
+    final_status: Mapping[str, object]
+    worker_completion: WorkerDataPlaneCompletionEnvelope | None = None
+    lease_tokens: tuple[Mapping[str, object], ...] = ()
+
+    @property
+    def bytes_completed(self) -> int:
+        return int(self.final_status.get("bytes_completed", 0))
+
+    @property
+    def state(self) -> str:
+        state = self.final_status.get("state", "unknown")
+        return str(getattr(state, "value", state))
 
 
 @dataclass
@@ -64,7 +89,7 @@ class WorkerIntentTransferExecutor:
                 job_id=intent.job_id,
                 source=source,
                 target=target,
-                result_factory=WorkerManagedTransferResult,
+                result_factory=WorkerIntentTransferResult,
             )
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
         lease_tokens = worker_lease_tokens(daemon_client, response)

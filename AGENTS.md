@@ -53,9 +53,8 @@ The production path must satisfy these contracts:
   authorization, status update, receipt creation, cleanup.
 - `turbobus/daemon/dispatch.py`: daemon request routing.
 - `turbobus/runtime_session.py`: production system-level API.
-- `turbobus/intent_executor.py`, `turbobus/worker_managed.py`,
-  `turbobus/direct_fallback.py`, and `turbobus/buffer_registration.py`:
-  split transfer execution path.
+- `turbobus/intent_executor.py`, `turbobus/direct_fallback.py`, and
+  `turbobus/buffer_registration.py`: split transfer execution path.
 - `turbobus/backends/cuda.py` and `turbobus/runtime_engine.py`: native CUDA
   backend, profile bootstrap, and plan conversion.
 - `turbobus/worker/lifecycle.py`: authorization, execution, status, cleanup.

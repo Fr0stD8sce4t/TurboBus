@@ -7,6 +7,7 @@ from .client import (
     SharedPinnedCpuBufferAllocator,
 )
 from .runtime_session import TurboBusRuntimeSession
+from .runtime_options import RuntimeOptions
 from .schema import (
     BufferHandle,
     BufferKind,
@@ -36,6 +37,7 @@ __all__ = [
     "TransferIntent",
     "TransferReceipt",
     "TransferStatusState",
+    "RuntimeOptions",
     "TurboBusClient",
     "TurboBusRuntimeSession",
     "WorkloadKind",

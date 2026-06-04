@@ -5,7 +5,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from . import native_runtime
-from .runtime_engine import RuntimeOptions
+from .runtime_options import RuntimeOptions
 
 
 @dataclass(frozen=True)

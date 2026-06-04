@@ -8,7 +8,7 @@ from .backends.cuda import default_cuda_backend
 from .buffer_registration import ExecutableBuffer
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .direct_fallback import execute_direct_fallback_transfer, is_direct_only_worker_plan
-from .runtime_engine import RuntimeOptions
+from .runtime_options import RuntimeOptions
 from .schema import (
     DaemonResponse,
     TransferIntent,

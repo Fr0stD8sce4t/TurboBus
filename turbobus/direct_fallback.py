@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .intent_execution_support import require_daemon_transfer_complete, require_ok
-from .runtime_engine import RuntimeOptions
+from .runtime_options import RuntimeOptions
 from .schema import ExecutionTicket, TransferIntent
 
 

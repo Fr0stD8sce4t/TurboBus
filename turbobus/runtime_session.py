@@ -22,7 +22,7 @@ from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
 from . import profile as runtime_profile
 from .ranges import TransferRange, range_as_dict
-from .runtime_engine import RuntimeOptions
+from .runtime_options import RuntimeOptions
 from .schema import (
     DaemonResponse,
     TransferIntent,

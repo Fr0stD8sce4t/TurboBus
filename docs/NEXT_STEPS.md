@@ -64,6 +64,10 @@ experiment work is planned.
   scheduling hook. Runtime/session code may still place system-owned hints
   such as chunk sizing into `TransferIntent`, and schema validation must keep
   rejecting physical route keys.
+- Keep runtime configuration in the module that owns it. Do not recreate
+  `runtime_engine.py` as a compatibility export layer after moving
+  `RuntimeOptions`; import it from `turbobus.runtime_options` or the top-level
+  package.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

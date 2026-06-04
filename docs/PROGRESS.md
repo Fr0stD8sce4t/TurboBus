@@ -23,27 +23,28 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited workload adapter scheduling controls during the daemon-first
-  closure pass.
-- Removed application-facing `policy_hints` parameters from model-loading,
-  training-offload, inference KV, vLLM KV slot, and vLLM integration adapters.
-- Kept adapter submissions on workload metadata, priority, intent prefix, and
-  runtime-session-owned buffer registration rather than application-provided
-  scheduling hints.
-- Left schema and offload-store policy hint validation in place so any
-  lower-level `TransferIntent` path still rejects physical route keys.
+- Audited runtime configuration ownership during the daemon-first closure
+  pass.
+- Moved `RuntimeOptions` from `runtime_engine.py` to
+  `runtime_options.py`, the module that now owns runtime configuration.
+- Updated production imports in runtime session, intent executor, direct
+  fallback, profile bootstrap, and worker CUDA execution to import from
+  `turbobus.runtime_options`.
+- Deleted the old `runtime_engine.py` file instead of keeping a compatibility
+  export layer.
+- Exported `RuntimeOptions` from the top-level `turbobus` package as part of
+  the system runtime API.
 
 ## Validation
 
-- `python -m py_compile turbobus\adapters\model_loading.py
-  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
-  turbobus\adapters\vllm.py turbobus\adapters\vllm_integration.py
-  turbobus\offload_store.py turbobus\schema.py` passed.
-- `rg -n "policy_hints" turbobus\adapters` found no adapter-level
-  application-facing policy hint entry.
-- `rg -n "def _normalize_policy_hints|def _validate_policy_hints_no_physical|policy_hints must not choose physical paths"
-  turbobus\schema.py turbobus\offload_store.py` confirmed lower-level
-  physical route key rejection remains in schema and offload-store validation.
+- `python -m py_compile turbobus\runtime_options.py
+  turbobus\runtime_session.py turbobus\intent_executor.py
+  turbobus\direct_fallback.py turbobus\profile.py
+  turbobus\worker\cuda_executor.py turbobus\__init__.py` passed.
+- `rg -n "runtime_engine" turbobus` found no production references to the
+  removed module.
+- `rg --files turbobus | rg "runtime_engine\.py|runtime_options\.py"` found
+  only `turbobus\runtime_options.py`.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -53,9 +54,9 @@ commands or making server validation a current entry point.
   pass is complete.
 - Existing tests still contain old production-path assumptions such as removed
   transfer request, manual reservation, worker shortcut, broad daemon client,
-  manual daemon planning, adapter policy hints, and compatibility entry
-  points. Current-stage constraints defer test migration until the system
-  implementation pass is complete.
+  manual daemon planning, adapter policy hints, old `runtime_engine` imports,
+  and compatibility entry points. Current-stage constraints defer test
+  migration until the system implementation pass is complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

@@ -5,7 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..backends.cuda import default_cuda_backend
-from ..runtime_engine import RuntimeOptions
+from ..runtime_options import RuntimeOptions
 from . import validation as worker_validation
 from .models import (
     WorkerTransferRequest,

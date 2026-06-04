@@ -2,8 +2,8 @@
 
 ## Current State
 
-Current main target: worker/backend failure cleanup and terminal receipt
-closure.
+Current main target: worker/backend execution status into daemon runtime
+feedback.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -15,23 +15,16 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Worker authorization failures are now validated as explicit cleanup-only
-  failure envelopes instead of leaking through the executor as an
-  unclassified state.
-- The worker intent executor now handles `authorization_failed` explicitly
-  and exits through the failure path.
-- Worker service parse failures are now validated and handled as explicit
-  cleanup-only failures instead of falling through the unknown-state path.
-- Cleanup failures are now split into pre-terminal and post-terminal cases so
-  the executor only waits for receipts when terminal evidence actually exists.
+- Daemon runtime summary now refreshes `completion_source_counts` and
+  `terminal_completion_source_counts` after transfer retirement.
+- Scheduler runtime metadata now exposes those completion-source counts
+  directly.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/intent_execution_support.py
-  turbobus/intent_executor.py` passed.
-- `git diff --check` passed.
+- Not run yet for this turn.
 
 ## Remaining Risk
 
@@ -44,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker/backend execution
-status into daemon runtime feedback.
+Continue with one concrete implementation boundary: real buffer correctness
+gate.

@@ -60,10 +60,30 @@ def runtime_state_metadata(
             "delayed_transfer_count": 0,
             "running_transfer_count": 0,
             "active_transfer_count": 0,
+            "active_reservation_count": 0,
+            "active_lease_count": 0,
+            "relay_staging_count": 0,
+            "relay_path_count": 0,
+            "relay_path_bytes_total": 0,
+            "completion_source_counts": {},
+            "terminal_completion_source_counts": {},
+            "busy_relays": (),
+            "active_bytes_by_direction": {},
+            "queued_bytes_by_direction": {},
+            "active_resource_usage": {},
         }
     summary = runtime_state.get("summary", {})
     if not isinstance(summary, Mapping):
         summary = {}
+    completion_source_counts = summary.get("completion_source_counts", {})
+    if not isinstance(completion_source_counts, Mapping):
+        completion_source_counts = {}
+    terminal_completion_source_counts = summary.get(
+        "terminal_completion_source_counts",
+        {},
+    )
+    if not isinstance(terminal_completion_source_counts, Mapping):
+        terminal_completion_source_counts = {}
     return {
         "version": int(runtime_state.get("version", 0) or 0),
         "queued_transfer_count": int(summary.get("queued_transfer_count", 0) or 0),
@@ -75,6 +95,14 @@ def runtime_state_metadata(
         "relay_staging_count": int(summary.get("relay_staging_count", 0) or 0),
         "relay_path_count": int(summary.get("relay_path_count", 0) or 0),
         "relay_path_bytes_total": int(summary.get("relay_path_bytes_total", 0) or 0),
+        "completion_source_counts": {
+            str(key): int(value)
+            for key, value in completion_source_counts.items()
+        },
+        "terminal_completion_source_counts": {
+            str(key): int(value)
+            for key, value in terminal_completion_source_counts.items()
+        },
         "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
         "active_bytes_by_direction": dict(
             summary.get("active_bytes_by_direction", {}) or {}

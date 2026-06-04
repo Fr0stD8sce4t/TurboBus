@@ -2669,12 +2669,29 @@ class TurboBusDaemon:
             "chunk_count": 0,
             "bytes_total": 0,
         }
+        completion_source_counts: dict[str, int] = {}
+        terminal_completion_source_counts: dict[str, int] = {}
         for key, value in path_summary.items():
             if not key.endswith(":relay"):
                 continue
             relay_path_summary["path_count"] += int(value.get("path_count", 0) or 0)
             relay_path_summary["chunk_count"] += int(value.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(value.get("bytes_total", 0) or 0)
+        for record in transfer_records:
+            completion_source = str(record.get("completion_source", "")).lower()
+            if not completion_source:
+                continue
+            completion_source_counts[completion_source] = (
+                completion_source_counts.get(completion_source, 0) + 1
+            )
+            if str(record.get("state")) in {
+                TransferStatusState.COMPLETE.value,
+                TransferStatusState.FAILED.value,
+                TransferStatusState.CANCELED.value,
+            }:
+                terminal_completion_source_counts[completion_source] = (
+                    terminal_completion_source_counts.get(completion_source, 0) + 1
+                )
         active_resource_usage = {
             "h2d": dict(active_by_direction.get("h2d", {})),
             "d2h": dict(active_by_direction.get("d2h", {})),
@@ -2733,6 +2750,8 @@ class TurboBusDaemon:
                 "relay_path_count": relay_path_summary["path_count"],
                 "relay_path_bytes_total": relay_path_summary["bytes_total"],
                 "busy_relays": busy_relays,
+                "completion_source_counts": completion_source_counts,
+                "terminal_completion_source_counts": terminal_completion_source_counts,
                 "queued_bytes_by_direction": queued_by_direction,
                 "active_bytes_by_direction": active_by_direction,
                 "active_paths": path_summary,
@@ -4756,6 +4775,8 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     summary_copy = dict(summary)
     path_summary: dict[str, dict[str, int]] = {}
     relay_path_summary = {"path_count": 0, "chunk_count": 0, "bytes_total": 0}
+    completion_source_counts: dict[str, int] = {}
+    terminal_completion_source_counts: dict[str, int] = {}
     active_by_direction = _transfer_bytes_by_direction(
         runtime_state.get("active_transfers", ()),
         include_remaining=True,
@@ -4779,6 +4800,21 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             relay_path_summary["path_count"] += 1
             relay_path_summary["chunk_count"] += int(record.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+    for record in _runtime_mapping_records(runtime_state.get("transfers", ())):
+        completion_source = str(record.get("completion_source", "")).lower()
+        if not completion_source:
+            continue
+        completion_source_counts[completion_source] = (
+            completion_source_counts.get(completion_source, 0) + 1
+        )
+        if str(record.get("state")) in {
+            TransferStatusState.COMPLETE.value,
+            TransferStatusState.FAILED.value,
+            TransferStatusState.CANCELED.value,
+        }:
+            terminal_completion_source_counts[completion_source] = (
+                terminal_completion_source_counts.get(completion_source, 0) + 1
+            )
 
     active_resource_usage = dict(summary_copy.get("active_resource_usage", {}) or {})
     active_resource_usage["h2d"] = dict(active_by_direction.get("h2d", {}))
@@ -4812,6 +4848,8 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "active_bytes_by_direction": active_by_direction,
             "active_paths": path_summary,
             "active_resource_usage": active_resource_usage,
+            "completion_source_counts": completion_source_counts,
+            "terminal_completion_source_counts": terminal_completion_source_counts,
         }
     )
     runtime_state["active_resource_usage"] = active_resource_usage

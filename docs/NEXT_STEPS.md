@@ -34,6 +34,10 @@ experiment work is planned.
   points, plus offload block alias and worker partial-lifecycle public entry
   points, ordinary daemon-client runtime/admin operations, buffer manual daemon
   registration helpers, and pure control re-export files.
+- Remove remaining broad daemon-client fallback behavior from runtime-session
+  role clients; socket-backed sessions may derive role clients from socket path,
+  but custom object sessions must provide explicit runtime, profile, and
+  execution daemon clients.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.

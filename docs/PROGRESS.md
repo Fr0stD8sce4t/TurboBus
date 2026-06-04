@@ -147,26 +147,28 @@ now goes through `TurboBusRuntimeSession` and `buffer_registration.py`. The old
 `turbobus.control` pure re-export package entry was deleted instead of kept as
 a compatibility layer.
 
+`TurboBusRuntimeSession.open()` no longer falls back to using one broad daemon
+object for runtime registration, profile bootstrap, and execution operations.
+Socket-backed sessions still derive the role clients from the daemon socket
+path, while custom object sessions must provide explicit runtime, profile, and
+execution daemon clients.
+
 ## Completed This Round
 
-- Split ordinary intent, runtime-registration, admin, profile, and execution
-  daemon socket client roles.
-- Routed `TurboBusRuntimeSession` session/job/buffer registration and close
-  through `TurboBusDaemonRuntimeClient`.
-- Removed manual buffer `register_with_daemon()` helpers and deleted the pure
-  `turbobus.control` re-export entry.
+- Removed runtime-session broad daemon-client fallback for runtime, profile,
+  and execution roles.
+- Added explicit runtime, profile, and execution daemon client accessors inside
+  `TurboBusRuntimeSession`.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\client.py
-  turbobus\daemon\__init__.py turbobus\runtime_session.py
-  turbobus\api\client.py turbobus\buffer_registration.py turbobus\client.py`
-  passed.
-- Targeted `rg` checks found no remaining production `register_with_daemon()`
-  or `turbobus.control` references. The ordinary `TurboBusDaemonClient` now
-  defines only intent submission and receipt wait methods.
+- `python -m py_compile turbobus\runtime_session.py
+  turbobus\daemon\client.py turbobus\api\client.py` passed.
+- Targeted `rg` checks found no remaining runtime-session `else daemon_client`
+  or `or self.daemon_client` role fallback. Remaining matches are explicit
+  missing-client checks.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -204,6 +206,10 @@ a compatibility layer.
   `register_with_daemon()` helpers, or expect one broad `TurboBusDaemonClient`
   to expose registration/admin methods. Current-stage constraints defer test
   migration until the system implementation pass is complete.
+- Existing tests or fake daemon objects may still call `TurboBusRuntimeSession.open()`
+  without explicit runtime/profile/execution role clients. Current-stage
+  constraints defer test migration until the system implementation pass is
+  complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

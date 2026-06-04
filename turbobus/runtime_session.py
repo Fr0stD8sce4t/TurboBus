@@ -91,27 +91,19 @@ class TurboBusRuntimeSession:
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
     ) -> "TurboBusRuntimeSession":
+        socket_path = getattr(daemon_client, "socket_path", None)
         if runtime_daemon_client is None:
-            socket_path = getattr(daemon_client, "socket_path", None)
-            runtime_daemon_client = (
-                TurboBusDaemonRuntimeClient(str(socket_path))
-                if socket_path is not None
-                else daemon_client
-            )
+            if socket_path is None:
+                raise ValueError("runtime_daemon_client is required without socket_path")
+            runtime_daemon_client = TurboBusDaemonRuntimeClient(str(socket_path))
         if execution_daemon_client is None:
-            socket_path = getattr(daemon_client, "socket_path", None)
-            execution_daemon_client = (
-                TurboBusDaemonExecutionClient(str(socket_path))
-                if socket_path is not None
-                else daemon_client
-            )
+            if socket_path is None:
+                raise ValueError("execution_daemon_client is required without socket_path")
+            execution_daemon_client = TurboBusDaemonExecutionClient(str(socket_path))
         if profile_daemon_client is None:
-            socket_path = getattr(daemon_client, "socket_path", None)
-            profile_daemon_client = (
-                TurboBusDaemonProfileClient(str(socket_path))
-                if socket_path is not None
-                else daemon_client
-            )
+            if socket_path is None:
+                raise ValueError("profile_daemon_client is required without socket_path")
+            profile_daemon_client = TurboBusDaemonProfileClient(str(socket_path))
         session = cls(
             daemon_client=daemon_client,
             job_id=str(job_id),
@@ -327,7 +319,7 @@ class TurboBusRuntimeSession:
         self.open_session()
         relays = self._relay_gpus_for_session()
         profile, response = runtime_profile.bootstrap_daemon_profile(
-            self.profile_daemon_client,
+            self._profile_daemon_client(),
             self.backend,
             self.runtime_options,
             target_gpu=int(self._target_gpu),
@@ -436,7 +428,7 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._client is not None:
             return self._client
-        execution_daemon_client = self.execution_daemon_client or self.daemon_client
+        execution_daemon_client = self._execution_daemon_client()
         worker_client = self.worker_client or WorkerTransferClient(
             execution_daemon_client,
             executor=CudaWorkerExecutor(
@@ -472,7 +464,21 @@ class TurboBusRuntimeSession:
 
     def _runtime_daemon_client(self):
         self._require_open()
-        return self.runtime_daemon_client or self.daemon_client
+        if self.runtime_daemon_client is None:
+            raise RuntimeError("runtime daemon client is not configured")
+        return self.runtime_daemon_client
+
+    def _execution_daemon_client(self):
+        self._require_open()
+        if self.execution_daemon_client is None:
+            raise RuntimeError("execution daemon client is not configured")
+        return self.execution_daemon_client
+
+    def _profile_daemon_client(self):
+        self._require_open()
+        if self.profile_daemon_client is None:
+            raise RuntimeError("profile daemon client is not configured")
+        return self.profile_daemon_client
 
     def _clear_local_session_state(self) -> None:
         self._session_id = None
@@ -498,7 +504,7 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._relay_gpus is not None:
             return self._relay_gpus
-        discovery = getattr(self.profile_daemon_client, "discover_relays", None)
+        discovery = getattr(self._profile_daemon_client(), "discover_relays", None)
         if not callable(discovery):
             raise RuntimeError(
                 "daemon client must support relay discovery for runtime sessions"

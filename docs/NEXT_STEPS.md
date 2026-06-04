@@ -7,9 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: real H2D / D2H execution path closure. Offload block
-construction should require explicit CPU and GPU backing so benchmark-facing
-adapters cannot hide a missing endpoint behind `None`.
+Current code target: isolation and authority hardening around daemon session
+close handling. Missing-session close paths in `turbobus/daemon/server.py`
+must not rewrite retired cleanup records before ownership checks run.
 
 ## Exit Criteria
 
@@ -17,16 +17,15 @@ adapters cannot hide a missing endpoint behind `None`.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Benchmark-facing offload adapters require explicit CPU and GPU backing at
-  block construction time.
+- Missing-session close handling does not rewrite retired session records
+  before ownership checks run.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/offload/store.py`, `turbobus/offload/blocks.py`, and the benchmark
-adapters should require real paired backing objects before transfer blocks can
-be created.
+`turbobus/daemon/server.py` session close handling should avoid mutating
+retired session cleanup records when the session is already gone.
 
 ## Next Entry
 

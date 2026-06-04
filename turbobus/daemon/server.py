@@ -4030,6 +4030,9 @@ class TurboBusDaemon:
         reason: str = "session_closed",
         removed: dict[str, object] | None = None,
     ) -> Session | None:
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return None
         session_peer = self._session_peer_identities.get(session_id)
         transfer_ids = self._transfer_ids_for_session_locked(session_id)
         self._archive_cleanup_target_locked(
@@ -4039,9 +4042,6 @@ class TurboBusDaemon:
             reason=reason,
             transfer_ids=transfer_ids,
         )
-        session = self._sessions.pop(session_id, None)
-        if session is None:
-            return None
         session.active = False
         session.closed_at = time.time()
         self._append_audit_record_locked(

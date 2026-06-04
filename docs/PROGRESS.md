@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current main target: real H2D / D2H execution path closure.
+Current main target: isolation and authority hardening.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -14,10 +14,10 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Offload block construction now requires explicit CPU and GPU backing objects
-  instead of accepting a hidden `None` GPU endpoint.
-- Added no test, experiment, benchmark, paper-validation, server-validation,
-  or compatibility export-layer code.
+- `close_session()` no longer rewrites retired session cleanup records when
+  the session is already gone.
+- Kept the round free of new test, experiment, benchmark, paper-validation,
+  server-validation, or compatibility export-layer code.
 
 ## Validation
 
@@ -28,6 +28,7 @@ code remain deferred until the full system implementation pass is complete.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain unverified until the full system implementation
   pass is complete.
+- Other cleanup branches still need the same missing-target authority audit.
 - Existing tests, examples, and benchmarks still contain old production-path
   assumptions; current-stage constraints defer migration until system
   implementation is complete.

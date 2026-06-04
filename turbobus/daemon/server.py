@@ -109,6 +109,7 @@ class TurboBusDaemon:
         self._transfer_peer_identities: dict[str, PeerIdentity] = {}
         self._transfer_receipt_archive: dict[str, dict[str, object]] = {}
         self._archived_intent_transfers: dict[str, str] = {}
+        self._retired_cleanup_targets: dict[tuple[str, str], dict[str, object]] = {}
         self._staging_records: dict[str, dict[str, object]] = {}
         self._audit_records: list[dict[str, object]] = []
         self._connection_scoped_sessions: set[str] = set()
@@ -360,8 +361,28 @@ class TurboBusDaemon:
             removed = _empty_removed_summary()
             cleanup_result: dict[str, object] = {}
             if cleanup.target_kind == "job":
+                archived_target = self._retired_cleanup_target_record_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                )
                 if cleanup.target_id not in self._jobs and not cleanup.force:
-                    return DaemonResponse(ok=False, error="unknown job")
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown job")
+                    try:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    return DaemonResponse(
+                        ok=True,
+                        payload={
+                            "cleanup": asdict(cleanup),
+                            "removed": removed,
+                        },
+                    )
                 try:
                     if cleanup.target_id in self._jobs:
                         self._validate_peer_owns_job_locked(
@@ -384,8 +405,28 @@ class TurboBusDaemon:
                     ),
                 )
             elif cleanup.target_kind == "buffer":
+                archived_target = self._retired_cleanup_target_record_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                )
                 if cleanup.target_id not in self._buffers and not cleanup.force:
-                    return DaemonResponse(ok=False, error="unknown buffer")
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown buffer")
+                    try:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    return DaemonResponse(
+                        ok=True,
+                        payload={
+                            "cleanup": asdict(cleanup),
+                            "removed": removed,
+                        },
+                    )
                 try:
                     if cleanup.target_id in self._buffers:
                         self._validate_peer_owns_buffer_locked(
@@ -400,6 +441,17 @@ class TurboBusDaemon:
                         )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
+                buffer = self._buffers.get(cleanup.target_id)
+                if buffer is not None:
+                    self._archive_cleanup_target_locked(
+                        target_kind=cleanup.target_kind,
+                        target_id=cleanup.target_id,
+                        peer_identity=peer_identity,
+                        reason=cleanup.reason,
+                        transfer_ids=self._transfer_ids_for_buffer_locked(
+                            cleanup.target_id
+                        ),
+                    )
                 transfer_ids = self._transfer_ids_for_buffer_locked(cleanup.target_id)
                 for lease_id in self._active_buffer_lease_ids_locked(cleanup.target_id):
                     _merge_removed(
@@ -427,6 +479,10 @@ class TurboBusDaemon:
                         removed["transfers"] = int(removed["transfers"]) + 1
                     self._retire_transfer_runtime_state_locked(transfer_id)
             elif cleanup.target_kind == "session":
+                archived_target = self._retired_cleanup_target_record_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                )
                 try:
                     if cleanup.target_id in self._sessions:
                         self._validate_peer_owns_session_locked(
@@ -441,6 +497,24 @@ class TurboBusDaemon:
                         )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
+                if cleanup.target_id not in self._sessions and not cleanup.force:
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown session")
+                    try:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    return DaemonResponse(
+                        ok=True,
+                        payload={
+                            "cleanup": asdict(cleanup),
+                            "removed": removed,
+                        },
+                    )
                 session = self._close_session_locked(
                     cleanup.target_id,
                     reason=cleanup.reason,
@@ -449,6 +523,10 @@ class TurboBusDaemon:
                 if session is None and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown session")
             elif cleanup.target_kind == "reservation":
+                archived_target = self._retired_cleanup_target_record_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                )
                 try:
                     self._validate_peer_owns_lease_locked(
                         lease_id=cleanup.target_id,
@@ -458,15 +536,65 @@ class TurboBusDaemon:
                     if str(exc) != "unknown lease":
                         return DaemonResponse(ok=False, error=str(exc))
                     staging_record = self._staging_records.get(cleanup.target_id)
-                    if staging_record is None or not cleanup.force:
-                        return DaemonResponse(ok=False, error=str(exc))
+                    if staging_record is not None and cleanup.force:
+                        try:
+                            self._validate_peer_owns_staging_record_locked(
+                                staging_record=staging_record,
+                                peer_identity=peer_identity,
+                            )
+                        except ValueError as staging_exc:
+                            return DaemonResponse(ok=False, error=str(staging_exc))
+                    elif archived_target is None or not cleanup.force:
+                        if archived_target is None:
+                            return DaemonResponse(ok=False, error=str(exc))
+                        try:
+                            self._validate_peer_owns_missing_cleanup_target_locked(
+                                target_kind=cleanup.target_kind,
+                                target_id=cleanup.target_id,
+                                peer_identity=peer_identity,
+                            )
+                        except ValueError as owner_exc:
+                            return DaemonResponse(ok=False, error=str(owner_exc))
+                        return DaemonResponse(
+                            ok=True,
+                            payload={
+                                "cleanup": asdict(cleanup),
+                                "removed": removed,
+                                "reservation_id": cleanup.target_id,
+                                "cleaned_reservation_ids": (),
+                                "cleanup_kind": cleanup.target_kind,
+                                "cleanup_mode": "noop",
+                            },
+                        )
+                if (
+                    cleanup.target_id not in self._reservations
+                    and cleanup.target_id not in self._staging_records
+                    and not cleanup.force
+                ):
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown reservation")
                     try:
-                        self._validate_peer_owns_staging_record_locked(
-                            staging_record=staging_record,
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
                             peer_identity=peer_identity,
                         )
-                    except ValueError as staging_exc:
-                        return DaemonResponse(ok=False, error=str(staging_exc))
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    cleanup_result = {
+                        "reservation_id": cleanup.target_id,
+                        "cleaned_reservation_ids": (),
+                        "cleanup_kind": cleanup.target_kind,
+                        "cleanup_mode": "noop",
+                    }
+                    return DaemonResponse(
+                        ok=True,
+                        payload={
+                            "cleanup": asdict(cleanup),
+                            "removed": removed,
+                            **cleanup_result,
+                        },
+                    )
                 released = self._release_reservation_and_count_locked(
                     cleanup.target_id,
                     final_state=TransferStatusState.CANCELED,
@@ -1559,6 +1687,25 @@ class TurboBusDaemon:
         if reservation is None:
             staging_record = self._staging_records.pop(reservation_key, None)
             if staging_record is not None and cleanup_reason is not None:
+                archived_peer = None
+                job_id = staging_record.get("job_id")
+                if job_id is not None:
+                    archived_peer = self._job_peer_identities.get(str(job_id))
+                if archived_peer is None:
+                    for buffer_id in staging_record.get("buffer_ids", ()) or ():
+                        buffer = self._buffers.get(str(buffer_id))
+                        if buffer is None:
+                            continue
+                        archived_peer = self._job_peer_identities.get(buffer.job_id)
+                        if archived_peer is not None:
+                            break
+                self._archive_cleanup_target_locked(
+                    target_kind="reservation",
+                    target_id=reservation_key,
+                    peer_identity=archived_peer,
+                    reason=cleanup_reason,
+                    transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
+                )
                 self._append_audit_record_locked(
                     event_type="cleanup",
                     staging_record=staging_record,
@@ -1585,6 +1732,18 @@ class TurboBusDaemon:
         transfer_id = self._reservation_transfers.get(reservation_key)
         lease = self._lease_tokens.get(reservation_key)
         staging_record = self._staging_records.get(reservation_key)
+        if reservation is not None:
+            self._archive_cleanup_target_locked(
+                target_kind="reservation",
+                target_id=reservation_key,
+                peer_identity=(
+                    None
+                    if lease is None or lease.job_id is None
+                    else self._job_peer_identities.get(str(lease.job_id))
+                ),
+                reason=cleanup_reason,
+                transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
+            )
         if cleanup_reason is not None:
             self._append_audit_record_locked(
                 event_type="cleanup",
@@ -3187,13 +3346,22 @@ class TurboBusDaemon:
 
     def _cleanup_job_locked(self, job_id: str, reason: str) -> dict[str, int]:
         removed = _empty_removed_summary()
-        job = self._jobs.pop(str(job_id), None)
+        normalized_job_id = str(job_id)
+        job_peer = self._job_peer_identities.get(normalized_job_id)
+        transfer_ids = self._transfer_ids_for_job_locked(normalized_job_id)
+        self._archive_cleanup_target_locked(
+            target_kind="job",
+            target_id=normalized_job_id,
+            peer_identity=job_peer,
+            reason=reason,
+            transfer_ids=transfer_ids,
+        )
+        job = self._jobs.pop(normalized_job_id, None)
         if job is not None:
             removed["jobs"] += 1
-        self._job_peer_identities.pop(str(job_id), None)
-        transfer_ids = self._transfer_ids_for_job_locked(str(job_id))
+        self._job_peer_identities.pop(normalized_job_id, None)
         for reservation_id, lease in list(self._lease_tokens.items()):
-            if lease.job_id == str(job_id):
+            if lease.job_id == normalized_job_id:
                 _merge_removed(
                     removed,
                     self._release_reservation_and_count_locked(
@@ -3213,7 +3381,7 @@ class TurboBusDaemon:
                 removed["transfers"] += 1
             self._retire_transfer_runtime_state_locked(transfer_id)
         for buffer_id, buffer in list(self._buffers.items()):
-            if buffer.job_id == str(job_id):
+            if buffer.job_id == normalized_job_id:
                 self._buffers.pop(buffer_id, None)
                 removed["buffers"] += 1
         return removed
@@ -3431,7 +3599,21 @@ class TurboBusDaemon:
             target_id=target_id,
         )
         if not transfer_ids:
-            raise ValueError(f"unknown {target_kind}")
+            archived_target = self._retired_cleanup_target_record_locked(
+                target_kind=target_kind,
+                target_id=target_id,
+            )
+            if archived_target is None:
+                raise ValueError(f"unknown {target_kind}")
+            archived_peer = archived_target.get("peer_identity")
+            if isinstance(archived_peer, PeerIdentity) and archived_peer.authenticated:
+                peer_auth.validate_peer_owner_match(
+                    expected=archived_peer,
+                    actual=peer_identity,
+                    owner_name=target_kind,
+                )
+                return
+            raise ValueError(f"{target_kind} owner identity is unavailable")
         for transfer_id in transfer_ids:
             status = self._transfer_statuses.get(transfer_id)
             if status is not None:
@@ -3595,6 +3777,34 @@ class TurboBusDaemon:
             mapped_transfer_id == normalized
             for mapped_transfer_id in self._reservation_transfers.values()
         )
+
+    def _archive_cleanup_target_locked(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+        peer_identity: PeerIdentity | None,
+        reason: str | None = None,
+        transfer_ids: tuple[str, ...] = (),
+    ) -> None:
+        normalized_kind = str(target_kind)
+        normalized_id = str(target_id)
+        self._retired_cleanup_targets[(normalized_kind, normalized_id)] = {
+            "target_kind": normalized_kind,
+            "target_id": normalized_id,
+            "peer_identity": peer_identity,
+            "reason": None if reason is None else str(reason),
+            "retired_at": time.time(),
+            "transfer_ids": tuple(str(item) for item in transfer_ids),
+        }
+
+    def _retired_cleanup_target_record_locked(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+    ) -> dict[str, object] | None:
+        return self._retired_cleanup_targets.get((str(target_kind), str(target_id)))
 
     def _retire_transfer_runtime_state_locked(
         self,
@@ -3765,6 +3975,15 @@ class TurboBusDaemon:
         reason: str = "session_closed",
         removed: dict[str, object] | None = None,
     ) -> Session | None:
+        session_peer = self._session_peer_identities.get(session_id)
+        transfer_ids = self._transfer_ids_for_session_locked(session_id)
+        self._archive_cleanup_target_locked(
+            target_kind="session",
+            target_id=session_id,
+            peer_identity=session_peer,
+            reason=reason,
+            transfer_ids=transfer_ids,
+        )
         session = self._sessions.pop(session_id, None)
         if session is None:
             return None

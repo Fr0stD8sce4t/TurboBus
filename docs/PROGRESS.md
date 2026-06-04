@@ -14,10 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Transfer retirement now archives receipt-facing intent, status, decision,
-  ticket, and ownership data before active runtime state is dropped, so
-  `transfer_status()` and `wait_transfer_receipt()` still work after cleanup
-  retires the live queue records.
+- Retired cleanup targets now archive ownership evidence for jobs, sessions,
+  buffers, and reservations before teardown, so repeated cleanup requests can
+  still validate the archived owner instead of collapsing straight to unknown.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -38,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: shared buffer and lease
-retirement hardening.
+Continue with one concrete implementation boundary: worker failure cleanup and
+receipt closure.

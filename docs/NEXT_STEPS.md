@@ -9,8 +9,8 @@ System implementation before experiments.
 
 Current code target: isolation and authority hardening. The runtime feedback
 path now feeds scheduler load accounting from live running activity; the next
-step is to keep receipt-facing ownership evidence alive after runtime
-retirement so cleanup does not break terminal status lookup or receipt access.
+step is to keep retired cleanup targets owner-verifiable so repeated cleanup
+requests can still prove which job, session, buffer, or lease owned the state.
 
 ## Exit Criteria
 
@@ -23,11 +23,11 @@ retirement so cleanup does not break terminal status lookup or receipt access.
 
 ## Current Code Work
 
-Archive receipt-facing transfer state before runtime retirement, then keep
-`transfer_status()` and receipt lookup working after cleanup removes the active
-queue state.
+Archive retired job, session, buffer, and reservation targets before runtime
+retirement, then let repeated cleanup calls resolve to the archived owner
+instead of failing as unknown targets.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: shared buffer and lease retirement hardening.
+boundary: worker failure cleanup and receipt closure.

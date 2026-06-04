@@ -9,8 +9,8 @@ System implementation before experiments.
 
 Current code target: isolation and authority hardening. The runtime feedback
 path now feeds scheduler load accounting from live running activity; the next
-step is to make worker/backend failure cleanup still close the terminal
-receipt path even when the first status report fails.
+step is to harden runtime-session startup so buffer registration rolls back
+any partial daemon registrations if the batch fails.
 
 ## Exit Criteria
 
@@ -23,11 +23,10 @@ receipt path even when the first status report fails.
 
 ## Current Code Work
 
-When worker status reporting fails after execution, retry the terminal
-`transfer_status()` update after cleanup so the daemon still receives the
-failure evidence needed to close the receipt path.
+`TurboBusRuntimeSession._register_pending_buffers()` should clean up any
+buffers it already registered if a later buffer registration fails.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: runtime-session startup rollback hardening.
+boundary: worker/backend failure cleanup and terminal receipt closure.

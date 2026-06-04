@@ -14,10 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Worker lifecycle status-report failure now returns the real worker terminal
-  state after cleanup and cleanup-evidence retry succeeds, so the lifecycle
-  envelope no longer stays pinned to `status_failed` after the daemon has the
-  terminal receipt evidence.
+- Runtime-session buffer registration now rolls back already-registered
+  buffers if a later daemon registration fails, so the startup path does not
+  leave a partial buffer-registration batch behind.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -38,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: runtime-session startup
-rollback hardening.
+Continue with one concrete implementation boundary: worker/backend failure
+cleanup and terminal receipt closure.

@@ -572,27 +572,42 @@ class TurboBusRuntimeSession:
     def _register_pending_buffers(self) -> None:
         self._require_open()
         self.session_id
-        for buffer_id, buffer in tuple(self._buffers.items()):
-            runtime_owned = buffer_id in self._owned_cpu_buffer_ids
-            fingerprint = (
-                buffer_registration_fingerprint(buffer),
-                self.session_id,
-                runtime_owned,
-            )
-            if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
-                continue
-            metadata = runtime_session_buffer_metadata(
-                buffer,
-                session_id=self.session_id,
-                runtime_owned=runtime_owned,
-            )
-            register_executable_buffer(
-                self._runtime_daemon_client(),
-                buffer,
-                metadata=metadata,
-            )
-            self._registered_buffer_ids.add(buffer_id)
-            self._registered_buffer_fingerprints[buffer_id] = fingerprint
+        registered_now: list[str] = []
+        try:
+            for buffer_id, buffer in tuple(self._buffers.items()):
+                runtime_owned = buffer_id in self._owned_cpu_buffer_ids
+                fingerprint = (
+                    buffer_registration_fingerprint(buffer),
+                    self.session_id,
+                    runtime_owned,
+                )
+                if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
+                    continue
+                metadata = runtime_session_buffer_metadata(
+                    buffer,
+                    session_id=self.session_id,
+                    runtime_owned=runtime_owned,
+                )
+                register_executable_buffer(
+                    self._runtime_daemon_client(),
+                    buffer,
+                    metadata=metadata,
+                )
+                registered_now.append(buffer_id)
+                self._registered_buffer_ids.add(buffer_id)
+                self._registered_buffer_fingerprints[buffer_id] = fingerprint
+        except Exception:
+            for buffer_id in reversed(registered_now):
+                try:
+                    self.cleanup_buffer(
+                        buffer_id,
+                        reason="runtime_buffer_registration_failed",
+                        force=True,
+                    )
+                except Exception:
+                    pass
+            raise
+
 
     def cleanup_buffer(
         self,

@@ -38,6 +38,10 @@ experiment work is planned.
   role clients; socket-backed sessions may derive role clients from socket path,
   but custom object sessions must provide explicit runtime, profile, and
   execution daemon clients.
+- Keep runtime-session role client resolution owned by
+  `TurboBusRuntimeSession` initialization, not only by factory helpers. Direct
+  object construction without a daemon socket path must still provide explicit
+  runtime, profile, and execution daemon clients.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.

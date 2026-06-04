@@ -79,6 +79,35 @@ class TurboBusRuntimeSession:
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
+    def __post_init__(self) -> None:
+        job_id = str(self.job_id)
+        if not job_id.strip():
+            raise ValueError("job_id must be non-empty")
+        self.job_id = job_id
+        if self.user_id is not None:
+            self.user_id = str(self.user_id)
+        self.max_inflight_chunks = int(self.max_inflight_chunks)
+        if self.max_inflight_chunks <= 0:
+            raise ValueError("max_inflight_chunks must be positive")
+        if self.runtime_options is None:
+            self.runtime_options = RuntimeOptions()
+        if not isinstance(self.runtime_options, RuntimeOptions):
+            raise TypeError("runtime_options must be a RuntimeOptions")
+
+        socket_path = getattr(self.daemon_client, "socket_path", None)
+        if self.runtime_daemon_client is None:
+            if socket_path is None:
+                raise ValueError("runtime_daemon_client is required without socket_path")
+            self.runtime_daemon_client = TurboBusDaemonRuntimeClient(str(socket_path))
+        if self.execution_daemon_client is None:
+            if socket_path is None:
+                raise ValueError("execution_daemon_client is required without socket_path")
+            self.execution_daemon_client = TurboBusDaemonExecutionClient(str(socket_path))
+        if self.profile_daemon_client is None:
+            if socket_path is None:
+                raise ValueError("profile_daemon_client is required without socket_path")
+            self.profile_daemon_client = TurboBusDaemonProfileClient(str(socket_path))
+
     @classmethod
     def open(
         cls,
@@ -94,19 +123,6 @@ class TurboBusRuntimeSession:
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
     ) -> "TurboBusRuntimeSession":
-        socket_path = getattr(daemon_client, "socket_path", None)
-        if runtime_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("runtime_daemon_client is required without socket_path")
-            runtime_daemon_client = TurboBusDaemonRuntimeClient(str(socket_path))
-        if execution_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("execution_daemon_client is required without socket_path")
-            execution_daemon_client = TurboBusDaemonExecutionClient(str(socket_path))
-        if profile_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("profile_daemon_client is required without socket_path")
-            profile_daemon_client = TurboBusDaemonProfileClient(str(socket_path))
         session = cls(
             daemon_client=daemon_client,
             job_id=str(job_id),

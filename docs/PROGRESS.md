@@ -23,28 +23,27 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited the public `turbobus.worker` package boundary during the
+- Audited `TurboBusRuntimeSession` daemon role-client wiring during the
   daemon-first closure pass.
-- Removed package-level exports for worker data-plane request/result models,
-  staging pools, resource binders, CUDA executors, and codec helpers.
-- Updated `TurboBusRuntimeSession` to import worker executor, resource binder,
-  lifecycle client, and socket client from the modules that own those
-  implementations.
-- Kept the public worker package focused on worker service and full lifecycle
-  entry points instead of partial data-plane construction tools.
+- Moved runtime, profile, and execution daemon-client resolution into
+  `TurboBusRuntimeSession.__post_init__()` so the rule applies to direct
+  construction as well as factory helpers.
+- Kept socket-backed sessions able to derive role clients from the socket path.
+- Kept custom object sessions required to provide explicit runtime, profile,
+  and execution daemon clients instead of falling back to a broad daemon
+  object.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\__init__.py
-  turbobus\runtime_session.py turbobus\worker\process.py
-  turbobus\worker\endpoint.py turbobus\worker\socket_client.py
-  turbobus\worker\transport.py` passed.
-- `rg -n "from \.worker import|from turbobus\.worker import" turbobus`
-  found no production imports from the package-level worker export surface.
-- `rg -n "WorkerTransferRequest|WorkerTransferResult|WorkerStagingPool|WorkerDataPlaneResourceBinder|WorkerDataPlaneResourceBinding|WorkerDataPlaneResources|CudaWorkerExecutor|decode_worker_request_envelope|encode_worker_request_envelope"
-  turbobus\worker\__init__.py turbobus\runtime_session.py` confirmed the
-  removed package exports are absent and runtime session imports the needed
-  implementation objects from owning modules.
+- `python -m py_compile turbobus\runtime_session.py
+  turbobus\intent_executor.py turbobus\buffer_registration.py
+  turbobus\profile.py turbobus\__init__.py` passed.
+- `rg -n "TurboBusRuntimeSession\(" turbobus benchmarks examples docs` found
+  no production direct construction sites that would be broken by the stricter
+  initialization boundary.
+- `rg -n "runtime_daemon_client is required without socket_path|execution_daemon_client is required without socket_path|profile_daemon_client is required without socket_path|__post_init__"
+  turbobus\runtime_session.py` confirmed role-client enforcement now lives in
+  runtime-session initialization.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk

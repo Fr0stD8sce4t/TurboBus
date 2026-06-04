@@ -26,11 +26,10 @@ experiment work is planned.
 
 ## Current Code Work
 
-- Inspect `turbobus/runtime_session.py`, `turbobus/intent_executor.py`,
-  `turbobus/direct_fallback.py`, `turbobus/buffer_registration.py`,
-  `turbobus/worker/lifecycle.py`, `turbobus/scheduler/daemon.py`,
-  `turbobus/daemon/server.py`, `turbobus/offload_store.py`, and
-  `turbobus/adapters/` for remaining route-selection or compatibility drift.
+- Continue inspecting production modules for remaining route-selection or
+  compatibility drift after removing old client, worker, transfer-request,
+  reservation, session-relay, worker-shortcut, adapter-alias, and planner-helper
+  entry points.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.

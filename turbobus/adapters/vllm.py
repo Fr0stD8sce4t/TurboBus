@@ -437,10 +437,3 @@ def _contiguous_runs(block_ids: list[int]) -> list[tuple[int, list[int]]]:
         current = [block_id]
     runs.append((start_index, current))
     return runs
-
-
-block_name = vllm_block_name
-make_block_refs_from_ids = make_vllm_block_refs_from_ids
-make_layer_groups_from_kv_caches = make_vllm_layer_groups_from_kv_caches
-make_layer_block_refs_from_ids = make_vllm_layer_block_refs_from_ids
-make_layer_range_refs_from_ids = make_vllm_layer_range_refs_from_ids

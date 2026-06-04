@@ -851,7 +851,3 @@ def _validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str,
             + ", ".join(str(key) for key in invalid_keys)
         )
     return policy_hints
-
-
-OffloadManager = OffloadStore
-KVBlockStore = OffloadStore

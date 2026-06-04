@@ -187,30 +187,6 @@ class PlannerEngine:
         )
 
 
-def plan_transfer(
-    total_bytes: int,
-    chunk_bytes: int,
-    profile,
-    mode: TransferMode | str = TransferMode.POOL,
-    *,
-    direction: str = "h2d",
-    options: PlannerEngineOptions | None = None,
-) -> PlannerTransferPlan:
-    return PlannerEngine(options).plan(total_bytes, chunk_bytes, profile, mode, direction=direction)
-
-
-def plan_transfer_ranges(
-    ranges: Iterable,
-    chunk_bytes: int,
-    profile,
-    mode: TransferMode | str = TransferMode.POOL,
-    *,
-    direction: str = "h2d",
-    options: PlannerEngineOptions | None = None,
-) -> PlannerTransferPlan:
-    return PlannerEngine(options).plan_ranges(ranges, chunk_bytes, profile, mode, direction=direction)
-
-
 def _direct_bandwidth(profile, direction: str) -> float:
     direct_attr = "direct_h2d_bw_gbps" if direction == "h2d" else "direct_d2h_bw_gbps"
     direct_bw = max(0.0, float(getattr(profile, direct_attr, 0.0) or 0.0))
@@ -256,6 +232,4 @@ def _range_fields(range_item) -> tuple[int, int, int]:
 __all__ = [
     "PlannerEngine",
     "PlannerEngineOptions",
-    "plan_transfer",
-    "plan_transfer_ranges",
 ]

@@ -183,7 +183,3 @@ def make_contiguous_kv_slots(
         )
         for index in range(count)
     ]
-
-
-FrameworkKVSlot = InferenceKVSlot
-FrameworkKVSlotAdapter = InferenceKVSlotAdapter

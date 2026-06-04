@@ -49,12 +49,6 @@ class TurboBusClient:
         self._daemon = daemon if daemon is not None else TurboBusDaemonClient(socket_path)
         self._transfer_executor = transfer_executor
 
-    def submit(self, intent: TransferIntent) -> TransferReceipt:
-        return self.submit_transfer_intent(intent)
-
-    def submit_transfer(self, intent: TransferIntent) -> TransferReceipt:
-        return self.submit_transfer_intent(intent)
-
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")

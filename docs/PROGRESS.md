@@ -94,29 +94,37 @@ The worker client no longer has public execute-only or execute-and-status
 shortcuts that can skip lease cleanup; runtime and worker socket paths use the
 authorize, execute, status report, and cleanup lifecycle.
 
+The adapter and planner public surfaces have been tightened. Adapter modules no
+longer export old aliases for the same runtime-session-backed classes, the
+public transfer client exposes the explicit `submit_transfer_intent()` entry,
+and module-level planner helper functions that could look like public
+application planning APIs have been removed. Scheduler code still owns planning
+through `PlannerEngine`.
+
 ## Completed This Round
 
-- Removed `WorkerTransferClient.submit`, which executed daemon-authorized work
-  without reporting status or cleaning up leases.
-- Removed `WorkerTransferClient.submit_and_report`, which reported status but
-  could still skip cleanup.
-- Removed `WorkerTransferClient.submit_report_and_cleanup`, leaving
-  `submit_report_cleanup_lifecycle` as the single local worker execution
-  entry.
-- Confirmed runtime session and worker socket paths already use the full worker
-  lifecycle.
+- Removed adapter/offload compatibility aliases:
+  `OffloadManager`, `KVBlockStore`, `ModelLoader`, `TrainingOffloadStore`,
+  `FrameworkKVSlot`, `FrameworkKVSlotAdapter`, and short vLLM helper aliases.
+- Removed `TurboBusClient.submit()` and `TurboBusClient.submit_transfer()` so
+  the public client names the required `TransferIntent` submission path.
+- Removed module-level `planner_engine.plan_transfer()` and
+  `planner_engine.plan_transfer_ranges()` helper entry points while keeping
+  scheduler-owned `PlannerEngine` planning intact.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\lifecycle.py
-  turbobus\worker\process.py turbobus\intent_execution_support.py
-  turbobus\intent_executor.py turbobus\runtime_session.py` passed.
-- `rg -n "def submit\(|submit_and_report\(|submit_report_and_cleanup\("
-  turbobus\worker turbobus\intent_execution_support.py
-  turbobus\intent_executor.py turbobus\runtime_session.py` found no worker
-  shortcut execution methods.
+- `python -m py_compile turbobus\api\client.py turbobus\offload_store.py
+  turbobus\adapters\__init__.py turbobus\adapters\inference.py
+  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
+  turbobus\adapters\vllm.py` passed.
+- `python -m py_compile turbobus\planner_engine.py
+  turbobus\scheduler\daemon.py turbobus\daemon\server.py` passed.
+- Targeted `rg` checks found no remaining production definitions or imports for
+  the removed aliases, client shortcut methods, or module-level planner helper
+  entry points.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -134,6 +142,10 @@ authorize, execute, status report, and cleanup lifecycle.
 - Existing tests may still call removed worker shortcut methods; current-stage
   constraints defer test migration until the system implementation pass is
   complete.
+- Existing tests or external callers may still reference adapter aliases or
+  `TurboBusClient.submit()`/`submit_transfer()`. Current-stage constraints
+  prefer removing compatibility names from production code before migrating
+  tests.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

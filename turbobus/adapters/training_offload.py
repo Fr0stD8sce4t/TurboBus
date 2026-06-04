@@ -175,6 +175,3 @@ class TrainingOffloadManager(OffloadStore):
         selected = self.names() if names is None else list(names)
         for name in selected:
             self.set_block_state(name, BlockState.GPU, clear_transfer_state=True)
-
-
-TrainingOffloadStore = TrainingOffloadManager

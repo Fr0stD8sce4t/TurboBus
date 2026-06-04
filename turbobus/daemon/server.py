@@ -569,6 +569,31 @@ class TurboBusDaemon:
                 if (
                     cleanup.target_id not in self._reservations
                     and cleanup.target_id not in self._staging_records
+                ):
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown reservation")
+                    try:
+                        self._validate_peer_owns_missing_cleanup_target_locked(
+                            target_kind=cleanup.target_kind,
+                            target_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as owner_exc:
+                        return DaemonResponse(ok=False, error=str(owner_exc))
+                    return DaemonResponse(
+                        ok=True,
+                        payload={
+                            "cleanup": asdict(cleanup),
+                            "removed": removed,
+                            "reservation_id": cleanup.target_id,
+                            "cleaned_reservation_ids": (),
+                            "cleanup_kind": cleanup.target_kind,
+                            "cleanup_mode": "noop",
+                        },
+                    )
+                if (
+                    cleanup.target_id not in self._reservations
+                    and cleanup.target_id not in self._staging_records
                     and not cleanup.force
                 ):
                     if archived_target is None:

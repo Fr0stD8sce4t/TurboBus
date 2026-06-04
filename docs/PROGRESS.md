@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current main target: runtime load feedback.
+Current main target: isolation and authority hardening.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Scheduler fairness now uses live runtime pressure from active transfers,
-  relay staging, and busy relay state.
+- Retired reservation cleanup now requires owner validation before returning
+  a no-op response.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -34,5 +34,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: isolation and authority
-hardening.
+Continue with one concrete implementation boundary: real H2D / D2H execution
+path closure.

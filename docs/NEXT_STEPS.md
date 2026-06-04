@@ -7,8 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: runtime load feedback. Scheduler fairness fallback
-should use live daemon runtime pressure, not just a transfer-count snapshot.
+Current code target: isolation and authority hardening. Reservation cleanup
+should not let a non-owner advance global cleanup state when the target has
+already retired.
 
 ## Exit Criteria
 
@@ -16,17 +17,17 @@ should use live daemon runtime pressure, not just a transfer-count snapshot.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Scheduler fairness reacts to live runtime pressure from active transfers,
-  relay staging, and relay busy state.
+- Cleanup of retired reservations still requires owner validation before any
+  no-op or global cleanup side effects are allowed.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/scheduler/load_feedback.py` should feed live runtime pressure into
-fairness fallback and policy metadata.
+`turbobus/daemon/server.py` should require owner validation before retired
+reservation cleanup can return a no-op response.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: isolation and authority hardening.
+boundary: real H2D / D2H execution path closure.

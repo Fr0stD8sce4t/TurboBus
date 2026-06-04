@@ -16,24 +16,22 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Split profile bootstrap support as one runtime/backend boundary.
-- Moved simple profile result models to `turbobus/profiling/models.py`.
-- Moved daemon profile serialization, cache freshness, validation, and
-  daemon-entry reconstruction to `turbobus/profiling/daemon_format.py`.
-- Moved CUDA profile collection, daemon `put_profile`, and bootstrap cache
-  flow to `turbobus/profiling/bootstrap.py`.
-- Updated `TurboBusRuntimeSession` to call the owning bootstrap module.
-- Deleted `turbobus/profile.py` instead of keeping a compatibility export
-  layer.
+- Split daemon peer authentication helpers as one daemon control-plane
+  boundary.
+- Moved Unix socket support checks, peer credential extraction, authenticated
+  peer error response, job identity binding, peer owner matching, and same
+  connection comparison to `turbobus/daemon/peer_auth.py`.
+- Updated `turbobus/daemon/server.py` to use the owning peer-auth module while
+  preserving daemon-owned peer state and existing request handling.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the new profiling modules and directly
-  related runtime/backend modules.
-- Searches found no production reference to the removed `turbobus.profile`
-  module.
+- `python -m py_compile` passed for the updated daemon peer-auth, server,
+  dispatch, startup, and daemon entry modules.
+- Searches found no old peer-auth helper implementation left in
+  `turbobus/daemon/server.py`.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk

@@ -46,6 +46,10 @@ worker/backend completion, and `TransferReceipt`.
 - Keep `turbobus.daemon` package-level exports focused on production daemon
   startup. Daemon role clients should be imported by production owners from
   `turbobus.daemon.client`, not exposed as app-facing package shortcuts.
+- Keep daemon peer authentication helpers owned by `turbobus/daemon/peer_auth.py`.
+  `server.py` may store peer-owned state, but Unix peer credential parsing,
+  authenticated-peer response, job identity binding, and peer owner matching
+  should stay out of the daemon server monolith.
 - Keep offload and framework adapters bound to real `TurboBusRuntimeSession`
   instances, not duck-typed clients that can bypass runtime-owned registration,
   profile bootstrap, worker execution, or cleanup.

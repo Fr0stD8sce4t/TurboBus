@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import struct
 import threading
 import time
 import uuid
@@ -12,6 +11,7 @@ from typing import Iterable, Mapping
 
 from . import dispatch as daemon_dispatch
 from . import leases as daemon_leases
+from . import peer_auth
 from . import profiles as daemon_profiles
 from . import receipts as daemon_receipts
 from ..schema import (
@@ -258,7 +258,7 @@ class TurboBusDaemon:
         peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         try:
-            user_id, process_id, container_id = _bind_job_identity_to_peer(
+            user_id, process_id, container_id = peer_auth.bind_job_identity_to_peer(
                 user_id=user_id,
                 process_id=process_id,
                 container_id=container_id,
@@ -283,7 +283,7 @@ class TurboBusDaemon:
                 else self._session_peer_identities.get(job.session_id)
             )
             try:
-                _validate_peer_owner_match(
+                peer_auth.validate_peer_owner_match(
                     expected=session_peer,
                     actual=peer_identity,
                     owner_name="session",
@@ -3092,7 +3092,7 @@ class TurboBusDaemon:
         transfer_peer = self._transfer_peer_identities.get(str(transfer_id))
         if transfer_peer is None or not transfer_peer.authenticated:
             raise ValueError("transfer owner identity is unavailable")
-        _validate_peer_owner_match(
+        peer_auth.validate_peer_owner_match(
             expected=transfer_peer,
             actual=peer_identity,
             owner_name="transfer",
@@ -3113,7 +3113,7 @@ class TurboBusDaemon:
         job_peer = self._job_peer_identities.get(job_key)
         if job_peer is None:
             raise ValueError("job owner identity is unavailable")
-        _validate_peer_owner_match(
+        peer_auth.validate_peer_owner_match(
             expected=job_peer,
             actual=peer_identity,
             owner_name="job",
@@ -3133,7 +3133,7 @@ class TurboBusDaemon:
         session_peer = self._session_peer_identities.get(session_key)
         if session_peer is None:
             raise ValueError("session owner identity is unavailable")
-        _validate_peer_owner_match(
+        peer_auth.validate_peer_owner_match(
             expected=session_peer,
             actual=peer_identity,
             owner_name="session",
@@ -3229,7 +3229,7 @@ class TurboBusDaemon:
             transfer_peer = self._transfer_peer_identities.get(transfer_id)
             if transfer_peer is None or not transfer_peer.authenticated:
                 raise ValueError("transfer owner identity is unavailable")
-            _validate_peer_owner_match(
+            peer_auth.validate_peer_owner_match(
                 expected=transfer_peer,
                 actual=peer_identity,
                 owner_name="transfer",
@@ -3590,7 +3590,7 @@ class TurboBusDaemon:
                 if session_connection_id != str(connection_id):
                     continue
             session_peer = self._session_peer_identities.get(session_id)
-            if not _peer_identity_same_connection(session_peer, peer_identity):
+            if not peer_auth.peer_identity_same_connection(session_peer, peer_identity):
                 continue
             self._close_session_locked(session_id, reason=reason, removed=removed)
         return removed
@@ -3708,7 +3708,7 @@ class TurboBusDaemon:
         connection_id: str | None = None,
     ) -> DaemonResponse:
         if self._requires_authenticated_peer_for_request(request):
-            return _authenticated_peer_required_response(request.peer_identity)
+            return peer_auth.authenticated_peer_required_response(request.peer_identity)
         try:
             return self._handle_request(request, connection_id=connection_id)
         except (KeyError, TypeError, ValueError) as exc:
@@ -3997,7 +3997,7 @@ class TurboBusDaemon:
         return sorted({int(gpu) for gpu in relay_gpus})
 
     def serve_forever(self, socket_path: str) -> None:
-        _validate_unix_socket_support(
+        peer_auth.validate_unix_socket_support(
             require_authenticated_peers=self._require_authenticated_peers
         )
         unlink_stale_socket(socket_path)
@@ -4011,7 +4011,7 @@ class TurboBusDaemon:
             while True:
                 conn, _ = server.accept()
                 with conn:
-                    peer_identity = _peer_identity_from_socket(conn)
+                    peer_identity = peer_auth.peer_identity_from_socket(conn)
                     connection_id = str(uuid.uuid4())
                     data = b""
                     try:
@@ -4050,7 +4050,7 @@ def socket_path_for_user(base_dir: str = "/tmp") -> str:
 
 
 def reserve_socket(path: str) -> socket.socket:
-    _validate_unix_socket_support(require_authenticated_peers=False)
+    peer_auth.validate_unix_socket_support(require_authenticated_peers=False)
     unlink_stale_socket(path)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(path)
@@ -4063,120 +4063,6 @@ def _topology_unavailable_response() -> DaemonResponse:
     return DaemonResponse(
         ok=False,
         error=_TOPOLOGY_UNAVAILABLE_ERROR,
-    )
-
-
-def _validate_unix_socket_support(*, require_authenticated_peers: bool) -> None:
-    if not hasattr(socket, "AF_UNIX"):
-        raise RuntimeError("Unix domain sockets are unavailable on this platform")
-    if require_authenticated_peers and not hasattr(socket, "SO_PEERCRED"):
-        raise RuntimeError(
-            "authenticated Unix peer credentials are required but SO_PEERCRED "
-            "is unavailable on this platform"
-        )
-
-
-def _authenticated_peer_required_response(
-    peer_identity: PeerIdentity | None,
-) -> DaemonResponse:
-    reason = "peer identity is unavailable"
-    if peer_identity is not None:
-        reason = peer_identity.unsupported_reason or "peer identity is unauthenticated"
-    return DaemonResponse(
-        ok=False,
-        error=f"authenticated peer credentials are required: {reason}",
-    )
-
-
-def _bind_job_identity_to_peer(
-    *,
-    user_id: str | None,
-    process_id: int | None,
-    container_id: str | None,
-    peer_identity: PeerIdentity | None,
-) -> tuple[str | None, int | None, str | None]:
-    if peer_identity is None or not peer_identity.authenticated:
-        return user_id, process_id, container_id
-    if user_id is not None and str(user_id) != str(peer_identity.user_id):
-        raise ValueError("job user_id does not match authenticated peer")
-    if (
-        process_id is not None
-        and peer_identity.process_id is not None
-        and int(process_id) != int(peer_identity.process_id)
-    ):
-        raise ValueError("job process_id does not match authenticated peer")
-    if (
-        container_id is not None
-        and peer_identity.container_id is not None
-        and str(container_id) != str(peer_identity.container_id)
-    ):
-        raise ValueError("job container_id does not match authenticated peer")
-    return (
-        str(peer_identity.user_id),
-        peer_identity.process_id if process_id is None else int(process_id),
-        peer_identity.container_id if container_id is None else str(container_id),
-    )
-
-
-def _validate_peer_owner_match(
-    *,
-    expected: PeerIdentity | None,
-    actual: PeerIdentity | None,
-    owner_name: str,
-) -> None:
-    if expected is None or actual is None:
-        return
-    if not expected.authenticated or not actual.authenticated:
-        return
-    if str(expected.user_id) != str(actual.user_id):
-        raise ValueError(f"{owner_name} owner does not match authenticated peer")
-
-
-def _peer_identity_same_connection(
-    expected: PeerIdentity | None,
-    actual: PeerIdentity | None,
-) -> bool:
-    if expected is None or actual is None:
-        return False
-    if expected.authenticated and actual.authenticated:
-        return (
-            str(expected.user_id) == str(actual.user_id)
-            and expected.process_id == actual.process_id
-            and expected.group_id == actual.group_id
-        )
-    return (
-        expected.authenticated == actual.authenticated
-        and expected.source == actual.source
-        and expected.unsupported_reason == actual.unsupported_reason
-    )
-
-
-def _peer_identity_from_socket(conn: socket.socket) -> PeerIdentity:
-    if hasattr(socket, "SO_PEERCRED"):
-        try:
-            credentials = conn.getsockopt(
-                socket.SOL_SOCKET,
-                socket.SO_PEERCRED,
-                struct.calcsize("3i"),
-            )
-            pid, uid, gid = struct.unpack("3i", credentials)
-            return PeerIdentity(
-                authenticated=True,
-                source="unix_socket_peercred",
-                user_id=str(uid),
-                process_id=pid,
-                group_id=gid,
-            )
-        except OSError as exc:
-            return PeerIdentity(
-                authenticated=False,
-                source="unix_socket_peercred",
-                unsupported_reason=str(exc),
-            )
-    return PeerIdentity(
-        authenticated=False,
-        source="unix_socket",
-        unsupported_reason="SO_PEERCRED is unavailable on this platform",
     )
 
 

@@ -35,6 +35,13 @@ plan generation, source buffer, destination buffer, job, and session. That
 keeps shared pinned CPU buffers and CUDA IPC GPU handles tied to the
 runtime-session registered buffers recorded by the daemon-issued execution.
 
+Daemon release and cleanup now have separate state boundaries. Worker lease
+release retires lease-side runtime state while keeping completed receipts
+available for the runtime session to consume. Session, job, or buffer cleanup
+retires the full transfer record, including active tickets, archived
+completion tickets, completion source/evidence, planning state, admission
+state, queue records, peer identity, intent mappings, and terminal status.
+
 Server-only validation remains deferred until after the full system
 implementation pass. Current code work should continue through code reading,
 implementation, refactoring, and existing minimal local checks without adding
@@ -42,20 +49,25 @@ server test commands or server-validation gates.
 
 ## Completed This Round
 
-- Added ticket binding to direct fallback resource evidence for successful
-  backend completion and backend failure status updates.
-- Added ticket binding to worker CUDA resource evidence for successful
-  execution and bound-resource failure results.
+- Split completed reservation release from full transfer cleanup: release now
+  clears lease-side runtime state but keeps completed receipt evidence available
+  for the runtime session.
+- Full session, job, or buffer cleanup retires transfer records together with
+  active tickets, archived completion tickets, completion evidence, planning
+  state, admission state, queue records, peer identity, intent mappings, and
+  terminal status.
+- Preserved daemon release ordering so completion evidence and archived ticket
+  are verified before lease state is retired.
 - Kept the old compatibility/export-layer files deleted and left server
   validation deferred.
 - Updated the active plan files to move the next implementation entry to
-  daemon ticket, receipt, and cleanup state consistency.
+  offload and adapter runtime-session handoff.
 
 ## Validation
 
-- `python -m py_compile turbobus\direct_fallback.py
-  turbobus\worker\resources.py turbobus\worker\cuda_executor.py
-  turbobus\buffer_registration.py turbobus\intent_executor.py` passed.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\daemon\dispatch.py turbobus\transfer_execution.py
+  turbobus\runtime_session.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -63,11 +75,11 @@ server test commands or server-validation gates.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Daemon ticket, receipt, and cleanup state consistency still needs inspection
-  before moving to the next system-code target.
+- Offload and adapter-facing runtime session handoff still needs inspection for
+  any remaining daemon bypass or application-side route choice.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon ticket, receipt, and
-cleanup state consistency while keeping server validation deferred until the
-full system implementation pass is complete.
+Continue the code implementation pass by inspecting offload and adapter runtime
+session handoff while keeping server validation deferred until the full system
+implementation pass is complete.

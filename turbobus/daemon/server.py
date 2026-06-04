@@ -1759,11 +1759,13 @@ class TurboBusDaemon:
                 and status_after.state in _TERMINAL_TRANSFER_STATES
                 and not self._transfer_has_reservations_locked(transfer_id)
             ):
-                self._retire_transfer_runtime_state_locked(
-                    transfer_id,
-                    final_state=status_after.state,
-                    reason=cleanup_reason,
-                )
+                if status_after.state is TransferStatusState.COMPLETE:
+                    self._retire_completed_transfer_lease_state_locked(
+                        transfer_id,
+                        reason=cleanup_reason,
+                    )
+                else:
+                    self._retire_transfer_runtime_state_locked(transfer_id)
         if cleanup_reason is not None:
             self._system_cleanup_events.append(
                 CleanupRequest(
@@ -1800,7 +1802,7 @@ class TurboBusDaemon:
             removed["staging_records"] += 1
         if status_before is not None and status_before.state not in _TERMINAL_TRANSFER_STATES:
             status_after = self._transfer_statuses.get(status_before.transfer_id)
-            if status_after is not None and status_after.state in _TERMINAL_TRANSFER_STATES:
+            if status_after is None or status_after.state in _TERMINAL_TRANSFER_STATES:
                 removed["transfers"] += 1
         return removed
 
@@ -3683,10 +3685,12 @@ class TurboBusDaemon:
         self._refresh_transfer_queue_record_locked(terminal.transfer_id)
         return terminal
 
-    def _drop_execution_ticket_for_transfer_locked(self, transfer_id: str) -> None:
+    def _drop_execution_ticket_for_transfer_locked(self, transfer_id: str) -> bool:
         ticket_id = self._transfer_tickets.pop(str(transfer_id), None)
         if ticket_id is not None:
             self._execution_tickets.pop(ticket_id, None)
+            return True
+        return False
 
     def _transfer_has_reservations_locked(self, transfer_id: str) -> bool:
         normalized = str(transfer_id)
@@ -3698,24 +3702,40 @@ class TurboBusDaemon:
     def _retire_transfer_runtime_state_locked(
         self,
         transfer_id: str,
-        *,
-        final_state: TransferStatusState | None = None,
-        reason: str | None = None,
     ) -> None:
         normalized = str(transfer_id)
         removed = False
-        self._drop_execution_ticket_for_transfer_locked(normalized)
-        status = self._transfer_statuses.get(normalized)
-        terminal_state = final_state
-        if terminal_state is None and status is not None:
-            terminal_state = status.state
+        removed = self._drop_execution_ticket_for_transfer_locked(normalized) or removed
+        removed = self._pop_transfer_runtime_maps_locked(normalized) or removed
+        removed = self._remove_transfer_intent_state_locked(normalized) or removed
+        if self._transfer_admissions.pop(normalized, None) is not None:
+            removed = True
+        if normalized in self._transfer_queue_records:
+            self._transfer_queue_records.pop(normalized, None)
+            removed = True
+        if normalized in self._transfer_queue:
+            self._transfer_queue = [
+                queued_id
+                for queued_id in self._transfer_queue
+                if queued_id != normalized
+            ]
+            removed = True
+        if self._transfer_statuses.pop(normalized, None) is not None:
+            removed = True
+        if removed:
+            self._runtime_state_version += 1
+
+    def _retire_completed_transfer_lease_state_locked(
+        self,
+        transfer_id: str,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        normalized = str(transfer_id)
+        removed = self._drop_execution_ticket_for_transfer_locked(normalized)
         admission = self._transfer_admissions.get(normalized)
         if admission is not None:
             updated = dict(admission)
-            if terminal_state is TransferStatusState.CANCELED:
-                updated["state"] = _ADMISSION_CANCELED
-            elif terminal_state is TransferStatusState.FAILED:
-                updated["state"] = _ADMISSION_FAILED
             updated["lease_ids"] = ()
             updated["retired_at"] = time.time()
             if reason is not None:
@@ -3735,6 +3755,36 @@ class TurboBusDaemon:
             removed = True
         if removed:
             self._runtime_state_version += 1
+
+    def _pop_transfer_runtime_maps_locked(self, transfer_id: str) -> bool:
+        normalized = str(transfer_id)
+        removed = False
+        for mapping in (
+            self._transfer_completion_tickets,
+            self._transfer_completion_sources,
+            self._transfer_completion_evidence,
+            self._transfer_plan_requests,
+            self._transfer_plan_generations,
+            self._transfer_plan_expirations,
+            self._transfer_plans,
+            self._scheduling_decisions,
+            self._transfer_peer_identities,
+        ):
+            if mapping.pop(normalized, None) is not None:
+                removed = True
+        return removed
+
+    def _remove_transfer_intent_state_locked(self, transfer_id: str) -> bool:
+        normalized = str(transfer_id)
+        intent_ids = [
+            intent_id
+            for intent_id, mapped_transfer_id in self._intent_transfers.items()
+            if mapped_transfer_id == normalized
+        ]
+        for intent_id in intent_ids:
+            self._intent_transfers.pop(intent_id, None)
+            self._transfer_intents.pop(intent_id, None)
+        return bool(intent_ids)
 
     def _mark_transfer_admission_terminal_locked(
         self,

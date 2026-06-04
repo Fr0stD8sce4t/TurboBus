@@ -3951,8 +3951,11 @@ class TurboBusDaemon:
         }
         if archived_record["intent_id"] is not None:
             self._archived_intent_transfers[str(archived_record["intent_id"])] = normalized
-        existing.update(archived_record)
-        self._transfer_receipt_archive[normalized] = existing
+        updated = dict(existing)
+        updated.update(archived_record)
+        if updated != existing:
+            self._runtime_state_version += 1
+        self._transfer_receipt_archive[normalized] = updated
 
     def _retire_completed_transfer_lease_state_locked(
         self,

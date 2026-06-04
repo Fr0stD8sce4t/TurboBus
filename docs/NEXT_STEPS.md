@@ -40,12 +40,12 @@ session API owns the transfer path.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py`, `turbobus/daemon/server.py`, and
-`turbobus/adapters/vllm.py` should keep the public runtime session path, daemon
-cleanup path, and vLLM adapter construction path aligned so `fetch_h2d()` /
-`offload_d2h()` stay on the session-owned API, session teardown advances the
-daemon runtime-state version that scheduler feedback reads, and partial vLLM
-group construction rolls back registered buffers and owned local CPU backing.
+`turbobus/runtime_session.py` and `turbobus/daemon/server.py` should keep the
+public runtime session path and daemon feedback path aligned so `fetch_h2d()` /
+`offload_d2h()` stay on the session-owned API, terminal worker/backend
+evidence updates advance the daemon runtime-state version that scheduler
+feedback reads, and session teardown still retires the owning buffers through
+the runtime session API.
 
 ## Next Entry
 

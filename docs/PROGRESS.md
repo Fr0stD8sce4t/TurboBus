@@ -20,6 +20,8 @@ code remain deferred until the full system implementation pass is complete.
   unclassified state.
 - The worker intent executor now handles `authorization_failed` explicitly
   and exits through the failure path.
+- Worker service parse failures are now validated and handled as explicit
+  cleanup-only failures instead of falling through the unknown-state path.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 

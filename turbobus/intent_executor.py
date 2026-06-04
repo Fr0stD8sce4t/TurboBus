@@ -153,6 +153,16 @@ class WorkerIntentTransferExecutor:
             raise RuntimeError(
                 worker_execution.error or "worker authorization failed"
             )
+        if worker_execution.final_state == "parse_failed":
+            cleanup_planned_relay_leases(
+                daemon_client,
+                lease_tokens,
+                reason="worker_parse_failed",
+                strict=False,
+            )
+            raise RuntimeError(
+                worker_execution.error or "worker transfer parse failed"
+            )
         if worker_execution.final_state in {"failed", "status_failed", "cleanup_failed"}:
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
         if worker_execution.final_state != "complete":

@@ -10,7 +10,8 @@ System implementation before experiments.
 Current code target: worker/backend failure cleanup and terminal receipt
 closure. Worker authorization failures now need to be treated as explicit
 cleanup-only failures instead of leaking through the worker executor as an
-unclassified state.
+unclassified state, and worker service parse failures should also be handled
+as terminal cleanup-only failures.
 
 ## Exit Criteria
 
@@ -24,7 +25,8 @@ unclassified state.
 ## Current Code Work
 
 `turbobus/intent_execution_support.py` and `turbobus/intent_executor.py`
-should handle `authorization_failed` as a terminal worker failure path.
+should handle `authorization_failed` and `parse_failed` as terminal worker
+failure paths.
 
 ## Next Entry
 

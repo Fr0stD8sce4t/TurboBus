@@ -314,8 +314,59 @@ def require_worker_completion_matches_request(
             completion,
             request,
         )
+    elif final_state == "parse_failed":
+        require_parse_failed_worker_completion_matches_request(completion)
     elif final_state in {"failed", "status_failed", "cleanup_failed"}:
         require_failed_worker_completion_matches_request(completion, request)
+
+
+def require_parse_failed_worker_completion_matches_request(
+    completion: WorkerDataPlaneCompletionEnvelope,
+) -> None:
+    if completion.ok:
+        raise WorkerCompletionEnvelopeError(
+            "parse-failed worker completion was marked ok"
+        )
+    if completion.transfer_id is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a transfer id"
+        )
+    if completion.lease_id is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a lease id"
+        )
+    if completion.worker_result is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a worker result"
+        )
+    if completion.daemon_running_update is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a daemon running update"
+        )
+    if completion.daemon_running_response is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a daemon running response"
+        )
+    if completion.daemon_status_update is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a daemon status update"
+        )
+    if completion.daemon_status_response is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a daemon status response"
+        )
+    if completion.staging_slot is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a staging slot"
+        )
+    if completion.staging_release is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a staging release"
+        )
+    if completion.daemon_cleanup_response is not None:
+        raise WorkerCompletionEnvelopeError(
+            "parse failure should not include a daemon cleanup response"
+        )
 
 
 def require_authorization_failed_worker_completion_matches_request(

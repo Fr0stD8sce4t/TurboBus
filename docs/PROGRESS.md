@@ -23,31 +23,24 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited offload and framework adapter runtime-session ownership during the
-  daemon-first closure pass.
-- Removed the duck-typed `TransferIntentClient` adapter boundary from
-  `OffloadStore`.
-- Required `OffloadStore` and its receipt handles to use real
-  `TurboBusRuntimeSession` instances.
-- Required vLLM slot and vLLM integration adapters to reject non-runtime-session
-  objects before they register buffers or submit transfers.
+- Audited the public client/API export boundary during the daemon-first
+  closure pass.
+- Removed `DaemonIntentClient` from the top-level `turbobus` package export.
+- Removed `DaemonIntentClient` from `turbobus.api` and renamed the remaining
+  protocol type inside `turbobus.api.client` to private `_DaemonIntentClient`.
+- Kept `TurboBusClient` focused on submitting `TransferIntent` objects and
+  waiting for `TransferReceipt` objects.
 
 ## Validation
 
-- `python -m py_compile turbobus\offload_store.py
-  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
-  turbobus\adapters\inference.py turbobus\adapters\vllm.py
-  turbobus\adapters\vllm_integration.py
-  turbobus\adapters\vllm_kv_connector.py turbobus\runtime_session.py`
-  passed.
-- `rg -n "TransferIntentClient|Protocol" turbobus\offload_store.py` found no
-  old duck-typed adapter client boundary.
-- `rg -n "hasattr\(runtime_session" turbobus\adapters\vllm.py
-  turbobus\adapters\vllm_integration.py` found no remaining vLLM
-  runtime-session duck typing.
-- `rg -n "TurboBusClient|DaemonIntentClient" turbobus\adapters
-  turbobus\offload_store.py` found no adapter/offload dependency on the old
-  public client path.
+- `python -m py_compile turbobus\api\__init__.py turbobus\api\client.py
+  turbobus\__init__.py turbobus\runtime_session.py` passed.
+- `rg -n "DaemonIntentClient" turbobus\__init__.py turbobus\api` found only
+  the private `_DaemonIntentClient` implementation detail in
+  `turbobus\api\client.py`.
+- `rg -n "def (register_session|register_buffer|cleanup|authorize_worker_transfer)"
+  turbobus\api\client.py` found no runtime, buffer, cleanup, or worker
+  execution methods on the public client.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -59,9 +52,9 @@ commands or making server validation a current entry point.
   transfer request, manual reservation, worker shortcut, broad daemon client,
   manual daemon planning, adapter policy hints, old `runtime_engine` imports,
   public worker internals, package-level worker data-plane exports, and
-  duck-typed offload clients, and compatibility entry points. Current-stage
-  constraints defer test migration until the system implementation pass is
-  complete.
+  duck-typed offload clients, exported daemon intent protocol helpers, and
+  compatibility entry points. Current-stage constraints defer test migration
+  until the system implementation pass is complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

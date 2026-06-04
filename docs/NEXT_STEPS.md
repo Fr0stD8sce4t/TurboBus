@@ -65,6 +65,11 @@ experiment work is planned.
   The public `TurboBusClient` should submit intents and wait for receipts only;
   it must not accept application-provided execution hooks that can bypass the
   runtime-session worker path.
+- Keep daemon intent protocol helper types internal to the public client
+  implementation. The top-level package and `turbobus.api` should expose
+  `TurboBusClient`, `TurboBusRuntimeSession`, shared buffers, schema objects,
+  and runtime options, not daemon-client protocol types for applications to
+  wire by hand.
 - Keep daemon planning reachable only through `TransferIntent` submission.
   Daemon-internal scheduling may still call the scheduler with a mode, but the
   daemon object should not expose a public manual planning method that lets

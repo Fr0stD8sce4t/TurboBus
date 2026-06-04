@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .api import DaemonIntentClient, TurboBusClient
+from .api import TurboBusClient
 from .client import (
     CudaIpcDeviceBuffer,
     SharedPinnedCpuBuffer,
@@ -26,7 +26,6 @@ __all__ = [
     "BufferHandle",
     "BufferKind",
     "CudaIpcDeviceBuffer",
-    "DaemonIntentClient",
     "ExecutionTicket",
     "JobIdentity",
     "SchedulingDecision",

@@ -9,7 +9,7 @@ from .receipts import require_complete_receipt_evidence
 
 
 @runtime_checkable
-class DaemonIntentClient(Protocol):
+class _DaemonIntentClient(Protocol):
     def submit_transfer_intent(self, intent: TransferIntent) -> DaemonResponse:
         ...
 
@@ -26,7 +26,7 @@ class TurboBusClient:
 
     def __init__(
         self,
-        daemon: DaemonIntentClient | None = None,
+        daemon: _DaemonIntentClient | None = None,
         *,
         socket_path: str | None = None,
     ) -> None:
@@ -90,6 +90,5 @@ def _transfer_receipt_from_payload(payload: dict[str, object]) -> TransferReceip
 
 
 __all__ = [
-    "DaemonIntentClient",
     "TurboBusClient",
 ]

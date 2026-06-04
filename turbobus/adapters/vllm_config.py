@@ -12,6 +12,7 @@ class TurboBusConnectorConfig:
     gpu_buffer_id: str
     chunk_bytes: int
     daemon_socket_path: str
+    worker_socket_path: str | None
     wait_timeout_seconds: float | None
     restore_block_limit: int
     restore_enabled: bool
@@ -50,6 +51,11 @@ class TurboBusConnectorConfig:
                 vllm_config,
                 "turbobus.daemon_socket_path",
                 os.environ.get("TURBOBUS_DAEMON_SOCKET_PATH", ""),
+            ),
+            worker_socket_path=extra_config_optional_str(
+                vllm_config,
+                "turbobus.worker_socket_path",
+                os.environ.get("TURBOBUS_WORKER_SOCKET_PATH", ""),
             ),
             wait_timeout_seconds=extra_config_optional_float(
                 vllm_config,
@@ -114,6 +120,16 @@ def extra_config_str(vllm_config, key: str, default: str) -> str:
     return str(extra_config_value(vllm_config, key, default))
 
 
+def extra_config_optional_str(vllm_config, key: str, default) -> str | None:
+    value = extra_config_value(vllm_config, key, default)
+    if value is None:
+        return None
+    text = str(value)
+    if not text:
+        return None
+    return text
+
+
 def extra_config_value(vllm_config, key: str, default):
     config = getattr(vllm_config, "kv_transfer_config", None)
     getter = getattr(config, "get_from_extra_config", None)
@@ -135,6 +151,7 @@ __all__ = [
     "extra_config_bool",
     "extra_config_float",
     "extra_config_int",
+    "extra_config_optional_str",
     "extra_config_optional_float",
     "extra_config_str",
     "extra_config_value",

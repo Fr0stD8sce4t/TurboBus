@@ -9,9 +9,12 @@ issues `ExecutionTicket` plans, and keeps the old `client_transfer.py` file
 deleted. `TurboBusRuntimeSession.open()` is now the public system entry without
 application-side relay selection: the target GPU is bound from registered CUDA
 buffers and relay eligibility is discovered from the daemon before session
-registration and profile bootstrap. Model loading, training offload, and
-inference KV adapters now have runtime-session entry points. Worker service and
-production process entry points route requests through the standard lifecycle.
+registration and profile bootstrap. `TurboBusRuntimeSession.open_socket()` now
+owns daemon socket and optional worker socket clients for the production socket
+path while keeping execution on daemon-issued `ExecutionTicket` data. Model
+loading, training offload, and inference KV adapters now have runtime-session
+entry points. Worker service and production process entry points route requests
+through the standard lifecycle.
 vLLM connector save/restore tracing now requires real `TransferReceipt` handles
 before it records receipt, decision, topology, or ticket ids.
 vLLM saved prefixes are keyed by job id, session id, and prefix key, and the
@@ -61,15 +64,16 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Preserved authenticated transfer-owner identity when the daemon creates a
-  transfer plan.
-- Changed receipt wait ownership checks to fall back to the stored transfer
-  owner after active job/session/buffer cleanup, while retaining normal job
-  ownership checks for active jobs.
+- Added a runtime-session socket entry that constructs the daemon socket client
+  and optional worker socket client inside `TurboBusRuntimeSession`.
+- Moved the vLLM connector onto the runtime-session socket entry so the adapter
+  no longer assembles a daemon client directly.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py` passed.
+- `python -m py_compile turbobus\runtime_session.py
+  turbobus\adapters\vllm_config.py
+  turbobus\adapters\vllm_kv_connector.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -80,5 +84,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon and worker
-production startup paths while keeping server validation deferred.
+Continue the code implementation pass by inspecting scheduler admission and
+runtime load feedback while keeping server validation deferred.

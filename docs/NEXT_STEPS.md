@@ -28,6 +28,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep `TurboBusRuntimeSession.open()` as the public system entry without
   application-side relay selection; it must register session, job, and buffers
   before submitting `TransferIntent`.
+- Keep `TurboBusRuntimeSession.open_socket()` as the production socket entry:
+  it owns daemon socket and optional worker socket clients, then still submits
+  only `TransferIntent` and consumes `TransferReceipt`.
 - Keep model loading, training offload, inference KV, vLLM connector, vLLM KV,
   and lower-level vLLM integration paths on the runtime-session API so callers
   do not assemble daemon clients, transfer contexts, or buffer registration
@@ -59,8 +62,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon and worker
-production startup paths. The socket entry points should route through the
-standard runtime session, daemon scheduling, worker lifecycle, and
-daemon-issued `ExecutionTicket` flow without adding compatibility wrappers,
+Continue the code implementation pass by inspecting scheduler admission and
+runtime load feedback. Daemon scheduling state should be driven by live
+transfer status, leases, and relay occupancy without benchmark hooks,
 server-validation gates, or application-side route controls.

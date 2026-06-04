@@ -5,7 +5,6 @@ import time
 from typing import Any
 
 from ..api.receipts import require_complete_receipt_evidence
-from ..daemon import TurboBusDaemonClient
 from ..offload_store import TransferStats, summarize_transfer_handles
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferReceipt, WorkloadKind
@@ -165,11 +164,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.session_id = self.config.session_id
         self.job_id = self.config.job_id
         self.max_saved_prefixes = self.config.max_saved_prefixes
-        self.daemon_client = TurboBusDaemonClient(self.config.daemon_socket_path)
-        self.runtime_session = TurboBusRuntimeSession.open(
-            self.daemon_client,
+        self.runtime_session = TurboBusRuntimeSession.open_socket(
+            daemon_socket_path=self.config.daemon_socket_path,
+            worker_socket_path=self.config.worker_socket_path,
             job_id=self.job_id,
         )
+        self.daemon_client = self.runtime_session.daemon_client
         self._layer_save_contexts: dict[str, _LayerSaveContext] = {}
         self._backing_pool = TurboBusCPUBackingPool(
             job_id=self.job_id,

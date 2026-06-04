@@ -34,8 +34,7 @@ class ModelWeightLoader(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> None:
-        context = AdapterTransferContext.from_runtime_session(
-            runtime_session,
+        context = runtime_session.make_adapter_transfer_context(
             cpu_buffer,
             gpu_buffer,
             workload_kind=WorkloadKind.MODEL_WEIGHTS,
@@ -44,6 +43,10 @@ class ModelWeightLoader(OffloadStore):
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
+        if not isinstance(context, AdapterTransferContext):
+            raise TypeError(
+                "runtime session adapter context factory must return an AdapterTransferContext"
+            )
         super().__init__(runtime_session, context)
 
     @classmethod

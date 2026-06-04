@@ -61,38 +61,6 @@ class AdapterTransferContext:
                 raise ValueError("wait_timeout_seconds must be non-negative")
             object.__setattr__(self, "wait_timeout_seconds", timeout)
 
-    @classmethod
-    def from_runtime_session(
-        cls,
-        runtime_session: TurboBusRuntimeSession,
-        cpu_buffer,
-        gpu_buffer,
-        *,
-        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
-        priority: int = 0,
-        policy_hints: Mapping[str, object] | None = None,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-    ) -> "AdapterTransferContext":
-        require_runtime_session_open(runtime_session)
-        context = runtime_session.make_adapter_transfer_context(
-            cpu_buffer,
-            gpu_buffer,
-            workload_kind=workload_kind,
-            priority=priority,
-            policy_hints=policy_hints,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
-        if not isinstance(context, cls):
-            raise TypeError(
-                "runtime session adapter context builder must return an AdapterTransferContext"
-            )
-        return context
-
-
 def require_runtime_session_open(runtime_session) -> None:
     if not isinstance(runtime_session, TurboBusRuntimeSession):
         raise TypeError("offload adapters require a TurboBusRuntimeSession")

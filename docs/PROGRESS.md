@@ -16,7 +16,8 @@ code remain deferred until the full system implementation pass is complete.
 
 - `TurboBusRuntimeSession` now owns the sole adapter construction path for
   the offload, inference, and vLLM adapters that feed `fetch_h2d()` /
-  `offload_d2h()`.
+  `offload_d2h()`, and the last `AdapterTransferContext.from_runtime_session`
+  wrapper was removed.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

@@ -37,8 +37,7 @@ class InferenceKVSlotAdapter(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> None:
-        transfer_context = AdapterTransferContext.from_runtime_session(
-            runtime_session,
+        transfer_context = runtime_session.make_adapter_transfer_context(
             cpu_backing,
             gpu_kv_backing,
             workload_kind=workload_kind,
@@ -47,6 +46,10 @@ class InferenceKVSlotAdapter(OffloadStore):
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
+        if not isinstance(transfer_context, AdapterTransferContext):
+            raise TypeError(
+                "runtime session adapter context factory must return an AdapterTransferContext"
+            )
         self._init_from_transfer_context(
             runtime_session,
             transfer_context,

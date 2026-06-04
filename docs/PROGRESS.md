@@ -104,25 +104,28 @@ issue fresh leases/tickets only when relay resources are available.
 Repeated submission of an already completed intent now returns the archived
 daemon-issued execution ticket used for the receipt instead of looking only in
 the active ticket map.
+Runtime-session submit and wait paths now verify returned receipts belong to
+the runtime job/session and that receipt ticket metadata matches the receipt's
+daemon-issued ticket id before the application consumes them.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Bound repeated `submit_transfer_intent()` responses to the same daemon ticket
-  resolver used by receipts, so completed transfers return archived
-  daemon-issued ticket evidence instead of indexing only active tickets.
-- Extended the existing daemon intent completion path assertion to cover
-  repeated submission after worker completion and ticket archival.
+- Added runtime-session receipt ownership validation for both submit and wait:
+  intent id, job id, session id, and daemon ticket metadata must match the
+  active runtime session before returning a `TransferReceipt`.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\daemon\dispatch.py turbobus\daemon\client.py
-  turbobus\daemon\receipts.py` passed.
-- `python -m unittest test.python.integration.test_daemon_state` passed.
+- `python -m py_compile turbobus\runtime_session.py turbobus\api\client.py
+  turbobus\api\receipts.py turbobus\offload_store.py` passed.
+- `python -m unittest test.python.unit.test_public_client_api` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
+- `python -m unittest test.python.unit.test_offload_store` was not used as a
+  passing check because its existing fake client lacks the runtime-session API
+  now required by `OffloadStore`.
 
 ## Remaining Risk
 
@@ -132,6 +135,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting runtime session receipt
-cleanup and daemon ticket ownership together while keeping server validation
-deferred until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting adapter runtime-session
+ownership and receipt handle cleanup while keeping server validation deferred
+until the full system implementation pass is complete.

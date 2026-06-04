@@ -247,6 +247,12 @@ class TurboBusRuntimeSession:
         self._register_pending_buffers()
         self._bootstrap_profile_if_enabled()
         receipt = self._intent_client().submit_transfer_intent(intent)
+        _validate_runtime_receipt(
+            receipt,
+            intent_id=intent.intent_id,
+            job_id=self.job_id,
+            session_id=self.session_id,
+        )
         self._submitted_intent_ids.add(intent.intent_id)
         return receipt
 
@@ -261,10 +267,17 @@ class TurboBusRuntimeSession:
             raise ValueError(
                 "runtime session can only wait for intents submitted through it"
             )
-        return self._intent_client().wait_transfer_receipt(
+        receipt = self._intent_client().wait_transfer_receipt(
             normalized_intent_id,
             timeout_seconds=timeout_seconds,
         )
+        _validate_runtime_receipt(
+            receipt,
+            intent_id=normalized_intent_id,
+            job_id=self.job_id,
+            session_id=self.session_id,
+        )
+        return receipt
 
     def bootstrap_profile(self, *, force: bool = False):
         self._require_open()
@@ -352,6 +365,12 @@ class TurboBusRuntimeSession:
         )
         self._validate_intent_uses_runtime_buffers(intent)
         receipt = self._intent_client().submit_transfer_intent(intent)
+        _validate_runtime_receipt(
+            receipt,
+            intent_id=intent.intent_id,
+            job_id=self.job_id,
+            session_id=self.session_id,
+        )
         self._submitted_intent_ids.add(intent.intent_id)
         return receipt
 
@@ -555,3 +574,25 @@ def _validate_intent_ranges_fit_buffers(
         total_bytes += bytes_count
     if total_bytes != int(intent.total_bytes):
         raise ValueError("intent total_bytes must match runtime buffer ranges")
+
+
+def _validate_runtime_receipt(
+    receipt: TransferReceipt,
+    *,
+    intent_id: str,
+    job_id: str,
+    session_id: str,
+) -> None:
+    if not isinstance(receipt, TransferReceipt):
+        raise TypeError("runtime transfer must return a TransferReceipt")
+    if receipt.intent_id != str(intent_id):
+        raise ValueError("runtime receipt intent_id does not match submitted intent")
+    if receipt.job_id != str(job_id):
+        raise ValueError("runtime receipt job_id does not match runtime session")
+    if receipt.session_id != str(session_id):
+        raise ValueError("runtime receipt session_id does not match runtime session")
+    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+    for key in ("execution_ticket_id", "evidence_ticket_id"):
+        ticket_id = metadata.get(key)
+        if ticket_id is not None and str(ticket_id) != receipt.ticket_id:
+            raise ValueError(f"runtime receipt {key} does not match receipt ticket_id")

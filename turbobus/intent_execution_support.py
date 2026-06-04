@@ -8,7 +8,7 @@ from .schema import (
     TransferReceipt,
     WorkerTransferAuthorizationRequest,
 )
-from .worker import (
+from .worker.models import (
     WorkerDataPlaneCompletionEnvelope,
     WorkerServiceRequestEnvelope,
     WorkerTransferLifecycleRecord,

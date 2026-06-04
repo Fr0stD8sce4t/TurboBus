@@ -21,17 +21,6 @@ class DaemonIntentClient(Protocol):
         ...
 
 
-@runtime_checkable
-class IntentTransferExecutor(Protocol):
-    def execute_transfer_intent(
-        self,
-        intent: TransferIntent,
-        response: DaemonResponse,
-        daemon: object,
-    ) -> TransferReceipt:
-        ...
-
-
 class TurboBusClient:
     """Public daemon-first transfer client."""
 
@@ -40,35 +29,17 @@ class TurboBusClient:
         daemon: DaemonIntentClient | None = None,
         *,
         socket_path: str | None = None,
-        transfer_executor: IntentTransferExecutor | None = None,
-        execution_daemon: object | None = None,
     ) -> None:
         if daemon is None and socket_path is None:
             raise ValueError("daemon or socket_path is required")
         if daemon is not None and socket_path is not None:
             raise ValueError("provide daemon or socket_path, not both")
-        if transfer_executor is not None and execution_daemon is None:
-            raise ValueError("execution_daemon is required with transfer_executor")
         self._daemon = daemon if daemon is not None else TurboBusDaemonClient(socket_path)
-        self._transfer_executor = transfer_executor
-        self._execution_daemon = execution_daemon
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")
         response = self._daemon.submit_transfer_intent(intent)
-        if self._transfer_executor is not None:
-            receipt = self._transfer_executor.execute_transfer_intent(
-                intent,
-                response,
-                self._execution_daemon,
-            )
-            if not isinstance(receipt, TransferReceipt):
-                raise TypeError("transfer executor must return a TransferReceipt")
-            if receipt.intent_id != intent.intent_id:
-                raise ValueError("daemon receipt intent_id does not match request")
-            require_complete_receipt_evidence(receipt)
-            return receipt
         return _receipt_from_response(response, expected_intent_id=intent.intent_id)
 
     def wait(
@@ -120,6 +91,5 @@ def _transfer_receipt_from_payload(payload: dict[str, object]) -> TransferReceip
 
 __all__ = [
     "DaemonIntentClient",
-    "IntentTransferExecutor",
     "TurboBusClient",
 ]

@@ -52,6 +52,10 @@ experiment work is planned.
   package should expose service and lifecycle entry points, not objects that
   let external callers construct data-plane work outside an
   `ExecutionTicket`.
+- Keep worker/backend transfer executors owned by `TurboBusRuntimeSession`.
+  The public `TurboBusClient` should submit intents and wait for receipts only;
+  it must not accept application-provided execution hooks that can bypass the
+  runtime-session worker path.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

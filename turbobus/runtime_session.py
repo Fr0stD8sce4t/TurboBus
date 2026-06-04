@@ -73,6 +73,11 @@ class TurboBusRuntimeSession:
         repr=False,
     )
     _client: TurboBusClient | None = field(default=None, init=False, repr=False)
+    _transfer_executor: WorkerIntentTransferExecutor | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -281,7 +286,7 @@ class TurboBusRuntimeSession:
         self._validate_intent_uses_runtime_buffers(intent)
         self._register_pending_buffers()
         self._bootstrap_profile_if_enabled()
-        receipt = self._intent_client().submit_transfer_intent(intent)
+        receipt = self._execute_intent_through_daemon(intent)
         _validate_runtime_receipt(
             receipt,
             intent_id=intent.intent_id,
@@ -399,7 +404,7 @@ class TurboBusRuntimeSession:
             metadata={} if metadata is None else dict(metadata),
         )
         self._validate_intent_uses_runtime_buffers(intent)
-        receipt = self._intent_client().submit_transfer_intent(intent)
+        receipt = self._execute_intent_through_daemon(intent)
         _validate_runtime_receipt(
             receipt,
             intent_id=intent.intent_id,
@@ -428,6 +433,26 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._client is not None:
             return self._client
+        self._client = TurboBusClient(daemon=self.daemon_client)
+        return self._client
+
+    def _execute_intent_through_daemon(self, intent: TransferIntent) -> TransferReceipt:
+        self._require_open()
+        response = self.daemon_client.submit_transfer_intent(intent)
+        execution_view = _RuntimeExecutionDaemonView(
+            intent_daemon=self.daemon_client,
+            execution_daemon=self._execution_daemon_client(),
+        )
+        return self._runtime_transfer_executor().execute_transfer_intent(
+            intent,
+            response,
+            execution_view,
+        )
+
+    def _runtime_transfer_executor(self) -> WorkerIntentTransferExecutor:
+        self._require_open()
+        if self._transfer_executor is not None:
+            return self._transfer_executor
         execution_daemon_client = self._execution_daemon_client()
         worker_client = self.worker_client or WorkerTransferClient(
             execution_daemon_client,
@@ -438,18 +463,13 @@ class TurboBusRuntimeSession:
             resource_binder=WorkerDataPlaneResourceBinder(backend=self.backend),
         )
         self.worker_client = worker_client
-        executor = WorkerIntentTransferExecutor(
+        self._transfer_executor = WorkerIntentTransferExecutor(
             buffers=self._buffers,
             worker_client=worker_client,
             backend=self.backend,
             runtime_options=self.runtime_options,
         )
-        self._client = TurboBusClient(
-            daemon=self.daemon_client,
-            transfer_executor=executor,
-            execution_daemon=execution_daemon_client,
-        )
-        return self._client
+        return self._transfer_executor
 
     def _register_pending_buffers(self) -> None:
         self._require_open()
@@ -485,6 +505,7 @@ class TurboBusRuntimeSession:
         self._target_gpu = None
         self._relay_gpus = None
         self._client = None
+        self._transfer_executor = None
         self._profile_bootstrapped = False
         self._buffers.clear()
         self._registered_buffer_ids.clear()
@@ -561,6 +582,31 @@ class TurboBusRuntimeSession:
 
 
 __all__ = ["TurboBusRuntimeSession"]
+
+
+@dataclass(frozen=True)
+class _RuntimeExecutionDaemonView:
+    intent_daemon: object
+    execution_daemon: object
+
+    def wait_transfer_receipt(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+    ) -> DaemonResponse:
+        return self.intent_daemon.wait_transfer_receipt(
+            intent_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def cleanup(self, *args, **kwargs) -> DaemonResponse:
+        return self.execution_daemon.cleanup(*args, **kwargs)
+
+    def transfer_status(self, *args, **kwargs) -> DaemonResponse:
+        return self.execution_daemon.transfer_status(*args, **kwargs)
+
+    def validate_lease(self, *args, **kwargs) -> DaemonResponse:
+        return self.execution_daemon.validate_lease(*args, **kwargs)
 
 
 def _buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, ...]:

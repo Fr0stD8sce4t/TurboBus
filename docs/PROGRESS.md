@@ -23,25 +23,31 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited public worker/data-plane exports during the daemon-first closure
-  pass.
-- Removed raw `WorkerDataPlaneRequest` and `WorkerDataPlaneCompletion` from
-  the public `turbobus.worker` package entry.
-- Changed production intent execution to import worker completion/lifecycle
-  types from `turbobus.worker.models`, the module that owns those
-  implementations.
-- Kept the raw worker data-plane schema objects available only through
-  `turbobus.schema` and internal worker modules that derive them from
-  daemon-issued tickets.
+- Audited public API/runtime execution ownership during the daemon-first
+  closure pass.
+- Removed the application-provided `transfer_executor` and `execution_daemon`
+  injection path from public `TurboBusClient`.
+- Moved worker/backend execution ownership into `TurboBusRuntimeSession`: it
+  now submits the intent to the daemon, receives the daemon scheduling payload,
+  and invokes the runtime-owned `WorkerIntentTransferExecutor`.
+- Added a private runtime execution daemon view so the runtime-owned executor
+  can wait for intent receipts while using the execution-role daemon client for
+  status, cleanup, and lease validation.
+- Changed worker execution support imports to use `turbobus.worker.models`
+  directly for worker envelope and lifecycle types.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\__init__.py
-  turbobus\intent_executor.py turbobus\worker\models.py` passed.
-- `rg -n "WorkerDataPlaneRequest|WorkerDataPlaneCompletion"
-  turbobus\worker\__init__.py` found no raw worker data-plane request or
-  completion exports; the remaining matches are
-  `WorkerDataPlaneCompletionEnvelope`.
+- `python -m py_compile turbobus\api\client.py turbobus\runtime_session.py
+  turbobus\intent_executor.py turbobus\intent_execution_support.py` passed.
+- `rg -n "transfer_executor|IntentTransferExecutor|execution_daemon"
+  turbobus\api` found no public API executor injection entry.
+- `rg -n "_RuntimeExecutionDaemonView|execution_view|TurboBusClient\("
+  turbobus\runtime_session.py turbobus\api\client.py` found the runtime-owned
+  private execution view and the pure public client construction.
+- `rg -n "from \.worker import" turbobus\intent_executor.py
+  turbobus\intent_execution_support.py` found no worker package model imports
+  in the intent execution helpers.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk

@@ -7,31 +7,28 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete worker/backend runtime feedback into daemon
-scheduling. Scheduler load accounting must use real admitted/running transfer
-state, not delayed or synthetic activity.
+Current code target: complete worker failure handling into daemon cleanup and
+`TransferReceipt` consumption. Worker/backend failures must remain on the
+daemon-issued ticket path and produce an explicit failed receipt after daemon
+status and cleanup are confirmed.
 
 ## Exit Criteria
 
-- Daemon runtime state distinguishes queued, delayed, running, and active
-  transfers.
-- Scheduler policy metadata receives delayed, queued, running, and active
-  counts from daemon runtime feedback.
-- Delayed admission promotion replans without counting the same transfer's old
-  reservations, leases, staging records, or paths as active load.
+- Worker failed completions require daemon FAILED status evidence.
+- Worker failed completions require cleanup evidence covering the daemon-issued
+  lease set and staging release.
+- Runtime intent execution returns the daemon failed `TransferReceipt` for
+  confirmed worker/backend failure instead of hiding it behind an exception.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-Finish the scheduler load-accounting closure for daemon-issued execution:
-admitted submitted transfers and running worker/backend transfers count as
-active execution; delayed transfers remain visible as waiting work but do not
-consume active bytes or relay busy feedback.
+Finish the failure path from daemon-issued `ExecutionTicket` through worker
+failure reporting, daemon cleanup, and runtime receipt consumption.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: worker failure handling to cleanup/receipt, runtime receipt
-validation, or adapter submission/receipt consumption through
-`TurboBusRuntimeSession`.
+boundary: runtime receipt validation, runtime session production startup, or
+adapter submission/receipt consumption through `TurboBusRuntimeSession`.

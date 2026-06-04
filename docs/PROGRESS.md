@@ -14,24 +14,21 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Made daemon runtime feedback distinguish delayed queued transfers from
-  admitted/running active execution.
-- Scheduler load accounting now receives delayed transfer counts while active
-  bytes and relay busy feedback are based on admitted submitted transfers and
-  running worker/backend transfers.
-- Delayed admission replanning now excludes the same transfer's old transfer
-  records, active paths, reservations, leases, staging records, and resource
-  summaries before asking the scheduler for a new plan.
+- Worker failed completion envelopes now require daemon FAILED status evidence.
+- Worker failed completion envelopes now require cleanup evidence for the
+  daemon-issued lease set and staging release.
+- Runtime intent execution now returns the daemon failed `TransferReceipt` for
+  confirmed worker/backend failure instead of converting that receipt path into
+  an exception.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for daemon server, scheduler load feedback, and
-  daemon scheduler modules.
-- Searches confirmed delayed transfer counts and admission-aware active
-  execution checks are confined to daemon runtime feedback and scheduler load
-  metadata.
+- `python -m py_compile` passed for intent execution support, intent executor,
+  runtime session, worker models, worker lifecycle, and daemon server modules.
+- Searches confirmed the worker failed completion validator and runtime
+  failed-receipt return path are present in the intended modules.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -45,6 +42,6 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker failure handling to
-cleanup/receipt, runtime receipt validation, or adapter submission/receipt
-consumption through `TurboBusRuntimeSession`.
+Continue with one concrete implementation boundary: runtime receipt validation,
+runtime session production startup, or adapter submission/receipt consumption
+through `TurboBusRuntimeSession`.

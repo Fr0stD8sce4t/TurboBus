@@ -309,6 +309,65 @@ def require_worker_completion_matches_request(
             request,
             slot=completion.staging_slot,
         )
+    elif final_state == "failed":
+        require_failed_worker_completion_matches_request(completion, request)
+
+
+def require_failed_worker_completion_matches_request(
+    completion: WorkerDataPlaneCompletionEnvelope,
+    request: WorkerTransferAuthorizationRequest,
+) -> None:
+    if completion.ok:
+        raise WorkerCompletionEnvelopeError("failed worker completion was marked ok")
+    if completion.transfer_id is None:
+        raise WorkerCompletionEnvelopeError("worker failure missing transfer id")
+    if completion.lease_id is None:
+        raise WorkerCompletionEnvelopeError("worker failure missing lease id")
+    if completion.worker_result is None:
+        raise WorkerCompletionEnvelopeError("worker failure missing worker result")
+    if state_text(completion.worker_result.get("state", "")) != "failed":
+        raise WorkerCompletionEnvelopeError("worker failure result did not fail")
+    if not str(completion.worker_result.get("error") or "").strip():
+        raise WorkerCompletionEnvelopeError("worker failure result missing error")
+    if completion.daemon_status_update is None:
+        raise WorkerCompletionEnvelopeError(
+            "worker failure missing daemon status update"
+        )
+    if state_text(completion.daemon_status_update.get("state", "")) != "failed":
+        raise WorkerCompletionEnvelopeError(
+            "worker failure daemon status update did not fail"
+        )
+    if completion.daemon_status_response is None:
+        raise WorkerCompletionEnvelopeError(
+            "worker failure missing daemon status response"
+        )
+    require_worker_daemon_response_matches_request(
+        completion.daemon_status_response,
+        request,
+        expected_state="failed",
+    )
+    if not bool(completion.daemon_status_response.get("ok", False)):
+        raise WorkerCompletionEnvelopeError(
+            "worker failure daemon status response was not ok"
+        )
+    if completion.daemon_cleanup_response is None:
+        raise WorkerCompletionEnvelopeError(
+            "worker failure missing daemon cleanup response"
+        )
+    require_worker_cleanup_response_matches_request(
+        completion.daemon_cleanup_response,
+        request,
+        lease_ids=completion.lease_ids,
+    )
+    require_worker_staging_slot_matches_request(
+        completion.staging_slot,
+        request,
+    )
+    require_worker_staging_release_matches_request(
+        completion.staging_release,
+        request,
+        slot=completion.staging_slot,
+    )
 
 
 def require_worker_mapping_matches_request(

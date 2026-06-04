@@ -7,14 +7,17 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete profile bootstrap closure. Runtime bootstrap
-must feed daemon scheduling and worker/backend execution without application
-route selection.
+Current code target: shared buffer lifecycle cleanup. Runtime-owned CPU and GPU
+buffer registration must carry enough daemon/worker lifecycle state for
+daemon-issued H2D, D2H, direct, relay, and pooled execution without
+application route selection.
 
 ## Exit Criteria
 
-- Runtime profile bootstrap installs profile data into daemon scheduling and
-  daemon-issued worker/backend execution payloads.
+- Runtime session buffer registration records daemon-visible ownership and
+  worker-usable buffer state before transfer intent submission.
+- Shared pinned CPU buffers and CUDA IPC GPU buffers have one clear cleanup path
+  after worker/backend completion or failure.
 - Public client and runtime-session consumers still submit `TransferIntent`
   and consume `TransferReceipt` without route selection.
 - No test, experiment, benchmark, paper-validation, or server-validation code
@@ -22,10 +25,10 @@ route selection.
 
 ## Current Code Work
 
-Close remaining profile bootstrap gaps without restoring old runtime or planner
-entry points.
+Close buffer lifecycle gaps in the runtime/daemon/worker production path
+without restoring old runtime or planner entry points.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: shared buffer lifecycle cleanup or daemon/worker production startup.
+boundary: daemon/worker production startup.

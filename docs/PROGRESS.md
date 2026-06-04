@@ -14,24 +14,26 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Worker cleanup completion now reports supplemental, ticket-bound evidence
-  back to the daemon after cleanup succeeds.
-- Daemon terminal status updates can merge same-state supplemental evidence
-  without reopening terminal transfers.
-- Transfer receipts now expose cleanup evidence alongside worker/backend
-  verification evidence.
+- Profile bootstrap now feeds daemon cache entries into worker CUDA execution
+  using the same daemon entry shape returned by `put_profile` and `get_profile`.
+- Direct fallback now preserves daemon planning metadata from the planned
+  payload when executing a daemon-issued direct `ExecutionTicket`, so backend
+  profile installation can see `planning.profile_entry`.
+- Worker and direct execution now install the daemon profile entry directly
+  instead of wrapping it as a nested profile object.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/daemon/server.py
-  turbobus/daemon/receipts.py turbobus/worker/lifecycle.py` passed.
+- `python -m py_compile turbobus/direct_fallback.py
+  turbobus/worker/cuda_executor.py turbobus/profiling/bootstrap.py
+  turbobus/profiling/daemon_format.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
 
-- CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
+- CUDA/native execution, vLLM runtime behavior, relay/pooled profile use, and
   server-only behavior remain unverified until the full system implementation
   pass is complete.
 - Existing tests, examples, and benchmarks still contain old production-path
@@ -40,4 +42,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: profile bootstrap closure.
+Continue with one concrete implementation boundary: shared buffer lifecycle
+cleanup.

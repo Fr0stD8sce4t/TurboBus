@@ -218,7 +218,7 @@ def _install_daemon_profile_if_available(
     profile_entry = request.data_plane.metadata.get("daemon_profile_entry")
     if not isinstance(profile_entry, dict):
         return
-    profile = profile_from_daemon_entry({"profile": profile_entry}, int(target_device))
+    profile = profile_from_daemon_entry(profile_entry, int(target_device))
     setter = getattr(backend, "set_cached_profile", None)
     if not callable(setter):
         raise RuntimeError("CUDA backend does not support cached profile installation")

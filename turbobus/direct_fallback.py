@@ -57,6 +57,7 @@ def execute_direct_fallback_transfer(
             runtime_options=runtime_options,
             direction=intent.direction,
             ticket=ticket,
+            planned_payload=planned_payload,
             source=source,
             target=target,
         )
@@ -167,12 +168,16 @@ def _execute_direct_ticket_plan(
     runtime_options: RuntimeOptions,
     direction: str,
     ticket: ExecutionTicket,
+    planned_payload: Mapping[str, object],
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
 ) -> tuple[int, dict[str, object]]:
     if not isinstance(ticket, ExecutionTicket):
         raise TypeError("direct fallback requires a daemon-issued ExecutionTicket")
     plan_payload = dict(ticket.plan)
+    planning = planned_payload.get("planning")
+    if isinstance(planning, Mapping):
+        plan_payload["planning"] = dict(planning)
     if direction == "h2d":
         if not isinstance(source, SharedPinnedCpuBuffer):
             raise TypeError("direct h2d source must be a SharedPinnedCpuBuffer")
@@ -671,7 +676,7 @@ def _install_daemon_profile_if_available(
     profile_entry = planning.get("profile_entry")
     if not isinstance(profile_entry, Mapping):
         return
-    profile = profile_from_daemon_entry({"profile": profile_entry}, int(target_device))
+    profile = profile_from_daemon_entry(profile_entry, int(target_device))
     setter = getattr(backend, "set_cached_profile", None)
     if not callable(setter):
         raise RuntimeError("CUDA backend does not support cached profile installation")

@@ -51,6 +51,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 - Keep terminal receipt wait available to the authenticated transfer owner after
   job/session/buffer cleanup, without letting cleaned transfers re-enter
   scheduling or worker execution.
+- Keep scheduler runtime feedback tied to live relay paths, active leases,
+  reservations, and worker staging records so busy relays are not reused while
+  a daemon-issued transfer still owns relay resources.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -62,7 +65,7 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting scheduler admission and
-runtime load feedback. Daemon scheduling state should be driven by live
-transfer status, leases, and relay occupancy without benchmark hooks,
+Continue the code implementation pass by inspecting delayed admission and
+reschedule promotion. Delayed transfers should be promoted only by daemon
+resource state and fresh `ExecutionTicket` generation, without benchmark hooks,
 server-validation gates, or application-side route controls.

@@ -613,6 +613,7 @@ def _runtime_state_metadata(
         "relay_staging_count": int(summary.get("relay_staging_count", 0) or 0),
         "relay_path_count": int(summary.get("relay_path_count", 0) or 0),
         "relay_path_bytes_total": int(summary.get("relay_path_bytes_total", 0) or 0),
+        "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
         "active_bytes_by_direction": dict(
             summary.get("active_bytes_by_direction", {}) or {}
         ),
@@ -666,12 +667,10 @@ def _runtime_view(
 ) -> _RuntimeView:
     normalized_job_id = None if job_id is None else str(job_id)
     workload = WorkloadKind(workload_kind).value
-    active_paths = ()
     active_transfer_count = 0
     queued_transfer_count = 0
     job_runtime_state: Mapping[str, object] = {}
     if isinstance(runtime_state, Mapping):
-        active_paths = runtime_state.get("active_paths", ()) or ()
         summary = runtime_state.get("summary", {})
         if isinstance(summary, Mapping):
             active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
@@ -682,16 +681,7 @@ def _runtime_view(
         jobs = runtime_state.get("job_runtime_state", {})
         if isinstance(jobs, Mapping):
             job_runtime_state = jobs
-    busy_relays: set[int] = set()
-    for record in active_paths:
-        if not isinstance(record, Mapping):
-            continue
-        if str(record.get("kind", "")).lower() != "relay":
-            continue
-        relay = record.get("relay_device")
-        if relay is None:
-            continue
-        busy_relays.add(int(relay))
+    busy_relays = _busy_relays_from_runtime_state(runtime_state)
 
     total_weight = 0.0
     total_active_bytes = 0
@@ -764,6 +754,30 @@ def _fairness_fallback_for_plan(
     if runtime_view.projected_weighted_active_bytes <= runtime_view.fairness_threshold_bytes:
         return None
     return "weighted fairness limit prefers direct fallback"
+
+
+def _busy_relays_from_runtime_state(
+    runtime_state: Mapping[str, object] | None,
+) -> set[int]:
+    busy: set[int] = set()
+    if not isinstance(runtime_state, Mapping):
+        return busy
+    for record in runtime_state.get("active_paths", ()) or ():
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("kind", "")).lower() != "relay":
+            continue
+        relay = record.get("relay_device")
+        if relay is not None:
+            busy.add(int(relay))
+    for key in ("active_leases", "active_reservations", "relay_staging"):
+        for record in runtime_state.get(key, ()) or ():
+            if not isinstance(record, Mapping):
+                continue
+            relay = record.get("relay_gpu")
+            if relay is not None:
+                busy.add(int(relay))
+    return busy
 
 
 def _contract_id(value: str | None, *, prefix: str, fallback: str) -> str:

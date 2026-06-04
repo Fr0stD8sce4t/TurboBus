@@ -58,22 +58,27 @@ Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
 transfers remain retired from scheduling and worker execution state.
+Scheduler runtime feedback now treats active relay paths, live relay leases,
+active reservations, and worker staging records as busy relay state for
+admission and next-plan decisions. Runtime summaries and scheduling metadata
+record those busy relays so daemon decisions are tied to live control-plane
+state rather than benchmark hints.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added a runtime-session socket entry that constructs the daemon socket client
-  and optional worker socket client inside `TurboBusRuntimeSession`.
-- Moved the vLLM connector onto the runtime-session socket entry so the adapter
-  no longer assembles a daemon client directly.
+- Extended scheduler runtime feedback so live leases, active reservations, and
+  staging records mark relay GPUs busy before worker execution reaches an
+  active relay path.
+- Updated daemon admission and runtime summaries to use the same live busy
+  relay view.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py
-  turbobus\adapters\vllm_config.py
-  turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\scheduler\daemon.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -84,5 +89,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting scheduler admission and
-runtime load feedback while keeping server validation deferred.
+Continue the code implementation pass by inspecting delayed admission and
+reschedule promotion while keeping server validation deferred.

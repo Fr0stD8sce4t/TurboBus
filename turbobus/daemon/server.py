@@ -1904,6 +1904,7 @@ class TurboBusDaemon:
         reason = self._relay_admission_blocked_reason_locked(
             session=session,
             leases=leases,
+            now=now,
         )
         if reason is None:
             return {
@@ -1943,12 +1944,13 @@ class TurboBusDaemon:
         *,
         session: Session,
         leases,
+        now: float,
     ) -> str | None:
         total_chunks = sum(lease.chunk_limit for lease in leases)
         if session.active_chunks + total_chunks > session.max_inflight_chunks:
             return "session relay admission is delayed by chunk quota"
         busy_relays = _busy_relays_from_runtime_state(
-            self._runtime_resource_state_locked()
+            self._runtime_resource_state_locked(now=float(now))
         )
         for lease in leases:
             if lease.relay_device not in session.relay_gpus:
@@ -2429,6 +2431,18 @@ class TurboBusDaemon:
                 "active_lease_count": len(active_leases),
             },
         }
+        busy_relays = tuple(
+            sorted(
+                _busy_relays_from_runtime_state(
+                    {
+                        "active_paths": path_records,
+                        "active_reservations": active_reservations,
+                        "active_leases": active_leases,
+                        "relay_staging": staging_records,
+                    }
+                )
+            )
+        )
         return {
             "version": self._runtime_state_version,
             "captured_at": captured_at,
@@ -2462,6 +2476,7 @@ class TurboBusDaemon:
                 "relay_staging_count": len(staging_records),
                 "relay_path_count": relay_path_summary["path_count"],
                 "relay_path_bytes_total": relay_path_summary["bytes_total"],
+                "busy_relays": busy_relays,
                 "queued_bytes_by_direction": queued_by_direction,
                 "active_bytes_by_direction": active_by_direction,
                 "active_paths": path_summary,
@@ -4360,7 +4375,7 @@ def _busy_relays_from_runtime_state(runtime_state: Mapping[str, object]) -> set[
     busy: set[int] = set()
     active_paths = runtime_state.get("active_paths", ())
     if not isinstance(active_paths, list | tuple):
-        return busy
+        active_paths = ()
     for item in active_paths:
         if not isinstance(item, Mapping):
             continue
@@ -4370,6 +4385,17 @@ def _busy_relays_from_runtime_state(runtime_state: Mapping[str, object]) -> set[
         if relay_device is None:
             continue
         busy.add(int(relay_device))
+    for key in ("active_leases", "active_reservations", "relay_staging"):
+        records = runtime_state.get(key, ())
+        if not isinstance(records, list | tuple):
+            continue
+        for item in records:
+            if not isinstance(item, Mapping):
+                continue
+            relay_gpu = item.get("relay_gpu")
+            if relay_gpu is None:
+                continue
+            busy.add(int(relay_gpu))
     return busy
 
 

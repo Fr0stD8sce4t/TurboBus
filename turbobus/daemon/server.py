@@ -665,10 +665,20 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         with self._lock:
             self._reap_stale_sessions_locked(time.time())
+            archived_target = self._retired_cleanup_target_record_locked(
+                target_kind="session",
+                target_id=str(session_id),
+            )
             try:
                 if str(session_id) in self._sessions:
                     self._validate_peer_owns_session_locked(
                         session_id=str(session_id),
+                        peer_identity=peer_identity,
+                    )
+                elif archived_target is not None:
+                    self._validate_peer_owns_missing_cleanup_target_locked(
+                        target_kind="session",
+                        target_id=str(session_id),
                         peer_identity=peer_identity,
                     )
             except ValueError as exc:
@@ -680,7 +690,12 @@ class TurboBusDaemon:
                 removed=removed,
             )
             if session is None:
-                return DaemonResponse(ok=False, error="unknown session")
+                if archived_target is None:
+                    return DaemonResponse(ok=False, error="unknown session")
+                return DaemonResponse(
+                    ok=True,
+                    payload={"session_id": session_id, "removed": removed},
+                )
             return DaemonResponse(
                 ok=True,
                 payload={"session_id": session_id, "removed": removed},

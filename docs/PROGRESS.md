@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `close_session()` no longer rewrites retired session cleanup records when
-  the session is already gone.
+- `close_session()` now validates retired session ownership before returning a
+  no-op for an already-closed session.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

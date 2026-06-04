@@ -25,6 +25,10 @@ code remain deferred until the full system implementation pass is complete.
 - The remaining offload, inference, training, and vLLM integration
   `from_runtime_session()` wrappers were removed so the session-owned factories
   are the only construction path.
+- `TurboBusRuntimeSession.open_session()` now bootstraps the daemon profile and
+  installs it with `put_profile` before the first transfer path is used.
+- `bootstrap_profile()` now returns a no-op success response when the session
+  profile is already installed and `force=False`.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -37,6 +41,8 @@ code remain deferred until the full system implementation pass is complete.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain unverified until the full system implementation
   pass is complete.
+- Profile bootstrap still depends on CUDA/backend behavior and daemon profile
+  RPCs that have not been server-verified in this session.
 - Older benchmark and example surfaces still use `TurboBusClient` and have not
   been migrated to the runtime-session-first API yet.
 - Existing tests, examples, and benchmarks still contain old production-path

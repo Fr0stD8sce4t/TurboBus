@@ -233,6 +233,7 @@ class TurboBusRuntimeSession:
                 "the daemon session"
             )
         session_id: str | None = None
+        relay_gpus: tuple[int, ...] = ()
         try:
             response = self._runtime_daemon_client().register_session(
                 int(self._target_gpu),
@@ -252,12 +253,16 @@ class TurboBusRuntimeSession:
                 ),
                 "daemon job registration failed",
             )
+            if bool(self.runtime_options.profile_on_first_transfer):
+                self._bootstrap_daemon_profile(relay_gpus, force=False)
         except Exception:
             if session_id is not None:
                 try:
                     self._runtime_daemon_client().close_session(session_id)
                 except Exception:
                     pass
+            self._relay_gpus = None
+            self._profile_bootstrapped = False
             raise
         self._relay_gpus = relay_gpus
         self._session_id = session_id
@@ -428,16 +433,12 @@ class TurboBusRuntimeSession:
         self._require_open()
         self.open_session()
         relays = self._relay_gpus_for_session()
-        profile, response = bootstrap_daemon_profile(
-            self._profile_daemon_client(),
-            self.backend,
-            self.runtime_options,
-            target_gpu=int(self._target_gpu),
-            relay_gpus=relays,
-            force=force,
-        )
-        self._profile_bootstrapped = True
-        return response
+        if self._profile_bootstrapped and not force:
+            return DaemonResponse(
+                ok=True,
+                payload={"bootstrapped": True, "already_bootstrapped": True},
+            )
+        return self._bootstrap_daemon_profile(relays, force=force)
 
     def close(self) -> DaemonResponse:
         if self._closed:
@@ -935,6 +936,23 @@ class TurboBusRuntimeSession:
         if not bool(self.runtime_options.profile_on_first_transfer):
             return
         self.bootstrap_profile(force=False)
+
+    def _bootstrap_daemon_profile(
+        self,
+        relay_gpus: Iterable[int],
+        *,
+        force: bool,
+    ) -> DaemonResponse:
+        _profile, response = bootstrap_daemon_profile(
+            self._profile_daemon_client(),
+            self.backend,
+            self.runtime_options,
+            target_gpu=int(self._target_gpu),
+            relay_gpus=relay_gpus,
+            force=force,
+        )
+        self._profile_bootstrapped = True
+        return response
 
     def _require_open(self) -> None:
         if self._closed:

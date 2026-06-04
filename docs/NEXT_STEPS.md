@@ -25,6 +25,8 @@ session API owns the transfer path.
 - The offload, inference, training, and vLLM adapter wrappers no longer expose
   their own `from_runtime_session()` constructors; session-owned factories are
   the only construction path.
+- Session open now triggers daemon profile bootstrap and `put_profile` before
+  the first transfer path is used.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 

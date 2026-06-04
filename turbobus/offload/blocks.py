@@ -82,6 +82,10 @@ class OffloadBlock:
     last_operation: str | None = None
 
     def __post_init__(self) -> None:
+        if self.cpu_tensor is None:
+            raise ValueError("offload blocks require a real CPU backing object")
+        if self.gpu_tensor is None:
+            raise ValueError("offload blocks require a real GPU backing object")
         if self.block_id is None:
             self.block_id = self.name
 

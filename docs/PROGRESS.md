@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current main target: isolation and authority hardening.
+Current main target: real H2D / D2H execution path closure.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Retired reservation cleanup now requires owner validation before returning
-  a no-op response.
+- Offload block construction now requires explicit CPU and GPU backing objects
+  instead of accepting a hidden `None` GPU endpoint.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 

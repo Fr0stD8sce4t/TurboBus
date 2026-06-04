@@ -7,9 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: isolation and authority hardening. Reservation cleanup
-should not let a non-owner advance global cleanup state when the target has
-already retired.
+Current code target: real H2D / D2H execution path closure. Offload block
+construction should require explicit CPU and GPU backing so benchmark-facing
+adapters cannot hide a missing endpoint behind `None`.
 
 ## Exit Criteria
 
@@ -17,15 +17,16 @@ already retired.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Cleanup of retired reservations still requires owner validation before any
-  no-op or global cleanup side effects are allowed.
+- Benchmark-facing offload adapters require explicit CPU and GPU backing at
+  block construction time.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/daemon/server.py` should require owner validation before retired
-reservation cleanup can return a no-op response.
+`turbobus/offload/store.py`, `turbobus/offload/blocks.py`, and the benchmark
+adapters should require real paired backing objects before transfer blocks can
+be created.
 
 ## Next Entry
 

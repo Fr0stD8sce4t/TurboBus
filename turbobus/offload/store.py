@@ -83,7 +83,7 @@ class OffloadStore:
         self,
         name: str,
         cpu_tensor,
-        gpu_tensor=None,
+        gpu_tensor,
         *,
         block_id=None,
         cpu_slot=None,
@@ -96,8 +96,6 @@ class OffloadStore:
         self._validate_range_fields(cpu_offset, gpu_offset, byte_count)
         if name in self._blocks:
             raise ValueError(f"offload block already exists: {name}")
-        if gpu_tensor is None:
-            raise ValueError("gpu_tensor must be a real GPU backing object")
         block = OffloadBlock(
             name=name,
             cpu_tensor=cpu_tensor,

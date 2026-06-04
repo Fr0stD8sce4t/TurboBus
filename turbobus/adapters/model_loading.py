@@ -60,7 +60,7 @@ class ModelWeightLoader(OffloadStore):
         self,
         name: str,
         cpu_tensor,
-        gpu_tensor=None,
+        gpu_tensor,
         *,
         bucket_id=None,
         cpu_offset: int = 0,

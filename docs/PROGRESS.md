@@ -14,9 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `daemon/server.py` now advances `_runtime_state_version` when terminal
-  transfer receipt archive state changes, so worker/backend completion evidence
-  updates are reflected in the runtime feedback view that scheduler reads.
+- `runtime_session.py` now retires local owned buffers and clears session state
+  even when daemon `close_session()` returns an error, so session shutdown no
+  longer leaves the runtime object half-open after a failed daemon close.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -24,7 +24,7 @@ code remain deferred until the full system implementation pass is complete.
 
 - `git diff --check` passed with CRLF normalization warnings on the edited
   files.
-- `python -m py_compile turbobus/daemon/server.py` passed.
+- `python -m py_compile turbobus/runtime_session.py` passed.
 
 ## Remaining Risk
 

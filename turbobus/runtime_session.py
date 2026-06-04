@@ -466,15 +466,24 @@ class TurboBusRuntimeSession:
                         "error": str(exc),
                     }
                 )
-        response = self._runtime_daemon_client().close_session(self._session_id)
-        if response.ok:
+        try:
+            response = self._runtime_daemon_client().close_session(self._session_id)
+        except Exception as exc:
+            response = DaemonResponse(ok=False, error=str(exc))
+        finally:
             self._release_owned_cpu_buffers()
             clear_runtime_session_state(self)
             self._closed = True
-            if cleanup_errors:
-                payload = dict(response.payload)
-                payload["buffer_cleanup_errors"] = cleanup_errors
-                return DaemonResponse(ok=True, payload=payload)
+        if cleanup_errors:
+            payload = {}
+            if isinstance(response.payload, Mapping):
+                payload.update(dict(response.payload))
+            payload["buffer_cleanup_errors"] = cleanup_errors
+            return DaemonResponse(
+                ok=response.ok,
+                error=response.error,
+                payload=payload,
+            )
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":

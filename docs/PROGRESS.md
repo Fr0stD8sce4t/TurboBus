@@ -14,38 +14,22 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `TurboBusRuntimeSession` now owns the sole adapter construction path for
-  the offload, inference, and vLLM adapters that feed `fetch_h2d()` /
-  `offload_d2h()`, the last `AdapterTransferContext.from_runtime_session`
-  wrapper was removed, and the vLLM adapter no longer constructs transfer
-  contexts itself.
-- The vLLM KV connector now calls `runtime_session.make_vllm_kv_slot_adapter()`
-  directly, and the old `VllmKVSlotAdapter.from_runtime_session()` wrapper was
-  removed.
-- The remaining offload, inference, training, and vLLM integration
-  `from_runtime_session()` wrappers were removed so the session-owned factories
-  are the only construction path.
-- `TurboBusRuntimeSession.open_session()` now bootstraps the daemon profile and
-  installs it with `put_profile` before the first transfer path is used.
-- `bootstrap_profile()` now returns a no-op success response when the session
-  profile is already installed and `force=False`.
-- `TurboBusRuntimeSession.close()` now cleans daemon-registered buffers before
-  closing the session, instead of only dropping local references.
-- `TurboBusRuntimeSession` now exposes a session-owned worker intent executor
-  factory and uses it for the daemon-issued transfer path.
-- `CudaWorkerExecutor.execute()` now binds worker data-plane resources itself
-  and runs the real execution path instead of returning an immediate failure.
-- `make_adapter_transfer_context()` now rolls back newly registered buffers if
-  session bootstrap or adapter context creation fails.
+- `daemon/server.py` now advances `_runtime_state_version` when a session is
+  actually closed, so session/job/buffer retirement shows up in the runtime
+  state that scheduler feedback reads.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
 ## Validation
 
-- Not run yet for this turn.
+- `git diff --check` passed with CRLF normalization warnings on the edited
+  files.
+- `python -m py_compile turbobus/daemon/server.py` passed.
 
 ## Remaining Risk
 
+- Runtime-state feedback still depends on server-side observation paths that
+  have not been server-verified in this session.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain unverified until the full system implementation
   pass is complete.

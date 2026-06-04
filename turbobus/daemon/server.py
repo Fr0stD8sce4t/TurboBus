@@ -4109,6 +4109,7 @@ class TurboBusDaemon:
             removed["sessions"] = int(removed["sessions"]) + 1
             removed["jobs"] = int(removed["jobs"]) + removed_jobs["jobs"]
             removed["buffers"] = int(removed["buffers"]) + removed_jobs["buffers"]
+        self._runtime_state_version += 1
         return session
 
     def _remove_session_jobs_and_buffers_locked(self, session_id: str) -> dict[str, int]:

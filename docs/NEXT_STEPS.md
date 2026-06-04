@@ -40,9 +40,10 @@ session API owns the transfer path.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py` should own the sole adapter construction path
-that feeds `fetch_h2d()` / `offload_d2h()`, the worker intent executor, and
-the offload / inference / vLLM adapters, including the vLLM KV connector path.
+`turbobus/runtime_session.py` and `turbobus/daemon/server.py` should keep the
+public runtime session path and daemon cleanup path aligned so `fetch_h2d()` /
+`offload_d2h()` stay on the session-owned API and session teardown advances the
+daemon runtime-state version that scheduler feedback reads.
 
 ## Next Entry
 

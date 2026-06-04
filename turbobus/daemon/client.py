@@ -42,6 +42,34 @@ class _DaemonSocketClientBase:
 
 
 class TurboBusDaemonClient(_DaemonSocketClientBase):
+    def submit_transfer_intent(self, intent: TransferIntent) -> DaemonResponse:
+        if not isinstance(intent, TransferIntent):
+            raise TypeError("intent must be a TransferIntent")
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.SUBMIT_TRANSFER_INTENT,
+                session_id=intent.session_id,
+                payload={"intent": asdict(intent)},
+            )
+        )
+
+    def wait_transfer_receipt(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+    ) -> DaemonResponse:
+        payload: dict[str, object] = {"intent_id": str(intent_id)}
+        if timeout_seconds is not None:
+            payload["timeout_seconds"] = float(timeout_seconds)
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.WAIT_TRANSFER_RECEIPT,
+                payload=payload,
+            )
+        )
+
+
+class TurboBusDaemonRuntimeClient(_DaemonSocketClientBase):
     def register_session(
         self,
         target_gpu: int,
@@ -128,32 +156,8 @@ class TurboBusDaemonClient(_DaemonSocketClientBase):
             )
         )
 
-    def submit_transfer_intent(self, intent: TransferIntent) -> DaemonResponse:
-        if not isinstance(intent, TransferIntent):
-            raise TypeError("intent must be a TransferIntent")
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.SUBMIT_TRANSFER_INTENT,
-                session_id=intent.session_id,
-                payload={"intent": asdict(intent)},
-            )
-        )
 
-    def wait_transfer_receipt(
-        self,
-        intent_id: str,
-        timeout_seconds: float | None = None,
-    ) -> DaemonResponse:
-        payload: dict[str, object] = {"intent_id": str(intent_id)}
-        if timeout_seconds is not None:
-            payload["timeout_seconds"] = float(timeout_seconds)
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.WAIT_TRANSFER_RECEIPT,
-                payload=payload,
-            )
-        )
-
+class TurboBusDaemonAdminClient(_DaemonSocketClientBase):
     def describe(self) -> DaemonResponse:
         return self.send(DaemonRequest(request_type=RequestType.PROFILE))
 

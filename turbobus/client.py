@@ -8,7 +8,7 @@ from multiprocessing import resource_tracker, shared_memory
 from typing import Any
 
 from .backends.cuda import default_cuda_backend
-from .schema import BufferRegistration, DaemonResponse
+from .schema import BufferRegistration
 
 
 _LOCAL_OWNED_SHARED_MEMORY_NAMES: set[str] = set()
@@ -210,17 +210,6 @@ class SharedPinnedCpuBuffer:
             metadata=self.metadata,
         )
 
-    def register_with_daemon(self, daemon_client) -> DaemonResponse:
-        return daemon_client.register_buffer(
-            buffer_id=self.buffer_id,
-            job_id=self.job_id,
-            kind="cpu_pinned",
-            size_bytes=self.size_bytes,
-            pinned=True,
-            handle_type="shared_pinned_cpu",
-            metadata=self.metadata,
-        )
-
     def register_for_cuda(self, backend=default_cuda_backend) -> None:
         if self._cuda_registered:
             return
@@ -329,18 +318,6 @@ class CudaIpcDeviceBuffer:
 
     def buffer_registration(self) -> BufferRegistration:
         return BufferRegistration(
-            buffer_id=self.buffer_id,
-            job_id=self.job_id,
-            kind="gpu",
-            size_bytes=self.size_bytes,
-            device_index=self.device_index,
-            address=self.device_ptr,
-            handle_type="cuda_ipc_device",
-            metadata=self.metadata,
-        )
-
-    def register_with_daemon(self, daemon_client) -> DaemonResponse:
-        return daemon_client.register_buffer(
             buffer_id=self.buffer_id,
             job_id=self.job_id,
             kind="gpu",

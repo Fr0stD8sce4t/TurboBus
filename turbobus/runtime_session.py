@@ -16,6 +16,7 @@ from .daemon import (
     TurboBusDaemonClient,
     TurboBusDaemonExecutionClient,
     TurboBusDaemonProfileClient,
+    TurboBusDaemonRuntimeClient,
 )
 from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
@@ -41,6 +42,7 @@ class TurboBusRuntimeSession:
     daemon_client: object
     job_id: str
     user_id: str | None = None
+    runtime_daemon_client: object | None = None
     execution_daemon_client: object | None = None
     profile_daemon_client: object | None = None
     worker_client: object | None = None
@@ -81,6 +83,7 @@ class TurboBusRuntimeSession:
         *,
         job_id: str,
         user_id: str | None = None,
+        runtime_daemon_client: object | None = None,
         execution_daemon_client: object | None = None,
         profile_daemon_client: object | None = None,
         worker_client: object | None = None,
@@ -88,6 +91,13 @@ class TurboBusRuntimeSession:
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
     ) -> "TurboBusRuntimeSession":
+        if runtime_daemon_client is None:
+            socket_path = getattr(daemon_client, "socket_path", None)
+            runtime_daemon_client = (
+                TurboBusDaemonRuntimeClient(str(socket_path))
+                if socket_path is not None
+                else daemon_client
+            )
         if execution_daemon_client is None:
             socket_path = getattr(daemon_client, "socket_path", None)
             execution_daemon_client = (
@@ -106,6 +116,7 @@ class TurboBusRuntimeSession:
             daemon_client=daemon_client,
             job_id=str(job_id),
             user_id=user_id,
+            runtime_daemon_client=runtime_daemon_client,
             execution_daemon_client=execution_daemon_client,
             profile_daemon_client=profile_daemon_client,
             worker_client=worker_client,
@@ -139,6 +150,7 @@ class TurboBusRuntimeSession:
             daemon_client,
             job_id=job_id,
             user_id=user_id,
+            runtime_daemon_client=TurboBusDaemonRuntimeClient(str(daemon_socket_path)),
             execution_daemon_client=TurboBusDaemonExecutionClient(
                 str(daemon_socket_path)
             ),
@@ -176,7 +188,7 @@ class TurboBusRuntimeSession:
                 "target GPU is not known; register a CUDA buffer before opening "
                 "the daemon session"
             )
-        response = self.daemon_client.register_session(
+        response = self._runtime_daemon_client().register_session(
             int(self._target_gpu),
             int(self.max_inflight_chunks),
         )
@@ -187,7 +199,7 @@ class TurboBusRuntimeSession:
             int(gpu) for gpu in session_payload.get("relay_gpus", ()) or ()
         )
         require_ok(
-            self.daemon_client.register_job(
+            self._runtime_daemon_client().register_job(
                 job_id=self.job_id,
                 user_id=self.user_id,
                 session_id=session_id,
@@ -335,7 +347,7 @@ class TurboBusRuntimeSession:
             self._clear_local_session_state()
             self._closed = True
             return DaemonResponse(ok=True, payload={"closed": False})
-        response = self.daemon_client.close_session(self._session_id)
+        response = self._runtime_daemon_client().close_session(self._session_id)
         if response.ok:
             self._clear_local_session_state()
             self._closed = True
@@ -454,9 +466,13 @@ class TurboBusRuntimeSession:
             fingerprint = _buffer_registration_fingerprint(buffer)
             if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
                 continue
-            register_executable_buffer(self.daemon_client, buffer)
+            register_executable_buffer(self._runtime_daemon_client(), buffer)
             self._registered_buffer_ids.add(buffer_id)
             self._registered_buffer_fingerprints[buffer_id] = fingerprint
+
+    def _runtime_daemon_client(self):
+        self._require_open()
+        return self.runtime_daemon_client or self.daemon_client
 
     def _clear_local_session_state(self) -> None:
         self._session_id = None

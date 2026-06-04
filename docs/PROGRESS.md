@@ -133,24 +133,40 @@ coordinators private to the worker lifecycle. `WorkerTransferClient` no longer
 exposes a public authorization-only method; the production worker entry remains
 the full authorize-execute-status-cleanup lifecycle.
 
+Daemon socket clients are now split by public role. `TurboBusDaemonClient`
+submits `TransferIntent` and waits for `TransferReceipt` only. Runtime
+registration operations live on `TurboBusDaemonRuntimeClient`, daemon admin
+operations live on `TurboBusDaemonAdminClient`, profile bootstrap operations
+live on `TurboBusDaemonProfileClient`, and worker execution operations live on
+`TurboBusDaemonExecutionClient`. `TurboBusRuntimeSession` owns the runtime,
+profile, execution, and intent clients instead of using one broad daemon client.
+
+Manual buffer daemon registration helpers were removed from
+`SharedPinnedCpuBuffer` and `CudaIpcDeviceBuffer`; runtime buffer registration
+now goes through `TurboBusRuntimeSession` and `buffer_registration.py`. The old
+`turbobus.control` pure re-export package entry was deleted instead of kept as
+a compatibility layer.
+
 ## Completed This Round
 
-- Removed old offload block alias methods and updated production adapters to
-  call canonical `OffloadStore` methods directly.
-- Made worker authorization, status reporter, and cleanup coordinator helpers
-  private implementation details and removed the public authorization-only
-  `WorkerTransferClient` entry point.
+- Split ordinary intent, runtime-registration, admin, profile, and execution
+  daemon socket client roles.
+- Routed `TurboBusRuntimeSession` session/job/buffer registration and close
+  through `TurboBusDaemonRuntimeClient`.
+- Removed manual buffer `register_with_daemon()` helpers and deleted the pure
+  `turbobus.control` re-export entry.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\offload_store.py
-  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
-  turbobus\worker\lifecycle.py turbobus\worker\__init__.py` passed.
-- Targeted `rg` and `Select-String` checks found no remaining production
-  `add_block()`, `remove_block()`, `get_block()`, public worker `authorize()`,
-  or package exports for worker authorization/status/cleanup helper classes.
+- `python -m py_compile turbobus\daemon\client.py
+  turbobus\daemon\__init__.py turbobus\runtime_session.py
+  turbobus\api\client.py turbobus\buffer_registration.py turbobus\client.py`
+  passed.
+- Targeted `rg` checks found no remaining production `register_with_daemon()`
+  or `turbobus.control` references. The ordinary `TurboBusDaemonClient` now
+  defines only intent submission and receipt wait methods.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -183,6 +199,10 @@ the full authorize-execute-status-cleanup lifecycle.
   defer test migration until the system implementation pass is complete.
 - Existing tests may still refer to removed offload block alias methods or
   worker authorization helper exports. Current-stage constraints defer test
+  migration until the system implementation pass is complete.
+- Existing tests may still import `turbobus.control`, use buffer
+  `register_with_daemon()` helpers, or expect one broad `TurboBusDaemonClient`
+  to expose registration/admin methods. Current-stage constraints defer test
   migration until the system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning

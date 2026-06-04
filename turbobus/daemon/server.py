@@ -1753,6 +1753,17 @@ class TurboBusDaemon:
                     else None
                 ),
             )
+            status_after = self._transfer_statuses.get(transfer_id)
+            if (
+                status_after is not None
+                and status_after.state in _TERMINAL_TRANSFER_STATES
+                and not self._transfer_has_reservations_locked(transfer_id)
+            ):
+                self._retire_transfer_runtime_state_locked(
+                    transfer_id,
+                    final_state=status_after.state,
+                    reason=cleanup_reason,
+                )
         if cleanup_reason is not None:
             self._system_cleanup_events.append(
                 CleanupRequest(
@@ -3677,9 +3688,41 @@ class TurboBusDaemon:
         if ticket_id is not None:
             self._execution_tickets.pop(ticket_id, None)
 
-    def _retire_transfer_runtime_state_locked(self, transfer_id: str) -> None:
+    def _transfer_has_reservations_locked(self, transfer_id: str) -> bool:
+        normalized = str(transfer_id)
+        return any(
+            mapped_transfer_id == normalized
+            for mapped_transfer_id in self._reservation_transfers.values()
+        )
+
+    def _retire_transfer_runtime_state_locked(
+        self,
+        transfer_id: str,
+        *,
+        final_state: TransferStatusState | None = None,
+        reason: str | None = None,
+    ) -> None:
         normalized = str(transfer_id)
         removed = False
+        self._drop_execution_ticket_for_transfer_locked(normalized)
+        status = self._transfer_statuses.get(normalized)
+        terminal_state = final_state
+        if terminal_state is None and status is not None:
+            terminal_state = status.state
+        admission = self._transfer_admissions.get(normalized)
+        if admission is not None:
+            updated = dict(admission)
+            if terminal_state is TransferStatusState.CANCELED:
+                updated["state"] = _ADMISSION_CANCELED
+            elif terminal_state is TransferStatusState.FAILED:
+                updated["state"] = _ADMISSION_FAILED
+            updated["lease_ids"] = ()
+            updated["retired_at"] = time.time()
+            if reason is not None:
+                updated["retired_reason"] = str(reason)
+            if updated != admission:
+                self._transfer_admissions[normalized] = updated
+                removed = True
         if normalized in self._transfer_queue_records:
             self._transfer_queue_records.pop(normalized, None)
             removed = True

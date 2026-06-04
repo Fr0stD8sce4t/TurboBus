@@ -7,32 +7,31 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten daemon/worker production cleanup and scheduling
-state after runtime-session and adapter-owned transfers complete. Workers and
-backends must continue to execute only daemon-issued `ExecutionTicket` plans,
-and application/runtime code must continue to submit `TransferIntent` and
-consume `TransferReceipt`.
+The next task is to tighten daemon/worker production startup and socket
+ownership so the runtime session, daemon socket client, worker socket service,
+and worker lifecycle keep using the same daemon-issued `ExecutionTicket`
+contract without application-side physical route control.
 
 ## Exit Criteria
 
-- Daemon cleanup of jobs, sessions, buffers, leases, tickets, and transfers
-  preserves isolation across sessions and jobs.
-- Completed, failed, canceled, or cleaned transfers cannot re-enter runtime
-  scheduling or worker execution with stale ticket data.
-- Terminal receipt wait remains available to the authenticated transfer owner
-  without reviving cleaned scheduling state.
+- Daemon and worker socket entry points expose the production runtime path
+  without restoring old single-process or manual-relay APIs.
+- Worker socket requests continue through the standard worker lifecycle and
+  cannot execute stale, application-selected, or non-daemon-issued plans.
+- Runtime-session `open_socket()` remains the public socket entry for
+  applications and adapters.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
   shim, or export layer code is added during this pass.
 
 ## Current Code Work
 
-- Inspect `turbobus/daemon/server.py` cleanup and release paths for transfer
-  retirement, archived ticket evidence, and delayed admission promotion.
-- Inspect worker completion and cleanup envelopes so successful completion
-  remains tied to daemon release evidence.
-- Keep `TurboBusRuntimeSession` and adapters on the unified session API:
-  applications submit only `TransferIntent` and consume session-owned
-  `TransferReceipt`.
+- Inspect `turbobus/daemon/__main__.py`, `turbobus/daemon/startup.py`,
+  `turbobus/worker/__main__.py`, `turbobus/worker/process.py`, and
+  `turbobus/worker/transport.py` for production startup consistency.
+- Inspect `TurboBusRuntimeSession.open_socket()` and worker socket clients for
+  route-selection or stale-ticket bypasses.
+- Keep daemon cleanup and release paths retired from active scheduling state
+  after terminal or cleaned transfers.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate compatibility
   export layers.
@@ -41,8 +40,7 @@ consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon cleanup, release,
-and delayed admission paths for stale execution-ticket or scheduling-state
-reuse. Keep the work focused on system code; defer tests, benchmarks,
-paper-validation, experiments, and server validation until the full system
-implementation pass is complete.
+Continue the code implementation pass by inspecting daemon and worker
+production startup/socket paths. Keep the work focused on system code; defer
+tests, benchmarks, paper-validation, experiments, and server validation until
+the full system implementation pass is complete.

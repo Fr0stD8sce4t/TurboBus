@@ -7,15 +7,16 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: daemon/worker production startup. Runtime sessions should
-be able to drive daemon and worker socket clients on the production path
-without restoring old runtime or planner entry points.
+Current code target: H2D/D2H system main path closure. `fetch_h2d()` and
+`offload_d2h()` should drive daemon-issued direct, relay, and pooled execution
+through `TurboBusRuntimeSession` without application route selection.
 
 ## Exit Criteria
 
-- Production socket setup wires runtime, execution, profile, and worker clients
-  into one `TurboBusRuntimeSession`.
-- Worker execution still consumes only daemon-issued `ExecutionTicket` payloads.
+- H2D and D2H public runtime methods submit `TransferIntent` and return
+  `TransferReceipt` from worker/backend completion or explicit failure.
+- Direct fallback, relay, and pooled paths execute only daemon-issued
+  `ExecutionTicket` payloads.
 - Public client and runtime-session consumers still submit `TransferIntent`
   and consume `TransferReceipt` without route selection.
 - No test, experiment, benchmark, paper-validation, or server-validation code
@@ -23,10 +24,10 @@ without restoring old runtime or planner entry points.
 
 ## Current Code Work
 
-Close daemon/worker startup gaps in the runtime production path without adding
-server validation wrappers or compatibility APIs.
+Close H2D/D2H runtime execution gaps in the system production path without
+adding benchmark, paper-validation, or server-validation entry points.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: H2D/D2H system main path closure.
+boundary: runtime feedback into scheduler load accounting.

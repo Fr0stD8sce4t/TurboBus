@@ -7,6 +7,7 @@ from typing import Any
 from ..offload.stats import TransferStats, summarize_transfer_handles
 from ..runtime.validation import validate_runtime_receipt
 from ..runtime_session import TurboBusRuntimeSession
+from ..runtime_options import RuntimeOptions
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids
 from .vllm_backing_pool import TurboBusCPUBackingPool
@@ -165,11 +166,14 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.job_id = self.config.job_id
         self.max_saved_prefixes = self.config.max_saved_prefixes
         self.runtime_session = TurboBusRuntimeSession.open_production_socket(
-            daemon_socket_path=self.config.daemon_socket_path,
-            worker_socket_path=self.config.worker_socket_path,
             job_id=self.job_id,
+            runtime_options=RuntimeOptions(
+                chunk_bytes=int(self.config.chunk_bytes),
+                daemon_socket_path=self.config.daemon_socket_path,
+                worker_socket_path=self.config.worker_socket_path,
+            ),
         )
-        self.session_id = self.runtime_session.open_session()
+        self.session_id = self.connector_session_id
         self._layer_save_contexts: dict[str, _LayerSaveContext] = {}
         self._backing_pool = TurboBusCPUBackingPool(
             job_id=self.job_id,

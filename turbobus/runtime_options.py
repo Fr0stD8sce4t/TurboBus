@@ -22,6 +22,7 @@ class RuntimeOptions:
     enable_dynamic_weights: bool = False
     dynamic_weight_alpha: float = 0.25
     daemon_socket_path: str | None = None
+    worker_socket_path: str | None = None
     daemon_max_inflight_chunks: int = 8
     daemon_profile_max_age_seconds: float = 3600.0
     admission_retry_timeout_seconds: float = 5.0

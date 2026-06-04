@@ -171,24 +171,37 @@ class TurboBusRuntimeSession:
     def open_production_socket(
         cls,
         *,
-        daemon_socket_path: str,
-        worker_socket_path: str,
+        daemon_socket_path: str | None = None,
+        worker_socket_path: str | None = None,
         job_id: str,
         user_id: str | None = None,
         max_inflight_chunks: int = 8,
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
     ) -> "TurboBusRuntimeSession":
-        if not str(worker_socket_path).strip():
+        options = runtime_options or RuntimeOptions()
+        resolved_daemon_socket = (
+            daemon_socket_path
+            if daemon_socket_path is not None
+            else options.daemon_socket_path
+        )
+        resolved_worker_socket = (
+            worker_socket_path
+            if worker_socket_path is not None
+            else options.worker_socket_path
+        )
+        if resolved_daemon_socket is None or not str(resolved_daemon_socket).strip():
+            raise ValueError("daemon_socket_path must be non-empty")
+        if resolved_worker_socket is None or not str(resolved_worker_socket).strip():
             raise ValueError("worker_socket_path must be non-empty")
         return cls.open_socket(
-            daemon_socket_path=daemon_socket_path,
-            worker_socket_path=worker_socket_path,
+            daemon_socket_path=str(resolved_daemon_socket),
+            worker_socket_path=str(resolved_worker_socket),
             job_id=job_id,
             user_id=user_id,
             max_inflight_chunks=max_inflight_chunks,
             backend=backend,
-            runtime_options=runtime_options,
+            runtime_options=options,
         )
 
     @property

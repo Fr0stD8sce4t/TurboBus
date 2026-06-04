@@ -983,6 +983,7 @@ class TurboBusDaemon:
         self._transfer_completion_sources[status.transfer_id] = normalized_completion_source
         self._transfer_completion_evidence[status.transfer_id] = existing
         self._archive_transfer_receipt_state_locked(status.transfer_id)
+        self._refresh_transfer_queue_record_locked(status.transfer_id)
         return DaemonResponse(ok=True)
 
     def submit_transfer_intent(
@@ -2517,6 +2518,8 @@ class TurboBusDaemon:
             str(record.get("state", "")),
             int(record.get("bytes_completed", 0) or 0),
             record.get("error"),
+            record.get("completion_source"),
+            record.get("completion_evidence"),
             record.get("intent_id"),
             record.get("source_buffer_id"),
             record.get("destination_buffer_id"),
@@ -2550,6 +2553,12 @@ class TurboBusDaemon:
             record["fallback_reason"] = decision.fallback_reason
         if status.error is not None:
             record["error"] = status.error
+        completion_source = self._transfer_completion_sources.get(str(transfer_id))
+        if completion_source is not None:
+            record["completion_source"] = completion_source
+        completion_evidence = self._transfer_completion_evidence.get(str(transfer_id))
+        if completion_evidence is not None:
+            record["completion_evidence"] = dict(completion_evidence)
         if status.state is TransferStatusState.RUNNING and record.get("started_at") is None:
             record["started_at"] = float(time.time() if now is None else now)
         if status.state in _TERMINAL_TRANSFER_STATES and record.get("completed_at") is None:
@@ -2569,6 +2578,8 @@ class TurboBusDaemon:
             str(record.get("state", "")),
             int(record.get("bytes_completed", 0) or 0),
             record.get("error"),
+            record.get("completion_source"),
+            record.get("completion_evidence"),
             record.get("intent_id"),
             record.get("source_buffer_id"),
             record.get("destination_buffer_id"),

@@ -8,8 +8,9 @@ state instead of appending history.
 System implementation before experiments.
 
 Current code target: worker/backend failure cleanup and terminal receipt
-closure. Worker-managed transfers now need to keep terminal failure states on
-the receipt path instead of falling through to route cleanup and an exception.
+closure. Terminal worker/backend completion evidence now needs to flow into
+the daemon runtime record so runtime feedback and scheduler views reflect the
+real execution source.
 
 ## Exit Criteria
 
@@ -22,11 +23,12 @@ the receipt path instead of falling through to route cleanup and an exception.
 
 ## Current Code Work
 
-`WorkerIntentTransferExecutor.execute_transfer_intent()` should wait
-for a receipt when `submit_worker_execution()` returns `status_failed` or
-`cleanup_failed`.
+`turbobus/daemon/server.py` should retain terminal `completion_source` and
+`completion_evidence` in the runtime queue record and bump the runtime state
+version when supplemental evidence arrives.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: worker/backend execution status into daemon runtime feedback.
+boundary: session/job/buffer registration into the TransferIntent execution
+path.

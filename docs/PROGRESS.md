@@ -3,7 +3,7 @@
 ## Current State
 
 Current main target: worker/backend failure cleanup and terminal receipt
-closure.
+closure with runtime feedback capture.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -15,18 +15,15 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `intent_execution_support.py` now treats `status_failed` and
-  `cleanup_failed` as terminal worker failure envelopes.
-- `WorkerIntentTransferExecutor.execute_transfer_intent()` now waits for a
-  receipt when worker-managed execution ends in `status_failed` or
-  `cleanup_failed`.
+- Terminal worker/backend completion evidence now refreshes the daemon runtime
+  queue record, so the runtime snapshot reflects the execution source and
+  evidence after supplemental terminal updates.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/intent_executor.py
-  turbobus/intent_execution_support.py` passed.
+- `python -m py_compile turbobus/daemon/server.py` passed.
 - `git diff --check` passed.
 
 ## Remaining Risk
@@ -40,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker/backend execution
-status into daemon runtime feedback.
+Continue with one concrete implementation boundary: session/job/buffer
+registration into the TransferIntent execution path.

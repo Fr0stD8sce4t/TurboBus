@@ -44,8 +44,9 @@ session API owns the transfer path.
 public runtime session path and daemon feedback path aligned so `fetch_h2d()` /
 `offload_d2h()` stay on the session-owned API, terminal worker/backend
 evidence updates advance the daemon runtime-state version that scheduler
-feedback reads, and `TurboBusRuntimeSession.close()` retires local buffer and
-session ownership even when daemon close returns an error.
+feedback reads, `TurboBusRuntimeSession.close()` retires local buffer and
+session ownership even when daemon close returns an error, and runtime-owned
+CPU buffer registration failures release their shared memory backing.
 
 ## Next Entry
 

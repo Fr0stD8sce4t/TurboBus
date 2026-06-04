@@ -14,9 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `runtime_session.py` now retires local owned buffers and clears session state
-  even when daemon `close_session()` returns an error, so session shutdown no
-  longer leaves the runtime object half-open after a failed daemon close.
+- `runtime_session.py` now releases runtime-owned CPU shared memory when CPU
+  buffer registration fails, so the session-owned buffer lifecycle no longer
+  leaks a newly allocated local backing on registration errors.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

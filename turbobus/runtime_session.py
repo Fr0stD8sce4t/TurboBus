@@ -288,6 +288,11 @@ class TurboBusRuntimeSession:
         except Exception:
             if owned_added:
                 self._owned_cpu_buffer_ids.discard(buffer.buffer_id)
+            if runtime_owned or getattr(buffer, "owner", False):
+                try:
+                    buffer.release()
+                except Exception:
+                    pass
             raise
         return buffer
 

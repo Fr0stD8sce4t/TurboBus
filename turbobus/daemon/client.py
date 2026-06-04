@@ -128,27 +128,6 @@ class TurboBusDaemonClient:
             )
         )
 
-    def reserve_transfer(
-        self,
-        session_id: str,
-        relay_gpu: int,
-        chunks: int,
-        bytes_: int = 0,
-        direction: str = "unknown",
-    ) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.RESERVE_TRANSFER,
-                session_id=str(session_id),
-                payload={
-                    "relay_gpu": int(relay_gpu),
-                    "chunks": int(chunks),
-                    "bytes": int(bytes_),
-                    "direction": str(direction),
-                },
-            )
-        )
-
     def submit_transfer_intent(self, intent: TransferIntent) -> DaemonResponse:
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")

@@ -77,30 +77,30 @@ directly, the daemon socket client no longer exposes `plan_transfer` or
 external `PLAN_TRANSFER` request type. Daemon-internal planning remains only as
 the implementation used after `submit_transfer_intent`.
 
+The manual relay reservation control-plane path is also removed from
+production entry points. Applications and socket clients can no longer submit a
+`RESERVE_TRANSFER` request or call a daemon client method that names a
+`relay_gpu`; relay leases are created inside daemon scheduling after a
+`TransferIntent` has been accepted.
+
 ## Completed This Round
 
-- Removed the old `TransferRequest` and `TransferDirection` production module
-  instead of keeping it as a compatibility or export layer.
-- Moved byte range ownership to `turbobus/ranges.py` and execution helper
-  ownership to `turbobus/intent_execution_support.py`.
-- Updated runtime session, buffer registration, intent executor, and direct
-  fallback code to operate on `TransferIntent` data instead of rebuilding old
-  route-shaped transfer requests.
-- Removed the daemon client `plan_transfer` and `plan_transfer_request` public
-  methods and removed the external daemon `PLAN_TRANSFER` dispatch route.
+- Removed the daemon client `reserve_transfer` method so public Python clients
+  cannot reserve a chosen relay GPU.
+- Removed the external daemon `RESERVE_TRANSFER` request type and dispatch
+  branch.
+- Removed the public daemon `reserve_transfer` method while preserving
+  daemon-internal scheduler lease creation and worker lease validation/release.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\ranges.py
-  turbobus\intent_execution_support.py turbobus\buffer_registration.py
-  turbobus\runtime_session.py turbobus\intent_executor.py
-  turbobus\direct_fallback.py turbobus\daemon\client.py
-  turbobus\daemon\dispatch.py turbobus\schema.py` passed.
-- `python -c "from turbobus.runtime_session import TurboBusRuntimeSession; from
-  turbobus.intent_executor import WorkerIntentTransferExecutor; from
-  turbobus.ranges import TransferRange; print('closure imports ok')"` passed.
+- `python -m py_compile turbobus\daemon\client.py
+  turbobus\daemon\dispatch.py turbobus\daemon\server.py turbobus\schema.py`
+  passed.
+- `rg -n "reserve_transfer\(|RequestType\.RESERVE_TRANSFER|RESERVE_TRANSFER|ISSUE_LEASE|issue_lease"
+  turbobus` found only daemon-internal `_issue_lease_token_locked`.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -109,9 +109,9 @@ the implementation used after `submit_transfer_intent`.
   server-only behavior remain deferred until the full system implementation
   pass is complete.
 - Existing test files still contain old `PLAN_TRANSFER` and `TransferRequest`
-  references. Current-stage constraints defer test migration until the system
-  implementation pass is complete, so this round only removes production-path
-  compatibility drift.
+  references plus old manual reservation checks. Current-stage constraints
+  defer test migration until the system implementation pass is complete, so
+  this round only removes production-path compatibility drift.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

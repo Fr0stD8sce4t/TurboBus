@@ -75,18 +75,6 @@ def handle_request(
             request.session_id,
             peer_identity=request.peer_identity,
         )
-    if request.request_type == RequestType.RESERVE_TRANSFER:
-        if request.session_id is None:
-            return DaemonResponse(ok=False, error="session_id is required")
-        payload = request.payload
-        return daemon.reserve_transfer(
-            session_id=request.session_id,
-            relay_gpu=int(payload["relay_gpu"]),
-            chunks=int(payload.get("chunks", 1)),
-            bytes_=int(payload.get("bytes", 0)),
-            direction=str(payload.get("direction", "unknown")),
-            peer_identity=request.peer_identity,
-        )
     if request.request_type == RequestType.SUBMIT_TRANSFER_INTENT:
         payload = request.payload
         intent_payload = payload.get("intent")

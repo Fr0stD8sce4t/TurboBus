@@ -14,20 +14,18 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Daemon plan and authorization payloads now carry the cached profile entry
-  used for that session's execution path.
-- Worker request parsing preserves the daemon profile entry in data-plane
-  metadata.
-- CUDA worker execution and direct fallback now install the daemon profile
-  into the backend runtime before data movement.
+- Restored a public `TurboBusClient` entry point that submits intents, waits
+  for receipts, and validates receipt evidence on completion.
+- Exported `TurboBusClient` from the package root so public callers can import
+  the client contract directly.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/daemon/receipts.py turbobus/daemon/server.py
-  turbobus/worker/models.py turbobus/worker/cuda_executor.py
-  turbobus/direct_fallback.py` passed.
+- `python -m py_compile turbobus/api.py turbobus/__init__.py` passed.
+- A small inline Python check confirmed `TurboBusClient` can submit a
+  receipt-backed intent and returns the expected receipt.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -41,5 +39,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: adapter
-submission/receipt consumption through `TurboBusRuntimeSession`.
+Continue with one concrete implementation boundary: worker/backend completion
+evidence cleanup.

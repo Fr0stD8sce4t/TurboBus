@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .api import TurboBusClient
 from .client import (
     CudaIpcDeviceBuffer,
     SharedPinnedCpuBuffer,
@@ -36,6 +37,7 @@ __all__ = [
     "TransferReceipt",
     "TransferStatusState",
     "RuntimeOptions",
+    "TurboBusClient",
     "TurboBusRuntimeSession",
     "WorkloadKind",
 ]

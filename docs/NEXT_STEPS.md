@@ -7,28 +7,25 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: complete adapter submission/receipt consumption through
-`TurboBusRuntimeSession`. Production adapters must stay on the public runtime
-session path while worker/backend execution remains on daemon-issued plans.
+Current code target: complete worker/backend completion evidence cleanup.
+Production transfer completion must keep using daemon-issued plans and
+receipt-oriented public APIs.
 
 ## Exit Criteria
 
-- Offload and vLLM adapters submit `TransferIntent` through
-  `TurboBusRuntimeSession` and consume `TransferReceipt` from the same session.
-- Adapter-side code does not choose physical routes or bypass daemon-issued
-  execution tickets.
-- Runtime session receipt waiting remains the production path for completion
-  consumption.
+- Worker completion, cleanup, and receipt evidence remain bound to daemon
+  tickets and daemon-issued transfer ids.
+- Public client and runtime-session consumers still submit `TransferIntent`
+  and consume `TransferReceipt` without route selection.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-Route adapter submission and receipt waiting through
-`TurboBusRuntimeSession` without restoring old direct client paths.
+Tighten worker/backend completion evidence and cleanup flow without restoring
+old direct client paths.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: worker/backend completion evidence cleanup or profile bootstrap
-closure.
+boundary: profile bootstrap closure or shared buffer lifecycle cleanup.

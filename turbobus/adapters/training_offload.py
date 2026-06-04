@@ -50,34 +50,6 @@ class TrainingOffloadManager(OffloadStore):
             )
         super().__init__(runtime_session, context)
 
-    @classmethod
-    def from_runtime_session(
-        cls,
-        runtime_session,
-        cpu_buffer,
-        gpu_buffer,
-        *,
-        workload_kind: WorkloadKind | str = WorkloadKind.TRAINING_STATE,
-        priority: int = 0,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-    ) -> "TrainingOffloadManager":
-        manager = runtime_session.make_training_offload_manager(
-            cpu_buffer,
-            gpu_buffer,
-            workload_kind=workload_kind,
-            priority=priority,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
-        if not isinstance(manager, cls):
-            raise TypeError(
-                "runtime session training offload factory must return a TrainingOffloadManager"
-            )
-        return manager
-
     def add_bucket(
         self,
         name: str,

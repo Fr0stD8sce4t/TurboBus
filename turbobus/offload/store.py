@@ -52,36 +52,6 @@ class OffloadStore:
         self._blocks: dict[str, OffloadBlock] = {}
         self._intent_counter = 0
 
-    @classmethod
-    def from_runtime_session(
-        cls,
-        runtime_session,
-        cpu_buffer,
-        gpu_buffer,
-        *,
-        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
-        priority: int = 0,
-        policy_hints: Mapping[str, object] | None = None,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-    ) -> "OffloadStore":
-        store = runtime_session.make_offload_store(
-            cpu_buffer,
-            gpu_buffer,
-            workload_kind=workload_kind,
-            priority=priority,
-            policy_hints=policy_hints,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
-        if not isinstance(store, cls):
-            raise TypeError(
-                "runtime session offload store factory must return an OffloadStore"
-            )
-        return store
-
     def add(
         self,
         name: str,

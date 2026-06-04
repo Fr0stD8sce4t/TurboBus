@@ -22,6 +22,9 @@ code remain deferred until the full system implementation pass is complete.
 - The vLLM KV connector now calls `runtime_session.make_vllm_kv_slot_adapter()`
   directly, and the old `VllmKVSlotAdapter.from_runtime_session()` wrapper was
   removed.
+- The remaining offload, inference, training, and vLLM integration
+  `from_runtime_session()` wrappers were removed so the session-owned factories
+  are the only construction path.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

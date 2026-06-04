@@ -85,34 +85,6 @@ class InferenceKVSlotAdapter(OffloadStore):
         self.cpu_backing = cpu_backing
         self.gpu_kv_backing = gpu_kv_backing
 
-    @classmethod
-    def from_runtime_session(
-        cls,
-        runtime_session,
-        cpu_backing,
-        gpu_kv_backing,
-        *,
-        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
-        priority: int = 0,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-    ) -> "InferenceKVSlotAdapter":
-        adapter = runtime_session.make_inference_kv_slot_adapter(
-            cpu_backing,
-            gpu_kv_backing,
-            workload_kind=workload_kind,
-            priority=priority,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
-        if not isinstance(adapter, cls):
-            raise TypeError(
-                "runtime session inference factory must return an InferenceKVSlotAdapter"
-            )
-        return adapter
-
     def register_slots(self, slots: Iterable[InferenceKVSlot]) -> None:
         for slot in slots:
             self.add(

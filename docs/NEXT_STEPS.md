@@ -22,8 +22,9 @@ session API owns the transfer path.
   with preserved intent identity and adapter metadata.
 - Adapter transfer context and offload / inference / vLLM adapter creation are
   owned solely by `TurboBusRuntimeSession`.
-- The vLLM KV connector no longer goes through the adapter classmethod wrapper;
-  it now calls the session-owned factory directly.
+- The offload, inference, training, and vLLM adapter wrappers no longer expose
+  their own `from_runtime_session()` constructors; session-owned factories are
+  the only construction path.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 

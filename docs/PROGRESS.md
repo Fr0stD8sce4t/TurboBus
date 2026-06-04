@@ -16,25 +16,25 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Closed the worker cleanup to scheduler-feedback boundary for daemon-issued
-  relay plans.
-- Daemon reservation cleanup responses now report the cleaned reservation id,
-  cleaned id set, cleanup kind, and cleanup mode when resources were actually
-  released.
-- Worker completion validation now requires cleanup evidence to cover every
-  lease id carried by the worker lifecycle, not only the primary lease.
-- This keeps pooled or multi-relay worker completion from being accepted while
-  leaving relay reservations active and visible as busy to later scheduling.
+- Implemented worker RUNNING status reporting before daemon-issued backend
+  execution starts.
+- Worker lifecycle now reports a daemon `running` status after authorization
+  and staging allocation, before CUDA/backend execution.
+- Worker lifecycle and completion envelopes now carry the running update and
+  daemon response so runtime/scheduler feedback can observe active execution
+  instead of seeing only submitted then complete.
+- Completion validation checks that the running response belongs to the same
+  transfer and reached daemon state `running`.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated daemon server, worker lifecycle,
-  worker models, intent executor, and intent execution support modules.
-- Searches found no use of a nonexistent `WorkerTransferAuthorizationRequest`
-  `lease_ids` field; cleanup coverage is taken from the worker completion
-  envelope.
+- `python -m py_compile` passed for the updated worker lifecycle, worker models,
+  intent execution support, intent executor, daemon server, worker socket
+  client, and worker transport modules.
+- Searches confirmed the new running update/response fields are confined to the
+  worker execution and completion-validation path.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -45,8 +45,8 @@ code remain deferred until the full system implementation pass is complete.
 - Existing tests still contain old production-path assumptions. Current-stage
   constraints defer test migration until the system implementation pass is
   complete.
-- The closure audit still needs to continue across scheduler feedback, worker
-  failure handling, runtime receipt validation, and adapter boundaries for
+- The closure audit still needs to continue across worker failure handling,
+  scheduler load accounting, runtime receipt validation, and adapter boundaries for
   remaining compatibility drift or public bypasses.
 - Benchmarks, examples, and tests still reference the removed old public client;
   current-stage constraints defer their migration until system implementation

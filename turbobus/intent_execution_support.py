@@ -212,6 +212,16 @@ def require_worker_completion_matches_request(
     if completion.lease_id is not None and completion.lease_id != request.lease_id:
         raise WorkerCompletionEnvelopeError("worker completion lease mismatch")
     require_worker_mapping_matches_request(
+        completion.daemon_running_update,
+        request,
+        label="worker daemon running update",
+    )
+    require_worker_daemon_response_matches_request(
+        completion.daemon_running_response,
+        request,
+        expected_state="running",
+    )
+    require_worker_mapping_matches_request(
         completion.worker_result,
         request,
         label="worker result",
@@ -235,6 +245,18 @@ def require_worker_completion_matches_request(
             raise WorkerCompletionEnvelopeError("worker completion missing lease id")
         if completion.worker_result is None:
             raise WorkerCompletionEnvelopeError("worker completion missing worker result")
+        if completion.daemon_running_update is None:
+            raise WorkerCompletionEnvelopeError(
+                "worker completion missing daemon running update"
+            )
+        if state_text(completion.daemon_running_update.get("state", "")) != "running":
+            raise WorkerCompletionEnvelopeError(
+                "worker daemon running update did not enter running"
+            )
+        if completion.daemon_running_response is None:
+            raise WorkerCompletionEnvelopeError(
+                "worker completion missing daemon running response"
+            )
         result_state = state_text(completion.worker_result.get("state", ""))
         if result_state != "complete":
             raise WorkerCompletionEnvelopeError("worker result did not complete")
@@ -308,6 +330,8 @@ def require_worker_mapping_matches_request(
 def require_worker_daemon_response_matches_request(
     response: Mapping[str, object] | None,
     request: WorkerTransferAuthorizationRequest,
+    *,
+    expected_state: str | None = None,
 ) -> None:
     if response is None:
         return
@@ -322,6 +346,12 @@ def require_worker_daemon_response_matches_request(
         request,
         label="worker daemon status response",
     )
+    if expected_state is not None:
+        status_state = state_text(status.get("state", ""))
+        if status_state != str(expected_state).lower():
+            raise WorkerCompletionEnvelopeError(
+                f"worker daemon status response was not {expected_state}"
+            )
 
 
 def require_worker_daemon_response_completed_bytes(

@@ -105,6 +105,16 @@ class _WorkerTransferStatusReporter:
             )
         return response
 
+    def report_running(
+        self,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+    ) -> tuple[dict[str, object], DaemonResponse]:
+        result = _worker_running_result(worker_request, staging_slot)
+        status_update = daemon_status_update_for_result(result)
+        response = self.report(result)
+        return status_update, response
+
 
 def _status_evidence_for_result(
     result: WorkerTransferResult,
@@ -485,6 +495,55 @@ class WorkerTransferClient:
                 error=str(exc),
             )
         staging_slot = self._staging_pool.allocate(worker_request.data_plane)
+        running_update: dict[str, object] | None = None
+        running_response: DaemonResponse | None = None
+        try:
+            running_update, running_response = self._status_reporter.report_running(
+                worker_request,
+                staging_slot,
+            )
+        except WorkerStatusReportError as exc:
+            staging_release = self._staging_pool.release(
+                staging_slot.slot_id,
+                worker_request.data_plane,
+            )
+            cleanup_target_id = cleanup_target_id_for_worker_request(
+                cleanup_target_kind,
+                worker_request,
+            )
+            try:
+                cleanup_response = (
+                    self._cleanup_coordinator.cleanup_status_report_failure(
+                        worker_request,
+                        target_kind=cleanup_target_kind,
+                    )
+                )
+            except WorkerCleanupError as cleanup_exc:
+                return WorkerTransferLifecycleRecord(
+                    authorization_request=request,
+                    worker_request=worker_request,
+                    staging_slot=staging_slot,
+                    running_update=running_update,
+                    running_response=running_response,
+                    staging_release=staging_release,
+                    cleanup_target_kind=cleanup_target_kind,
+                    cleanup_target_id=cleanup_target_id,
+                    final_state="cleanup_failed",
+                    error=str(cleanup_exc),
+                )
+            return WorkerTransferLifecycleRecord(
+                authorization_request=request,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
+                staging_release=staging_release,
+                cleanup_target_kind=cleanup_target_kind,
+                cleanup_target_id=cleanup_target_id,
+                cleanup_response=cleanup_response,
+                final_state="status_failed",
+                error=str(exc),
+            )
         try:
             result = validate_worker_completion_bytes(
                 worker_request,
@@ -520,6 +579,8 @@ class WorkerTransferClient:
                     authorization_request=request,
                     worker_request=worker_request,
                     staging_slot=staging_slot,
+                    running_update=running_update,
+                    running_response=running_response,
                     staging_release=staging_release,
                     result=result,
                     status_update=status_update,
@@ -532,6 +593,8 @@ class WorkerTransferClient:
                 authorization_request=request,
                 worker_request=worker_request,
                 staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
                 staging_release=staging_release,
                 result=result,
                 status_update=status_update,
@@ -564,6 +627,8 @@ class WorkerTransferClient:
                 authorization_request=request,
                 worker_request=worker_request,
                 staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
                 staging_release=staging_release,
                 result=result,
                 status_update=status_update,
@@ -581,6 +646,8 @@ class WorkerTransferClient:
             authorization_request=request,
             worker_request=worker_request,
             staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
             staging_release=staging_release,
             result=result,
             status_update=status_update,
@@ -727,6 +794,29 @@ def validate_worker_completion_bytes(
         },
     )
     return _worker_result_with_ticket_binding(request, failed)
+
+
+def _worker_running_result(
+    request: WorkerTransferRequest,
+    staging_slot: WorkerStagingSlot,
+) -> WorkerTransferResult:
+    return _worker_result_with_ticket_binding(
+        request,
+        WorkerTransferResult(
+            transfer_id=request.transfer_id,
+            state=WorkerTransferState.RUNNING,
+            bytes_completed=0,
+            metadata={
+                "relay_gpu": request.authorization.relay_gpu,
+                "relay_gpus": worker_validation.authorized_relay_gpus_for_request(
+                    request
+                ),
+                "src_buffer_id": request.authorization.src_buffer.buffer_id,
+                "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
+                "staging_slot_id": staging_slot.slot_id,
+            },
+        ),
+    )
 
 
 def _worker_result_with_ticket_binding(

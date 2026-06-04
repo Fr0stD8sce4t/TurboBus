@@ -20,6 +20,7 @@ from . import validation as worker_validation
 
 
 class WorkerTransferState(str, Enum):
+    RUNNING = "running"
     FAILED = "failed"
     COMPLETE = "complete"
 
@@ -269,6 +270,8 @@ class WorkerTransferLifecycleRecord:
     authorization_request: WorkerTransferAuthorizationRequest
     worker_request: WorkerTransferRequest | None = None
     staging_slot: WorkerStagingSlot | None = None
+    running_update: Mapping[str, object] | None = None
+    running_response: DaemonResponse | None = None
     staging_release: WorkerStagingSlot | None = None
     result: WorkerTransferResult | None = None
     status_update: Mapping[str, object] | None = None
@@ -292,6 +295,16 @@ class WorkerTransferLifecycleRecord:
             WorkerStagingSlot,
         ):
             raise TypeError("staging_slot must be a WorkerStagingSlot")
+        if self.running_update is not None and not isinstance(
+            self.running_update,
+            Mapping,
+        ):
+            raise TypeError("running_update must be a mapping")
+        if self.running_response is not None and not isinstance(
+            self.running_response,
+            DaemonResponse,
+        ):
+            raise TypeError("running_response must be a DaemonResponse")
         if self.staging_release is not None and not isinstance(
             self.staging_release,
             WorkerStagingSlot,
@@ -323,6 +336,8 @@ class WorkerTransferLifecycleRecord:
             object.__setattr__(self, "error", str(self.error))
         if self.status_update is not None:
             object.__setattr__(self, "status_update", dict(self.status_update))
+        if self.running_update is not None:
+            object.__setattr__(self, "running_update", dict(self.running_update))
 
     def as_dict(self) -> dict[str, object]:
         lease_ids = (
@@ -346,6 +361,16 @@ class WorkerTransferLifecycleRecord:
             "staging_slot": (
                 self.staging_slot.as_dict()
                 if self.staging_slot is not None
+                else None
+            ),
+            "running_update": (
+                dict(self.running_update)
+                if self.running_update is not None
+                else None
+            ),
+            "running_response": (
+                asdict(self.running_response)
+                if self.running_response is not None
                 else None
             ),
             "staging_release": (
@@ -387,6 +412,8 @@ class WorkerDataPlaneCompletionEnvelope:
     lease_ids: tuple[str, ...] = ()
     final_state: str | None = None
     staging_slot: Mapping[str, object] | None = None
+    daemon_running_update: Mapping[str, object] | None = None
+    daemon_running_response: Mapping[str, object] | None = None
     worker_result: Mapping[str, object] | None = None
     daemon_status_update: Mapping[str, object] | None = None
     daemon_status_response: Mapping[str, object] | None = None
@@ -398,6 +425,8 @@ class WorkerDataPlaneCompletionEnvelope:
         object.__setattr__(self, "ok", bool(self.ok))
         for field_name in (
             "staging_slot",
+            "daemon_running_update",
+            "daemon_running_response",
             "worker_result",
             "daemon_status_update",
             "daemon_status_response",
@@ -445,6 +474,8 @@ class WorkerDataPlaneCompletionEnvelope:
             lease_ids=lifecycle_lease_ids(lifecycle),
             final_state=lifecycle.final_state,
             staging_slot=payload["staging_slot"],
+            daemon_running_update=payload["running_update"],
+            daemon_running_response=payload["running_response"],
             worker_result=payload["result"],
             daemon_status_update=payload["status_update"],
             daemon_status_response=payload["status_response"],
@@ -462,6 +493,16 @@ class WorkerDataPlaneCompletionEnvelope:
             "final_state": self.final_state,
             "staging_slot": (
                 dict(self.staging_slot) if self.staging_slot is not None else None
+            ),
+            "daemon_running_update": (
+                dict(self.daemon_running_update)
+                if self.daemon_running_update is not None
+                else None
+            ),
+            "daemon_running_response": (
+                dict(self.daemon_running_response)
+                if self.daemon_running_response is not None
+                else None
             ),
             "worker_result": (
                 dict(self.worker_result) if self.worker_result is not None else None
@@ -574,6 +615,8 @@ def buffer_from_payload(payload: object) -> BufferRegistration:
 
 def daemon_state_for_worker_state(state: WorkerTransferState) -> TransferStatusState:
     worker_state = WorkerTransferState(state)
+    if worker_state == WorkerTransferState.RUNNING:
+        return TransferStatusState.RUNNING
     if worker_state == WorkerTransferState.COMPLETE:
         return TransferStatusState.COMPLETE
     return TransferStatusState.FAILED
@@ -584,6 +627,8 @@ def daemon_status_update_for_result(result: WorkerTransferResult) -> dict[str, o
     error = result.error
     if result.state == WorkerTransferState.FAILED and error is None:
         error = "worker transfer failed"
+    if result.state == WorkerTransferState.RUNNING:
+        error = None
     return {
         "transfer_id": result.transfer_id,
         "state": daemon_state.value,

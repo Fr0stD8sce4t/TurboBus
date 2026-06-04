@@ -7,17 +7,18 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to inspect real workload closure so model-loading, training
-offload, inference KV, vLLM KV, and lower-level vLLM paths keep using the
-unified runtime session without application-side physical route control.
+The next task is to perform a system-code closure audit for the daemon-first
+path before any test, benchmark, paper-validation, server-validation, or
+experiment work is planned.
 
 ## Exit Criteria
 
-- Workload adapters construct transfer work through `TurboBusRuntimeSession`
-  and `OffloadStore` intent submission instead of daemon, worker, or backend
-  shortcuts.
-- Adapter state keys, handles, and events preserve daemon runtime session,
-  job, intent, ticket, and receipt identity.
+- Public runtime session, intent executor, worker lifecycle, scheduler,
+  offload store, and adapters have no remaining compatibility wrappers or
+  application-side physical route controls.
+- System modules still route work through `TransferIntent`, daemon scheduling,
+  daemon-issued `ExecutionTicket`, worker/backend completion, and
+  `TransferReceipt`.
 - Applications and adapters still submit only `TransferIntent` and consume
   `TransferReceipt`.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
@@ -25,14 +26,14 @@ unified runtime session without application-side physical route control.
 
 ## Current Code Work
 
-- Inspect `turbobus/offload_store.py`, `turbobus/adapters/model_loading.py`,
-  `turbobus/adapters/training_offload.py`,
-  `turbobus/adapters/inference.py`, `turbobus/adapters/vllm.py`,
-  `turbobus/adapters/vllm_integration.py`, and
-  `turbobus/adapters/vllm_kv_connector.py` for runtime-session handoff.
-- Keep offload and vLLM adapter handoff owned by `TurboBusRuntimeSession`; vLLM
-  connector prefix state uses the daemon runtime session id while preserving
-  the connector engine id only as metadata.
+- Inspect `turbobus/runtime_session.py`, `turbobus/intent_executor.py`,
+  `turbobus/direct_fallback.py`, `turbobus/buffer_registration.py`,
+  `turbobus/worker/lifecycle.py`, `turbobus/scheduler/daemon.py`,
+  `turbobus/daemon/server.py`, `turbobus/offload_store.py`, and
+  `turbobus/adapters/` for remaining route-selection or compatibility drift.
+- Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
+  runtime session, job, intent, ticket, decision, topology, and receipt
+  identity in adapter-visible state.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
   deleted. Do not recreate compatibility export layers.
@@ -41,7 +42,7 @@ unified runtime session without application-side physical route control.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting real workload closure
-through the unified runtime session. Keep the work focused on system code;
-defer tests, benchmarks, paper-validation, experiments, and server validation
-until the full system implementation pass is complete.
+Continue the code implementation pass with a system-code closure audit. Keep
+the work focused on implementation and refactoring; defer tests, benchmarks,
+paper-validation, experiments, and server validation until the full system
+implementation pass is complete.

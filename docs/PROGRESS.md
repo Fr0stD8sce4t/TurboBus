@@ -64,25 +64,34 @@ Opening shared pinned CPU buffers and CUDA IPC device handles revalidates the
 daemon-issued `ExecutionTicket`, worker authorization, data-plane request,
 ticket id, transfer id, and plan generation before touching resources.
 
+Real workload adapters keep using the unified runtime-session path. Offload
+block state now exposes the last daemon intent, receipt, ticket, decision,
+topology snapshot, job, session, receipt state, and error identity, and the
+lower-level vLLM integration entry rejects non-runtime-session objects before
+building KV adapters.
+
 ## Completed This Round
 
-- Tightened worker resource binding so `WorkerDataPlaneResourceBinder.bind()`
-  accepts only a full `WorkerTransferRequest`, not a bare data-plane request.
-- Revalidated daemon-issued ticket ownership before binding shared pinned CPU
-  buffers and CUDA IPC GPU handles.
-- Added ticket id, plan generation, session id, and job id to worker resource
-  evidence emitted by bound resources.
+- Inspected offload, model-loading, training-offload, inference KV, vLLM KV,
+  vLLM integration, and vLLM connector handoff for daemon, worker, backend, or
+  physical-route shortcuts.
+- Added daemon transfer identity fields to `OffloadBlockInfo` so workload
+  adapter state preserves the last intent, receipt, ticket, decision, topology
+  snapshot, job, session, receipt state, and transfer error.
+- Required the lower-level vLLM integration entry to receive an open
+  `TurboBusRuntimeSession`-shaped object before it can build KV adapters.
 - Kept the old compatibility/export-layer files deleted and left server
   validation deferred.
 - Updated the active plan files to move the next implementation entry to
-  real workload closure through the unified runtime session.
+  a system-code closure audit.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\resources.py
-  turbobus\worker\lifecycle.py turbobus\worker\models.py
-  turbobus\worker\validation.py turbobus\worker\cuda_executor.py
-  turbobus\runtime_session.py` passed.
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
+  turbobus\adapters\inference.py turbobus\adapters\vllm.py
+  turbobus\adapters\vllm_integration.py
+  turbobus\adapters\vllm_kv_connector.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -90,11 +99,12 @@ ticket id, transfer id, and plan generation before touching resources.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Real workload closure still needs inspection so every adapter path stays on
-  the unified runtime session and consumes real receipts.
+- A final system-code closure audit still needs to look for remaining
+  compatibility drift or application-side route selection before planning
+  tests, benchmarks, paper validation, server validation, or experiments.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting real workload closure
-through the unified runtime session while keeping server validation deferred
-until the full system implementation pass is complete.
+Continue the code implementation pass with a system-code closure audit while
+keeping server validation deferred until the full system implementation pass
+is complete.

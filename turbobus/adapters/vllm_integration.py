@@ -103,6 +103,9 @@ class VllmTurboBusIntegration:
         cpu_buffer_id: str = "vllm-kv-cpu",
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> None:
+        _require_runtime_session_open(runtime_session)
+        if not hasattr(runtime_session, "job_id"):
+            raise TypeError("vLLM integration requires a TurboBusRuntimeSession")
         self.runtime_session = runtime_session
         self.state = VllmIntegrationState()
         self._cpu_backings = list(cpu_backings) if cpu_backings is not None else None

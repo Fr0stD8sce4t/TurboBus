@@ -178,6 +178,15 @@ class OffloadBlockInfo:
     state: BlockState
     last_operation: str | None
     transfer_stats: TransferStats | None
+    last_intent_id: str | None = None
+    last_receipt_id: str | None = None
+    last_ticket_id: str | None = None
+    last_decision_id: str | None = None
+    last_topology_snapshot_id: str | None = None
+    last_job_id: str | None = None
+    last_session_id: str | None = None
+    last_receipt_state: str | None = None
+    last_transfer_error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -195,6 +204,15 @@ class OffloadBlockInfo:
                 if self.transfer_stats is not None
                 else None
             ),
+            "last_intent_id": self.last_intent_id,
+            "last_receipt_id": self.last_receipt_id,
+            "last_ticket_id": self.last_ticket_id,
+            "last_decision_id": self.last_decision_id,
+            "last_topology_snapshot_id": self.last_topology_snapshot_id,
+            "last_job_id": self.last_job_id,
+            "last_session_id": self.last_session_id,
+            "last_receipt_state": self.last_receipt_state,
+            "last_transfer_error": self.last_transfer_error,
         }
 
 
@@ -263,6 +281,7 @@ class OffloadBlock:
         return summarize_transfer_handles([self.last_handle])
 
     def info(self) -> OffloadBlockInfo:
+        transfer_identity = transfer_identity_from_handle(self.last_handle)
         return OffloadBlockInfo(
             name=self.name,
             block_id=self.block_id,
@@ -274,6 +293,7 @@ class OffloadBlock:
             state=self.state,
             last_operation=self.last_operation,
             transfer_stats=self.last_transfer_stats,
+            **transfer_identity,
         )
 
 
@@ -314,6 +334,36 @@ def transfer_stats_from_receipt(receipt: TransferReceipt) -> TransferStats:
         direct_chunks=direct_chunks,
         relay_chunks=relay_chunks,
     )
+
+
+def transfer_identity_from_handle(handle: object | None) -> dict[str, str | None]:
+    if handle is None:
+        return {
+            "last_intent_id": None,
+            "last_receipt_id": None,
+            "last_ticket_id": None,
+            "last_decision_id": None,
+            "last_topology_snapshot_id": None,
+            "last_job_id": None,
+            "last_session_id": None,
+            "last_receipt_state": None,
+            "last_transfer_error": None,
+        }
+    intent = getattr(handle, "intent", None)
+    receipt = getattr(handle, "receipt", None)
+    return {
+        "last_intent_id": _optional_str(getattr(intent, "intent_id", None)),
+        "last_receipt_id": _optional_str(getattr(receipt, "receipt_id", None)),
+        "last_ticket_id": _optional_str(getattr(receipt, "ticket_id", None)),
+        "last_decision_id": _optional_str(getattr(receipt, "decision_id", None)),
+        "last_topology_snapshot_id": _optional_str(
+            getattr(receipt, "topology_snapshot_id", None)
+        ),
+        "last_job_id": _optional_str(getattr(receipt, "job_id", None)),
+        "last_session_id": _optional_str(getattr(receipt, "session_id", None)),
+        "last_receipt_state": _optional_str(getattr(receipt, "state", None)),
+        "last_transfer_error": _optional_str(getattr(receipt, "error", None)),
+    }
 
 
 def _stat_value(stats, name: str) -> int:
@@ -699,6 +749,12 @@ def _require_non_empty(value: object, field_name: str) -> str:
     if not normalized.strip():
         raise ValueError(f"{field_name} must be non-empty")
     return normalized
+
+
+def _optional_str(value: object | None) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _require_runtime_session_client(

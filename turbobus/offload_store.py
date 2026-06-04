@@ -448,45 +448,14 @@ class OffloadStore:
         self._blocks[name] = block
         return block
 
-    def add_block(
-        self,
-        name: str,
-        cpu_tensor,
-        gpu_tensor=None,
-        *,
-        block_id=None,
-        cpu_slot=None,
-        gpu_slot=None,
-        cpu_offset: int = 0,
-        gpu_offset: int = 0,
-        byte_count: int | None = None,
-    ) -> OffloadBlock:
-        return self.add(
-            name,
-            cpu_tensor,
-            gpu_tensor,
-            block_id=block_id,
-            cpu_slot=cpu_slot,
-            gpu_slot=gpu_slot,
-            cpu_offset=cpu_offset,
-            gpu_offset=gpu_offset,
-            byte_count=byte_count,
-        )
-
     def remove(self, name: str) -> OffloadBlock:
         return self._blocks.pop(name)
-
-    def remove_block(self, name: str) -> OffloadBlock:
-        return self.remove(name)
 
     def block(self, name: str) -> OffloadBlock:
         try:
             return self._blocks[name]
         except KeyError as exc:
             raise KeyError(f"unknown offload block: {name}") from exc
-
-    def get_block(self, name: str) -> OffloadBlock:
-        return self.block(name)
 
     def names(self) -> list[str]:
         return list(self._blocks)

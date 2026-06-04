@@ -125,7 +125,7 @@ class TrainingOffloadManager(OffloadStore):
         return blocks
 
     def bucket(self, name: str) -> OffloadBlock:
-        return self.get_block(name)
+        return self.block(name)
 
     def bucket_info(self, name: str) -> OffloadBlockInfo:
         return self.block_info(name)

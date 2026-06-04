@@ -123,30 +123,34 @@ conversion helpers are gone. Native runtime initialization still enables the
 pool-capable default; direct, relay, and pooled execution remain scheduler
 outcomes carried in daemon-issued plans.
 
+Offload store block operations now expose one canonical production method set:
+`add()`, `remove()`, and `block()`. The old `add_block()`, `remove_block()`,
+and `get_block()` aliases are removed from production code, and model-loading
+and training-offload adapters call the canonical methods directly.
+
+Worker transfer internals now keep authorization, status reporting, and cleanup
+coordinators private to the worker lifecycle. `WorkerTransferClient` no longer
+exposes a public authorization-only method; the production worker entry remains
+the full authorize-execute-status-cleanup lifecycle.
+
 ## Completed This Round
 
-- Removed app-facing transfer-mode controls from runtime options, CUDA backend,
-  and native Python helpers while keeping scheduler-owned `TransferMode`
-  planning internals.
-- Split target/relay profile bootstrap socket methods into
-  `TurboBusDaemonProfileClient` and routed `TurboBusRuntimeSession` profile
-  bootstrap and relay discovery through that client.
-- Deleted the unused old native `TransferHandle` wrapper from
-  `runtime_engine.py`; production transfers continue to return
-  `TransferReceipt`.
+- Removed old offload block alias methods and updated production adapters to
+  call canonical `OffloadStore` methods directly.
+- Made worker authorization, status reporter, and cleanup coordinator helpers
+  private implementation details and removed the public authorization-only
+  `WorkerTransferClient` entry point.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_engine.py turbobus\native_runtime.py
-  turbobus\backends\base.py turbobus\backends\cuda.py
-  turbobus\daemon\client.py turbobus\daemon\__init__.py
-  turbobus\runtime_session.py turbobus\profile.py` passed.
-- Targeted `rg` checks found no remaining production
-  `transfer_mode_value`, `native_transfer_mode`, `runtime_transfer_mode_value`,
-  or old `runtime_engine.TransferHandle` definitions. Profile methods now
-  remain only on `TurboBusDaemonProfileClient` and daemon server handlers.
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
+  turbobus\worker\lifecycle.py turbobus\worker\__init__.py` passed.
+- Targeted `rg` and `Select-String` checks found no remaining production
+  `add_block()`, `remove_block()`, `get_block()`, public worker `authorize()`,
+  or package exports for worker authorization/status/cleanup helper classes.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -177,6 +181,9 @@ outcomes carried in daemon-issued plans.
 - Existing tests may still refer to removed runtime/backend transfer-mode
   helper APIs or the old native `TransferHandle`. Current-stage constraints
   defer test migration until the system implementation pass is complete.
+- Existing tests may still refer to removed offload block alias methods or
+  worker authorization helper exports. Current-stage constraints defer test
+  migration until the system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

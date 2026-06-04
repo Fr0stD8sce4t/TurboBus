@@ -31,6 +31,7 @@ experiment work is planned.
   reservation, session-relay, worker-shortcut, adapter-alias, planner-helper,
   release-transfer, reschedule-transfer, app-facing execution-status, runtime
   transfer-mode, backend transfer-mode, and ordinary daemon-client profile entry
+  points, plus offload block alias and worker partial-lifecycle public entry
   points.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt

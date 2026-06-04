@@ -48,11 +48,11 @@ class WorkerCleanupError(RuntimeError):
     pass
 
 
-class WorkerTransferAuthorizer:
+class _WorkerTransferAuthorizer:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
-    def authorize(
+    def _authorize(
         self,
         request: WorkerTransferAuthorizationRequest,
     ) -> WorkerTransferRequest:
@@ -83,7 +83,7 @@ class WorkerTransferAuthorizer:
             ) from exc
 
 
-class WorkerTransferStatusReporter:
+class _WorkerTransferStatusReporter:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
@@ -146,7 +146,7 @@ def _status_evidence_for_result(
     return {key: metadata[key] for key in evidence_keys if key in metadata}
 
 
-class WorkerTransferCleanupCoordinator:
+class _WorkerTransferCleanupCoordinator:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
@@ -424,8 +424,8 @@ class WorkerTransferClient:
         self,
         daemon_client,
         executor: object | None = None,
-        status_reporter: WorkerTransferStatusReporter | None = None,
-        cleanup_coordinator: WorkerTransferCleanupCoordinator | None = None,
+        status_reporter: _WorkerTransferStatusReporter | None = None,
+        cleanup_coordinator: _WorkerTransferCleanupCoordinator | None = None,
         staging_pool: WorkerStagingPool | None = None,
         resource_binder: WorkerDataPlaneResourceBinder | None = None,
     ) -> None:
@@ -433,22 +433,22 @@ class WorkerTransferClient:
             executor = default_worker_executor()
             if resource_binder is None:
                 resource_binder = WorkerDataPlaneResourceBinder()
-        self.authorizer = WorkerTransferAuthorizer(daemon_client)
+        self.authorizer = _WorkerTransferAuthorizer(daemon_client)
         self.executor = executor
-        self.status_reporter = status_reporter or WorkerTransferStatusReporter(
+        self.status_reporter = status_reporter or _WorkerTransferStatusReporter(
             daemon_client
         )
-        self.cleanup_coordinator = cleanup_coordinator or WorkerTransferCleanupCoordinator(
+        self.cleanup_coordinator = cleanup_coordinator or _WorkerTransferCleanupCoordinator(
             daemon_client
         )
         self.staging_pool = staging_pool or WorkerStagingPool()
         self.resource_binder = resource_binder
 
-    def authorize(
+    def _authorize(
         self,
         request: WorkerTransferAuthorizationRequest,
     ) -> WorkerTransferRequest:
-        return self.authorizer.authorize(request)
+        return self.authorizer._authorize(request)
 
     def submit_report_cleanup_lifecycle(
         self,
@@ -456,7 +456,7 @@ class WorkerTransferClient:
         cleanup_target_kind: str = "reservation",
     ) -> WorkerTransferLifecycleRecord:
         try:
-            worker_request = self.authorize(request)
+            worker_request = self._authorize(request)
         except WorkerAuthorizationError as exc:
             cleanup_target_id = cleanup_target_id_for_request(
                 cleanup_target_kind,
@@ -915,11 +915,8 @@ __all__ = [
     "WorkerAuthorizationError",
     "WorkerCleanupError",
     "WorkerStatusReportError",
-    "WorkerTransferAuthorizer",
-    "WorkerTransferCleanupCoordinator",
     "WorkerTransferClient",
     "WorkerTransferService",
-    "WorkerTransferStatusReporter",
     "cleanup_target_id",
     "default_worker_executor",
     "execute_worker_transfer",

@@ -95,6 +95,22 @@ class InferenceKVSlotAdapter(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> "InferenceKVSlotAdapter":
+        factory = getattr(runtime_session, "make_inference_kv_slot_adapter", None)
+        if callable(factory):
+            adapter = factory(
+                cpu_backing,
+                gpu_kv_backing,
+                workload_kind=workload_kind,
+                priority=priority,
+                metadata=metadata,
+                intent_prefix=intent_prefix,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+            if not isinstance(adapter, cls):
+                raise TypeError(
+                    "runtime session inference factory must return an InferenceKVSlotAdapter"
+                )
+            return adapter
         return cls(
             runtime_session,
             cpu_backing,

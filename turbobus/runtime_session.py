@@ -589,6 +589,118 @@ class TurboBusRuntimeSession:
             wait_timeout_seconds=wait_timeout_seconds,
         )
 
+    def make_offload_store(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        from .offload.store import OffloadStore
+
+        context = self.make_adapter_transfer_context(
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return OffloadStore(self, context)
+
+    def make_training_offload_manager(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.TRAINING_STATE,
+        priority: int = 0,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        from .adapters.training_offload import TrainingOffloadManager
+
+        context = self.make_adapter_transfer_context(
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return TrainingOffloadManager._from_transfer_context(
+            self,
+            context,
+            cpu_buffer,
+            gpu_buffer,
+        )
+
+    def make_model_weight_loader(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        priority: int = 0,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        from .adapters.model_loading import ModelWeightLoader
+
+        context = self.make_adapter_transfer_context(
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=WorkloadKind.MODEL_WEIGHTS,
+            priority=priority,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return ModelWeightLoader._from_transfer_context(
+            self,
+            context,
+            cpu_buffer,
+            gpu_buffer,
+        )
+
+    def make_inference_kv_slot_adapter(
+        self,
+        cpu_backing,
+        gpu_kv_backing,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        from .adapters.inference import InferenceKVSlotAdapter
+
+        context = self.make_adapter_transfer_context(
+            cpu_backing,
+            gpu_kv_backing,
+            workload_kind=workload_kind,
+            priority=priority,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+        return InferenceKVSlotAdapter._from_transfer_context(
+            self,
+            context,
+            cpu_backing,
+            gpu_kv_backing,
+        )
+
     def _ensure_transfer_buffers(
         self,
         source: ExecutableBuffer,

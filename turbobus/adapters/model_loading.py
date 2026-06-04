@@ -11,6 +11,18 @@ from ..schema import WorkloadKind
 class ModelWeightLoader(OffloadStore):
     """Model-weight bucket loading API backed by daemon transfer intent."""
 
+    @classmethod
+    def _from_transfer_context(
+        cls,
+        runtime_session,
+        transfer_context: AdapterTransferContext,
+        cpu_buffer,
+        gpu_buffer,
+    ) -> "ModelWeightLoader":
+        instance = cls.__new__(cls)
+        OffloadStore.__init__(instance, runtime_session, transfer_context)
+        return instance
+
     def __init__(
         self,
         runtime_session,
@@ -46,6 +58,21 @@ class ModelWeightLoader(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> "ModelWeightLoader":
+        factory = getattr(runtime_session, "make_model_weight_loader", None)
+        if callable(factory):
+            loader = factory(
+                cpu_buffer,
+                gpu_buffer,
+                priority=priority,
+                metadata=metadata,
+                intent_prefix=intent_prefix,
+                wait_timeout_seconds=wait_timeout_seconds,
+            )
+            if not isinstance(loader, cls):
+                raise TypeError(
+                    "runtime session model weight factory must return a ModelWeightLoader"
+                )
+            return loader
         return cls(
             runtime_session,
             cpu_buffer,

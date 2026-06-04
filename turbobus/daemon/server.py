@@ -464,9 +464,14 @@ class TurboBusDaemon:
             else:
                 return DaemonResponse(ok=False, error="unsupported cleanup target")
             self._cleanup_events.append(cleanup)
+            promoted = self._promote_delayed_transfers_locked(now=time.time())
             return DaemonResponse(
                 ok=True,
-                payload={"cleanup": asdict(cleanup), "removed": removed},
+                payload={
+                    "cleanup": asdict(cleanup),
+                    "removed": removed,
+                    "promoted_transfers": promoted,
+                },
             )
 
     def close_session(
@@ -596,6 +601,7 @@ class TurboBusDaemon:
             if reservation is None:
                 return DaemonResponse(ok=False, error="unknown reservation")
             released_reservation_id = reservation.reservation_id
+            promoted = self._promote_delayed_transfers_locked(now=time.time())
             return DaemonResponse(
                 ok=True,
                 payload={
@@ -603,6 +609,7 @@ class TurboBusDaemon:
                     "released_reservation_ids": (released_reservation_id,),
                     "cleanup_kind": "reservation",
                     "cleanup_mode": "release",
+                    "promoted_transfers": promoted,
                 },
             )
 
@@ -806,6 +813,7 @@ class TurboBusDaemon:
                 )
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
             removed = _empty_removed_summary()
+            promoted = ()
             if updated.state is TransferStatusState.COMPLETE:
                 self._append_transfer_audit_records_locked(
                     event_type="worker_completion",
@@ -830,6 +838,7 @@ class TurboBusDaemon:
                         cleanup_reason=updated.error or "worker_failed",
                     ),
                 )
+                promoted = self._promote_delayed_transfers_locked(now=time.time())
             elif updated.state is TransferStatusState.CANCELED:
                 self._append_transfer_audit_records_locked(
                     event_type="transfer_canceled",
@@ -847,9 +856,14 @@ class TurboBusDaemon:
                         cleanup_reason=updated.error or "transfer_canceled",
                     ),
                 )
+                promoted = self._promote_delayed_transfers_locked(now=time.time())
             return DaemonResponse(
                 ok=True,
-                payload={"status": asdict(updated), "removed": removed},
+                payload={
+                    "status": asdict(updated),
+                    "removed": removed,
+                    "promoted_transfers": promoted,
+                },
             )
 
     def submit_transfer_intent(
@@ -1615,9 +1629,11 @@ class TurboBusDaemon:
 
     def reap_expired_leases(self, now: float | None = None) -> list[str]:
         with self._lock:
-            return self._reap_expired_leases_locked(
-                time.time() if now is None else float(now)
-            )
+            checked_at = time.time() if now is None else float(now)
+            expired = self._reap_expired_leases_locked(checked_at)
+            if expired:
+                self._promote_delayed_transfers_locked(now=checked_at)
+            return expired
 
     def _release_reservation_locked(
         self,
@@ -2107,6 +2123,150 @@ class TurboBusDaemon:
         if ticket_id is None or ticket_id not in self._execution_tickets:
             return "intent transfer status update requires daemon-issued execution ticket"
         return None
+
+    def _promote_delayed_transfers_locked(
+        self,
+        *,
+        now: float,
+    ) -> tuple[dict[str, object], ...]:
+        promoted: list[dict[str, object]] = []
+        delayed_transfer_ids = tuple(
+            transfer_id
+            for transfer_id, admission in sorted(self._transfer_admissions.items())
+            if admission.get("state") == _ADMISSION_DELAYED
+        )
+        for transfer_id in delayed_transfer_ids:
+            status = self._transfer_statuses.get(transfer_id)
+            if status is None or status.state in _TERMINAL_TRANSFER_STATES:
+                continue
+            request = self._transfer_plan_requests.get(transfer_id)
+            if request is None:
+                continue
+            try:
+                (
+                    session,
+                    decision,
+                    buffer_ids_tuple,
+                    _plan_job_id,
+                    _relay_eligibility,
+                    _planning_relays,
+                    _snapshot_id,
+                ) = self._scheduler_decision_for_transfer_locked(
+                    session_id=str(request["session_id"]),
+                    total_bytes=int(request["total_bytes"]),
+                    chunk_bytes=int(request["chunk_bytes"]),
+                    mode=str(request["mode"]),
+                    direction=str(request["direction"]),
+                    job_id=(
+                        None
+                        if request.get("job_id") is None
+                        else str(request["job_id"])
+                    ),
+                    buffer_ids=request.get("buffer_ids"),
+                    normalized_ranges=request.get("ranges"),
+                    intent_id=request.get("intent_id"),
+                    topology_snapshot_id=request.get("topology_snapshot_id"),
+                    workload_kind=str(request.get("workload_kind", "generic")),
+                    priority=int(request.get("priority", 0) or 0),
+                    peer_identity=None,
+                    now=now,
+                    exclude_transfer_id=transfer_id,
+                    defer_relay_admission=True,
+                )
+            except ValueError as exc:
+                admission = dict(self._transfer_admissions.get(transfer_id, {}))
+                admission.update(
+                    {
+                        "state": _ADMISSION_DELAYED,
+                        "reason": str(exc),
+                        "promotion_failed_at": float(now),
+                    }
+                )
+                self._transfer_admissions[transfer_id] = admission
+                self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+                continue
+            admission = self._admission_for_decision_locked(
+                decision,
+                session=session,
+                allow_delayed=True,
+                now=now,
+            )
+            if admission["state"] != _ADMISSION_ADMITTED:
+                admission = {
+                    **admission,
+                    "plan_generation": self._transfer_plan_generations.get(
+                        transfer_id,
+                        0,
+                    ),
+                    "plan_expires_at": self._transfer_plan_expirations.get(transfer_id),
+                    "promotion_checked_at": float(now),
+                }
+                self._transfer_admissions[transfer_id] = admission
+                self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+                continue
+
+            generation = int(self._transfer_plan_generations.get(transfer_id, 0)) + 1
+            self._transfer_plan_generations[transfer_id] = generation
+            self._transfer_plans[transfer_id] = dict(decision.plan)
+            self._scheduling_decisions[transfer_id] = decision
+            self._transfer_plan_expirations[transfer_id] = (
+                self._plan_expires_at_for_decision(decision, now=now)
+            )
+            self._execution_tickets.pop(self._transfer_tickets.pop(transfer_id, ""), None)
+            reservations = self._commit_scheduler_leases_locked(
+                session,
+                decision,
+                transfer_id=transfer_id,
+                buffer_ids=buffer_ids_tuple,
+            )
+            admission = {
+                **admission,
+                "lease_ids": tuple(
+                    reservation.reservation_id for reservation in reservations
+                ),
+                "plan_generation": generation,
+                "plan_expires_at": self._transfer_plan_expirations[transfer_id],
+                "promoted_at": float(now),
+            }
+            self._transfer_admissions[transfer_id] = admission
+            intent_id = request.get("intent_id")
+            intent = (
+                None
+                if intent_id is None
+                else self._transfer_intents.get(str(intent_id))
+            )
+            ticket = None
+            if intent is not None:
+                ticket = self._execution_ticket_for_intent_locked(
+                    intent=intent,
+                    transfer_id=transfer_id,
+                    decision=decision,
+                    now=now,
+                )
+                self._execution_tickets[ticket.ticket_id] = ticket
+                self._transfer_tickets[transfer_id] = ticket.ticket_id
+            self._append_audit_record_locked(
+                event_type="admission_promoted",
+                transfer_id=transfer_id,
+                ticket=ticket,
+                state=status.state,
+                reason="daemon_resource_state_available",
+                bytes_completed=status.bytes_completed,
+                now=now,
+            )
+            self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+            self._touch_session_locked(session.session_id, now)
+            promoted.append(
+                {
+                    "transfer_id": transfer_id,
+                    "plan_generation": generation,
+                    "lease_ids": tuple(
+                        reservation.reservation_id for reservation in reservations
+                    ),
+                    "ticket_id": None if ticket is None else ticket.ticket_id,
+                }
+            )
+        return tuple(promoted)
 
     def _current_execution_ticket_for_transfer_locked(
         self,

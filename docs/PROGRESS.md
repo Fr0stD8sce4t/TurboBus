@@ -63,22 +63,25 @@ active reservations, and worker staging records as busy relay state for
 admission and next-plan decisions. Runtime summaries and scheduling metadata
 record those busy relays so daemon decisions are tied to live control-plane
 state rather than benchmark hints.
+Delayed relay admissions now promote from daemon-owned resource changes:
+reservation release, cleanup, failure/cancel cleanup, and expired lease reaping
+scan delayed transfers, re-run daemon scheduling, advance plan generation, and
+issue fresh leases/tickets only when relay resources are available.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Extended scheduler runtime feedback so live leases, active reservations, and
-  staging records mark relay GPUs busy before worker execution reaches an
-  active relay path.
-- Updated daemon admission and runtime summaries to use the same live busy
-  relay view.
+- Added daemon-owned delayed admission promotion after relay resources are
+  released or reaped.
+- Promotion re-runs scheduler state, advances `plan_generation`, commits new
+  leases, and issues fresh `ExecutionTicket` data without application route
+  selection.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\scheduler\daemon.py` passed.
+- `python -m py_compile turbobus\daemon\server.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -89,5 +92,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting delayed admission and
-reschedule promotion while keeping server validation deferred.
+Continue the code implementation pass by inspecting worker/backend execution
+evidence and receipt completion while keeping server validation deferred.

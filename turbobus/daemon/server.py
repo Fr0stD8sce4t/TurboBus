@@ -107,6 +107,8 @@ class TurboBusDaemon:
         self._transfer_completion_sources: dict[str, str] = {}
         self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
         self._transfer_peer_identities: dict[str, PeerIdentity] = {}
+        self._transfer_receipt_archive: dict[str, dict[str, object]] = {}
+        self._archived_intent_transfers: dict[str, str] = {}
         self._staging_records: dict[str, dict[str, object]] = {}
         self._audit_records: list[dict[str, object]] = []
         self._connection_scoped_sessions: set[str] = set()
@@ -543,13 +545,23 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         with self._lock:
             status = self._transfer_statuses.get(str(transfer_id))
+            archived = self._transfer_receipt_archive.get(str(transfer_id), {})
+            if status is None and isinstance(archived.get("status"), TransferStatus):
+                status = archived["status"]
             if status is None:
                 return DaemonResponse(ok=False, error="unknown transfer")
             try:
-                self._validate_peer_owns_job_locked(
-                    job_id=status.job_id,
-                    peer_identity=peer_identity,
-                )
+                if status.job_id in self._jobs:
+                    self._validate_peer_owns_job_locked(
+                        job_id=status.job_id,
+                        peer_identity=peer_identity,
+                    )
+                else:
+                    self._validate_peer_owns_receipt_transfer_locked(
+                        transfer_id=status.transfer_id,
+                        job_id=status.job_id,
+                        peer_identity=peer_identity,
+                    )
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
             if state is None and bytes_completed is None and error is None:
@@ -842,6 +854,7 @@ class TurboBusDaemon:
         existing.update(supplemental)
         self._transfer_completion_sources[status.transfer_id] = normalized_completion_source
         self._transfer_completion_evidence[status.transfer_id] = existing
+        self._archive_transfer_receipt_state_locked(status.transfer_id)
         return DaemonResponse(ok=True)
 
     def submit_transfer_intent(
@@ -999,6 +1012,10 @@ class TurboBusDaemon:
                 try:
                     receipt = self._receipt_for_intent_locked(normalized_intent_id)
                     transfer_id = self._intent_transfers.get(normalized_intent_id)
+                    if transfer_id is None:
+                        transfer_id = self._archived_intent_transfers.get(
+                            normalized_intent_id
+                        )
                     self._validate_peer_owns_receipt_transfer_locked(
                         transfer_id=transfer_id,
                         job_id=receipt.job_id,
@@ -2178,7 +2195,13 @@ class TurboBusDaemon:
         self,
         transfer_id: str,
     ) -> ExecutionTicket:
-        ticket = self._transfer_completion_tickets.get(str(transfer_id))
+        normalized = str(transfer_id)
+        ticket = self._transfer_completion_tickets.get(normalized)
+        if ticket is None:
+            archived = self._transfer_receipt_archive.get(normalized, {})
+            archived_ticket = archived.get("ticket")
+            if isinstance(archived_ticket, ExecutionTicket):
+                ticket = archived_ticket
         if ticket is None:
             raise ValueError(
                 "intent transfer completion requires archived execution ticket"
@@ -2193,6 +2216,10 @@ class TurboBusDaemon:
         completion_ticket = self._transfer_completion_tickets.get(normalized_transfer_id)
         if completion_ticket is not None:
             return completion_ticket
+        archived = self._transfer_receipt_archive.get(normalized_transfer_id, {})
+        archived_ticket = archived.get("ticket")
+        if isinstance(archived_ticket, ExecutionTicket):
+            return archived_ticket
         ticket_id = self._transfer_tickets.get(normalized_transfer_id)
         return None if ticket_id is None else self._execution_tickets.get(ticket_id)
 
@@ -2201,14 +2228,19 @@ class TurboBusDaemon:
         if not self._intent_requires_execution_evidence_locked(normalized_transfer_id):
             return None
         status = self._transfer_statuses.get(normalized_transfer_id)
+        archived = self._transfer_receipt_archive.get(normalized_transfer_id, {})
+        if status is None and isinstance(archived.get("status"), TransferStatus):
+            status = archived["status"]
         if status is None:
             return "unknown transfer"
         evidence = self._transfer_completion_evidence.get(normalized_transfer_id)
+        if evidence is None and isinstance(archived.get("completion_evidence"), Mapping):
+            evidence = archived["completion_evidence"]
         if not isinstance(evidence, Mapping):
             return "intent transfer release requires verified completion evidence"
         completion_source = self._transfer_completion_sources.get(
             normalized_transfer_id,
-            "worker",
+            str(archived.get("completion_source", "worker")),
         )
         try:
             ticket = self._completion_ticket_for_transfer_locked(
@@ -2833,10 +2865,19 @@ class TurboBusDaemon:
         normalized_intent_id = str(intent_id)
         transfer_id = self._intent_transfers.get(normalized_intent_id)
         if transfer_id is None:
+            transfer_id = self._archived_intent_transfers.get(normalized_intent_id)
+        if transfer_id is None:
             raise ValueError("unknown transfer intent")
+        archived = self._transfer_receipt_archive.get(str(transfer_id), {})
         intent = self._transfer_intents.get(normalized_intent_id)
+        if intent is None and isinstance(archived.get("intent"), TransferIntent):
+            intent = archived["intent"]
         status = self._transfer_statuses.get(transfer_id)
+        if status is None and isinstance(archived.get("status"), TransferStatus):
+            status = archived["status"]
         decision = self._scheduling_decisions.get(transfer_id)
+        if decision is None and isinstance(archived.get("decision"), SchedulingDecision):
+            decision = archived["decision"]
         if intent is None:
             raise ValueError("transfer intent is unavailable")
         if status is None:
@@ -2845,8 +2886,17 @@ class TurboBusDaemon:
             raise ValueError("scheduling decision is unavailable")
         ticket = self._receipt_execution_ticket_for_transfer_locked(transfer_id)
         admission = dict(self._transfer_admissions.get(transfer_id, {}))
+        if not admission and isinstance(archived.get("admission"), Mapping):
+            admission = dict(archived["admission"])
         completion_source = self._transfer_completion_sources.get(transfer_id)
+        if completion_source is None and archived.get("completion_source") is not None:
+            completion_source = str(archived["completion_source"])
         completion_evidence = self._transfer_completion_evidence.get(transfer_id)
+        if (
+            completion_evidence is None
+            and isinstance(archived.get("completion_evidence"), Mapping)
+        ):
+            completion_evidence = dict(archived["completion_evidence"])
         return daemon_receipts.receipt_for_transfer(
             transfer_id=transfer_id,
             intent=intent,
@@ -2864,7 +2914,13 @@ class TurboBusDaemon:
     def _intent_requires_execution_evidence_locked(self, transfer_id: str) -> bool:
         request = self._transfer_plan_requests.get(str(transfer_id), {})
         intent_id = request.get("intent_id")
-        return intent_id is not None and str(intent_id) in self._transfer_intents
+        if intent_id is None:
+            archived = self._transfer_receipt_archive.get(str(transfer_id), {})
+            intent_id = archived.get("intent_id")
+        return intent_id is not None and (
+            str(intent_id) in self._transfer_intents
+            or str(intent_id) in self._archived_intent_transfers
+        )
 
     def _topology_snapshot_id_locked(self) -> str:
         if self._topology_provider is None:
@@ -3244,6 +3300,11 @@ class TurboBusDaemon:
             )
             return
         transfer_peer = self._transfer_peer_identities.get(str(transfer_id))
+        if transfer_peer is None:
+            archived = self._transfer_receipt_archive.get(str(transfer_id), {})
+            archived_peer = archived.get("peer_identity")
+            if isinstance(archived_peer, PeerIdentity):
+                transfer_peer = archived_peer
         if transfer_peer is None or not transfer_peer.authenticated:
             raise ValueError("transfer owner identity is unavailable")
         peer_auth.validate_peer_owner_match(
@@ -3540,6 +3601,7 @@ class TurboBusDaemon:
         transfer_id: str,
     ) -> None:
         normalized = str(transfer_id)
+        self._archive_transfer_receipt_state_locked(normalized)
         removed = False
         removed = self._drop_execution_ticket_for_transfer_locked(normalized) or removed
         removed = self._pop_transfer_runtime_maps_locked(normalized) or removed
@@ -3560,6 +3622,57 @@ class TurboBusDaemon:
             removed = True
         if removed:
             self._runtime_state_version += 1
+
+    def _archive_transfer_receipt_state_locked(self, transfer_id: str) -> None:
+        normalized = str(transfer_id)
+        existing = dict(self._transfer_receipt_archive.get(normalized, {}))
+        request = self._transfer_plan_requests.get(normalized, {})
+        intent_id = request.get("intent_id")
+        if intent_id is None:
+            intent_id = existing.get("intent_id")
+        current_intent = (
+            self._transfer_intents.get(str(intent_id))
+            if intent_id is not None
+            else None
+        )
+        if current_intent is None:
+            archived_intent = existing.get("intent")
+            if isinstance(archived_intent, TransferIntent):
+                current_intent = archived_intent
+        status = self._transfer_statuses.get(normalized)
+        if status is None:
+            archived_status = existing.get("status")
+            if isinstance(archived_status, TransferStatus):
+                status = archived_status
+        decision = self._scheduling_decisions.get(normalized)
+        if decision is None:
+            archived_decision = existing.get("decision")
+            if isinstance(archived_decision, SchedulingDecision):
+                decision = archived_decision
+        if status is None or decision is None or current_intent is None:
+            if existing:
+                self._transfer_receipt_archive[normalized] = existing
+            return
+        archived_record = {
+            "transfer_id": normalized,
+            "intent_id": str(intent_id) if intent_id is not None else None,
+            "intent": current_intent,
+            "status": status,
+            "decision": decision,
+            "ticket": self._receipt_execution_ticket_for_transfer_locked(normalized),
+            "admission": dict(self._transfer_admissions.get(normalized, {})),
+            "plan_generation": self._transfer_plan_generations.get(normalized, 0),
+            "plan_expires_at": self._transfer_plan_expirations.get(normalized),
+            "completion_source": self._transfer_completion_sources.get(normalized),
+            "completion_evidence": dict(
+                self._transfer_completion_evidence.get(normalized, {})
+            ),
+            "peer_identity": self._transfer_peer_identities.get(normalized),
+        }
+        if archived_record["intent_id"] is not None:
+            self._archived_intent_transfers[str(archived_record["intent_id"])] = normalized
+        existing.update(archived_record)
+        self._transfer_receipt_archive[normalized] = existing
 
     def _retire_completed_transfer_lease_state_locked(
         self,

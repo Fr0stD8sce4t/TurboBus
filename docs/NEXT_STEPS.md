@@ -9,8 +9,8 @@ System implementation before experiments.
 
 Current code target: isolation and authority hardening. The runtime feedback
 path now feeds scheduler load accounting from live running activity; the next
-step is to tighten ownership and cleanup so runtime state stays aligned with
-the job, session, and buffer owners that produced it.
+step is to keep receipt-facing ownership evidence alive after runtime
+retirement so cleanup does not break terminal status lookup or receipt access.
 
 ## Exit Criteria
 
@@ -23,8 +23,9 @@ the job, session, and buffer owners that produced it.
 
 ## Current Code Work
 
-Harden transfer/session/buffer retirement so daemon runtime feedback and
-cleanup stay aligned with ownership boundaries.
+Archive receipt-facing transfer state before runtime retirement, then keep
+`transfer_status()` and receipt lookup working after cleanup removes the active
+queue state.
 
 ## Next Entry
 

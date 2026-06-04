@@ -14,16 +14,18 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Scheduler load feedback now includes live running-transfer pressure, so
-  relay fairness fallback reacts to actual concurrent execution instead of only
-  byte totals.
+- Transfer retirement now archives receipt-facing intent, status, decision,
+  ticket, and ownership data before active runtime state is dropped, so
+  `transfer_status()` and `wait_transfer_receipt()` still work after cleanup
+  retires the live queue records.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- Pending: `python -m py_compile turbobus/scheduler/load_feedback.py` and
-  `git diff --check`.
+- `python -m py_compile turbobus/daemon/server.py
+  turbobus/scheduler/load_feedback.py` passed.
+- `git diff --check` passed with a CRLF warning on `turbobus/daemon/server.py`.
 
 ## Remaining Risk
 

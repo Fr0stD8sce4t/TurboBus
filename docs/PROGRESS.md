@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current main target: real buffer correctness gate.
+Current main target: benchmark data-plane repair.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Runtime session buffer registration now rejects closed shared pinned CPU
-  buffers and CUDA buffers without live device pointers.
+- Offload store registration no longer fabricates placeholder GPU backing for
+  offload blocks.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -34,5 +34,4 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: benchmark data-plane
-repair.
+Continue with one concrete implementation boundary: runtime load feedback.

@@ -97,7 +97,7 @@ class OffloadStore:
         if name in self._blocks:
             raise ValueError(f"offload block already exists: {name}")
         if gpu_tensor is None:
-            gpu_tensor = object()
+            raise ValueError("gpu_tensor must be a real GPU backing object")
         block = OffloadBlock(
             name=name,
             cpu_tensor=cpu_tensor,

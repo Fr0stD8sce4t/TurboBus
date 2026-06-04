@@ -23,7 +23,6 @@ from .intent_execution_support import (
     require_worker_plan_matches_leases,
     submit_worker_execution,
     wait_for_intent_receipt,
-    worker_lease_tokens,
 )
 from .worker.models import (
     WorkerDataPlaneCompletionEnvelope,
@@ -75,7 +74,13 @@ class WorkerIntentTransferExecutor:
             raise TypeError("intent must be a TransferIntent")
         require_ok(response, "daemon transfer intent submission failed")
         source, target = _intent_buffers(self.buffers, intent)
-        payload = _intent_execution_payload(response.payload)
+        payload = _admitted_intent_execution_payload(
+            daemon_client=daemon_client,
+            intent=intent,
+            response=response,
+            timeout_seconds=self.runtime_options.admission_retry_timeout_seconds,
+            interval_seconds=self.runtime_options.admission_retry_interval_seconds,
+        )
         admission_error = _intent_execution_admission_error(payload)
         if admission_error is not None:
             raise RuntimeError(admission_error)
@@ -91,7 +96,7 @@ class WorkerIntentTransferExecutor:
                 result_factory=WorkerIntentTransferResult,
             )
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
-        lease_tokens = worker_lease_tokens(daemon_client, response)
+        lease_tokens = _payload_lease_tokens(payload)
         if not lease_tokens:
             return receipt_from_daemon_payload(
                 payload,
@@ -186,6 +191,47 @@ def _intent_execution_admission_error(payload: Mapping[str, object]) -> str | No
     if expires_at is not None and time.time() > float(expires_at):
         return "transfer plan expired"
     return None
+
+
+def _intent_execution_admission_state(payload: Mapping[str, object]) -> str:
+    admission = payload.get("admission")
+    if not isinstance(admission, Mapping):
+        return "admitted"
+    state = str(admission.get("state", "")).lower()
+    return state or "admitted"
+
+
+def _payload_lease_tokens(
+    payload: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    lease_tokens = payload.get("lease_tokens") or ()
+    return tuple(dict(lease_token) for lease_token in lease_tokens)
+
+
+def _admitted_intent_execution_payload(
+    *,
+    daemon_client,
+    intent: TransferIntent,
+    response: DaemonResponse,
+    timeout_seconds: float,
+    interval_seconds: float,
+) -> dict[str, object]:
+    payload = _intent_execution_payload(response.payload)
+    if _intent_execution_admission_state(payload) != "delayed":
+        return payload
+    submitter = getattr(daemon_client, "submit_transfer_intent", None)
+    if not callable(submitter):
+        return payload
+    deadline = time.time() + max(0.0, float(timeout_seconds))
+    interval = max(0.001, float(interval_seconds))
+    while time.time() < deadline:
+        time.sleep(min(interval, max(0.0, deadline - time.time())))
+        retry_response = submitter(intent)
+        require_ok(retry_response, "daemon transfer intent admission retry failed")
+        payload = _intent_execution_payload(retry_response.payload)
+        if _intent_execution_admission_state(payload) != "delayed":
+            return payload
+    return payload
 
 
 def _validate_intent_lease_tokens(

@@ -26,16 +26,6 @@ def require_ok(response: DaemonResponse, message: str) -> None:
         raise RuntimeError(response.error or message)
 
 
-def worker_lease_tokens(
-    daemon_client,
-    response: DaemonResponse,
-) -> tuple[Mapping[str, object], ...]:
-    lease_tokens = response.payload.get("lease_tokens") or ()
-    if not lease_tokens:
-        raise RuntimeError("worker-managed transfer requires relay leases")
-    return tuple(dict(lease_token) for lease_token in lease_tokens)
-
-
 def require_worker_plan_matches_leases(
     plan_payload: Mapping[str, object],
     lease_tokens: Iterable[Mapping[str, object]],
@@ -582,5 +572,4 @@ __all__ = [
     "state_text",
     "submit_worker_execution",
     "wait_for_intent_receipt",
-    "worker_lease_tokens",
 ]

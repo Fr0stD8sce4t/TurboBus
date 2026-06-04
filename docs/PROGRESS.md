@@ -16,22 +16,22 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Split daemon peer authentication helpers as one daemon control-plane
-  boundary.
-- Moved Unix socket support checks, peer credential extraction, authenticated
-  peer error response, job identity binding, peer owner matching, and same
-  connection comparison to `turbobus/daemon/peer_auth.py`.
-- Updated `turbobus/daemon/server.py` to use the owning peer-auth module while
-  preserving daemon-owned peer state and existing request handling.
+- Closed the delayed-admission execution gap in the daemon-first intent path.
+- Re-submitting an existing `TransferIntent` now asks the daemon to promote
+  delayed admission and returns the current execution payload, including the
+  daemon-issued ticket, active reservations, lease tokens, receipt, and plan.
+- `WorkerIntentTransferExecutor` now performs a bounded delayed-admission retry
+  through the runtime daemon view and then executes only the admitted daemon
+  payload.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated daemon peer-auth, server,
-  dispatch, startup, and daemon entry modules.
-- Searches found no old peer-auth helper implementation left in
-  `turbobus/daemon/server.py`.
+- `python -m py_compile` passed for the updated daemon server, intent executor,
+  runtime daemon view, runtime options, and runtime session modules.
+- Searches found no remaining use of the removed initial-response lease-token
+  helper.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -42,9 +42,9 @@ code remain deferred until the full system implementation pass is complete.
 - Existing tests still contain old production-path assumptions. Current-stage
   constraints defer test migration until the system implementation pass is
   complete.
-- The closure audit still needs to continue across daemon, worker, scheduler,
-  runtime, and adapter boundaries for remaining compatibility drift or public
-  bypasses.
+- The closure audit still needs to continue across worker completion, cleanup,
+  runtime receipt validation, scheduler feedback, and adapter boundaries for
+  remaining compatibility drift or public bypasses.
 - Tests still import old worker and daemon package-level internals; current
   constraints defer test migration until system implementation is complete.
 - Tests still import old `turbobus.profile` helpers; current constraints defer

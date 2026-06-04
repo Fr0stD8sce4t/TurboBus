@@ -26,33 +26,11 @@ worker/backend completion, and `TransferReceipt`.
 
 ## Current Code Work
 
-- Keep auditing production modules for compatibility drift or public bypasses
-  around daemon-issued execution tickets.
-- Keep runtime-session support split into owning modules under
-  `turbobus/runtime/`; `turbobus/runtime_session.py` should remain the public
-  high-level entry, not a dump of helper logic.
-- Keep socket-backed runtime sessions deriving daemon role clients from the
-  socket path, while direct object construction without a daemon socket must
-  provide explicit runtime, profile, and execution daemon clients.
-- Keep profile bootstrap split by real ownership under `turbobus/profiling/`:
-  profile data models, daemon profile format/cache handling, and daemon
-  bootstrap/install logic should live in separate modules. Do not recreate
-  `turbobus/profile.py` as a compatibility export layer.
-- Keep worker/backend transfer executors owned by `TurboBusRuntimeSession`.
-  `TurboBusClient` should submit intents and wait for receipts only.
-- Keep `turbobus.worker` package-level exports limited to worker service,
-  socket, process, endpoint, and transport entry points. Worker lifecycle
-  clients and authorization helpers should stay in their owning modules.
-- Keep `turbobus.daemon` package-level exports focused on production daemon
-  startup. Daemon role clients should be imported by production owners from
-  `turbobus.daemon.client`, not exposed as app-facing package shortcuts.
-- Keep daemon peer authentication helpers owned by `turbobus/daemon/peer_auth.py`.
-  `server.py` may store peer-owned state, but Unix peer credential parsing,
-  authenticated-peer response, job identity binding, and peer owner matching
-  should stay out of the daemon server monolith.
-- Keep offload and framework adapters bound to real `TurboBusRuntimeSession`
-  instances, not duck-typed clients that can bypass runtime-owned registration,
-  profile bootstrap, worker execution, or cleanup.
+- Continue with the next functional boundary that can break daemon-issued
+  execution: worker completion, cleanup, runtime receipt validation, or adapter
+  intent submission must not bypass `TurboBusRuntimeSession`.
+- Do not make helper extraction, package export cleanup, or compatibility
+  wrapper removal a standalone target unless it directly closes that boundary.
 - Keep deleted files such as `client_transfer.py`, `offload_store.py`,
   `worker_managed.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` deleted; do not recreate compatibility export

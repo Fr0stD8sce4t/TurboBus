@@ -808,20 +808,10 @@ class TurboBusDaemon:
                     )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-                try:
-                    receipt = self._receipt_for_intent_locked(intent.intent_id)
-                except ValueError as exc:
-                    return DaemonResponse(ok=False, error=str(exc))
-                ticket = self._receipt_execution_ticket_for_transfer_locked(
-                    existing_transfer_id
-                )
-                return DaemonResponse(
-                    ok=True,
-                    payload={
-                        "receipt": asdict(receipt),
-                        "transfer_id": existing_transfer_id,
-                        "ticket": None if ticket is None else asdict(ticket),
-                    },
+                return self._intent_execution_payload_response_locked(
+                    intent=intent,
+                    transfer_id=existing_transfer_id,
+                    now=time.time(),
                 )
 
         planned = self._plan_transfer(
@@ -878,6 +868,57 @@ class TurboBusDaemon:
                     "planning": planned.payload.get("planning", {}),
                 },
             )
+
+    def _intent_execution_payload_response_locked(
+        self,
+        *,
+        intent: TransferIntent,
+        transfer_id: str,
+        now: float,
+    ) -> DaemonResponse:
+        try:
+            receipt = self._receipt_for_intent_locked(intent.intent_id)
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        status = self._transfer_statuses.get(str(transfer_id))
+        decision = self._scheduling_decisions.get(str(transfer_id))
+        session = self._sessions.get(intent.session_id)
+        if status is None:
+            return DaemonResponse(ok=False, error="transfer status is unavailable")
+        if decision is None:
+            return DaemonResponse(ok=False, error="scheduling decision is unavailable")
+        if session is None:
+            return DaemonResponse(ok=False, error="transfer session is unavailable")
+
+        if (
+            self._transfer_admissions.get(str(transfer_id), {}).get("state")
+            == _ADMISSION_DELAYED
+        ):
+            self._promote_delayed_transfers_locked(now=now)
+            receipt = self._receipt_for_intent_locked(intent.intent_id)
+            status = self._transfer_statuses.get(str(transfer_id))
+            decision = self._scheduling_decisions.get(str(transfer_id))
+            if status is None:
+                return DaemonResponse(ok=False, error="transfer status is unavailable")
+            if decision is None:
+                return DaemonResponse(ok=False, error="scheduling decision is unavailable")
+
+        relay_eligibility = self._relay_eligibility_for_session_locked(session)
+        planning_relays = tuple(
+            int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
+        )
+        reservations = self._reservations_for_transfer_locked(str(transfer_id))
+        payload = self._planned_transfer_payload_locked(
+            transfer_id=str(transfer_id),
+            decision=decision,
+            status=status,
+            session=session,
+            planning_relays=planning_relays,
+            relay_eligibility=relay_eligibility,
+            reservations=reservations,
+        )
+        payload["receipt"] = asdict(receipt)
+        return DaemonResponse(ok=True, payload=payload)
 
     def wait_transfer_receipt(
         self,
@@ -1549,6 +1590,20 @@ class TurboBusDaemon:
                 ),
             )
         return removed
+
+    def _reservations_for_transfer_locked(
+        self,
+        transfer_id: str,
+    ) -> list[TransferReservation]:
+        normalized_transfer_id = str(transfer_id)
+        return [
+            self._reservations[reservation_id]
+            for reservation_id, mapped_transfer_id in sorted(
+                self._reservation_transfers.items()
+            )
+            if mapped_transfer_id == normalized_transfer_id
+            and reservation_id in self._reservations
+        ]
 
     def _scheduler_decision_for_transfer_locked(
         self,

@@ -24,6 +24,8 @@ class RuntimeOptions:
     daemon_socket_path: str | None = None
     daemon_max_inflight_chunks: int = 8
     daemon_profile_max_age_seconds: float = 3600.0
+    admission_retry_timeout_seconds: float = 5.0
+    admission_retry_interval_seconds: float = 0.05
 
     @classmethod
     def from_tuning_json(cls, path: str | Path) -> "RuntimeOptions":

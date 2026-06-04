@@ -20,6 +20,9 @@ class RuntimeExecutionDaemonView:
             timeout_seconds=timeout_seconds,
         )
 
+    def submit_transfer_intent(self, *args, **kwargs) -> DaemonResponse:
+        return self.intent_daemon.submit_transfer_intent(*args, **kwargs)
+
     def cleanup(self, *args, **kwargs) -> DaemonResponse:
         return self.execution_daemon.cleanup(*args, **kwargs)
 

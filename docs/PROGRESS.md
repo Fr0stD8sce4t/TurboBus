@@ -22,6 +22,8 @@ code remain deferred until the full system implementation pass is complete.
   and exits through the failure path.
 - Worker service parse failures are now validated and handled as explicit
   cleanup-only failures instead of falling through the unknown-state path.
+- Cleanup failures are now split into pre-terminal and post-terminal cases so
+  the executor only waits for receipts when terminal evidence actually exists.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 

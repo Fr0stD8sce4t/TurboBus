@@ -11,7 +11,9 @@ Current code target: worker/backend failure cleanup and terminal receipt
 closure. Worker authorization failures now need to be treated as explicit
 cleanup-only failures instead of leaking through the worker executor as an
 unclassified state, and worker service parse failures should also be handled
-as terminal cleanup-only failures.
+as terminal cleanup-only failures. Cleanup failures now need to split cleanly
+between pre-terminal cleanup failures and post-terminal cleanup failures with
+receipt availability.
 
 ## Exit Criteria
 
@@ -25,8 +27,8 @@ as terminal cleanup-only failures.
 ## Current Code Work
 
 `turbobus/intent_execution_support.py` and `turbobus/intent_executor.py`
-should handle `authorization_failed` and `parse_failed` as terminal worker
-failure paths.
+should handle `authorization_failed`, `parse_failed`, and `cleanup_failed` as
+terminal worker failure paths with the correct receipt/no-receipt split.
 
 ## Next Entry
 

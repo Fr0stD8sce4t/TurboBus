@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from ..runtime_session import TurboBusRuntimeSession
-from ..runtime.validation import require_complete_receipt_evidence
+from ..runtime.validation import validate_runtime_receipt
 from ..schema import TransferIntent, TransferReceipt, TransferStatusState
 from .context import AdapterTransferContext, require_runtime_session_open
 from .stats import TransferStats, transfer_stats_from_receipt
@@ -64,12 +63,12 @@ def validate_adapter_receipt(
             raise ValueError("receipt job_id does not match adapter context")
         if receipt.session_id != transfer_context.session_id:
             raise ValueError("receipt session_id does not match adapter context")
-    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
-    for key in ("execution_ticket_id", "evidence_ticket_id"):
-        ticket_id = metadata.get(key)
-        if ticket_id is not None and str(ticket_id) != receipt.ticket_id:
-            raise ValueError(f"receipt {key} does not match receipt ticket_id")
-    require_complete_receipt_evidence(receipt)
+    validate_runtime_receipt(
+        receipt,
+        intent_id=intent.intent_id,
+        job_id=intent.job_id,
+        session_id=intent.session_id,
+    )
 
 
 __all__ = [

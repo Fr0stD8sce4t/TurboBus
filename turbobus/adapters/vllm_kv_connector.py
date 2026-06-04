@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from ..offload.stats import TransferStats, summarize_transfer_handles
-from ..runtime.validation import require_complete_receipt_evidence
+from ..runtime.validation import validate_runtime_receipt
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids
@@ -686,7 +686,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
         total_ms = (time.perf_counter() - total_start) * 1000.0
         stats = _adapter_transfer_stats(adapter, refs, handles).as_dict()
-        receipt_trace = _receipt_trace_from_handles(handles)
+        receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
         self.state.events.append(
             {
                 "event": "restore",
@@ -805,7 +805,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         handles = adapter.save_prefix(refs)
         transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
         stats = _adapter_transfer_stats(adapter, refs, handles)
-        receipt_trace = _receipt_trace_from_handles(handles)
+        receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
         context.transfer_ms += transfer_ms
         context.bytes += stats.bytes
         context.direct_chunks += stats.direct_chunks
@@ -1077,7 +1077,10 @@ def _adapter_transfer_stats(adapter, refs, handles) -> TransferStats:
     )
 
 
-def _receipt_trace_from_handles(handles) -> dict[str, Any]:
+def _receipt_trace_from_handles(
+    handles,
+    runtime_session: TurboBusRuntimeSession,
+) -> dict[str, Any]:
     receipts: list[TransferReceipt] = []
     seen = set()
     handles = list(handles)
@@ -1096,10 +1099,13 @@ def _receipt_trace_from_handles(handles) -> dict[str, Any]:
         receipts.append(receipt)
     if not receipts:
         raise RuntimeError("vLLM TurboBus transfer produced no receipts")
-    return _receipt_trace_from_receipts(receipts)
+    return _receipt_trace_from_receipts(receipts, runtime_session)
 
 
-def _receipt_trace_from_receipts(receipts: list[TransferReceipt]) -> dict[str, Any]:
+def _receipt_trace_from_receipts(
+    receipts: list[TransferReceipt],
+    runtime_session: TurboBusRuntimeSession,
+) -> dict[str, Any]:
     direct_bytes = 0
     relay_bytes = 0
     receipt_ids: list[str] = []
@@ -1108,7 +1114,12 @@ def _receipt_trace_from_receipts(receipts: list[TransferReceipt]) -> dict[str, A
     ticket_ids: list[str] = []
     fallback_reasons: list[str] = []
     for receipt in receipts:
-        require_complete_receipt_evidence(receipt)
+        validate_runtime_receipt(
+            receipt,
+            intent_id=receipt.intent_id,
+            job_id=runtime_session.job_id,
+            session_id=runtime_session.session_id,
+        )
         receipt_ids.append(receipt.receipt_id)
         decision_ids.append(receipt.decision_id)
         topology_snapshot_ids.append(receipt.topology_snapshot_id)

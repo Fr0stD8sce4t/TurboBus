@@ -58,38 +58,51 @@ class VllmKVSlotAdapter:
         self.runtime_session = runtime_session
         self.adapters = {}
         self.transfer_context: AdapterTransferContext | None = None
-        for group in self.groups.values():
-            cpu_buffer = runtime_session.register_cpu_buffer(
-                _require_shared_cpu_buffer(group.cpu_backing)
-            )
-            gpu_buffer = runtime_session.register_cuda_buffer(
-                _cuda_buffer_for_group(
+        created_groups: list[dict[str, object]] = []
+        try:
+            for group in self.groups.values():
+                cpu_buffer = _require_shared_cpu_buffer(group.cpu_backing)
+                gpu_buffer = _cuda_buffer_for_group(
                     runtime_session,
                     group,
                     buffer_id=_group_gpu_buffer_id(gpu_buffer_id, group),
                 )
-            )
-            group_context = runtime_session.make_adapter_transfer_context(
-                cpu_buffer,
-                gpu_buffer,
-                workload_kind=workload_kind,
-                priority=priority,
-                policy_hints={
-                    "chunk_bytes": int(runtime_session.runtime_options.chunk_bytes),
-                },
-                metadata=_group_metadata(metadata, group.group_id),
-                intent_prefix=_group_intent_prefix(intent_prefix, group.group_id),
-                wait_timeout_seconds=wait_timeout_seconds,
-            )
-            adapter = InferenceKVSlotAdapter._from_transfer_context(
-                runtime_session,
-                group_context,
-                cpu_buffer,
-                gpu_buffer,
-            )
-            if self.transfer_context is None:
-                self.transfer_context = group_context
-            self.adapters[group.group_id] = adapter
+                existing_buffers = getattr(runtime_session, "_buffers", {})
+                group_resources = {
+                    "cpu_buffer_id": cpu_buffer.buffer_id,
+                    "cpu_buffer_was_registered": cpu_buffer.buffer_id
+                    in existing_buffers,
+                    "gpu_buffer_id": gpu_buffer.buffer_id,
+                    "gpu_buffer_was_registered": gpu_buffer.buffer_id
+                    in existing_buffers,
+                }
+                created_groups.append(group_resources)
+                cpu_buffer = runtime_session.register_cpu_buffer(cpu_buffer)
+                gpu_buffer = runtime_session.register_cuda_buffer(gpu_buffer)
+                group_context = runtime_session.make_adapter_transfer_context(
+                    cpu_buffer,
+                    gpu_buffer,
+                    workload_kind=workload_kind,
+                    priority=priority,
+                    policy_hints={
+                        "chunk_bytes": int(runtime_session.runtime_options.chunk_bytes),
+                    },
+                    metadata=_group_metadata(metadata, group.group_id),
+                    intent_prefix=_group_intent_prefix(intent_prefix, group.group_id),
+                    wait_timeout_seconds=wait_timeout_seconds,
+                )
+                adapter = InferenceKVSlotAdapter._from_transfer_context(
+                    runtime_session,
+                    group_context,
+                    cpu_buffer,
+                    gpu_buffer,
+                )
+                if self.transfer_context is None:
+                    self.transfer_context = group_context
+                self.adapters[group.group_id] = adapter
+        except Exception:
+            _rollback_group_initialization(runtime_session, created_groups)
+            raise
         if self.transfer_context is None:
             raise ValueError("vLLM adapter requires at least one group")
         self._registered_names: set[str] = set()
@@ -241,6 +254,41 @@ def _cuda_buffer_for_group(
         size_bytes=_tensor_nbytes(value),
         device_ptr=ptr,
     )
+
+
+def _rollback_group_initialization(
+    runtime_session,
+    created_groups: list[dict[str, object]],
+) -> None:
+    for group_resources in reversed(created_groups):
+        _rollback_registered_buffer(
+            runtime_session,
+            str(group_resources["cpu_buffer_id"]),
+            was_registered=bool(group_resources["cpu_buffer_was_registered"]),
+        )
+        _rollback_registered_buffer(
+            runtime_session,
+            str(group_resources["gpu_buffer_id"]),
+            was_registered=bool(group_resources["gpu_buffer_was_registered"]),
+        )
+
+
+def _rollback_registered_buffer(
+    runtime_session,
+    buffer_id: str,
+    *,
+    was_registered: bool,
+) -> None:
+    if was_registered:
+        return
+    try:
+        runtime_session.cleanup_buffer(
+            buffer_id,
+            reason="runtime_vllm_adapter_creation_failed",
+            force=True,
+        )
+    except Exception:
+        pass
 
 
 def _tensor_device_index(tensor) -> int:

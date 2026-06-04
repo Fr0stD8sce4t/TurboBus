@@ -14,9 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- `daemon/server.py` now advances `_runtime_state_version` when a session is
-  actually closed, so session/job/buffer retirement shows up in the runtime
-  state that scheduler feedback reads.
+- `adapters/vllm.py` now rolls back partially registered CPU/GPU buffers if
+  vLLM group adapter construction fails mid-stream, so session-owned vLLM
+  setup no longer leaves half-built buffer state behind.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -24,7 +24,7 @@ code remain deferred until the full system implementation pass is complete.
 
 - `git diff --check` passed with CRLF normalization warnings on the edited
   files.
-- `python -m py_compile turbobus/daemon/server.py` passed.
+- `python -m py_compile turbobus/adapters/vllm.py` passed.
 
 ## Remaining Risk
 
@@ -43,6 +43,8 @@ code remain deferred until the full system implementation pass is complete.
   active runtime environment.
 - Adapter context creation still depends on the caller providing valid CPU and
   GPU buffers that can be registered against the active daemon session.
+- vLLM adapter setup still depends on real vLLM tensors and buffer backings in
+  the active runtime environment.
 - Older benchmark and example surfaces still use `TurboBusClient` and have not
   been migrated to the runtime-session-first API yet.
 - Existing tests, examples, and benchmarks still contain old production-path

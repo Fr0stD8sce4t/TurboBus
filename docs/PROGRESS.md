@@ -53,27 +53,29 @@ implementation pass. Current code work should continue through code reading,
 implementation, refactoring, and existing minimal local checks without adding
 server test commands or server-validation gates.
 
+Runtime load feedback is now isolated in scheduler code. `DaemonScheduler`
+builds its scheduling policy view from daemon-owned runtime resource state,
+and daemon relay admission uses the same busy-relay parser when checking
+active relay paths, reservations, leases, and staging records.
+
 ## Completed This Round
 
-- Inspected offload and adapter-facing runtime handoff for daemon bypass and
-  application-side physical route choice.
-- Bound vLLM connector prefix identity to the daemon runtime session id instead
-  of the connector config engine id, so saved prefixes and events share the
-  same session identity as submitted `TransferIntent` receipts.
-- Removed the vLLM connector's stored daemon-client shortcut so the adapter path
-  remains visibly owned by `TurboBusRuntimeSession`.
+- Split runtime load feedback out of `turbobus/scheduler/daemon.py` into
+  `turbobus/scheduler/load_feedback.py`.
+- Kept scheduler decisions consuming daemon-owned active transfer, job,
+  reservation, lease, path, and staging state through that module.
+- Reused the same busy-relay parser in daemon relay admission and runtime
+  state summaries, so scheduler policy and admission checks interpret active
+  relay load consistently.
 - Kept the old compatibility/export-layer files deleted and left server
   validation deferred.
 - Updated the active plan files to move the next implementation entry to
-  runtime load feedback into daemon scheduling.
+  isolation and authority hardening.
 
 ## Validation
 
-- `python -m py_compile turbobus\offload_store.py
-  turbobus\adapters\vllm_kv_connector.py turbobus\adapters\vllm.py
-  turbobus\adapters\vllm_integration.py turbobus\adapters\model_loading.py
-  turbobus\adapters\training_offload.py turbobus\adapters\inference.py
-  turbobus\runtime_session.py` passed.
+- `python -m py_compile turbobus\scheduler\load_feedback.py
+  turbobus\scheduler\daemon.py turbobus\daemon\server.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -81,11 +83,11 @@ server test commands or server-validation gates.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Runtime load feedback still needs inspection to ensure scheduler decisions
-  consume daemon-owned active transfer state.
+- Isolation and authority hardening still needs inspection to ensure worker and
+  data-plane execution cannot drift from daemon-issued tickets.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting runtime load feedback into
-daemon scheduling while keeping server validation deferred until the full
-system implementation pass is complete.
+Continue the code implementation pass by inspecting isolation and authority
+hardening while keeping server validation deferred until the full system
+implementation pass is complete.

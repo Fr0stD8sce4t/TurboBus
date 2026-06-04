@@ -7,16 +7,16 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten runtime load feedback into daemon scheduling so
-the scheduler can reason about active transfer state without applications or
-adapters choosing physical routes.
+The next task is to tighten isolation and authority boundaries around
+daemon-issued `ExecutionTicket` execution and transfer cleanup after runtime
+load feedback has been split into scheduler-owned code.
 
 ## Exit Criteria
 
-- Daemon scheduling consumes runtime resource state for active transfers and
-  relay load.
-- Runtime state is derived from daemon-owned transfer, lease, ticket, and
-  cleanup records rather than adapter or benchmark hints.
+- Workers and data-plane code execute only daemon-issued `ExecutionTicket`
+  plans with matching job, session, buffer, ticket, and plan-generation data.
+- Daemon release and cleanup keep completed receipts consumable while retiring
+  lease, ticket, admission, peer, and runtime state consistently.
 - Applications and adapters still submit only `TransferIntent` and consume
   `TransferReceipt`.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
@@ -24,8 +24,9 @@ adapters choosing physical routes.
 
 ## Current Code Work
 
-- Inspect `turbobus/daemon/server.py`, `turbobus/scheduler/daemon.py`, and
-  `turbobus/scheduler/load_feedback.py` for runtime-state scheduling inputs.
+- Inspect `turbobus/daemon/server.py`, `turbobus/worker/lifecycle.py`,
+  `turbobus/worker/validation.py`, `turbobus/worker/resources.py`, and
+  `turbobus/worker/cuda_executor.py` for authority and cleanup boundaries.
 - Keep offload and vLLM adapter handoff owned by `TurboBusRuntimeSession`; vLLM
   connector prefix state uses the daemon runtime session id while preserving
   the connector engine id only as metadata.
@@ -37,7 +38,7 @@ adapters choosing physical routes.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting runtime load feedback into
-daemon scheduling. Keep the work focused on system code; defer tests,
-benchmarks, paper-validation, experiments, and server validation until the full
-system implementation pass is complete.
+Continue the code implementation pass by inspecting isolation and authority
+hardening in daemon-issued ticket execution and cleanup. Keep the work focused
+on system code; defer tests, benchmarks, paper-validation, experiments, and
+server validation until the full system implementation pass is complete.

@@ -6,6 +6,12 @@ from typing import Callable, Mapping
 
 from ..planner_engine import PlannerEngine
 from ..planner_types import PlannerLease, PlannerStats, PlannerTransferPlan
+from .load_feedback import (
+    RuntimeLoadView,
+    fairness_fallback_for_plan,
+    runtime_state_metadata,
+    runtime_view,
+)
 from ..schema import (
     RelayQuota,
     SchedulingDecision,
@@ -49,44 +55,6 @@ class _RelayPolicy:
             "deferred_relays": self.deferred_relays,
             "filtered_relays": self.filtered_relays,
             "defer_relay_admission": self.defer_relay_admission,
-        }
-
-
-@dataclass(frozen=True)
-class _RuntimeView:
-    job_id: str | None
-    workload_kind: str
-    priority: int
-    busy_relays: frozenset[int]
-    job_weight: float
-    total_weight: float
-    current_job_active_bytes: int
-    total_active_bytes: int
-    request_charge_bytes: float
-    average_weighted_active_bytes: float
-    current_weighted_active_bytes: float
-    projected_weighted_active_bytes: float
-    fairness_threshold_bytes: float
-    active_transfer_count: int
-    queued_transfer_count: int
-
-    def policy_metadata(self) -> dict[str, object]:
-        return {
-            "job_id": self.job_id,
-            "job_weight": self.job_weight,
-            "total_weight": self.total_weight,
-            "workload_kind": self.workload_kind,
-            "priority": self.priority,
-            "request_charge_bytes": self.request_charge_bytes,
-            "current_job_active_bytes": self.current_job_active_bytes,
-            "total_active_bytes": self.total_active_bytes,
-            "current_weighted_active_bytes": self.current_weighted_active_bytes,
-            "projected_weighted_active_bytes": self.projected_weighted_active_bytes,
-            "average_weighted_active_bytes": self.average_weighted_active_bytes,
-            "fairness_threshold_bytes": self.fairness_threshold_bytes,
-            "busy_relays": tuple(sorted(self.busy_relays)),
-            "active_transfer_count": self.active_transfer_count,
-            "queued_transfer_count": self.queued_transfer_count,
         }
 
 
@@ -143,7 +111,7 @@ class DaemonScheduler:
 
         requested_mode = _parse_transfer_mode(mode)
         planning_mode = TransferMode.POOL if requested_mode is TransferMode.AUTO else requested_mode
-        runtime_view = _runtime_view(
+        runtime_load = runtime_view(
             runtime_state=runtime_state,
             job_id=job_id,
             total_bytes=total_bytes,
@@ -155,7 +123,7 @@ class DaemonScheduler:
             session=session,
             relay_quotas=relay_quotas,
             direction=direction,
-            runtime_view=runtime_view,
+            runtime_view=runtime_load,
             defer_relay_admission=defer_relay_admission,
         )
         if (
@@ -183,9 +151,9 @@ class DaemonScheduler:
             job_id=job_id,
             defer_relay_admission=defer_relay_admission,
         )
-        fairness_fallback = _fairness_fallback_for_plan(
+        fairness_fallback = fairness_fallback_for_plan(
             plan=plan,
-            runtime_view=runtime_view,
+            runtime_view=runtime_load,
         )
         if fairness_fallback is not None:
             lease_error = fairness_fallback
@@ -231,12 +199,12 @@ class DaemonScheduler:
             metadata={
                 "leases": [lease.as_dict() for lease in leases],
                 "stats": stats.as_dict(),
-                "runtime_state": _runtime_state_metadata(runtime_state),
+                "runtime_state": runtime_state_metadata(runtime_state),
                 "topology": _topology_metadata(
                     topology_snapshot_id=topology_snapshot_id,
                     relay_eligibility=relay_eligibility,
                 ),
-                "policy": runtime_view.policy_metadata(),
+                "policy": runtime_load.policy_metadata(),
                 "relay_policy": relay_policy.as_dict(),
             },
         )
@@ -248,7 +216,7 @@ class DaemonScheduler:
         session: Session,
         relay_quotas: Mapping[int, RelayQuota],
         direction: str,
-        runtime_view: "_RuntimeView",
+        runtime_view: RuntimeLoadView,
         defer_relay_admission: bool,
     ) -> tuple[_Profile, str | None, _RelayPolicy]:
         empty_policy = _RelayPolicy(
@@ -590,40 +558,6 @@ def _path_summary_for_plan(
     return tuple(summary)
 
 
-def _runtime_state_metadata(
-    runtime_state: Mapping[str, object] | None,
-) -> dict[str, object]:
-    if not isinstance(runtime_state, Mapping):
-        return {
-            "version": 0,
-            "queued_transfer_count": 0,
-            "running_transfer_count": 0,
-            "active_transfer_count": 0,
-        }
-    summary = runtime_state.get("summary", {})
-    if not isinstance(summary, Mapping):
-        summary = {}
-    return {
-        "version": int(runtime_state.get("version", 0) or 0),
-        "queued_transfer_count": int(summary.get("queued_transfer_count", 0) or 0),
-        "running_transfer_count": int(summary.get("running_transfer_count", 0) or 0),
-        "active_transfer_count": int(summary.get("active_transfer_count", 0) or 0),
-        "active_reservation_count": int(summary.get("active_reservation_count", 0) or 0),
-        "active_lease_count": int(summary.get("active_lease_count", 0) or 0),
-        "relay_staging_count": int(summary.get("relay_staging_count", 0) or 0),
-        "relay_path_count": int(summary.get("relay_path_count", 0) or 0),
-        "relay_path_bytes_total": int(summary.get("relay_path_bytes_total", 0) or 0),
-        "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
-        "active_bytes_by_direction": dict(
-            summary.get("active_bytes_by_direction", {}) or {}
-        ),
-        "queued_bytes_by_direction": dict(
-            summary.get("queued_bytes_by_direction", {}) or {}
-        ),
-        "active_resource_usage": dict(summary.get("active_resource_usage", {}) or {}),
-    }
-
-
 def _topology_metadata(
     *,
     topology_snapshot_id: str | None,
@@ -655,129 +589,6 @@ def _topology_metadata(
             if isinstance(item, Mapping)
         ),
     }
-
-
-def _runtime_view(
-    *,
-    runtime_state: Mapping[str, object] | None,
-    job_id: str | None,
-    total_bytes: int,
-    workload_kind: WorkloadKind | str,
-    priority: int,
-) -> _RuntimeView:
-    normalized_job_id = None if job_id is None else str(job_id)
-    workload = WorkloadKind(workload_kind).value
-    active_transfer_count = 0
-    queued_transfer_count = 0
-    job_runtime_state: Mapping[str, object] = {}
-    if isinstance(runtime_state, Mapping):
-        summary = runtime_state.get("summary", {})
-        if isinstance(summary, Mapping):
-            active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
-            queued_transfer_count = int(summary.get("queued_transfer_count", 0) or 0)
-            nested_jobs = summary.get("job_runtime_state", {})
-            if isinstance(nested_jobs, Mapping):
-                job_runtime_state = nested_jobs
-        jobs = runtime_state.get("job_runtime_state", {})
-        if isinstance(jobs, Mapping):
-            job_runtime_state = jobs
-    busy_relays = _busy_relays_from_runtime_state(runtime_state)
-
-    total_weight = 0.0
-    total_active_bytes = 0
-    current_job_active_bytes = 0
-    job_weight = 1.0
-    for key, value in job_runtime_state.items():
-        if not isinstance(value, Mapping):
-            continue
-        weight = max(0.0, float(value.get("weight", 1.0) or 1.0))
-        total_weight += weight
-        active_bytes = int(value.get("active_bytes_remaining", 0) or 0)
-        total_active_bytes += active_bytes
-        if normalized_job_id is not None and str(key) == normalized_job_id:
-            job_weight = weight or 1.0
-            current_job_active_bytes = active_bytes
-    if total_weight <= 0.0:
-        total_weight = max(1.0, job_weight)
-    if normalized_job_id is not None and normalized_job_id not in job_runtime_state:
-        total_weight += job_weight
-    request_charge = float(total_bytes) * _workload_charge_multiplier(workload)
-    if int(priority) > 0:
-        request_charge = request_charge / (1.0 + min(int(priority), 9) * 0.1)
-    current_weighted = current_job_active_bytes / max(job_weight, 1e-12)
-    projected_weighted = (current_job_active_bytes + request_charge) / max(
-        job_weight,
-        1e-12,
-    )
-    average_weighted = (
-        (total_active_bytes + request_charge) / max(total_weight, 1e-12)
-    )
-    return _RuntimeView(
-        job_id=normalized_job_id,
-        workload_kind=workload,
-        priority=int(priority),
-        busy_relays=frozenset(busy_relays),
-        job_weight=job_weight,
-        total_weight=total_weight,
-        current_job_active_bytes=current_job_active_bytes,
-        total_active_bytes=total_active_bytes,
-        request_charge_bytes=request_charge,
-        average_weighted_active_bytes=average_weighted,
-        current_weighted_active_bytes=current_weighted,
-        projected_weighted_active_bytes=projected_weighted,
-        fairness_threshold_bytes=average_weighted * 1.25,
-        active_transfer_count=active_transfer_count,
-        queued_transfer_count=queued_transfer_count,
-    )
-
-
-def _workload_charge_multiplier(workload_kind: str) -> float:
-    if workload_kind == WorkloadKind.KV_CACHE.value:
-        return 0.75
-    if workload_kind == WorkloadKind.TRAINING_STATE.value:
-        return 1.25
-    if workload_kind == WorkloadKind.OPTIMIZER_STATE.value:
-        return 1.25
-    return 1.0
-
-
-def _fairness_fallback_for_plan(
-    *,
-    plan: PlannerTransferPlan,
-    runtime_view: _RuntimeView,
-) -> str | None:
-    has_relay = any(assignment.path.kind == "relay" for assignment in plan.assignments)
-    if not has_relay:
-        return None
-    if runtime_view.total_active_bytes <= 0:
-        return None
-    if runtime_view.projected_weighted_active_bytes <= runtime_view.fairness_threshold_bytes:
-        return None
-    return "weighted fairness limit prefers direct fallback"
-
-
-def _busy_relays_from_runtime_state(
-    runtime_state: Mapping[str, object] | None,
-) -> set[int]:
-    busy: set[int] = set()
-    if not isinstance(runtime_state, Mapping):
-        return busy
-    for record in runtime_state.get("active_paths", ()) or ():
-        if not isinstance(record, Mapping):
-            continue
-        if str(record.get("kind", "")).lower() != "relay":
-            continue
-        relay = record.get("relay_device")
-        if relay is not None:
-            busy.add(int(relay))
-    for key in ("active_leases", "active_reservations", "relay_staging"):
-        for record in runtime_state.get(key, ()) or ():
-            if not isinstance(record, Mapping):
-                continue
-            relay = record.get("relay_gpu")
-            if relay is not None:
-                busy.add(int(relay))
-    return busy
 
 
 def _contract_id(value: str | None, *, prefix: str, fallback: str) -> str:
@@ -819,7 +630,7 @@ def _relay_unavailable_reason(
     session: Session,
     quota: RelayQuota | None,
     relay_device: int,
-    runtime_view: _RuntimeView,
+    runtime_view: RuntimeLoadView,
 ) -> str | None:
     if relay_device not in session.relay_gpus:
         return "relay GPU is not assigned to this session"

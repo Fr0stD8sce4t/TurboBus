@@ -41,6 +41,7 @@ from ..scheduler import (
     SchedulingDecision,
     scheduling_decision_leases,
 )
+from ..scheduler.load_feedback import busy_relays_from_runtime_state
 
 
 _TERMINAL_TRANSFER_STATES = {
@@ -2020,7 +2021,7 @@ class TurboBusDaemon:
         total_chunks = sum(lease.chunk_limit for lease in leases)
         if session.active_chunks + total_chunks > session.max_inflight_chunks:
             return "session relay admission is delayed by chunk quota"
-        busy_relays = _busy_relays_from_runtime_state(
+        busy_relays = busy_relays_from_runtime_state(
             self._runtime_resource_state_locked(now=float(now))
         )
         for lease in leases:
@@ -2648,7 +2649,7 @@ class TurboBusDaemon:
         }
         busy_relays = tuple(
             sorted(
-                _busy_relays_from_runtime_state(
+                busy_relays_from_runtime_state(
                     {
                         "active_paths": path_records,
                         "active_reservations": active_reservations,
@@ -4717,34 +4718,6 @@ def _runtime_state_without_transfer(
                 "job_runtime_state": filtered["job_runtime_state"],
             }
     return filtered
-
-
-def _busy_relays_from_runtime_state(runtime_state: Mapping[str, object]) -> set[int]:
-    busy: set[int] = set()
-    active_paths = runtime_state.get("active_paths", ())
-    if not isinstance(active_paths, list | tuple):
-        active_paths = ()
-    for item in active_paths:
-        if not isinstance(item, Mapping):
-            continue
-        if str(item.get("kind", "")).lower() != "relay":
-            continue
-        relay_device = item.get("relay_device")
-        if relay_device is None:
-            continue
-        busy.add(int(relay_device))
-    for key in ("active_leases", "active_reservations", "relay_staging"):
-        records = runtime_state.get(key, ())
-        if not isinstance(records, list | tuple):
-            continue
-        for item in records:
-            if not isinstance(item, Mapping):
-                continue
-            relay_gpu = item.get("relay_gpu")
-            if relay_gpu is None:
-                continue
-            busy.add(int(relay_gpu))
-    return busy
 
 
 def _normalize_transfer_ranges(

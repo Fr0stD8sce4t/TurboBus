@@ -14,9 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Retired cleanup targets now archive ownership evidence for jobs, sessions,
-  buffers, and reservations before teardown, so repeated cleanup requests can
-  still validate the archived owner instead of collapsing straight to unknown.
+- Worker lifecycle status-report failure now retries the terminal daemon
+  status update after cleanup, so failure evidence can still reach the daemon
+  and close the receipt path even when the first report fails.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -37,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: worker failure cleanup and
-receipt closure.
+Continue with one concrete implementation boundary: delete the old
+`turbobus/client_transfer.py` export layer.

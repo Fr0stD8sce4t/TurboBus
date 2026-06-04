@@ -589,6 +589,29 @@ class WorkerTransferClient:
                     final_state="cleanup_failed",
                     error=str(cleanup_exc),
                 )
+            try:
+                status_response = self._report_cleanup_evidence(
+                    worker_request,
+                    result,
+                    cleanup_response,
+                    current_status_response=cleanup_response,
+                )
+            except WorkerStatusReportError as report_exc:
+                return WorkerTransferLifecycleRecord(
+                    authorization_request=request,
+                    worker_request=worker_request,
+                    staging_slot=staging_slot,
+                    running_update=running_update,
+                    running_response=running_response,
+                    staging_release=staging_release,
+                    result=result,
+                    status_update=status_update,
+                    cleanup_response=cleanup_response,
+                    cleanup_target_kind=cleanup_target_kind,
+                    cleanup_target_id=cleanup_target_id,
+                    final_state="status_failed",
+                    error=str(report_exc),
+                )
             return WorkerTransferLifecycleRecord(
                 authorization_request=request,
                 worker_request=worker_request,
@@ -598,6 +621,7 @@ class WorkerTransferClient:
                 staging_release=staging_release,
                 result=result,
                 status_update=status_update,
+                status_response=status_response,
                 cleanup_target_kind=cleanup_target_kind,
                 cleanup_target_id=cleanup_target_id,
                 cleanup_response=cleanup_response,

@@ -9,8 +9,8 @@ System implementation before experiments.
 
 Current code target: isolation and authority hardening. The runtime feedback
 path now feeds scheduler load accounting from live running activity; the next
-step is to keep retired cleanup targets owner-verifiable so repeated cleanup
-requests can still prove which job, session, buffer, or lease owned the state.
+step is to keep worker failure cleanup able to close receipts even when the
+first status report fails, so cleanup and receipt closure stay coupled.
 
 ## Exit Criteria
 
@@ -23,11 +23,11 @@ requests can still prove which job, session, buffer, or lease owned the state.
 
 ## Current Code Work
 
-Archive retired job, session, buffer, and reservation targets before runtime
-retirement, then let repeated cleanup calls resolve to the archived owner
-instead of failing as unknown targets.
+When worker status reporting fails after execution, retry the terminal
+`transfer_status()` update after cleanup so the daemon still receives the
+failure evidence needed to close the receipt path.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: worker failure cleanup and receipt closure.
+boundary: delete the old `turbobus/client_transfer.py` export layer.

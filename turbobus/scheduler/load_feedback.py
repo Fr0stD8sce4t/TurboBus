@@ -14,6 +14,7 @@ class RuntimeLoadView:
     workload_kind: str
     priority: int
     busy_relays: frozenset[int]
+    runtime_state: dict[str, object]
     job_weight: float
     total_weight: float
     current_job_active_bytes: int
@@ -29,6 +30,8 @@ class RuntimeLoadView:
     delayed_transfer_count: int
 
     def policy_metadata(self) -> dict[str, object]:
+        runtime_state = dict(self.runtime_state)
+        active_resource_usage = dict(runtime_state.get("active_resource_usage", {}) or {})
         return {
             "job_id": self.job_id,
             "job_weight": self.job_weight,
@@ -43,10 +46,39 @@ class RuntimeLoadView:
             "average_weighted_active_bytes": self.average_weighted_active_bytes,
             "fairness_threshold_bytes": self.fairness_threshold_bytes,
             "busy_relays": tuple(sorted(self.busy_relays)),
+            "runtime_state_version": int(runtime_state.get("version", 0) or 0),
+            "active_reservation_count": int(
+                runtime_state.get("active_reservation_count", 0) or 0
+            ),
+            "active_lease_count": int(runtime_state.get("active_lease_count", 0) or 0),
+            "relay_staging_count": int(runtime_state.get("relay_staging_count", 0) or 0),
+            "relay_path_count": int(runtime_state.get("relay_path_count", 0) or 0),
+            "relay_path_bytes_total": int(
+                runtime_state.get("relay_path_bytes_total", 0) or 0
+            ),
             "active_transfer_count": self.active_transfer_count,
             "running_transfer_count": self.running_transfer_count,
             "queued_transfer_count": self.queued_transfer_count,
             "delayed_transfer_count": self.delayed_transfer_count,
+            "completion_source_counts": {
+                str(key): int(value)
+                for key, value in dict(
+                    runtime_state.get("completion_source_counts", {}) or {}
+                ).items()
+            },
+            "terminal_completion_source_counts": {
+                str(key): int(value)
+                for key, value in dict(
+                    runtime_state.get("terminal_completion_source_counts", {}) or {}
+                ).items()
+            },
+            "active_bytes_by_direction": dict(
+                runtime_state.get("active_bytes_by_direction", {}) or {}
+            ),
+            "queued_bytes_by_direction": dict(
+                runtime_state.get("queued_bytes_by_direction", {}) or {}
+            ),
+            "active_resource_usage": active_resource_usage,
         }
 
 
@@ -124,6 +156,7 @@ def runtime_view(
 ) -> RuntimeLoadView:
     normalized_job_id = None if job_id is None else str(job_id)
     workload = WorkloadKind(workload_kind).value
+    runtime_state_snapshot = runtime_state_metadata(runtime_state)
     active_transfer_count = 0
     running_transfer_count = 0
     queued_transfer_count = 0
@@ -178,6 +211,7 @@ def runtime_view(
         workload_kind=workload,
         priority=int(priority),
         busy_relays=frozenset(busy_relays),
+        runtime_state=runtime_state_snapshot,
         job_weight=job_weight,
         total_weight=total_weight,
         current_job_active_bytes=current_job_active_bytes,

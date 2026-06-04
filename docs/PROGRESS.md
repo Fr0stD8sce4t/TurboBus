@@ -2,7 +2,7 @@
 
 ## Current State
 
-Current main target: benchmark data-plane repair.
+Current main target: runtime load feedback.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -14,8 +14,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Offload store registration no longer fabricates placeholder GPU backing for
-  offload blocks.
+- Scheduler policy metadata now carries live daemon runtime summary state,
+  including active resource usage and completion-source counts.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -34,4 +34,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: runtime load feedback.
+Continue with one concrete implementation boundary: isolation and authority
+hardening.

@@ -7,9 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: benchmark data-plane repair. Offload block registration
-should require real CPU and GPU backing instead of fabricating placeholder
-GPU tensors.
+Current code target: runtime load feedback. Scheduler load metadata should
+carry live daemon runtime summary state, including active resource usage and
+completion-source counts, instead of only the minimal count set.
 
 ## Exit Criteria
 
@@ -17,17 +17,17 @@ GPU tensors.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Offload block registration rejects placeholder GPU backing before it can be
-  used in a transfer intent.
+- Scheduler decision metadata exposes live runtime resource usage and
+  completion-source counts.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/offload/store.py` should reject missing GPU backing and force the
-benchmark-facing offload adapters to use real paired buffers.
+`turbobus/scheduler/load_feedback.py` should surface daemon runtime summary
+state in the scheduler policy metadata.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: runtime load feedback.
+boundary: isolation and authority hardening.

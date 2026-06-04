@@ -7,29 +7,29 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten profile bootstrap and runtime/native profile
-ownership so `TurboBusRuntimeSession` can populate daemon profile state without
-applications selecting physical routes or assembling profile control-plane
-calls manually.
+The next task is to tighten native/data-plane resource ownership across direct
+fallback and worker CUDA execution so shared pinned CPU buffers and CUDA IPC
+GPU buffers remain bound to daemon-issued `ExecutionTicket` data and cleaned up
+through the unified runtime session path.
 
 ## Exit Criteria
 
-- Runtime profile bootstrap remains owned by `TurboBusRuntimeSession` and the
-  daemon profile API.
-- Profile conversion keeps target/relay data tied to daemon-discovered session
-  relays, not application-provided route choices.
-- Native profile helpers expose only the capabilities needed by the unified
-  runtime session path.
+- Direct fallback and worker CUDA execution continue to execute only
+  daemon-issued plans and tickets.
+- Shared pinned CPU buffer registration and CUDA IPC device handle ownership
+  remain tied to runtime-session registered buffers.
+- Resource evidence recorded in completion metadata reflects the buffers and
+  ticket used by the daemon-issued execution.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
   shim, or export layer code is added during this pass.
 
 ## Current Code Work
 
-- Inspect `turbobus/runtime_session.py`, `turbobus/profile.py`,
-  `turbobus/runtime_engine.py`, and `turbobus/backends/cuda.py` for profile
-  bootstrap ownership and native profile conversion.
-- Keep `TurboBusRuntimeSession.open_socket()` as the public socket entry; the
-  old worker-managed manual target/relay client path has been removed.
+- Inspect `turbobus/direct_fallback.py`, `turbobus/worker/resources.py`,
+  `turbobus/worker/cuda_executor.py`, and `turbobus/buffer_registration.py`
+  for resource ownership and cleanup consistency.
+- Keep profile bootstrap owned by `TurboBusRuntimeSession` and daemon profile
+  APIs; profile target/relay data must match daemon-discovered session relays.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
   deleted. Do not recreate compatibility export layers.
@@ -38,7 +38,7 @@ calls manually.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting profile bootstrap and
-runtime/native profile ownership. Keep the work focused on system code; defer
-tests, benchmarks, paper-validation, experiments, and server validation until
-the full system implementation pass is complete.
+Continue the code implementation pass by inspecting direct fallback and worker
+CUDA resource ownership. Keep the work focused on system code; defer tests,
+benchmarks, paper-validation, experiments, and server validation until the full
+system implementation pass is complete.

@@ -15,6 +15,10 @@ def profile_key(target_gpu: int, relay_gpus: Iterable[int]) -> str:
 def normalize_profile(profile: dict, target_gpu: int) -> dict:
     if not isinstance(profile, dict):
         raise ValueError("profile must be a dict")
+    target = int(target_gpu)
+    profile_target = int(profile.get("target_device", target))
+    if profile_target != target:
+        raise ValueError("profile target_device must match target_gpu")
     direct_h2d = float(profile.get("direct_h2d_bw_gbps", 0.0) or 0.0)
     direct_d2h = float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0)
     if direct_h2d <= 0.0:
@@ -23,10 +27,13 @@ def normalize_profile(profile: dict, target_gpu: int) -> dict:
     for relay in profile.get("relays", []) or []:
         if not isinstance(relay, dict):
             raise ValueError("profile relays must be dicts")
+        relay_target = int(relay.get("target_device", target))
+        if relay_target != target:
+            raise ValueError("profile relay target_device must match target_gpu")
         relays.append(
             {
                 "relay_device": int(relay["relay_device"]),
-                "target_device": int(relay.get("target_device", target_gpu)),
+                "target_device": relay_target,
                 "h2d_bw_gbps": float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
                 "d2h_bw_gbps": float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
                 "p2p_bw_gbps": float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
@@ -38,7 +45,7 @@ def normalize_profile(profile: dict, target_gpu: int) -> dict:
             }
         )
     return {
-        "target_device": int(profile.get("target_device", target_gpu)),
+        "target_device": target,
         "direct_h2d_bw_gbps": direct_h2d,
         "direct_d2h_bw_gbps": direct_d2h,
         "relays": relays,
@@ -55,12 +62,19 @@ def profile_entry(
 ) -> dict:
     target = int(target_gpu)
     relays = normalize_relays(relay_gpus)
+    normalized_profile = normalize_profile(profile, target)
+    profile_relays = [int(relay["relay_device"]) for relay in normalized_profile["relays"]]
+    if len(profile_relays) != len(set(profile_relays)):
+        raise ValueError("profile relay devices must be unique")
+    profile_relays = sorted(profile_relays)
+    if profile_relays != relays:
+        raise ValueError("profile relay devices must match relay_gpus")
     return {
         "target_gpu": target,
         "relay_gpus": relays,
         "profile_bytes": int(profile_bytes),
         "updated_at": float(updated_at),
-        "profile": normalize_profile(profile, target),
+        "profile": normalized_profile,
     }
 
 

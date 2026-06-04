@@ -53,10 +53,48 @@ def profile_to_daemon_dict(profile) -> dict[str, object]:
     }
 
 
+def validate_daemon_profile_dict(
+    profile: Mapping[str, object],
+    *,
+    target_gpu: int,
+    relay_gpus: Iterable[int],
+) -> dict[str, object]:
+    if not isinstance(profile, Mapping):
+        raise TypeError("profile must be a mapping")
+    normalized = dict(profile)
+    target = int(target_gpu)
+    profile_target = int(normalized.get("target_device", target))
+    if profile_target != target:
+        raise ValueError("profile target_device must match runtime target_gpu")
+    normalized["target_device"] = target
+    expected_relays = sorted({int(gpu) for gpu in relay_gpus})
+    relays = []
+    for relay in normalized.get("relays", []) or []:
+        if not isinstance(relay, Mapping):
+            raise ValueError("profile relays must be mappings")
+        relay_record = dict(relay)
+        relay_target = int(relay_record.get("target_device", target))
+        if relay_target != target:
+            raise ValueError("profile relay target_device must match runtime target_gpu")
+        relay_record["relay_device"] = int(relay_record["relay_device"])
+        relay_record["target_device"] = target
+        relays.append(relay_record)
+    profile_relays = [int(relay["relay_device"]) for relay in relays]
+    if len(profile_relays) != len(set(profile_relays)):
+        raise ValueError("profile relay devices must be unique")
+    profile_relays = sorted(profile_relays)
+    if profile_relays != expected_relays:
+        raise ValueError("profile relay devices must match daemon-discovered relays")
+    normalized["relays"] = relays
+    return normalized
+
+
 def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
     profile = entry.get("profile")
     if not isinstance(profile, Mapping):
         raise ValueError("daemon profile entry has no profile object")
+    if int(profile.get("target_device", target_gpu)) != int(target_gpu):
+        raise ValueError("daemon profile target_device does not match target_gpu")
     direct_h2d = float(profile.get("direct_h2d_bw_gbps", 0.0) or 0.0)
     if direct_h2d <= 0.0:
         raise ValueError("daemon profile direct_h2d_bw_gbps must be positive")
@@ -163,7 +201,11 @@ def install_daemon_profile(
     response = writer(
         int(target_gpu),
         [int(gpu) for gpu in relay_gpus],
-        profile_to_daemon_dict(profile),
+        validate_daemon_profile_dict(
+            profile_to_daemon_dict(profile),
+            target_gpu=int(target_gpu),
+            relay_gpus=relay_gpus,
+        ),
         profile_bytes=int(profile_bytes),
     )
     if not getattr(response, "ok", False):

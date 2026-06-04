@@ -56,6 +56,10 @@ experiment work is planned.
   The public `TurboBusClient` should submit intents and wait for receipts only;
   it must not accept application-provided execution hooks that can bypass the
   runtime-session worker path.
+- Keep daemon planning reachable only through `TransferIntent` submission.
+  Daemon-internal scheduling may still call the scheduler with a mode, but the
+  daemon object should not expose a public manual planning method that lets
+  callers choose direct, relay, or pool.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

@@ -824,7 +824,7 @@ class TurboBusDaemon:
                     },
                 )
 
-        planned = self.plan_transfer(
+        planned = self._plan_transfer(
             session_id=intent.session_id,
             total_bytes=intent.total_bytes,
             chunk_bytes=chunk_bytes,
@@ -1181,7 +1181,7 @@ class TurboBusDaemon:
                 },
             )
 
-    def plan_transfer(
+    def _plan_transfer(
         self,
         session_id: str,
         total_bytes: int,

@@ -23,31 +23,25 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited public API/runtime execution ownership during the daemon-first
+- Audited daemon and scheduler planning ownership during the daemon-first
   closure pass.
-- Removed the application-provided `transfer_executor` and `execution_daemon`
-  injection path from public `TurboBusClient`.
-- Moved worker/backend execution ownership into `TurboBusRuntimeSession`: it
-  now submits the intent to the daemon, receives the daemon scheduling payload,
-  and invokes the runtime-owned `WorkerIntentTransferExecutor`.
-- Added a private runtime execution daemon view so the runtime-owned executor
-  can wait for intent receipts while using the execution-role daemon client for
-  status, cleanup, and lease validation.
-- Changed worker execution support imports to use `turbobus.worker.models`
-  directly for worker envelope and lifecycle types.
+- Removed the public `TurboBusDaemon.plan_transfer()` method name by making the
+  existing planning implementation daemon-internal as `_plan_transfer()`.
+- Kept `submit_transfer_intent()` on the daemon as the production planning
+  entry; it calls `_plan_transfer()` with daemon-owned `mode="auto"`.
+- Confirmed production API, runtime session, offload store, and adapters do
+  not expose `PLAN_TRANSFER` or manual `plan_transfer` entry points.
 
 ## Validation
 
-- `python -m py_compile turbobus\api\client.py turbobus\runtime_session.py
-  turbobus\intent_executor.py turbobus\intent_execution_support.py` passed.
-- `rg -n "transfer_executor|IntentTransferExecutor|execution_daemon"
-  turbobus\api` found no public API executor injection entry.
-- `rg -n "_RuntimeExecutionDaemonView|execution_view|TurboBusClient\("
-  turbobus\runtime_session.py turbobus\api\client.py` found the runtime-owned
-  private execution view and the pure public client construction.
-- `rg -n "from \.worker import" turbobus\intent_executor.py
-  turbobus\intent_execution_support.py` found no worker package model imports
-  in the intent execution helpers.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\daemon\dispatch.py turbobus\scheduler\daemon.py` passed.
+- `rg -n "\.plan_transfer\(|def plan_transfer\(|self\.plan_transfer\("
+  turbobus` found only daemon-internal scheduler calls and the scheduler
+  method itself.
+- `rg -n PLAN_TRANSFER turbobus\daemon turbobus\api
+  turbobus\runtime_session.py turbobus\offload_store.py turbobus\adapters`
+  found no production external plan request entry.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -57,8 +51,9 @@ commands or making server validation a current entry point.
   pass is complete.
 - Existing tests still contain old production-path assumptions such as removed
   transfer request, manual reservation, worker shortcut, broad daemon client,
-  and compatibility entry points. Current-stage constraints defer test
-  migration until the system implementation pass is complete.
+  manual daemon planning, and compatibility entry points. Current-stage
+  constraints defer test migration until the system implementation pass is
+  complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

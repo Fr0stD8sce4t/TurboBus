@@ -173,6 +173,7 @@ def receipt_for_transfer(
     evidence_ticket_id = evidence.get("ticket_id")
     evidence_transfer_id = evidence.get("transfer_id")
     evidence_plan_generation = _optional_int(evidence.get("plan_generation"))
+    evidence_expected_bytes = _optional_int(evidence.get("expected_bytes"))
     resource_evidence = evidence.get("resource_evidence")
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
@@ -203,6 +204,9 @@ def receipt_for_transfer(
             "executed": completion_source in {"worker", "backend"},
             "verified": bool(evidence.get("verified", False)),
             "verified_bytes": int(evidence.get("verified_bytes", 0) or 0),
+            "evidence_expected_bytes": (
+                None if evidence_expected_bytes is None else evidence_expected_bytes
+            ),
             "content_match": bool(evidence.get("content_match", False)),
             "verification_source": evidence.get("verification_source"),
             "verification_method": evidence.get("verification_method"),

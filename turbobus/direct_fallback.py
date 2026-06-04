@@ -68,11 +68,19 @@ def execute_direct_fallback_transfer(
                 f"{bytes_completed} of {ticket.total_bytes} daemon-ticketed bytes"
             )
     except Exception as exc:
+        failure_payload = {"failure_source": "direct_fallback"}
+        failure_resource_evidence = _direct_endpoint_resource_evidence(
+            direction=transfer_request.direction.value,
+            source=source,
+            target=target,
+        )
+        if failure_resource_evidence is not None:
+            failure_payload["resource_evidence"] = failure_resource_evidence
         failure_evidence = (
             None
             if ticket is None
             else _completion_evidence_with_ticket_binding(
-                {"failure_source": "direct_fallback"},
+                failure_payload,
                 ticket=ticket,
             )
         )
@@ -96,6 +104,11 @@ def execute_direct_fallback_transfer(
         ),
     )
     if not completed.ok:
+        completion_failure_resource_evidence = _direct_endpoint_resource_evidence(
+            direction=transfer_request.direction.value,
+            source=source,
+            target=target,
+        )
         daemon_client.transfer_status(
             transfer_id,
             state="failed",
@@ -103,7 +116,16 @@ def execute_direct_fallback_transfer(
             error=completed.error or "backend verification failed",
             completion_source="backend",
             completion_evidence=_completion_evidence_with_ticket_binding(
-                {"failure_source": "direct_fallback"},
+                {
+                    "failure_source": "direct_fallback",
+                    **(
+                        {}
+                        if completion_failure_resource_evidence is None
+                        else {
+                            "resource_evidence": completion_failure_resource_evidence
+                        }
+                    ),
+                },
                 ticket=ticket,
             ),
         )
@@ -155,6 +177,8 @@ def _execute_direct_ticket_plan(
             target_device=target.device_index,
             plan_payload=plan_payload,
             host_buffer=source,
+            source=source,
+            target=target,
             device_ptr=int(target.device_ptr),
             device_bytes=target.size_bytes,
             direction=direction,
@@ -170,6 +194,8 @@ def _execute_direct_ticket_plan(
         target_device=source.device_index,
         plan_payload=plan_payload,
         host_buffer=target,
+        source=source,
+        target=target,
         device_ptr=int(source.device_ptr),
         device_bytes=source.size_bytes,
         direction=direction,
@@ -183,6 +209,8 @@ def _run_direct_plan(
     target_device: int,
     plan_payload: Mapping[str, object],
     host_buffer: SharedPinnedCpuBuffer,
+    source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     device_ptr: int,
     device_bytes: int,
     direction: str,
@@ -237,6 +265,16 @@ def _run_direct_plan(
                 device_bytes=int(device_bytes),
                 ranges=_plan_transfer_ranges(plan_payload),
                 expected_bytes=int(plan_payload["total_bytes"]),
+                resource_evidence=_direct_resource_evidence(
+                    direction=direction,
+                    source=source,
+                    target=target,
+                    host_ptr=host_ptr,
+                    host_bytes=host_buffer.size_bytes,
+                    device_ptr=int(device_ptr),
+                    device_bytes=int(device_bytes),
+                    target_device=int(target_device),
+                ),
             ),
         )
     finally:
@@ -367,6 +405,7 @@ def _direct_plan_completion_evidence(
     device_bytes: int,
     ranges: Iterable[Mapping[str, int]],
     expected_bytes: int,
+    resource_evidence: Mapping[str, object],
 ) -> dict[str, object]:
     verifier = getattr(backend, "verify_transfer", None)
     if not callable(verifier):
@@ -383,7 +422,94 @@ def _direct_plan_completion_evidence(
         )
     )
     evidence.setdefault("expected_bytes", int(expected_bytes))
+    evidence.setdefault("resource_evidence", dict(resource_evidence))
     return evidence
+
+
+def _direct_resource_evidence(
+    *,
+    direction: str,
+    source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    host_ptr: int,
+    host_bytes: int,
+    device_ptr: int,
+    device_bytes: int,
+    target_device: int,
+) -> dict[str, object]:
+    endpoint_evidence = _direct_endpoint_resource_evidence(
+        direction=direction,
+        source=source,
+        target=target,
+    )
+    evidence = {} if endpoint_evidence is None else dict(endpoint_evidence)
+    evidence.update(
+        {
+            "evidence_source": "direct_fallback_resources",
+            "host_ptr": int(host_ptr),
+            "host_bytes": int(host_bytes),
+            "device_ptr": int(device_ptr),
+            "device_bytes": int(device_bytes),
+            "device_index": int(target_device),
+            "cuda_host_registered": True,
+        }
+    )
+    return evidence
+
+
+def _direct_endpoint_resource_evidence(
+    *,
+    direction: str,
+    source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+) -> dict[str, object] | None:
+    normalized_direction = str(direction).lower()
+    if normalized_direction == "h2d":
+        if not isinstance(source, SharedPinnedCpuBuffer) or not isinstance(
+            target,
+            CudaIpcDeviceBuffer,
+        ):
+            return None
+        cpu_buffer = source
+        device_buffer = target
+        cpu_role = "source"
+        device_role = "destination"
+    elif normalized_direction == "d2h":
+        if not isinstance(source, CudaIpcDeviceBuffer) or not isinstance(
+            target,
+            SharedPinnedCpuBuffer,
+        ):
+            return None
+        cpu_buffer = target
+        device_buffer = source
+        cpu_role = "destination"
+        device_role = "source"
+    else:
+        return None
+    return {
+        "direction": normalized_direction,
+        "src_buffer_id": source.buffer_id,
+        "src_handle_type": _direct_handle_type(source),
+        "dst_buffer_id": target.buffer_id,
+        "dst_handle_type": _direct_handle_type(target),
+        "cpu_buffer_id": cpu_buffer.buffer_id,
+        "cpu_handle_type": "shared_pinned_cpu",
+        "cpu_buffer_role": cpu_role,
+        "device_buffer_id": device_buffer.buffer_id,
+        "device_handle_type": "cuda_ipc_device",
+        "device_buffer_role": device_role,
+        "device_index": int(device_buffer.device_index),
+    }
+
+
+def _direct_handle_type(
+    buffer: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+) -> str:
+    if isinstance(buffer, SharedPinnedCpuBuffer):
+        return "shared_pinned_cpu"
+    if isinstance(buffer, CudaIpcDeviceBuffer):
+        return "cuda_ipc_device"
+    return "unknown"
 
 
 def _completion_evidence_with_ticket_binding(

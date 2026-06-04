@@ -4748,9 +4748,15 @@ def _normalize_completion_evidence(
         expected_ticket=expected_ticket,
     )
     resource_evidence = evidence.get("resource_evidence")
+    expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
         "verified_bytes": verified_bytes,
+        **(
+            {}
+            if expected_evidence_bytes is None
+            else {"expected_bytes": int(expected_evidence_bytes)}
+        ),
         "content_match": True,
         "verification_source": str(
             evidence.get("verification_source") or completion_source

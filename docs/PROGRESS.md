@@ -74,6 +74,10 @@ fallback cleanup path.
 CUDA worker execution now snapshots the daemon-authorized CPU/GPU data-plane
 resources while they are open and attaches that resource evidence to worker
 success, bound failure, daemon completion evidence, and receipt metadata.
+Direct fallback now snapshots the runtime-owned CPU/GPU endpoint resources used
+for a daemon-issued direct `ExecutionTicket`, includes that resource evidence in
+backend completion/failure evidence, and preserves backend expected-byte
+evidence in daemon receipts.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -93,16 +97,16 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Bound CUDA worker result metadata to the `WorkerDataPlaneResources` snapshot
-  used for the daemon-issued request.
-- Preserved resource evidence through worker status reporting, daemon
-  completion evidence normalization, and transfer receipt metadata.
+- Bound direct fallback backend completion and failure evidence to the
+  daemon-issued direct ticket and the CPU/GPU endpoint resources used for that
+  execution.
+- Preserved direct backend expected-byte evidence through daemon completion
+  evidence normalization and transfer receipt metadata.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\cuda_executor.py
-  turbobus\worker\lifecycle.py turbobus\daemon\server.py
-  turbobus\daemon\receipts.py` passed.
+- `python -m py_compile turbobus\direct_fallback.py
+  turbobus\daemon\server.py turbobus\daemon\receipts.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -113,7 +117,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon completion evidence
-and receipt metadata for direct fallback and worker-managed paths while keeping
-server validation deferred until the full system implementation pass is
-complete.
+Continue the code implementation pass by inspecting runtime-session intent
+execution and receipt waiting while keeping server validation deferred until the
+full system implementation pass is complete.

@@ -2322,6 +2322,12 @@ class TurboBusDaemon:
             for transfer_id in self._transfer_queue
             if transfer_id in self._transfer_queue_records
         ]
+        delayed_transfers = [
+            dict(record)
+            for record in transfer_records
+            if str(record.get("state")) == TransferStatusState.SUBMITTED.value
+            and not _record_has_admitted_execution(record)
+        ]
         queued_transfers = [
             dict(record)
             for record in transfer_records
@@ -2335,11 +2341,7 @@ class TurboBusDaemon:
         active_transfers = [
             dict(record)
             for record in transfer_records
-            if str(record.get("state"))
-            in {
-                TransferStatusState.SUBMITTED.value,
-                TransferStatusState.RUNNING.value,
-            }
+            if _record_has_active_execution(record)
         ]
         active_by_direction: dict[str, dict[str, int]] = {}
         queued_by_direction: dict[str, dict[str, int]] = {}
@@ -2415,6 +2417,7 @@ class TurboBusDaemon:
             "transfer_order": tuple(self._transfer_queue),
             "transfers": transfer_records,
             "queued_transfers": queued_transfers,
+            "delayed_transfers": delayed_transfers,
             "running_transfers": running_transfers,
             "active_transfers": active_transfers,
             "active_paths": path_records,
@@ -2425,6 +2428,7 @@ class TurboBusDaemon:
             "relay_staging": staging_records,
             "summary": {
                 "queued_transfer_count": len(queued_transfers),
+                "delayed_transfer_count": len(delayed_transfers),
                 "running_transfer_count": len(running_transfers),
                 "active_transfer_count": len(active_transfers),
                 "terminal_transfer_count": sum(
@@ -2516,10 +2520,7 @@ class TurboBusDaemon:
                 job_record["running_transfer_count"] = int(
                     job_record["running_transfer_count"]
                 ) + 1
-            if state in {
-                TransferStatusState.SUBMITTED.value,
-                TransferStatusState.RUNNING.value,
-            }:
+            if _record_has_active_execution(record):
                 bytes_total = int(record.get("bytes_total", 0) or 0)
                 bytes_completed = int(record.get("bytes_completed", 0) or 0)
                 job_record["active_transfer_count"] = int(
@@ -4284,9 +4285,13 @@ def _runtime_state_without_transfer(
     for key in (
         "transfers",
         "queued_transfers",
+        "delayed_transfers",
         "running_transfers",
         "active_transfers",
         "active_paths",
+        "active_reservations",
+        "active_leases",
+        "relay_staging",
     ):
         value = filtered.get(key)
         if isinstance(value, list | tuple):
@@ -4301,66 +4306,14 @@ def _runtime_state_without_transfer(
         filtered["transfer_order"] = tuple(
             str(item) for item in order if str(item) != normalized
         )
-    summary = filtered.get("summary")
-    if isinstance(summary, Mapping):
-        summary_copy = dict(summary)
-        summary_copy["queued_transfer_count"] = len(filtered.get("queued_transfers", ()))
-        summary_copy["running_transfer_count"] = len(filtered.get("running_transfers", ()))
-        summary_copy["active_transfer_count"] = len(filtered.get("active_transfers", ()))
-        filtered["summary"] = summary_copy
+    _refresh_runtime_feedback_summary(filtered)
     job_runtime_state = filtered.get("job_runtime_state")
     transfers = filtered.get("transfers", ())
     if isinstance(job_runtime_state, Mapping) and isinstance(transfers, list | tuple):
-        filtered_jobs = {
-            str(job_id): {
-                "job_id": str(job_id),
-                "weight": float(
-                    record.get("weight", 1.0)
-                    if isinstance(record, Mapping)
-                    else 1.0
-                ),
-                "queued_transfer_count": 0,
-                "running_transfer_count": 0,
-                "active_transfer_count": 0,
-                "active_bytes_total": 0,
-                "active_bytes_remaining": 0,
-            }
-            for job_id, record in job_runtime_state.items()
-        }
-        for item in transfers:
-            if not isinstance(item, Mapping) or item.get("job_id") is None:
-                continue
-            job_id = str(item["job_id"])
-            job_record = filtered_jobs.setdefault(
-                job_id,
-                {
-                    "job_id": job_id,
-                    "weight": 1.0,
-                    "queued_transfer_count": 0,
-                    "running_transfer_count": 0,
-                    "active_transfer_count": 0,
-                    "active_bytes_total": 0,
-                    "active_bytes_remaining": 0,
-                },
-            )
-            state = str(item.get("state", ""))
-            if state == TransferStatusState.SUBMITTED.value:
-                job_record["queued_transfer_count"] += 1
-            elif state == TransferStatusState.RUNNING.value:
-                job_record["running_transfer_count"] += 1
-            if state in {
-                TransferStatusState.SUBMITTED.value,
-                TransferStatusState.RUNNING.value,
-            }:
-                bytes_total = int(item.get("bytes_total", 0) or 0)
-                bytes_completed = int(item.get("bytes_completed", 0) or 0)
-                job_record["active_transfer_count"] += 1
-                job_record["active_bytes_total"] += bytes_total
-                job_record["active_bytes_remaining"] += max(
-                    0,
-                    bytes_total - bytes_completed,
-                )
-        filtered["job_runtime_state"] = dict(sorted(filtered_jobs.items()))
+        filtered["job_runtime_state"] = _job_runtime_state_from_records(
+            job_runtime_state,
+            transfers,
+        )
         if isinstance(filtered.get("summary"), Mapping):
             filtered["summary"] = {
                 **dict(filtered["summary"]),
@@ -4368,6 +4321,169 @@ def _runtime_state_without_transfer(
             }
     return filtered
 
+
+def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
+    summary = runtime_state.get("summary")
+    if not isinstance(summary, Mapping):
+        return
+    summary_copy = dict(summary)
+    path_summary: dict[str, dict[str, int]] = {}
+    relay_path_summary = {"path_count": 0, "chunk_count": 0, "bytes_total": 0}
+    active_by_direction = _transfer_bytes_by_direction(
+        runtime_state.get("active_transfers", ()),
+        include_remaining=True,
+    )
+    queued_by_direction = _transfer_bytes_by_direction(
+        runtime_state.get("queued_transfers", ()),
+        include_remaining=False,
+    )
+    for record in _runtime_mapping_records(runtime_state.get("active_paths", ())):
+        kind = str(record.get("kind", "unknown"))
+        direction = str(record.get("direction", "unknown"))
+        key = f"{direction}:{kind}"
+        bucket = path_summary.setdefault(
+            key,
+            {"path_count": 0, "chunk_count": 0, "bytes_total": 0},
+        )
+        bucket["path_count"] += 1
+        bucket["chunk_count"] += int(record.get("chunk_count", 0) or 0)
+        bucket["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+        if kind == "relay":
+            relay_path_summary["path_count"] += 1
+            relay_path_summary["chunk_count"] += int(record.get("chunk_count", 0) or 0)
+            relay_path_summary["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+
+    active_resource_usage = dict(summary_copy.get("active_resource_usage", {}) or {})
+    active_resource_usage["h2d"] = dict(active_by_direction.get("h2d", {}))
+    active_resource_usage["d2h"] = dict(active_by_direction.get("d2h", {}))
+    active_resource_usage["p2p"] = dict(relay_path_summary)
+    relay_staging = dict(active_resource_usage.get("relay_staging", {}) or {})
+    relay_staging.update(
+        {
+            "count": len(runtime_state.get("relay_staging", ()) or ()),
+            "active_reservation_count": len(
+                runtime_state.get("active_reservations", ()) or ()
+            ),
+            "active_lease_count": len(runtime_state.get("active_leases", ()) or ()),
+        }
+    )
+    active_resource_usage["relay_staging"] = relay_staging
+
+    summary_copy.update(
+        {
+            "queued_transfer_count": len(runtime_state.get("queued_transfers", ()) or ()),
+            "delayed_transfer_count": len(runtime_state.get("delayed_transfers", ()) or ()),
+            "running_transfer_count": len(runtime_state.get("running_transfers", ()) or ()),
+            "active_transfer_count": len(runtime_state.get("active_transfers", ()) or ()),
+            "active_reservation_count": len(runtime_state.get("active_reservations", ()) or ()),
+            "active_lease_count": len(runtime_state.get("active_leases", ()) or ()),
+            "relay_staging_count": len(runtime_state.get("relay_staging", ()) or ()),
+            "relay_path_count": relay_path_summary["path_count"],
+            "relay_path_bytes_total": relay_path_summary["bytes_total"],
+            "busy_relays": tuple(sorted(busy_relays_from_runtime_state(runtime_state))),
+            "queued_bytes_by_direction": queued_by_direction,
+            "active_bytes_by_direction": active_by_direction,
+            "active_paths": path_summary,
+            "active_resource_usage": active_resource_usage,
+        }
+    )
+    runtime_state["active_resource_usage"] = active_resource_usage
+    runtime_state["summary"] = summary_copy
+
+
+def _transfer_bytes_by_direction(
+    transfers: object,
+    *,
+    include_remaining: bool,
+) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for record in _runtime_mapping_records(transfers):
+        direction = str(record.get("direction", "unknown"))
+        bucket = result.setdefault(
+            direction,
+            {"transfer_count": 0, "bytes_total": 0},
+        )
+        bucket["transfer_count"] += 1
+        bucket["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+        if include_remaining:
+            bucket["bytes_remaining"] = int(bucket.get("bytes_remaining", 0)) + max(
+                0,
+                int(record.get("bytes_total", 0) or 0)
+                - int(record.get("bytes_completed", 0) or 0),
+            )
+    return result
+
+
+def _job_runtime_state_from_records(
+    job_runtime_state: Mapping[str, object],
+    transfers: object,
+) -> dict[str, dict[str, object]]:
+    filtered_jobs = {
+        str(job_id): {
+            "job_id": str(job_id),
+            "weight": float(
+                record.get("weight", 1.0)
+                if isinstance(record, Mapping)
+                else 1.0
+            ),
+            "queued_transfer_count": 0,
+            "running_transfer_count": 0,
+            "active_transfer_count": 0,
+            "active_bytes_total": 0,
+            "active_bytes_remaining": 0,
+        }
+        for job_id, record in job_runtime_state.items()
+    }
+    for item in _runtime_mapping_records(transfers):
+        if item.get("job_id") is None:
+            continue
+        job_id = str(item["job_id"])
+        job_record = filtered_jobs.setdefault(
+            job_id,
+            {
+                "job_id": job_id,
+                "weight": 1.0,
+                "queued_transfer_count": 0,
+                "running_transfer_count": 0,
+                "active_transfer_count": 0,
+                "active_bytes_total": 0,
+                "active_bytes_remaining": 0,
+            },
+        )
+        state = str(item.get("state", ""))
+        if state == TransferStatusState.SUBMITTED.value:
+            job_record["queued_transfer_count"] += 1
+        elif state == TransferStatusState.RUNNING.value:
+            job_record["running_transfer_count"] += 1
+        if _record_has_active_execution(item):
+            bytes_total = int(item.get("bytes_total", 0) or 0)
+            bytes_completed = int(item.get("bytes_completed", 0) or 0)
+            job_record["active_transfer_count"] += 1
+            job_record["active_bytes_total"] += bytes_total
+            job_record["active_bytes_remaining"] += max(
+                0,
+                bytes_total - bytes_completed,
+            )
+    return dict(sorted(filtered_jobs.items()))
+
+
+def _runtime_mapping_records(value: object) -> tuple[Mapping[str, object], ...]:
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _record_has_admitted_execution(record: Mapping[str, object]) -> bool:
+    return str(record.get("admission_state", _ADMISSION_ADMITTED)) == _ADMISSION_ADMITTED
+
+
+def _record_has_active_execution(record: Mapping[str, object]) -> bool:
+    state = str(record.get("state", ""))
+    if state == TransferStatusState.RUNNING.value:
+        return True
+    if state != TransferStatusState.SUBMITTED.value:
+        return False
+    return _record_has_admitted_execution(record)
 
 def _normalize_transfer_ranges(
     ranges: Iterable[dict[str, int]] | None,

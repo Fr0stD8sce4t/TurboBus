@@ -25,6 +25,7 @@ class RuntimeLoadView:
     fairness_threshold_bytes: float
     active_transfer_count: int
     queued_transfer_count: int
+    delayed_transfer_count: int
 
     def policy_metadata(self) -> dict[str, object]:
         return {
@@ -43,6 +44,7 @@ class RuntimeLoadView:
             "busy_relays": tuple(sorted(self.busy_relays)),
             "active_transfer_count": self.active_transfer_count,
             "queued_transfer_count": self.queued_transfer_count,
+            "delayed_transfer_count": self.delayed_transfer_count,
         }
 
 
@@ -53,6 +55,7 @@ def runtime_state_metadata(
         return {
             "version": 0,
             "queued_transfer_count": 0,
+            "delayed_transfer_count": 0,
             "running_transfer_count": 0,
             "active_transfer_count": 0,
         }
@@ -62,6 +65,7 @@ def runtime_state_metadata(
     return {
         "version": int(runtime_state.get("version", 0) or 0),
         "queued_transfer_count": int(summary.get("queued_transfer_count", 0) or 0),
+        "delayed_transfer_count": int(summary.get("delayed_transfer_count", 0) or 0),
         "running_transfer_count": int(summary.get("running_transfer_count", 0) or 0),
         "active_transfer_count": int(summary.get("active_transfer_count", 0) or 0),
         "active_reservation_count": int(summary.get("active_reservation_count", 0) or 0),
@@ -92,12 +96,14 @@ def runtime_view(
     workload = WorkloadKind(workload_kind).value
     active_transfer_count = 0
     queued_transfer_count = 0
+    delayed_transfer_count = 0
     job_runtime_state: Mapping[str, object] = {}
     if isinstance(runtime_state, Mapping):
         summary = runtime_state.get("summary", {})
         if isinstance(summary, Mapping):
             active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
             queued_transfer_count = int(summary.get("queued_transfer_count", 0) or 0)
+            delayed_transfer_count = int(summary.get("delayed_transfer_count", 0) or 0)
             nested_jobs = summary.get("job_runtime_state", {})
             if isinstance(nested_jobs, Mapping):
                 job_runtime_state = nested_jobs
@@ -151,6 +157,7 @@ def runtime_view(
         fairness_threshold_bytes=average_weighted * 1.25,
         active_transfer_count=active_transfer_count,
         queued_transfer_count=queued_transfer_count,
+        delayed_transfer_count=delayed_transfer_count,
     )
 
 

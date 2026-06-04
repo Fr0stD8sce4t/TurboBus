@@ -7,38 +7,31 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Continue the system-code closure audit for the daemon-first path. The current
-code pass should keep production work flowing through `TurboBusRuntimeSession`,
-`TransferIntent`, daemon scheduling, daemon-issued `ExecutionTicket`,
-worker/backend completion, and `TransferReceipt`.
+Current code target: complete worker/backend runtime feedback into daemon
+scheduling. Scheduler load accounting must use real admitted/running transfer
+state, not delayed or synthetic activity.
 
 ## Exit Criteria
 
-- Public runtime, client, worker, daemon, offload, and adapter boundaries have
-  no compatibility export layers, old entry wrappers, or application-side
-  physical route controls.
-- Runtime session setup owns session/job/buffer registration, profile
-  bootstrap, worker execution wiring, receipt validation, and cleanup state.
-- Applications and adapters submit intent and consume receipt only; they do not
-  choose direct, relay, pool, target GPU, or relay GPU routes.
+- Daemon runtime state distinguishes queued, delayed, running, and active
+  transfers.
+- Scheduler policy metadata receives delayed, queued, running, and active
+  counts from daemon runtime feedback.
+- Delayed admission promotion replans without counting the same transfer's old
+  reservations, leases, staging records, or paths as active load.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-- Continue with the next functional boundary that can break daemon-issued
-  execution: worker failure handling, scheduler load accounting, or framework
-  adapter paths must preserve runtime-session ownership and daemon-issued plans.
-- Do not make helper extraction, package export cleanup, or compatibility
-  wrapper removal a standalone target unless it directly closes that boundary.
-- Keep deleted files such as `client_transfer.py`, `offload_store.py`,
-  `worker_managed.py`, `turbobus/api/client.py`,
-  `turbobus/worker/helper.py`, and `turbobus/daemon/protocol.py` deleted; do
-  not recreate compatibility export layers.
+Finish the scheduler load-accounting closure for daemon-issued execution:
+admitted submitted transfers and running worker/backend transfers count as
+active execution; delayed transfers remain visible as waiting work but do not
+consume active bytes or relay busy feedback.
 
 ## Next Entry
 
-Continue the code implementation pass with the next complete system boundary
-that still shows compatibility drift, mixed responsibilities, or route-control
-bypass risk. Defer tests, benchmarks, paper validation, experiments, and server
-validation until the full system implementation pass is complete.
+After this target is complete, continue with one concrete implementation
+boundary: worker failure handling to cleanup/receipt, runtime receipt
+validation, or adapter submission/receipt consumption through
+`TurboBusRuntimeSession`.

@@ -16,22 +16,27 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Closed the delayed-admission execution gap in the daemon-first intent path.
-- Re-submitting an existing `TransferIntent` now asks the daemon to promote
-  delayed admission and returns the current execution payload, including the
-  daemon-issued ticket, active reservations, lease tokens, receipt, and plan.
-- `WorkerIntentTransferExecutor` now performs a bounded delayed-admission retry
-  through the runtime daemon view and then executes only the admitted daemon
-  payload.
+- Closed the public client/runtime boundary that let applications bypass
+  `TurboBusRuntimeSession`.
+- Removed the old direct `TurboBusClient` public API and deleted the
+  `turbobus/api` compatibility entry files instead of preserving a re-export
+  layer.
+- Runtime receipt waiting now happens inside `TurboBusRuntimeSession` with
+  runtime-owned daemon response parsing and receipt evidence validation.
+- Offload and vLLM receipt evidence checks now import from runtime validation,
+  not from the removed public client package.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated daemon server, intent executor,
-  runtime daemon view, runtime options, and runtime session modules.
-- Searches found no remaining use of the removed initial-response lease-token
-  helper.
+- `python -m py_compile` passed for the updated public package, runtime session,
+  runtime validation, offload handle, vLLM connector, daemon server, and intent
+  executor modules.
+- Import/export checks confirmed `TurboBusRuntimeSession` remains exported and
+  `TurboBusClient` is no longer exported from `turbobus`.
+- Searches found no production `turbobus` module importing `TurboBusClient` or
+  `turbobus.api`.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -45,6 +50,9 @@ code remain deferred until the full system implementation pass is complete.
 - The closure audit still needs to continue across worker completion, cleanup,
   runtime receipt validation, scheduler feedback, and adapter boundaries for
   remaining compatibility drift or public bypasses.
+- Benchmarks, examples, and tests still reference the removed old public client;
+  current-stage constraints defer their migration until system implementation
+  is complete.
 - Tests still import old worker and daemon package-level internals; current
   constraints defer test migration until system implementation is complete.
 - Tests still import old `turbobus.profile` helpers; current constraints defer

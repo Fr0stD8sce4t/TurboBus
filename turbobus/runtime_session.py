@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
-from .api import TurboBusClient
 from .backends.cuda import default_cuda_backend
 from .buffer_registration import (
     ExecutableBuffer,
@@ -81,7 +80,6 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
-    _client: TurboBusClient | None = field(default=None, init=False, repr=False)
     _transfer_executor: WorkerIntentTransferExecutor | None = field(
         default=None,
         init=False,
@@ -312,9 +310,16 @@ class TurboBusRuntimeSession:
             raise ValueError(
                 "runtime session can only wait for intents submitted through it"
             )
-        receipt = self._intent_client().wait_transfer_receipt(
+        waiter = getattr(self.daemon_client, "wait_transfer_receipt", None)
+        if not callable(waiter):
+            raise TypeError("daemon client must support wait_transfer_receipt")
+        response = waiter(
             normalized_intent_id,
             timeout_seconds=timeout_seconds,
+        )
+        receipt = _receipt_from_daemon_response(
+            response,
+            expected_intent_id=normalized_intent_id,
         )
         validate_runtime_receipt(
             receipt,
@@ -434,13 +439,6 @@ class TurboBusRuntimeSession:
         self.open_session()
         self._register_pending_buffers()
 
-    def _intent_client(self) -> TurboBusClient:
-        self._require_open()
-        if self._client is not None:
-            return self._client
-        self._client = TurboBusClient(daemon=self.daemon_client)
-        return self._client
-
     def _execute_intent_through_daemon(self, intent: TransferIntent) -> TransferReceipt:
         self._require_open()
         response = self.daemon_client.submit_transfer_intent(intent)
@@ -559,6 +557,32 @@ class TurboBusRuntimeSession:
             source=source,
             target=target,
         )
+
+
+def _receipt_from_daemon_response(
+    response: DaemonResponse,
+    *,
+    expected_intent_id: str,
+) -> TransferReceipt:
+    if not isinstance(response, DaemonResponse):
+        raise TypeError("daemon response must be a DaemonResponse")
+    if not response.ok:
+        raise RuntimeError(response.error or "daemon receipt wait failed")
+    receipt_payload = response.payload.get("receipt")
+    if not isinstance(receipt_payload, Mapping):
+        raise ValueError("daemon response missing receipt")
+    receipt = _transfer_receipt_from_payload(receipt_payload)
+    if receipt.intent_id != str(expected_intent_id):
+        raise ValueError("daemon receipt intent_id does not match request")
+    return receipt
+
+
+def _transfer_receipt_from_payload(payload: Mapping[str, object]) -> TransferReceipt:
+    names = {field.name for field in fields(TransferReceipt)}
+    unknown = sorted(key for key in payload if key not in names)
+    if unknown:
+        raise ValueError("daemon receipt contains unknown fields: " + ", ".join(unknown))
+    return TransferReceipt(**dict(payload))
 
 
 __all__ = ["TurboBusRuntimeSession"]

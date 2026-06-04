@@ -4,8 +4,8 @@ from dataclasses import dataclass, field, replace
 import time
 from typing import Any
 
-from ..api.receipts import require_complete_receipt_evidence
 from ..offload.stats import TransferStats, summarize_transfer_handles
+from ..runtime.validation import require_complete_receipt_evidence
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferReceipt, WorkloadKind
 from .vllm import make_vllm_layer_range_refs_from_ids

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ..schema import TransferIntent, TransferReceipt
+from ..schema import (
+    TransferIntent,
+    TransferReceipt,
+    TransferStatusState,
+    require_complete_receipt_metadata_evidence,
+)
 
 
 def validate_intent_ranges_fit_buffers(
@@ -49,9 +54,18 @@ def validate_runtime_receipt(
         ticket_id = metadata.get(key)
         if ticket_id is not None and str(ticket_id) != receipt.ticket_id:
             raise ValueError(f"runtime receipt {key} does not match receipt ticket_id")
+    require_complete_receipt_evidence(receipt)
+
+
+def require_complete_receipt_evidence(receipt: TransferReceipt) -> None:
+    if TransferStatusState(receipt.state) is not TransferStatusState.COMPLETE:
+        return
+    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+    require_complete_receipt_metadata_evidence(metadata, int(receipt.bytes_total))
 
 
 __all__ = [
+    "require_complete_receipt_evidence",
     "validate_intent_ranges_fit_buffers",
     "validate_runtime_receipt",
 ]

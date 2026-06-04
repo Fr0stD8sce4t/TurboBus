@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from ..api.receipts import require_complete_receipt_evidence
 from ..runtime_session import TurboBusRuntimeSession
+from ..runtime.validation import require_complete_receipt_evidence
 from ..schema import TransferIntent, TransferReceipt, TransferStatusState
 from .context import AdapterTransferContext, require_runtime_session_open
 from .stats import TransferStats, transfer_stats_from_receipt

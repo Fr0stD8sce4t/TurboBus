@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from ..runtime_options import RuntimeOptions
+
+
+def normalize_runtime_session_config(session) -> None:
+    job_id = str(session.job_id)
+    if not job_id.strip():
+        raise ValueError("job_id must be non-empty")
+    session.job_id = job_id
+    if session.user_id is not None:
+        session.user_id = str(session.user_id)
+    session.max_inflight_chunks = int(session.max_inflight_chunks)
+    if session.max_inflight_chunks <= 0:
+        raise ValueError("max_inflight_chunks must be positive")
+    if session.runtime_options is None:
+        session.runtime_options = RuntimeOptions()
+    if not isinstance(session.runtime_options, RuntimeOptions):
+        raise TypeError("runtime_options must be a RuntimeOptions")
+
+
+def resolve_runtime_role_clients(
+    session,
+    *,
+    runtime_client_factory,
+    execution_client_factory,
+    profile_client_factory,
+) -> None:
+    socket_path = getattr(session.daemon_client, "socket_path", None)
+    if session.runtime_daemon_client is None:
+        if socket_path is None:
+            raise ValueError("runtime_daemon_client is required without socket_path")
+        session.runtime_daemon_client = runtime_client_factory(str(socket_path))
+    if session.execution_daemon_client is None:
+        if socket_path is None:
+            raise ValueError("execution_daemon_client is required without socket_path")
+        session.execution_daemon_client = execution_client_factory(str(socket_path))
+    if session.profile_daemon_client is None:
+        if socket_path is None:
+            raise ValueError("profile_daemon_client is required without socket_path")
+        session.profile_daemon_client = profile_client_factory(str(socket_path))
+
+
+def clear_runtime_session_state(session) -> None:
+    session._session_id = None
+    session._target_gpu = None
+    session._relay_gpus = None
+    session._client = None
+    session._transfer_executor = None
+    session._profile_bootstrapped = False
+    session._buffers.clear()
+    session._registered_buffer_ids.clear()
+    session._registered_buffer_fingerprints.clear()
+    session._submitted_intent_ids.clear()
+
+
+__all__ = [
+    "clear_runtime_session_state",
+    "normalize_runtime_session_config",
+    "resolve_runtime_role_clients",
+]

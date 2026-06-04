@@ -22,6 +22,17 @@ from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
 from . import profile as runtime_profile
 from .ranges import TransferRange, range_as_dict
+from .runtime.buffers import (
+    buffer_registration_fingerprint,
+    validate_intent_uses_runtime_buffers,
+)
+from .runtime.daemon_view import RuntimeExecutionDaemonView
+from .runtime.session_state import (
+    clear_runtime_session_state,
+    normalize_runtime_session_config,
+    resolve_runtime_role_clients,
+)
+from .runtime.validation import validate_runtime_receipt
 from .runtime_options import RuntimeOptions
 from .schema import (
     DaemonResponse,
@@ -80,33 +91,13 @@ class TurboBusRuntimeSession:
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        job_id = str(self.job_id)
-        if not job_id.strip():
-            raise ValueError("job_id must be non-empty")
-        self.job_id = job_id
-        if self.user_id is not None:
-            self.user_id = str(self.user_id)
-        self.max_inflight_chunks = int(self.max_inflight_chunks)
-        if self.max_inflight_chunks <= 0:
-            raise ValueError("max_inflight_chunks must be positive")
-        if self.runtime_options is None:
-            self.runtime_options = RuntimeOptions()
-        if not isinstance(self.runtime_options, RuntimeOptions):
-            raise TypeError("runtime_options must be a RuntimeOptions")
-
-        socket_path = getattr(self.daemon_client, "socket_path", None)
-        if self.runtime_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("runtime_daemon_client is required without socket_path")
-            self.runtime_daemon_client = TurboBusDaemonRuntimeClient(str(socket_path))
-        if self.execution_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("execution_daemon_client is required without socket_path")
-            self.execution_daemon_client = TurboBusDaemonExecutionClient(str(socket_path))
-        if self.profile_daemon_client is None:
-            if socket_path is None:
-                raise ValueError("profile_daemon_client is required without socket_path")
-            self.profile_daemon_client = TurboBusDaemonProfileClient(str(socket_path))
+        normalize_runtime_session_config(self)
+        resolve_runtime_role_clients(
+            self,
+            runtime_client_factory=TurboBusDaemonRuntimeClient,
+            execution_client_factory=TurboBusDaemonExecutionClient,
+            profile_client_factory=TurboBusDaemonProfileClient,
+        )
 
     @classmethod
     def open(
@@ -301,7 +292,7 @@ class TurboBusRuntimeSession:
         self._register_pending_buffers()
         self._bootstrap_profile_if_enabled()
         receipt = self._execute_intent_through_daemon(intent)
-        _validate_runtime_receipt(
+        validate_runtime_receipt(
             receipt,
             intent_id=intent.intent_id,
             job_id=self.job_id,
@@ -325,7 +316,7 @@ class TurboBusRuntimeSession:
             normalized_intent_id,
             timeout_seconds=timeout_seconds,
         )
-        _validate_runtime_receipt(
+        validate_runtime_receipt(
             receipt,
             intent_id=normalized_intent_id,
             job_id=self.job_id,
@@ -355,12 +346,12 @@ class TurboBusRuntimeSession:
                 payload={"closed": False, "already_closed": True},
             )
         if self._session_id is None:
-            self._clear_local_session_state()
+            clear_runtime_session_state(self)
             self._closed = True
             return DaemonResponse(ok=True, payload={"closed": False})
         response = self._runtime_daemon_client().close_session(self._session_id)
         if response.ok:
-            self._clear_local_session_state()
+            clear_runtime_session_state(self)
             self._closed = True
         return response
 
@@ -419,7 +410,7 @@ class TurboBusRuntimeSession:
         )
         self._validate_intent_uses_runtime_buffers(intent)
         receipt = self._execute_intent_through_daemon(intent)
-        _validate_runtime_receipt(
+        validate_runtime_receipt(
             receipt,
             intent_id=intent.intent_id,
             job_id=self.job_id,
@@ -453,7 +444,7 @@ class TurboBusRuntimeSession:
     def _execute_intent_through_daemon(self, intent: TransferIntent) -> TransferReceipt:
         self._require_open()
         response = self.daemon_client.submit_transfer_intent(intent)
-        execution_view = _RuntimeExecutionDaemonView(
+        execution_view = RuntimeExecutionDaemonView(
             intent_daemon=self.daemon_client,
             execution_daemon=self._execution_daemon_client(),
         )
@@ -489,7 +480,7 @@ class TurboBusRuntimeSession:
         self._require_open()
         self.session_id
         for buffer_id, buffer in tuple(self._buffers.items()):
-            fingerprint = _buffer_registration_fingerprint(buffer)
+            fingerprint = buffer_registration_fingerprint(buffer)
             if self._registered_buffer_fingerprints.get(buffer_id) == fingerprint:
                 continue
             register_executable_buffer(self._runtime_daemon_client(), buffer)
@@ -513,18 +504,6 @@ class TurboBusRuntimeSession:
         if self.profile_daemon_client is None:
             raise RuntimeError("profile daemon client is not configured")
         return self.profile_daemon_client
-
-    def _clear_local_session_state(self) -> None:
-        self._session_id = None
-        self._target_gpu = None
-        self._relay_gpus = None
-        self._client = None
-        self._transfer_executor = None
-        self._profile_bootstrapped = False
-        self._buffers.clear()
-        self._registered_buffer_ids.clear()
-        self._registered_buffer_fingerprints.clear()
-        self._submitted_intent_ids.clear()
 
     def _bind_target_gpu(self, device_index: int) -> None:
         self._require_open()
@@ -575,113 +554,11 @@ class TurboBusRuntimeSession:
     def _validate_intent_uses_runtime_buffers(self, intent: TransferIntent) -> None:
         source = self._buffers[intent.source_buffer_id]
         target = self._buffers[intent.destination_buffer_id]
-        direction = str(intent.direction).lower()
-        if direction == "h2d":
-            if not isinstance(source, SharedPinnedCpuBuffer):
-                raise ValueError("h2d intent source must be a registered CPU buffer")
-            if not isinstance(target, CudaIpcDeviceBuffer):
-                raise ValueError("h2d intent destination must be a registered CUDA buffer")
-        elif direction == "d2h":
-            if not isinstance(source, CudaIpcDeviceBuffer):
-                raise ValueError("d2h intent source must be a registered CUDA buffer")
-            if not isinstance(target, SharedPinnedCpuBuffer):
-                raise ValueError("d2h intent destination must be a registered CPU buffer")
-        else:
-            raise ValueError("intent direction must be h2d or d2h")
-        _validate_intent_ranges_fit_buffers(
+        validate_intent_uses_runtime_buffers(
             intent,
-            source_bytes=source.size_bytes,
-            target_bytes=target.size_bytes,
+            source=source,
+            target=target,
         )
 
 
 __all__ = ["TurboBusRuntimeSession"]
-
-
-@dataclass(frozen=True)
-class _RuntimeExecutionDaemonView:
-    intent_daemon: object
-    execution_daemon: object
-
-    def wait_transfer_receipt(
-        self,
-        intent_id: str,
-        timeout_seconds: float | None = None,
-    ) -> DaemonResponse:
-        return self.intent_daemon.wait_transfer_receipt(
-            intent_id,
-            timeout_seconds=timeout_seconds,
-        )
-
-    def cleanup(self, *args, **kwargs) -> DaemonResponse:
-        return self.execution_daemon.cleanup(*args, **kwargs)
-
-    def transfer_status(self, *args, **kwargs) -> DaemonResponse:
-        return self.execution_daemon.transfer_status(*args, **kwargs)
-
-    def validate_lease(self, *args, **kwargs) -> DaemonResponse:
-        return self.execution_daemon.validate_lease(*args, **kwargs)
-
-
-def _buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, ...]:
-    registration = buffer.buffer_registration()
-    metadata = tuple(
-        sorted((str(key), str(value)) for key, value in registration.metadata.items())
-    )
-    return (
-        registration.buffer_id,
-        registration.job_id,
-        registration.kind,
-        registration.size_bytes,
-        registration.device_index,
-        registration.address,
-        registration.pinned,
-        registration.handle_type,
-        metadata,
-    )
-
-
-def _validate_intent_ranges_fit_buffers(
-    intent: TransferIntent,
-    *,
-    source_bytes: int,
-    target_bytes: int,
-) -> None:
-    total_bytes = 0
-    for item in intent.ranges:
-        source_offset = int(item["src_offset"])
-        target_offset = int(item["dst_offset"])
-        bytes_count = int(item["bytes"])
-        if source_offset < 0 or target_offset < 0:
-            raise ValueError("intent range offsets must be non-negative")
-        if bytes_count <= 0:
-            raise ValueError("intent range bytes must be positive")
-        if source_offset + bytes_count > int(source_bytes):
-            raise ValueError("intent range exceeds runtime source buffer")
-        if target_offset + bytes_count > int(target_bytes):
-            raise ValueError("intent range exceeds runtime destination buffer")
-        total_bytes += bytes_count
-    if total_bytes != int(intent.total_bytes):
-        raise ValueError("intent total_bytes must match runtime buffer ranges")
-
-
-def _validate_runtime_receipt(
-    receipt: TransferReceipt,
-    *,
-    intent_id: str,
-    job_id: str,
-    session_id: str,
-) -> None:
-    if not isinstance(receipt, TransferReceipt):
-        raise TypeError("runtime transfer must return a TransferReceipt")
-    if receipt.intent_id != str(intent_id):
-        raise ValueError("runtime receipt intent_id does not match submitted intent")
-    if receipt.job_id != str(job_id):
-        raise ValueError("runtime receipt job_id does not match runtime session")
-    if receipt.session_id != str(session_id):
-        raise ValueError("runtime receipt session_id does not match runtime session")
-    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
-    for key in ("execution_ticket_id", "evidence_ticket_id"):
-        ticket_id = metadata.get(key)
-        if ticket_id is not None and str(ticket_id) != receipt.ticket_id:
-            raise ValueError(f"runtime receipt {key} does not match receipt ticket_id")

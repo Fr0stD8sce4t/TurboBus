@@ -68,9 +68,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting runtime-session intent
-execution and receipt waiting. `TurboBusRuntimeSession` should keep direct
-fallback and worker-managed completions on daemon-issued tickets, real
-backend/worker evidence, and runtime-owned buffers without adding benchmark
-hooks, paper-validation code, compatibility export layers, or server-validation
-gates.
+Continue the code implementation pass by inspecting runtime-session close and
+cleanup interactions with pending transfers and adapters. Closed sessions
+should not accept new buffer registration, transfer submission, receipt waits,
+or profile bootstrap, and adapter-owned runtime sessions should keep cleanup on
+the unified session API without adding benchmark hooks, paper-validation code,
+compatibility export layers, or server-validation gates.

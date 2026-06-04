@@ -78,6 +78,10 @@ Direct fallback now snapshots the runtime-owned CPU/GPU endpoint resources used
 for a daemon-issued direct `ExecutionTicket`, includes that resource evidence in
 backend completion/failure evidence, and preserves backend expected-byte
 evidence in daemon receipts.
+Runtime-session intent submission now validates that custom and generated
+`TransferIntent` objects use runtime-owned CPU/GPU buffers with matching
+direction and byte ranges. Runtime receipt waits are limited to intents that
+were successfully submitted through that session.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -97,16 +101,14 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Bound direct fallback backend completion and failure evidence to the
-  daemon-issued direct ticket and the CPU/GPU endpoint resources used for that
-  execution.
-- Preserved direct backend expected-byte evidence through daemon completion
-  evidence normalization and transfer receipt metadata.
+- Bound runtime-session intent submission to runtime-owned CPU/GPU buffers,
+  matching transfer direction, and byte ranges that fit those buffers.
+- Restricted `TurboBusRuntimeSession.wait_transfer_receipt()` to intents
+  successfully submitted through the same runtime session.
 
 ## Validation
 
-- `python -m py_compile turbobus\direct_fallback.py
-  turbobus\daemon\server.py turbobus\daemon\receipts.py` passed.
+- `python -m py_compile turbobus\runtime_session.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -117,6 +119,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting runtime-session intent
-execution and receipt waiting while keeping server validation deferred until the
-full system implementation pass is complete.
+Continue the code implementation pass by inspecting runtime-session close and
+cleanup interactions with pending transfers and adapters while keeping server
+validation deferred until the full system implementation pass is complete.

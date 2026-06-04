@@ -59,6 +59,11 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _submitted_intent_ids: set[str] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
     _client: TurboBusClient | None = field(default=None, init=False, repr=False)
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
@@ -238,9 +243,12 @@ class TurboBusRuntimeSession:
             raise ValueError("intent source buffer is not registered with the session")
         if intent.destination_buffer_id not in self._buffers:
             raise ValueError("intent destination buffer is not registered with the session")
+        self._validate_intent_uses_runtime_buffers(intent)
         self._register_pending_buffers()
         self._bootstrap_profile_if_enabled()
-        return self._intent_client().submit_transfer_intent(intent)
+        receipt = self._intent_client().submit_transfer_intent(intent)
+        self._submitted_intent_ids.add(intent.intent_id)
+        return receipt
 
     def wait_transfer_receipt(
         self,
@@ -248,8 +256,13 @@ class TurboBusRuntimeSession:
         timeout_seconds: float | None = None,
     ) -> TransferReceipt:
         self._require_open()
+        normalized_intent_id = str(intent_id)
+        if normalized_intent_id not in self._submitted_intent_ids:
+            raise ValueError(
+                "runtime session can only wait for intents submitted through it"
+            )
         return self._intent_client().wait_transfer_receipt(
-            str(intent_id),
+            normalized_intent_id,
             timeout_seconds=timeout_seconds,
         )
 
@@ -337,7 +350,10 @@ class TurboBusRuntimeSession:
             policy_hints={"chunk_bytes": int(chunk_bytes)},
             metadata={} if metadata is None else dict(metadata),
         )
-        return self._intent_client().submit_transfer_intent(intent)
+        self._validate_intent_uses_runtime_buffers(intent)
+        receipt = self._intent_client().submit_transfer_intent(intent)
+        self._submitted_intent_ids.add(intent.intent_id)
+        return receipt
 
     def _ensure_transfer_buffers(
         self,
@@ -399,6 +415,7 @@ class TurboBusRuntimeSession:
         self._buffers.clear()
         self._registered_buffer_ids.clear()
         self._registered_buffer_fingerprints.clear()
+        self._submitted_intent_ids.clear()
 
     def _bind_target_gpu(self, device_index: int) -> None:
         self._require_open()
@@ -446,6 +463,28 @@ class TurboBusRuntimeSession:
         if self._closed:
             raise RuntimeError("TurboBus runtime session is closed")
 
+    def _validate_intent_uses_runtime_buffers(self, intent: TransferIntent) -> None:
+        source = self._buffers[intent.source_buffer_id]
+        target = self._buffers[intent.destination_buffer_id]
+        direction = str(intent.direction).lower()
+        if direction == "h2d":
+            if not isinstance(source, SharedPinnedCpuBuffer):
+                raise ValueError("h2d intent source must be a registered CPU buffer")
+            if not isinstance(target, CudaIpcDeviceBuffer):
+                raise ValueError("h2d intent destination must be a registered CUDA buffer")
+        elif direction == "d2h":
+            if not isinstance(source, CudaIpcDeviceBuffer):
+                raise ValueError("d2h intent source must be a registered CUDA buffer")
+            if not isinstance(target, SharedPinnedCpuBuffer):
+                raise ValueError("d2h intent destination must be a registered CPU buffer")
+        else:
+            raise ValueError("intent direction must be h2d or d2h")
+        _validate_intent_ranges_fit_buffers(
+            intent,
+            source_bytes=source.size_bytes,
+            target_bytes=target.size_bytes,
+        )
+
 
 __all__ = ["TurboBusRuntimeSession"]
 
@@ -492,3 +531,27 @@ def _buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, 
         registration.handle_type,
         metadata,
     )
+
+
+def _validate_intent_ranges_fit_buffers(
+    intent: TransferIntent,
+    *,
+    source_bytes: int,
+    target_bytes: int,
+) -> None:
+    total_bytes = 0
+    for item in intent.ranges:
+        source_offset = int(item["src_offset"])
+        target_offset = int(item["dst_offset"])
+        bytes_count = int(item["bytes"])
+        if source_offset < 0 or target_offset < 0:
+            raise ValueError("intent range offsets must be non-negative")
+        if bytes_count <= 0:
+            raise ValueError("intent range bytes must be positive")
+        if source_offset + bytes_count > int(source_bytes):
+            raise ValueError("intent range exceeds runtime source buffer")
+        if target_offset + bytes_count > int(target_bytes):
+            raise ValueError("intent range exceeds runtime destination buffer")
+        total_bytes += bytes_count
+    if total_bytes != int(intent.total_bytes):
+        raise ValueError("intent total_bytes must match runtime buffer ranges")

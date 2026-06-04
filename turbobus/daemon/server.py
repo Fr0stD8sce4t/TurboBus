@@ -356,6 +356,7 @@ class TurboBusDaemon:
         )
         with self._lock:
             removed = _empty_removed_summary()
+            cleanup_result: dict[str, object] = {}
             if cleanup.target_kind == "job":
                 if cleanup.target_id not in self._jobs and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown job")
@@ -476,6 +477,18 @@ class TurboBusDaemon:
                 ):
                     return DaemonResponse(ok=False, error="unknown reservation")
                 _merge_removed(removed, released)
+                cleaned = (
+                    int(released["reservations"]) > 0
+                    or int(released["staging_records"]) > 0
+                )
+                cleanup_result = {
+                    "reservation_id": cleanup.target_id,
+                    "cleaned_reservation_ids": (
+                        (cleanup.target_id,) if cleaned else ()
+                    ),
+                    "cleanup_kind": cleanup.target_kind,
+                    "cleanup_mode": "cleanup" if cleaned else "noop",
+                }
             else:
                 return DaemonResponse(ok=False, error="unsupported cleanup target")
             self._cleanup_events.append(cleanup)
@@ -486,6 +499,7 @@ class TurboBusDaemon:
                     "cleanup": asdict(cleanup),
                     "removed": removed,
                     "promoted_transfers": promoted,
+                    **cleanup_result,
                 },
             )
 

@@ -276,6 +276,7 @@ def require_worker_completion_matches_request(
         require_worker_cleanup_response_matches_request(
             completion.daemon_cleanup_response,
             request,
+            lease_ids=completion.lease_ids,
         )
         require_worker_staging_slot_matches_request(
             completion.staging_slot,
@@ -350,6 +351,8 @@ def require_worker_daemon_response_completed_bytes(
 def require_worker_cleanup_response_matches_request(
     response: Mapping[str, object],
     request: WorkerTransferAuthorizationRequest,
+    *,
+    lease_ids: Iterable[str] = (),
 ) -> None:
     if not bool(response.get("ok", False)):
         raise WorkerCompletionEnvelopeError(
@@ -386,6 +389,7 @@ def require_worker_cleanup_response_matches_request(
     cleaned_ids = require_cleaned_reservation_ids(
         cleaned_reservation_ids,
         request,
+        lease_ids=lease_ids,
         label="worker daemon cleanup response",
     )
     lease_responses = payload.get("lease_responses")
@@ -432,6 +436,7 @@ def require_cleaned_reservation_ids(
     cleaned_reservation_ids: object,
     request: WorkerTransferAuthorizationRequest,
     *,
+    lease_ids: Iterable[str] = (),
     label: str,
 ) -> tuple[str, ...]:
     if isinstance(cleaned_reservation_ids, (str, bytes)) or not isinstance(
@@ -450,6 +455,13 @@ def require_cleaned_reservation_ids(
         raise WorkerCompletionEnvelopeError(
             f"{label} missing primary lease"
         )
+    expected_lease_ids = tuple(str(item) for item in lease_ids)
+    if expected_lease_ids:
+        missing = sorted(set(expected_lease_ids) - set(cleaned_ids))
+        if missing:
+            raise WorkerCompletionEnvelopeError(
+                f"{label} missing cleaned leases: " + ", ".join(missing)
+            )
     return cleaned_ids
 
 

@@ -16,27 +16,25 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Closed the public client/runtime boundary that let applications bypass
-  `TurboBusRuntimeSession`.
-- Removed the old direct `TurboBusClient` public API and deleted the
-  `turbobus/api` compatibility entry files instead of preserving a re-export
-  layer.
-- Runtime receipt waiting now happens inside `TurboBusRuntimeSession` with
-  runtime-owned daemon response parsing and receipt evidence validation.
-- Offload and vLLM receipt evidence checks now import from runtime validation,
-  not from the removed public client package.
+- Closed the worker cleanup to scheduler-feedback boundary for daemon-issued
+  relay plans.
+- Daemon reservation cleanup responses now report the cleaned reservation id,
+  cleaned id set, cleanup kind, and cleanup mode when resources were actually
+  released.
+- Worker completion validation now requires cleanup evidence to cover every
+  lease id carried by the worker lifecycle, not only the primary lease.
+- This keeps pooled or multi-relay worker completion from being accepted while
+  leaving relay reservations active and visible as busy to later scheduling.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated public package, runtime session,
-  runtime validation, offload handle, vLLM connector, daemon server, and intent
-  executor modules.
-- Import/export checks confirmed `TurboBusRuntimeSession` remains exported and
-  `TurboBusClient` is no longer exported from `turbobus`.
-- Searches found no production `turbobus` module importing `TurboBusClient` or
-  `turbobus.api`.
+- `python -m py_compile` passed for the updated daemon server, worker lifecycle,
+  worker models, intent executor, and intent execution support modules.
+- Searches found no use of a nonexistent `WorkerTransferAuthorizationRequest`
+  `lease_ids` field; cleanup coverage is taken from the worker completion
+  envelope.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -47,8 +45,8 @@ code remain deferred until the full system implementation pass is complete.
 - Existing tests still contain old production-path assumptions. Current-stage
   constraints defer test migration until the system implementation pass is
   complete.
-- The closure audit still needs to continue across worker completion, cleanup,
-  runtime receipt validation, scheduler feedback, and adapter boundaries for
+- The closure audit still needs to continue across scheduler feedback, worker
+  failure handling, runtime receipt validation, and adapter boundaries for
   remaining compatibility drift or public bypasses.
 - Benchmarks, examples, and tests still reference the removed old public client;
   current-stage constraints defer their migration until system implementation

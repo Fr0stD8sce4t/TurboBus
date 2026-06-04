@@ -27,8 +27,8 @@ worker/backend completion, and `TransferReceipt`.
 ## Current Code Work
 
 - Continue with the next functional boundary that can break daemon-issued
-  execution: worker completion, cleanup, scheduler feedback, or framework
-  adapter paths must preserve runtime-session ownership.
+  execution: scheduler feedback, worker failure handling, or framework adapter
+  paths must preserve runtime-session ownership and daemon-issued plans.
 - Do not make helper extraction, package export cleanup, or compatibility
   wrapper removal a standalone target unless it directly closes that boundary.
 - Keep deleted files such as `client_transfer.py`, `offload_store.py`,

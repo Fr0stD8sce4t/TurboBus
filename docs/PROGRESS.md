@@ -29,6 +29,8 @@ code remain deferred until the full system implementation pass is complete.
   installs it with `put_profile` before the first transfer path is used.
 - `bootstrap_profile()` now returns a no-op success response when the session
   profile is already installed and `force=False`.
+- `TurboBusRuntimeSession.close()` now cleans daemon-registered buffers before
+  closing the session, instead of only dropping local references.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -43,6 +45,8 @@ code remain deferred until the full system implementation pass is complete.
   pass is complete.
 - Profile bootstrap still depends on CUDA/backend behavior and daemon profile
   RPCs that have not been server-verified in this session.
+- Buffer cleanup on close still depends on daemon cleanup RPC success for the
+  registered buffers in the active session.
 - Older benchmark and example surfaces still use `TurboBusClient` and have not
   been migrated to the runtime-session-first API yet.
 - Existing tests, examples, and benchmarks still contain old production-path

@@ -27,6 +27,8 @@ session API owns the transfer path.
   the only construction path.
 - Session open now triggers daemon profile bootstrap and `put_profile` before
   the first transfer path is used.
+- Session close now cleans daemon-registered buffers before closing the
+  session, so buffer ownership retires through the runtime session API.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 

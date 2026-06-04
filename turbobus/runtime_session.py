@@ -451,11 +451,30 @@ class TurboBusRuntimeSession:
             clear_runtime_session_state(self)
             self._closed = True
             return DaemonResponse(ok=True, payload={"closed": False})
+        cleanup_errors: list[dict[str, object]] = []
+        for buffer_id in tuple(self._registered_buffer_ids):
+            try:
+                self.cleanup_buffer(
+                    buffer_id,
+                    reason="runtime_session_close",
+                    force=True,
+                )
+            except Exception as exc:
+                cleanup_errors.append(
+                    {
+                        "buffer_id": buffer_id,
+                        "error": str(exc),
+                    }
+                )
         response = self._runtime_daemon_client().close_session(self._session_id)
         if response.ok:
             self._release_owned_cpu_buffers()
             clear_runtime_session_state(self)
             self._closed = True
+            if cleanup_errors:
+                payload = dict(response.payload)
+                payload["buffer_cleanup_errors"] = cleanup_errors
+                return DaemonResponse(ok=True, payload=payload)
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":

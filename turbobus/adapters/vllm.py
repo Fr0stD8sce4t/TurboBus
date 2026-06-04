@@ -72,6 +72,7 @@ class VllmKVSlotAdapter:
                     "cpu_buffer_id": cpu_buffer.buffer_id,
                     "cpu_buffer_was_registered": cpu_buffer.buffer_id
                     in existing_buffers,
+                    "cpu_buffer": cpu_buffer,
                     "gpu_buffer_id": gpu_buffer.buffer_id,
                     "gpu_buffer_was_registered": gpu_buffer.buffer_id
                     in existing_buffers,
@@ -263,32 +264,55 @@ def _rollback_group_initialization(
     for group_resources in reversed(created_groups):
         _rollback_registered_buffer(
             runtime_session,
-            str(group_resources["cpu_buffer_id"]),
+            group_resources["cpu_buffer"],
             was_registered=bool(group_resources["cpu_buffer_was_registered"]),
         )
         _rollback_registered_buffer(
             runtime_session,
-            str(group_resources["gpu_buffer_id"]),
+            group_resources["gpu_buffer_id"],
             was_registered=bool(group_resources["gpu_buffer_was_registered"]),
         )
 
 
 def _rollback_registered_buffer(
     runtime_session,
-    buffer_id: str,
+    buffer,
     *,
     was_registered: bool,
 ) -> None:
+    buffer_id = str(getattr(buffer, "buffer_id", buffer))
     if was_registered:
-        return
-    try:
-        runtime_session.cleanup_buffer(
-            buffer_id,
-            reason="runtime_vllm_adapter_creation_failed",
-            force=True,
-        )
-    except Exception:
-        pass
+        try:
+            if not bool(getattr(runtime_session, "closed", False)):
+                runtime_session.cleanup_buffer(
+                    buffer_id,
+                    reason="runtime_vllm_adapter_creation_failed",
+                    force=True,
+                )
+                return
+        except Exception:
+            pass
+    _discard_runtime_session_buffer(runtime_session, buffer_id)
+    if isinstance(buffer, SharedPinnedCpuBuffer) and bool(getattr(buffer, "owner", False)):
+        try:
+            buffer.release()
+        except Exception:
+            pass
+
+
+def _discard_runtime_session_buffer(runtime_session, buffer_id: str) -> None:
+    buffers = getattr(runtime_session, "_buffers", None)
+    if isinstance(buffers, dict):
+        buffers.pop(buffer_id, None)
+    registered_ids = getattr(runtime_session, "_registered_buffer_ids", None)
+    if isinstance(registered_ids, set):
+        registered_ids.discard(buffer_id)
+    fingerprints = getattr(runtime_session, "_registered_buffer_fingerprints", None)
+    if isinstance(fingerprints, dict):
+        fingerprints.pop(buffer_id, None)
+    owned_ids = getattr(runtime_session, "_owned_cpu_buffer_ids", None)
+    if isinstance(owned_ids, set):
+        owned_ids.discard(buffer_id)
 
 
 def _tensor_device_index(tensor) -> int:

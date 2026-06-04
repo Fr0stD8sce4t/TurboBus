@@ -15,8 +15,9 @@ code remain deferred until the full system implementation pass is complete.
 ## Completed This Round
 
 - `adapters/vllm.py` now rolls back partially registered CPU/GPU buffers if
-  vLLM group adapter construction fails mid-stream, so session-owned vLLM
-  setup no longer leaves half-built buffer state behind.
+  vLLM group adapter construction fails mid-stream, and it also releases owned
+  shared CPU backing when session cleanup can no longer run, so session-owned
+  vLLM setup no longer leaves half-built local buffer state behind.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

@@ -45,7 +45,7 @@ session API owns the transfer path.
 cleanup path, and vLLM adapter construction path aligned so `fetch_h2d()` /
 `offload_d2h()` stay on the session-owned API, session teardown advances the
 daemon runtime-state version that scheduler feedback reads, and partial vLLM
-group construction rolls back registered buffers.
+group construction rolls back registered buffers and owned local CPU backing.
 
 ## Next Entry
 

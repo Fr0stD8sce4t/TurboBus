@@ -46,7 +46,8 @@ public runtime session path and daemon feedback path aligned so `fetch_h2d()` /
 evidence updates advance the daemon runtime-state version that scheduler
 feedback reads, `TurboBusRuntimeSession.close()` retires local buffer and
 session ownership even when daemon close returns an error, and runtime-owned
-CPU buffer registration failures release their shared memory backing.
+CPU buffer registration failures and buffer cleanup failures release their
+shared memory backing.
 
 ## Next Entry
 

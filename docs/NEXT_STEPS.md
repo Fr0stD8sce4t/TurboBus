@@ -7,29 +7,26 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: H2D/D2H system main path closure. `fetch_h2d()` and
-`offload_d2h()` should drive daemon-issued direct, relay, and pooled execution
-through `TurboBusRuntimeSession` without application route selection, while
-keeping chunk sizing on the same runtime-configured path.
+Current code target: isolation and authority hardening. The runtime feedback
+path now feeds scheduler load accounting from live running activity; the next
+step is to tighten ownership and cleanup so runtime state stays aligned with
+the job, session, and buffer owners that produced it.
 
 ## Exit Criteria
 
-- H2D and D2H public runtime methods submit `TransferIntent` and return
-  `TransferReceipt` from worker/backend completion or explicit failure.
-- Direct fallback, relay, and pooled paths execute only daemon-issued
-  `ExecutionTicket` payloads.
-- Public client and runtime-session consumers still submit `TransferIntent`
-  and consume `TransferReceipt` without route selection.
+- Ownership and cleanup paths retire runtime state only for the owning job,
+  session, or buffer.
+- Scheduler feedback continues to consume live runtime state rather than
+  static plan output.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-Close H2D/D2H runtime execution and chunk-size propagation gaps in the system
-production path without adding benchmark, paper-validation, or server-validation
-entry points.
+Harden transfer/session/buffer retirement so daemon runtime feedback and
+cleanup stay aligned with ownership boundaries.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: runtime feedback into scheduler load accounting.
+boundary: shared buffer and lease retirement hardening.

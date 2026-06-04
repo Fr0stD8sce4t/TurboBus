@@ -24,6 +24,7 @@ class RuntimeLoadView:
     projected_weighted_active_bytes: float
     fairness_threshold_bytes: float
     active_transfer_count: int
+    running_transfer_count: int
     queued_transfer_count: int
     delayed_transfer_count: int
 
@@ -43,6 +44,7 @@ class RuntimeLoadView:
             "fairness_threshold_bytes": self.fairness_threshold_bytes,
             "busy_relays": tuple(sorted(self.busy_relays)),
             "active_transfer_count": self.active_transfer_count,
+            "running_transfer_count": self.running_transfer_count,
             "queued_transfer_count": self.queued_transfer_count,
             "delayed_transfer_count": self.delayed_transfer_count,
         }
@@ -95,6 +97,7 @@ def runtime_view(
     normalized_job_id = None if job_id is None else str(job_id)
     workload = WorkloadKind(workload_kind).value
     active_transfer_count = 0
+    running_transfer_count = 0
     queued_transfer_count = 0
     delayed_transfer_count = 0
     job_runtime_state: Mapping[str, object] = {}
@@ -102,6 +105,7 @@ def runtime_view(
         summary = runtime_state.get("summary", {})
         if isinstance(summary, Mapping):
             active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
+            running_transfer_count = int(summary.get("running_transfer_count", 0) or 0)
             queued_transfer_count = int(summary.get("queued_transfer_count", 0) or 0)
             delayed_transfer_count = int(summary.get("delayed_transfer_count", 0) or 0)
             nested_jobs = summary.get("job_runtime_state", {})
@@ -156,6 +160,7 @@ def runtime_view(
         projected_weighted_active_bytes=projected_weighted,
         fairness_threshold_bytes=average_weighted * 1.25,
         active_transfer_count=active_transfer_count,
+        running_transfer_count=running_transfer_count,
         queued_transfer_count=queued_transfer_count,
         delayed_transfer_count=delayed_transfer_count,
     )
@@ -181,7 +186,9 @@ def fairness_fallback_for_plan(
         return None
     if runtime_view.total_active_bytes <= 0:
         return None
-    if runtime_view.projected_weighted_active_bytes <= runtime_view.fairness_threshold_bytes:
+    running_pressure = min(runtime_view.running_transfer_count, 8) * 0.05
+    effective_threshold = runtime_view.fairness_threshold_bytes / (1.0 + running_pressure)
+    if runtime_view.projected_weighted_active_bytes <= effective_threshold:
         return None
     return "weighted fairness limit prefers direct fallback"
 

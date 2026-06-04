@@ -107,26 +107,35 @@ socket client helpers, dispatch routes, and daemon public methods were removed.
 Lease release remains available only through daemon cleanup and worker
 lifecycle cleanup paths.
 
+The daemon socket client surface is now split by role. `TurboBusDaemonClient`
+keeps application/runtime control operations such as registration, intent
+submission, receipt waits, topology, and profile bootstrap. Execution-only
+operations such as worker authorization, status updates, lease validation, and
+cleanup live on `TurboBusDaemonExecutionClient`, which is used by the runtime
+executor and worker service. Worker cleanup responses now use cleanup
+terminology instead of the removed manual release path.
+
 ## Completed This Round
 
-- Removed `RESCHEDULE_TRANSFER` and `RELEASE_TRANSFER` from the daemon request
-  schema.
-- Removed daemon socket client helpers and dispatch routes for manual transfer
-  reschedule and release.
-- Removed daemon public `reschedule_transfer()` and `release_transfer()` methods
-  plus dead reschedule state helpers.
+- Split execution-only daemon socket methods out of `TurboBusDaemonClient` into
+  `TurboBusDaemonExecutionClient`.
+- Routed `TurboBusRuntimeSession`, direct fallback, and worker service startup
+  through the execution daemon client for status, lease validation,
+  authorization, and cleanup.
+- Replaced worker completion cleanup validation from old release response
+  semantics to cleanup response semantics.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\schema.py turbobus\daemon\client.py
-  turbobus\daemon\dispatch.py turbobus\daemon\server.py
-  turbobus\worker\lifecycle.py turbobus\intent_execution_support.py
-  turbobus\direct_fallback.py turbobus\runtime_session.py` passed.
-- Targeted `rg` checks found no remaining production `RESCHEDULE_TRANSFER`,
-  `RELEASE_TRANSFER`, `reschedule_transfer()`, `release_transfer()`, or
-  reschedule state-helper entry points.
+- `python -m py_compile turbobus\daemon\client.py turbobus\daemon\__init__.py
+  turbobus\api\client.py turbobus\runtime_session.py
+  turbobus\worker\process.py turbobus\worker\lifecycle.py
+  turbobus\direct_fallback.py turbobus\intent_executor.py
+  turbobus\intent_execution_support.py` passed.
+- Targeted `rg` checks found no remaining production manual-release helper
+  calls or release-response worker cleanup semantics.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -151,6 +160,9 @@ lifecycle cleanup paths.
 - Existing tests may still reference removed manual release or reschedule
   request types. Current-stage constraints defer test migration until the
   system implementation pass is complete.
+- Existing tests may still instantiate `TurboBusClient` with a transfer
+  executor but without an execution daemon client. Current-stage constraints
+  defer test migration until the system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

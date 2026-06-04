@@ -27,7 +27,7 @@ class IntentTransferExecutor(Protocol):
         self,
         intent: TransferIntent,
         response: DaemonResponse,
-        daemon: DaemonIntentClient,
+        daemon: object,
     ) -> TransferReceipt:
         ...
 
@@ -41,13 +41,17 @@ class TurboBusClient:
         *,
         socket_path: str | None = None,
         transfer_executor: IntentTransferExecutor | None = None,
+        execution_daemon: object | None = None,
     ) -> None:
         if daemon is None and socket_path is None:
             raise ValueError("daemon or socket_path is required")
         if daemon is not None and socket_path is not None:
             raise ValueError("provide daemon or socket_path, not both")
+        if transfer_executor is not None and execution_daemon is None:
+            raise ValueError("execution_daemon is required with transfer_executor")
         self._daemon = daemon if daemon is not None else TurboBusDaemonClient(socket_path)
         self._transfer_executor = transfer_executor
+        self._execution_daemon = execution_daemon
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
         if not isinstance(intent, TransferIntent):
@@ -57,7 +61,7 @@ class TurboBusClient:
             receipt = self._transfer_executor.execute_transfer_intent(
                 intent,
                 response,
-                self._daemon,
+                self._execution_daemon,
             )
             if not isinstance(receipt, TransferReceipt):
                 raise TypeError("transfer executor must return a TransferReceipt")

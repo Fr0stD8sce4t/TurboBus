@@ -4,7 +4,7 @@ import argparse
 from threading import Event
 from typing import Sequence
 
-from ..daemon import TurboBusDaemonClient
+from ..daemon import TurboBusDaemonExecutionClient
 from .endpoint import WorkerServiceEndpoint
 from .lifecycle import WorkerTransferClient, WorkerTransferService
 from .transport import WorkerServiceUnixSocketTransport
@@ -14,7 +14,7 @@ def build_worker_service_transport(
     daemon_socket_path: str,
     socket_path: str,
 ) -> WorkerServiceUnixSocketTransport:
-    daemon_client = TurboBusDaemonClient(str(daemon_socket_path))
+    daemon_client = TurboBusDaemonExecutionClient(str(daemon_socket_path))
     transfer_client = WorkerTransferClient(daemon_client)
     endpoint = WorkerServiceEndpoint(
         service=WorkerTransferService(

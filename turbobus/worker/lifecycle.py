@@ -202,7 +202,6 @@ class WorkerTransferCleanupCoordinator:
             target_kind=target_kind,
             reason=reason,
             force=force,
-            release_completed=False,
         )
 
     def _authorized_cleanup_targets(
@@ -271,23 +270,21 @@ class WorkerTransferCleanupCoordinator:
             )
         if result.state == WorkerTransferState.COMPLETE:
             if len(lease_ids) == 1:
-                release = getattr(self.daemon_client, "release_transfer", None)
-                if not callable(release):
-                    raise WorkerCleanupError(
-                        "daemon client cannot release completed worker transfer"
-                    )
-                response: DaemonResponse = release(request.authorization.lease_id)
-                if not response.ok:
-                    raise WorkerCleanupError(
-                        response.error or "worker completion release failed"
-                    )
-                return response
+                return self._cleanup(
+                    target_kind=target_kind,
+                    target_id=cleanup_target_id(
+                        target_kind,
+                        lease_id=request.authorization.lease_id,
+                        session_id=request.authorization.session_id,
+                    ),
+                    reason=reason or "worker_complete",
+                    force=force,
+                )
             return self._cleanup_worker_leases(
                 lease_ids=lease_ids,
                 target_kind=target_kind,
                 reason=reason or "worker_complete",
                 force=force,
-                release_completed=True,
             )
         if len(lease_ids) == 1:
             return self._cleanup(
@@ -305,7 +302,6 @@ class WorkerTransferCleanupCoordinator:
             target_kind=target_kind,
             reason=reason or f"worker_{result.state.value}",
             force=force,
-            release_completed=False,
         )
 
     def cleanup_status_report_failure(
@@ -345,7 +341,6 @@ class WorkerTransferCleanupCoordinator:
             target_kind=target_kind,
             reason=reason,
             force=force,
-            release_completed=False,
         )
 
     def _cleanup(
@@ -372,14 +367,12 @@ class WorkerTransferCleanupCoordinator:
         target_kind: str,
         reason: str,
         force: bool,
-        release_completed: bool,
     ) -> DaemonResponse:
         return self._cleanup_lease_ids(
             lease_ids=lease_ids,
             target_kind=target_kind,
             reason=reason,
             force=force,
-            release_completed=release_completed,
         )
 
     def _cleanup_lease_ids(
@@ -389,41 +382,25 @@ class WorkerTransferCleanupCoordinator:
         target_kind: str,
         reason: str,
         force: bool,
-        release_completed: bool,
     ) -> DaemonResponse:
-        release = getattr(self.daemon_client, "release_transfer", None)
         cleanup = getattr(self.daemon_client, "cleanup", None)
-        if release_completed and not callable(release):
-            raise WorkerCleanupError(
-                "daemon client cannot release completed worker transfer"
-            )
-        if not release_completed and not callable(cleanup):
+        if not callable(cleanup):
             raise WorkerCleanupError("daemon client cannot clean worker transfer")
         responses: list[dict[str, object]] = []
-        released_ids: list[str] = []
-        release_evidence: dict[str, object] = {}
+        cleaned_ids: list[str] = []
         errors: list[str] = []
         for lease_id in lease_ids:
-            if release_completed:
-                response = release(lease_id)
-            else:
-                response = cleanup(
-                    target_kind=target_kind,
-                    target_id=lease_id,
-                    reason=reason,
-                    force=force,
-                )
+            response = cleanup(
+                target_kind=target_kind,
+                target_id=lease_id,
+                reason=reason,
+                force=force,
+            )
             responses.append(asdict(response))
             if response.ok:
                 payload = response.payload if isinstance(response.payload, Mapping) else {}
-                if release_completed:
-                    _merge_release_evidence(
-                        release_evidence,
-                        payload,
-                        lease_id=lease_id,
-                    )
                 reservation_id = payload.get("reservation_id")
-                released_ids.append(
+                cleaned_ids.append(
                     str(reservation_id) if reservation_id is not None else str(lease_id)
                 )
                 continue
@@ -433,12 +410,11 @@ class WorkerTransferCleanupCoordinator:
         payload = {
             "reservation_id": lease_ids[0],
             "lease_ids": lease_ids,
-            "released_reservation_ids": tuple(released_ids),
+            "cleaned_reservation_ids": tuple(cleaned_ids),
             "lease_responses": tuple(responses),
             "cleanup_kind": target_kind,
             "reason": reason,
-            "cleanup_mode": "release" if release_completed else "cleanup",
-            **release_evidence,
+            "cleanup_mode": "cleanup",
         }
         return DaemonResponse(ok=True, payload=payload)
 
@@ -751,43 +727,6 @@ def validate_worker_completion_bytes(
         },
     )
     return _worker_result_with_ticket_binding(request, failed)
-
-
-def _merge_release_evidence(
-    merged: dict[str, object],
-    payload: Mapping[str, object],
-    *,
-    lease_id: str,
-) -> None:
-    if payload.get("cleanup_mode") != "release":
-        raise WorkerCleanupError("completed worker release was not a daemon release")
-    for key in ("transfer_id", "ticket_id", "plan_generation"):
-        value = payload.get(key)
-        if value is None:
-            raise WorkerCleanupError(f"completed worker release missing {key}")
-        try:
-            normalized: object = (
-                int(value) if key == "plan_generation" else str(value)
-            )
-        except (TypeError, ValueError) as exc:
-            raise WorkerCleanupError(
-                f"completed worker release invalid {key}"
-            ) from exc
-        existing = merged.get(key)
-        if existing is not None and existing != normalized:
-            raise WorkerCleanupError(f"completed worker release {key} mismatch")
-        merged[key] = normalized
-    response_lease_ids = payload.get("lease_ids")
-    if response_lease_ids is not None:
-        if isinstance(response_lease_ids, (str, bytes)):
-            raise WorkerCleanupError("completed worker release lease_ids are invalid")
-        expected_lease_ids = tuple(str(item) for item in response_lease_ids)
-        if str(lease_id) not in expected_lease_ids:
-            raise WorkerCleanupError("completed worker release lease_ids mismatch")
-        existing_lease_ids = merged.get("lease_ids")
-        if existing_lease_ids is not None and existing_lease_ids != expected_lease_ids:
-            raise WorkerCleanupError("completed worker release lease set mismatch")
-        merged["lease_ids"] = expected_lease_ids
 
 
 def _worker_result_with_ticket_binding(

@@ -29,7 +29,8 @@ experiment work is planned.
 - Continue inspecting production modules for remaining route-selection or
   compatibility drift after removing old client, worker, transfer-request,
   reservation, session-relay, worker-shortcut, adapter-alias, planner-helper,
-  release-transfer, and reschedule-transfer entry points.
+  release-transfer, reschedule-transfer, and app-facing execution-status entry
+  points.
 - Keep workload adapters owned by `TurboBusRuntimeSession` and preserve daemon
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.

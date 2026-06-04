@@ -281,14 +281,11 @@ def require_worker_completion_matches_request(
         )
         if completion.daemon_cleanup_response is None:
             raise WorkerCompletionEnvelopeError(
-                "worker completion missing daemon release response"
+                "worker completion missing daemon cleanup response"
             )
-        worker_metadata = _worker_result_metadata(completion.worker_result)
-        require_worker_release_response_matches_request(
+        require_worker_cleanup_response_matches_request(
             completion.daemon_cleanup_response,
             request,
-            expected_ticket_id=worker_metadata.get("ticket_id"),
-            expected_plan_generation=worker_metadata.get("plan_generation"),
         )
         require_worker_staging_slot_matches_request(
             completion.staging_slot,
@@ -315,15 +312,6 @@ def require_worker_mapping_matches_request(
     lease_id = payload.get("lease_id")
     if lease_id is not None and str(lease_id) != request.lease_id:
         raise WorkerCompletionEnvelopeError(f"{label} lease mismatch")
-
-
-def _worker_result_metadata(
-    worker_result: Mapping[str, object] | None,
-) -> Mapping[str, object]:
-    if not isinstance(worker_result, Mapping):
-        return {}
-    metadata = worker_result.get("metadata")
-    return metadata if isinstance(metadata, Mapping) else {}
 
 
 def require_worker_daemon_response_matches_request(
@@ -369,56 +357,46 @@ def require_worker_daemon_response_completed_bytes(
     )
 
 
-def require_worker_release_response_matches_request(
+def require_worker_cleanup_response_matches_request(
     response: Mapping[str, object],
     request: WorkerTransferAuthorizationRequest,
-    *,
-    expected_ticket_id: object | None = None,
-    expected_plan_generation: object | None = None,
 ) -> None:
     if not bool(response.get("ok", False)):
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response was not ok"
+            "worker daemon cleanup response was not ok"
         )
     payload = response.get("payload")
     if not isinstance(payload, Mapping):
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response missing payload"
+            "worker daemon cleanup response missing payload"
         )
     if bool(payload.get("cleanup_skipped", False)):
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response skipped cleanup"
+            "worker daemon cleanup response skipped cleanup"
         )
     reservation_id = payload.get("reservation_id")
     if reservation_id is None:
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response missing reservation id"
+            "worker daemon cleanup response missing reservation id"
         )
     if str(reservation_id) != request.lease_id:
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response reservation mismatch"
+            "worker daemon cleanup response reservation mismatch"
         )
     cleanup_mode = payload.get("cleanup_mode")
-    if cleanup_mode != "release":
+    if cleanup_mode != "cleanup":
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response was not a release"
+            "worker daemon cleanup response was not cleanup"
         )
-    released_reservation_ids = payload.get("released_reservation_ids")
-    if released_reservation_ids is None:
+    cleaned_reservation_ids = payload.get("cleaned_reservation_ids")
+    if cleaned_reservation_ids is None:
         raise WorkerCompletionEnvelopeError(
-            "worker daemon release response missing released reservation ids"
+            "worker daemon cleanup response missing cleaned reservation ids"
         )
-    released_ids = require_released_reservation_ids(
-        released_reservation_ids,
+    cleaned_ids = require_cleaned_reservation_ids(
+        cleaned_reservation_ids,
         request,
-        label="worker daemon release response",
-    )
-    require_worker_release_evidence_matches_request(
-        payload,
-        request,
-        label="worker daemon release response",
-        expected_ticket_id=expected_ticket_id,
-        expected_plan_generation=expected_plan_generation,
+        label="worker daemon cleanup response",
     )
     lease_responses = payload.get("lease_responses")
     if lease_responses is not None:
@@ -427,116 +405,62 @@ def require_worker_release_response_matches_request(
             Iterable,
         ):
             raise WorkerCompletionEnvelopeError(
-                "worker daemon release response lease responses must be iterable"
+                "worker daemon cleanup response lease responses must be iterable"
             )
         for lease_response in lease_responses:
             if not isinstance(lease_response, Mapping):
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response must be a mapping"
+                    "worker daemon cleanup response lease response must be a mapping"
                 )
             if not bool(lease_response.get("ok", False)):
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response was not ok"
+                    "worker daemon cleanup response lease response was not ok"
                 )
             lease_payload = lease_response.get("payload")
             if lease_payload is None:
                 continue
             if not isinstance(lease_payload, Mapping):
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response payload must be a mapping"
+                    "worker daemon cleanup response lease response payload must be a mapping"
                 )
-            if lease_payload.get("cleanup_mode") != "release":
+            if lease_payload.get("cleanup_mode") != "cleanup":
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response was not a release"
+                    "worker daemon cleanup response lease response was not cleanup"
                 )
             lease_response_reservation_id = lease_payload.get("reservation_id")
             if lease_response_reservation_id is None:
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response missing reservation id"
+                    "worker daemon cleanup response lease response missing reservation id"
                 )
-            if str(lease_response_reservation_id) not in released_ids:
+            if str(lease_response_reservation_id) not in cleaned_ids:
                 raise WorkerCompletionEnvelopeError(
-                    "worker daemon release response lease response reservation was not released"
+                    "worker daemon cleanup response lease response reservation was not cleaned"
                 )
-            require_worker_release_evidence_matches_request(
-                lease_payload,
-                request,
-                label="worker daemon release response lease response",
-                expected_ticket_id=expected_ticket_id,
-                expected_plan_generation=expected_plan_generation,
-            )
 
 
-def require_worker_release_evidence_matches_request(
-    payload: Mapping[str, object],
-    request: WorkerTransferAuthorizationRequest,
-    *,
-    label: str,
-    expected_ticket_id: object | None = None,
-    expected_plan_generation: object | None = None,
-) -> None:
-    transfer_id = payload.get("transfer_id")
-    if transfer_id is None or str(transfer_id) != request.transfer_id:
-        raise WorkerCompletionEnvelopeError(f"{label} transfer evidence mismatch")
-    ticket_id = payload.get("ticket_id")
-    if ticket_id is None or not str(ticket_id).strip():
-        raise WorkerCompletionEnvelopeError(f"{label} missing ticket evidence")
-    if expected_ticket_id is not None and str(ticket_id) != str(expected_ticket_id):
-        raise WorkerCompletionEnvelopeError(f"{label} ticket evidence mismatch")
-    generation = payload.get("plan_generation")
-    if generation is None:
-        raise WorkerCompletionEnvelopeError(f"{label} missing plan generation evidence")
-    try:
-        normalized_generation = int(generation)
-        if normalized_generation <= 0:
-            raise ValueError
-    except (TypeError, ValueError) as exc:
-        raise WorkerCompletionEnvelopeError(
-            f"{label} invalid plan generation evidence"
-        ) from exc
-    if expected_plan_generation is not None:
-        try:
-            expected_generation = int(expected_plan_generation)
-        except (TypeError, ValueError) as exc:
-            raise WorkerCompletionEnvelopeError(
-                f"{label} invalid expected plan generation evidence"
-            ) from exc
-        if normalized_generation != expected_generation:
-            raise WorkerCompletionEnvelopeError(
-                f"{label} plan generation evidence mismatch"
-            )
-    lease_ids = payload.get("lease_ids")
-    if lease_ids is None:
-        return
-    if isinstance(lease_ids, (str, bytes)) or not isinstance(lease_ids, Iterable):
-        raise WorkerCompletionEnvelopeError(f"{label} lease_ids evidence is invalid")
-    if request.lease_id not in {str(item) for item in lease_ids}:
-        raise WorkerCompletionEnvelopeError(f"{label} lease_ids evidence mismatch")
-
-
-def require_released_reservation_ids(
-    released_reservation_ids: object,
+def require_cleaned_reservation_ids(
+    cleaned_reservation_ids: object,
     request: WorkerTransferAuthorizationRequest,
     *,
     label: str,
 ) -> tuple[str, ...]:
-    if isinstance(released_reservation_ids, (str, bytes)) or not isinstance(
-        released_reservation_ids,
+    if isinstance(cleaned_reservation_ids, (str, bytes)) or not isinstance(
+        cleaned_reservation_ids,
         Iterable,
     ):
         raise WorkerCompletionEnvelopeError(
-            f"{label} released reservation ids must be iterable"
+            f"{label} cleaned reservation ids must be iterable"
         )
-    released_ids = tuple(str(item) for item in released_reservation_ids)
-    if not released_ids:
+    cleaned_ids = tuple(str(item) for item in cleaned_reservation_ids)
+    if not cleaned_ids:
         raise WorkerCompletionEnvelopeError(
-            f"{label} missing released reservation ids"
+            f"{label} missing cleaned reservation ids"
         )
-    if request.lease_id not in released_ids:
+    if request.lease_id not in cleaned_ids:
         raise WorkerCompletionEnvelopeError(
             f"{label} missing primary lease"
         )
-    return released_ids
+    return cleaned_ids
 
 
 def require_worker_staging_slot_matches_request(

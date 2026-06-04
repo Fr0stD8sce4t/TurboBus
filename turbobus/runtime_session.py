@@ -12,7 +12,7 @@ from .buffer_registration import (
     register_executable_buffer,
 )
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from .daemon import TurboBusDaemonClient
+from .daemon import TurboBusDaemonClient, TurboBusDaemonExecutionClient
 from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
 from . import profile as runtime_profile
@@ -37,6 +37,7 @@ class TurboBusRuntimeSession:
     daemon_client: object
     job_id: str
     user_id: str | None = None
+    execution_daemon_client: object | None = None
     worker_client: object | None = None
     max_inflight_chunks: int = 8
     backend: object = default_cuda_backend
@@ -75,15 +76,24 @@ class TurboBusRuntimeSession:
         *,
         job_id: str,
         user_id: str | None = None,
+        execution_daemon_client: object | None = None,
         worker_client: object | None = None,
         max_inflight_chunks: int = 8,
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
     ) -> "TurboBusRuntimeSession":
+        if execution_daemon_client is None:
+            socket_path = getattr(daemon_client, "socket_path", None)
+            execution_daemon_client = (
+                TurboBusDaemonExecutionClient(str(socket_path))
+                if socket_path is not None
+                else daemon_client
+            )
         session = cls(
             daemon_client=daemon_client,
             job_id=str(job_id),
             user_id=user_id,
+            execution_daemon_client=execution_daemon_client,
             worker_client=worker_client,
             max_inflight_chunks=int(max_inflight_chunks),
             backend=backend,
@@ -110,10 +120,14 @@ class TurboBusRuntimeSession:
             if not str(worker_socket_path).strip():
                 raise ValueError("worker_socket_path must be non-empty")
             worker_client = WorkerServiceSocketClient(str(worker_socket_path))
+        daemon_client = TurboBusDaemonClient(str(daemon_socket_path))
         return cls.open(
-            TurboBusDaemonClient(str(daemon_socket_path)),
+            daemon_client,
             job_id=job_id,
             user_id=user_id,
+            execution_daemon_client=TurboBusDaemonExecutionClient(
+                str(daemon_socket_path)
+            ),
             worker_client=worker_client,
             max_inflight_chunks=max_inflight_chunks,
             backend=backend,
@@ -395,8 +409,9 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._client is not None:
             return self._client
+        execution_daemon_client = self.execution_daemon_client or self.daemon_client
         worker_client = self.worker_client or WorkerTransferClient(
-            self.daemon_client,
+            execution_daemon_client,
             executor=CudaWorkerExecutor(
                 backend=self.backend,
                 options=self.runtime_options,
@@ -413,6 +428,7 @@ class TurboBusRuntimeSession:
         self._client = TurboBusClient(
             daemon=self.daemon_client,
             transfer_executor=executor,
+            execution_daemon=execution_daemon_client,
         )
         return self._client
 

@@ -13,7 +13,7 @@ from ..schema import (
 )
 
 
-class TurboBusDaemonClient:
+class _DaemonSocketClientBase:
     def __init__(self, socket_path: str) -> None:
         self.socket_path = str(socket_path)
 
@@ -40,6 +40,8 @@ class TurboBusDaemonClient:
             error=response_data.get("error"),
         )
 
+
+class TurboBusDaemonClient(_DaemonSocketClientBase):
     def register_session(
         self,
         target_gpu: int,
@@ -152,6 +154,91 @@ class TurboBusDaemonClient:
             )
         )
 
+    def describe(self) -> DaemonResponse:
+        return self.send(DaemonRequest(request_type=RequestType.PROFILE))
+
+    def get_inventory(self) -> DaemonResponse:
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.GET_INVENTORY,
+            )
+        )
+
+    def invalidate_topology(self) -> DaemonResponse:
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.INVALIDATE_TOPOLOGY,
+            )
+        )
+
+    def discover_relays(
+        self,
+        target_gpu: int | None = None,
+    ) -> DaemonResponse:
+        payload: dict[str, object] = {}
+        if target_gpu is not None:
+            payload["target_gpu"] = int(target_gpu)
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.DISCOVER_RELAYS,
+                payload=payload,
+            )
+        )
+
+    def reap_expired_leases(self, now: float | None = None) -> DaemonResponse:
+        payload: dict[str, object] = {}
+        if now is not None:
+            payload["now"] = float(now)
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.REAP_EXPIRED_LEASES,
+                payload=payload,
+            )
+        )
+
+    def get_profile(self, target_gpu: int, relay_gpus: list[int]) -> DaemonResponse:
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.GET_PROFILE,
+                payload={
+                    "target_gpu": int(target_gpu),
+                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
+                },
+            )
+        )
+
+    def put_profile(
+        self,
+        target_gpu: int,
+        relay_gpus: list[int],
+        profile: dict,
+        profile_bytes: int = 0,
+    ) -> DaemonResponse:
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.PUT_PROFILE,
+                payload={
+                    "target_gpu": int(target_gpu),
+                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
+                    "profile": profile,
+                    "profile_bytes": int(profile_bytes),
+                },
+            )
+        )
+
+    def invalidate_profile(self, target_gpu: int, relay_gpus: list[int]) -> DaemonResponse:
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.INVALIDATE_PROFILE,
+                payload={
+                    "target_gpu": int(target_gpu),
+                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
+                },
+            )
+        )
+
+
+class TurboBusDaemonExecutionClient(_DaemonSocketClientBase):
     def cleanup(
         self,
         target_kind: str,
@@ -234,88 +321,5 @@ class TurboBusDaemonClient:
             DaemonRequest(
                 request_type=RequestType.AUTHORIZE_WORKER_TRANSFER,
                 payload=asdict(request),
-            )
-        )
-
-    def describe(self) -> DaemonResponse:
-        return self.send(DaemonRequest(request_type=RequestType.PROFILE))
-
-    def get_inventory(self) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.GET_INVENTORY,
-            )
-        )
-
-    def invalidate_topology(self) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.INVALIDATE_TOPOLOGY,
-            )
-        )
-
-    def discover_relays(
-        self,
-        target_gpu: int | None = None,
-    ) -> DaemonResponse:
-        payload: dict[str, object] = {}
-        if target_gpu is not None:
-            payload["target_gpu"] = int(target_gpu)
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.DISCOVER_RELAYS,
-                payload=payload,
-            )
-        )
-
-    def reap_expired_leases(self, now: float | None = None) -> DaemonResponse:
-        payload: dict[str, object] = {}
-        if now is not None:
-            payload["now"] = float(now)
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.REAP_EXPIRED_LEASES,
-                payload=payload,
-            )
-        )
-
-    def get_profile(self, target_gpu: int, relay_gpus: list[int]) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.GET_PROFILE,
-                payload={
-                    "target_gpu": int(target_gpu),
-                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
-                },
-            )
-        )
-
-    def put_profile(
-        self,
-        target_gpu: int,
-        relay_gpus: list[int],
-        profile: dict,
-        profile_bytes: int = 0,
-    ) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.PUT_PROFILE,
-                payload={
-                    "target_gpu": int(target_gpu),
-                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
-                    "profile": profile,
-                    "profile_bytes": int(profile_bytes),
-                },
-            )
-        )
-
-    def invalidate_profile(self, target_gpu: int, relay_gpus: list[int]) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.INVALIDATE_PROFILE,
-                payload={
-                    "target_gpu": int(target_gpu),
-                    "relay_gpus": [int(gpu) for gpu in relay_gpus],
-                },
             )
         )

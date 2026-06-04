@@ -54,6 +54,7 @@ class CudaWorkerExecutor:
                 request,
                 staging_slot,
                 "bound resources do not match the worker request",
+                resources=resources,
             )
         target_device = _target_device_for_request(request)
         if target_device is None:
@@ -61,7 +62,9 @@ class CudaWorkerExecutor:
                 request,
                 staging_slot,
                 "CUDA worker executor requires a GPU device index",
+                resources=resources,
             )
+        resource_evidence = _resource_evidence(resources)
 
         try:
             plan_payload = _worker_plan_payload(request, int(target_device))
@@ -96,7 +99,12 @@ class CudaWorkerExecutor:
             self.backend.wait(runtime, handle)
             stats = self.backend.stats(runtime, handle)
         except Exception as exc:
-            return _failed_result(request, staging_slot, str(exc))
+            return _failed_result(
+                request,
+                staging_slot,
+                str(exc),
+                resources=resources,
+            )
 
         bytes_completed = _stats_int(stats, "bytes", int(plan_payload["total_bytes"]))
         planned_direct_bytes = _assignment_byte_count(plan_payload, "direct")
@@ -109,8 +117,14 @@ class CudaWorkerExecutor:
                 target_device=int(target_device),
                 ranges=_plan_transfer_ranges(plan_payload),
             )
+            completion_evidence.setdefault("resource_evidence", resource_evidence)
         except Exception as exc:
-            return _failed_result(request, staging_slot, str(exc))
+            return _failed_result(
+                request,
+                staging_slot,
+                str(exc),
+                resources=resources,
+            )
         direct_chunks = _stats_int(
             stats,
             "direct_chunks",
@@ -138,6 +152,7 @@ class CudaWorkerExecutor:
                 "src_buffer_id": request.data_plane.src_handle.buffer_id,
                 "dst_buffer_id": request.data_plane.dst_handle.buffer_id,
                 "staging_slot_id": staging_slot.slot_id,
+                "resource_evidence": resource_evidence,
                 "direct_bytes": _stats_int(
                     stats,
                     "direct_bytes",
@@ -341,6 +356,8 @@ def _failed_result(
     request: WorkerTransferRequest,
     staging_slot: WorkerStagingSlot,
     error: str,
+    *,
+    resources: WorkerDataPlaneResources | None = None,
 ) -> WorkerTransferResult:
     return WorkerTransferResult(
         transfer_id=request.transfer_id,
@@ -353,6 +370,7 @@ def _failed_result(
             "src_buffer_id": request.authorization.src_buffer.buffer_id,
             "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
             "staging_slot_id": staging_slot.slot_id,
+            **_resource_evidence_metadata(resources),
             **_ticket_binding_metadata(request),
         },
     )
@@ -375,6 +393,22 @@ def _ticket_binding_metadata(
     if plan_generation is not None:
         metadata["plan_generation"] = int(plan_generation)
     return metadata
+
+
+def _resource_evidence(
+    resources: WorkerDataPlaneResources,
+) -> dict[str, object]:
+    evidence = resources.as_dict()
+    evidence.setdefault("evidence_source", "worker_data_plane_resources")
+    return evidence
+
+
+def _resource_evidence_metadata(
+    resources: WorkerDataPlaneResources | None,
+) -> dict[str, object]:
+    if resources is None:
+        return {}
+    return {"resource_evidence": _resource_evidence(resources)}
 
 
 def _stats_int(stats: Any, field_name: str, default: int) -> int:

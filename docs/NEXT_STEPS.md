@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting CUDA worker executor
-resource evidence and transfer metadata. Backend execution should keep using
-daemon-authorized resources and should report resource, ticket, plan, and byte
-evidence without restoring application-side route controls, compatibility
-export layers, benchmark hooks, or server-validation gates.
+Continue the code implementation pass by inspecting daemon completion evidence
+and receipt metadata for direct fallback and worker-managed paths. Completion
+state should keep binding real backend/worker byte evidence to daemon-issued
+tickets, plans, and authorized resources without adding benchmark hooks,
+paper-validation code, compatibility export layers, or server-validation gates.

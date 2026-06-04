@@ -71,6 +71,9 @@ Worker data-plane resources now own the CUDA IPC device handle opened for the
 daemon-authorized request. Closing the resources closes CUDA host registration,
 shared CPU memory, and the device IPC handle, while the binding remains a
 fallback cleanup path.
+CUDA worker execution now snapshots the daemon-authorized CPU/GPU data-plane
+resources while they are open and attaches that resource evidence to worker
+success, bound failure, daemon completion evidence, and receipt metadata.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -90,16 +93,16 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Moved CUDA IPC device-handle ownership into `WorkerDataPlaneResources`, so
-  direct resource close now releases the IPC handle as well as the shared CPU
-  buffer and CUDA host registration.
-- Kept `WorkerDataPlaneResourceBinding` as a fallback cleanup path and exposed
-  resource lifecycle state in resource metadata.
+- Bound CUDA worker result metadata to the `WorkerDataPlaneResources` snapshot
+  used for the daemon-issued request.
+- Preserved resource evidence through worker status reporting, daemon
+  completion evidence normalization, and transfer receipt metadata.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\resources.py
-  turbobus\worker\lifecycle.py turbobus\worker\cuda_executor.py` passed.
+- `python -m py_compile turbobus\worker\cuda_executor.py
+  turbobus\worker\lifecycle.py turbobus\daemon\server.py
+  turbobus\daemon\receipts.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -110,6 +113,7 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting CUDA worker executor
-resource evidence and transfer metadata while keeping server validation
-deferred until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting daemon completion evidence
+and receipt metadata for direct fallback and worker-managed paths while keeping
+server validation deferred until the full system implementation pass is
+complete.

@@ -4747,6 +4747,7 @@ def _normalize_completion_evidence(
         evidence,
         expected_ticket=expected_ticket,
     )
+    resource_evidence = evidence.get("resource_evidence")
     return {
         "verified": True,
         "verified_bytes": verified_bytes,
@@ -4765,6 +4766,11 @@ def _normalize_completion_evidence(
             if destination_digest is None
             else {"destination_digest": str(destination_digest)}
         ),
+        **(
+            {}
+            if not isinstance(resource_evidence, Mapping)
+            else {"resource_evidence": dict(resource_evidence)}
+        ),
         **ticket_binding,
     }
 
@@ -4778,11 +4784,15 @@ def _normalize_status_ticket_evidence(
         raise ValueError(
             "intent transfer status update requires daemon ticket evidence"
         )
-    return _normalize_ticket_binding(
+    ticket_binding = _normalize_ticket_binding(
         evidence,
         expected_ticket=expected_ticket,
         evidence_name="status evidence",
     )
+    resource_evidence = evidence.get("resource_evidence")
+    if isinstance(resource_evidence, Mapping):
+        ticket_binding["resource_evidence"] = dict(resource_evidence)
+    return ticket_binding
 
 
 def _normalize_completion_ticket_binding(

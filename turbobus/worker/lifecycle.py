@@ -113,7 +113,12 @@ def _status_evidence_for_result(
     if result.state is not WorkerTransferState.COMPLETE:
         evidence = {
             key: metadata[key]
-            for key in ("ticket_id", "transfer_id", "plan_generation")
+            for key in (
+                "ticket_id",
+                "transfer_id",
+                "plan_generation",
+                "resource_evidence",
+            )
             if key in metadata
         }
         return evidence or None
@@ -131,6 +136,7 @@ def _status_evidence_for_result(
         "verification_method",
         "source_digest",
         "destination_digest",
+        "resource_evidence",
         "ticket_id",
         "transfer_id",
         "plan_generation",

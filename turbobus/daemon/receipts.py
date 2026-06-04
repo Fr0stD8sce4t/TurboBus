@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict
 
 from ..schema import (
@@ -172,6 +173,7 @@ def receipt_for_transfer(
     evidence_ticket_id = evidence.get("ticket_id")
     evidence_transfer_id = evidence.get("transfer_id")
     evidence_plan_generation = _optional_int(evidence.get("plan_generation"))
+    resource_evidence = evidence.get("resource_evidence")
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -215,6 +217,11 @@ def receipt_for_transfer(
             ),
             "evidence_plan_generation": (
                 None if evidence_plan_generation is None else evidence_plan_generation
+            ),
+            "resource_evidence": (
+                dict(resource_evidence)
+                if isinstance(resource_evidence, Mapping)
+                else None
             ),
         },
     )

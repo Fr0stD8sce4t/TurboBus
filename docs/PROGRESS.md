@@ -14,21 +14,22 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Worker failed completion envelopes now require daemon FAILED status evidence.
-- Worker failed completion envelopes now require cleanup evidence for the
-  daemon-issued lease set and staging release.
-- Runtime intent execution now returns the daemon failed `TransferReceipt` for
-  confirmed worker/backend failure instead of converting that receipt path into
-  an exception.
+- Runtime receipt validation now checks ticket, transfer, and plan-generation
+  binding in receipt metadata.
+- Complete receipts continue to require worker/backend execution and verified
+  byte evidence.
+- Failed or canceled receipts now require worker/backend execution source,
+  execution evidence, error, ticket evidence, transfer evidence, and
+  plan-generation evidence before `TurboBusRuntimeSession` returns them.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for intent execution support, intent executor,
-  runtime session, worker models, worker lifecycle, and daemon server modules.
-- Searches confirmed the worker failed completion validator and runtime
-  failed-receipt return path are present in the intended modules.
+- `python -m py_compile` passed for runtime validation, runtime session, intent
+  executor, direct fallback, daemon receipts, and schema modules.
+- Searches confirmed runtime receipt validation is called from
+  `TurboBusRuntimeSession` and now includes failed/canceled evidence checks.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -42,6 +43,6 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: runtime receipt validation,
-runtime session production startup, or adapter submission/receipt consumption
-through `TurboBusRuntimeSession`.
+Continue with one concrete implementation boundary: runtime session production
+startup or adapter submission/receipt consumption through
+`TurboBusRuntimeSession`.

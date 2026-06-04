@@ -45,6 +45,9 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
   receipt wait, or profile bootstrap calls.
 - Keep daemon cleanup paths from leaving cleaned job, buffer, or session
   transfers in the runtime scheduling view.
+- Keep terminal receipt wait available to the authenticated transfer owner after
+  job/session/buffer cleanup, without letting cleaned transfers re-enter
+  scheduling or worker execution.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`, and
   `turbobus/daemon/protocol.py` files deleted. Do not recreate them as
   compatibility export layers.
@@ -56,8 +59,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon receipt wait,
-reschedule, and cleanup state after job/session/buffer teardown. Cleaned or
-retired transfers must not re-enter scheduling or execution, while terminal
-receipt evidence remains available for the owning job/session. Keep
-server-only behavior as a deferred runtime risk, not a blocker for this stage.
+Continue the code implementation pass by inspecting daemon and worker
+production startup paths. The socket entry points should route through the
+standard runtime session, daemon scheduling, worker lifecycle, and
+daemon-issued `ExecutionTicket` flow without adding compatibility wrappers,
+server-validation gates, or application-side route controls.

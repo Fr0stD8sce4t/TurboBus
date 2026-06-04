@@ -51,24 +51,26 @@ Successful worker completion cleanup now requires daemon release evidence:
 daemon `release_transfer()` returns an explicit release payload, and worker
 completion envelope validation rejects skipped cleanup, generic cleanup, or
 missing released-reservation evidence.
+Terminal receipt waits now keep authenticated transfer-owner evidence at plan
+time, so a completed or canceled transfer can still be read by its owner after
+job, session, or buffer cleanup removes active ownership state. Cleaned
+transfers remain retired from scheduling and worker execution state.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Standardized daemon single-reservation release responses with the same
-  `cleanup_mode: release` and `released_reservation_ids` evidence used by
-  worker multi-lease completion cleanup.
-- Tightened worker completion envelope validation so a completed transfer
-  cannot accept skipped cleanup, generic cleanup, missing release ids, or
-  non-release lease responses as completion cleanup evidence.
+- Preserved authenticated transfer-owner identity when the daemon creates a
+  transfer plan.
+- Changed receipt wait ownership checks to fall back to the stored transfer
+  owner after active job/session/buffer cleanup, while retaining normal job
+  ownership checks for active jobs.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py
-  turbobus\transfer_execution.py turbobus\worker\lifecycle.py
-  turbobus\worker\models.py turbobus\intent_executor.py` passed.
+- `python -m py_compile turbobus\daemon\server.py` passed.
+- `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
 
@@ -78,6 +80,5 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue tightening cross-job isolation and daemon authority by inspecting
-daemon receipt wait, reschedule, and cleanup state after job/session/buffer
-teardown while keeping server validation deferred.
+Continue the code implementation pass by inspecting daemon and worker
+production startup paths while keeping server validation deferred.

@@ -105,6 +105,7 @@ class TurboBusDaemon:
         self._transfer_statuses: dict[str, TransferStatus] = {}
         self._transfer_completion_sources: dict[str, str] = {}
         self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
+        self._transfer_peer_identities: dict[str, PeerIdentity] = {}
         self._staging_records: dict[str, dict[str, object]] = {}
         self._audit_records: list[dict[str, object]] = []
         self._connection_scoped_sessions: set[str] = set()
@@ -966,7 +967,9 @@ class TurboBusDaemon:
             with self._lock:
                 try:
                     receipt = self._receipt_for_intent_locked(normalized_intent_id)
-                    self._validate_peer_owns_job_locked(
+                    transfer_id = self._intent_transfers.get(normalized_intent_id)
+                    self._validate_peer_owns_receipt_transfer_locked(
+                        transfer_id=transfer_id,
                         job_id=receipt.job_id,
                         peer_identity=peer_identity,
                     )
@@ -1344,6 +1347,13 @@ class TurboBusDaemon:
                 session_id=session.session_id,
             )
             self._transfer_statuses[transfer_id] = status
+            transfer_peer_identity = self._transfer_peer_identity_for_owner_locked(
+                job_id=status.job_id,
+                session_id=session.session_id,
+                peer_identity=peer_identity,
+            )
+            if transfer_peer_identity is not None:
+                self._transfer_peer_identities[transfer_id] = transfer_peer_identity
             self._transfer_plans[transfer_id] = dict(decision.plan)
             self._scheduling_decisions[transfer_id] = decision
             self._transfer_plan_requests[transfer_id] = {
@@ -3131,6 +3141,50 @@ class TurboBusDaemon:
                 if transfer_id is not None:
                     transfer_ids.add(transfer_id)
         return tuple(sorted(transfer_ids))
+
+    def _transfer_peer_identity_for_owner_locked(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> PeerIdentity | None:
+        if peer_identity is not None and peer_identity.authenticated:
+            return peer_identity
+        job_peer = self._job_peer_identities.get(str(job_id))
+        if job_peer is not None and job_peer.authenticated:
+            return job_peer
+        session_peer = self._session_peer_identities.get(str(session_id))
+        if session_peer is not None and session_peer.authenticated:
+            return session_peer
+        return None
+
+    def _validate_peer_owns_receipt_transfer_locked(
+        self,
+        *,
+        transfer_id: str | None,
+        job_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if peer_identity is None or not peer_identity.authenticated:
+            return
+        if transfer_id is None:
+            raise ValueError("unknown transfer")
+        job_key = str(job_id)
+        if job_key in self._jobs:
+            self._validate_peer_owns_job_locked(
+                job_id=job_key,
+                peer_identity=peer_identity,
+            )
+            return
+        transfer_peer = self._transfer_peer_identities.get(str(transfer_id))
+        if transfer_peer is None or not transfer_peer.authenticated:
+            raise ValueError("transfer owner identity is unavailable")
+        _validate_peer_owner_match(
+            expected=transfer_peer,
+            actual=peer_identity,
+            owner_name="transfer",
+        )
 
     def _validate_peer_owns_job_locked(
         self,

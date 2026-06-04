@@ -133,6 +133,23 @@ class VllmTurboBusIntegration:
         cpu_buffer_id: str = "vllm-kv-cpu",
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> "VllmTurboBusIntegration":
+        factory = getattr(runtime_session, "make_vllm_turbobus_integration", None)
+        if callable(factory):
+            integration = factory(
+                cpu_backings,
+                workload_kind=workload_kind,
+                priority=priority,
+                metadata=metadata,
+                intent_prefix=intent_prefix,
+                wait_timeout_seconds=wait_timeout_seconds,
+                cpu_buffer_id=cpu_buffer_id,
+                gpu_buffer_id=gpu_buffer_id,
+            )
+            if not isinstance(integration, cls):
+                raise TypeError(
+                    "runtime session vLLM integration factory must return a VllmTurboBusIntegration"
+                )
+            return integration
         return cls(
             runtime_session,
             cpu_backings,

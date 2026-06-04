@@ -701,6 +701,56 @@ class TurboBusRuntimeSession:
             gpu_kv_backing,
         )
 
+    def make_vllm_kv_slot_adapter(
+        self,
+        groups,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        gpu_buffer_id: str = "vllm-kv-gpu",
+    ):
+        from .adapters.vllm import VllmKVSlotAdapter
+
+        return VllmKVSlotAdapter(
+            self,
+            groups,
+            workload_kind=workload_kind,
+            priority=priority,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+            gpu_buffer_id=gpu_buffer_id,
+        )
+
+    def make_vllm_turbobus_integration(
+        self,
+        cpu_backings: Iterable | None = None,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
+        priority: int = 0,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+        cpu_buffer_id: str = "vllm-kv-cpu",
+        gpu_buffer_id: str = "vllm-kv-gpu",
+    ):
+        from .adapters.vllm_integration import VllmTurboBusIntegration
+
+        return VllmTurboBusIntegration(
+            self,
+            cpu_backings,
+            workload_kind=workload_kind,
+            priority=priority,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+            cpu_buffer_id=cpu_buffer_id,
+            gpu_buffer_id=gpu_buffer_id,
+        )
+
     def _ensure_transfer_buffers(
         self,
         source: ExecutableBuffer,

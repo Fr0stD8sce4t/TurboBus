@@ -82,6 +82,11 @@ Runtime-session intent submission now validates that custom and generated
 `TransferIntent` objects use runtime-owned CPU/GPU buffers with matching
 direction and byte ranges. Runtime receipt waits are limited to intents that
 were successfully submitted through that session.
+Adapter-owned runtime-session paths now explicitly reject closed runtime
+sessions before creating offload or vLLM slot transfer contexts. vLLM connector
+close now clears and reports pending load/save metadata, saved/sending/receiving
+request sets, pending save parameters, prefix state, pending save backings, and
+the owned runtime session through the unified session API.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -101,14 +106,15 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Bound runtime-session intent submission to runtime-owned CPU/GPU buffers,
-  matching transfer direction, and byte ranges that fit those buffers.
-- Restricted `TurboBusRuntimeSession.wait_transfer_receipt()` to intents
-  successfully submitted through the same runtime session.
+- Made offload and vLLM adapter context creation reject closed runtime
+  sessions before registering buffers or opening transfer contexts.
+- Made vLLM connector close explicitly clear and report pending load/save
+  metadata and request state before closing its runtime session.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py` passed.
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\vllm.py turbobus\adapters\vllm_kv_connector.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -119,6 +125,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting runtime-session close and
-cleanup interactions with pending transfers and adapters while keeping server
-validation deferred until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting worker socket/process
+startup and lifecycle ownership while keeping server validation deferred until
+the full system implementation pass is complete.

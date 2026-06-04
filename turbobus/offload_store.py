@@ -107,6 +107,7 @@ class AdapterTransferContext:
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> "AdapterTransferContext":
+        _require_runtime_session_open(runtime_session)
         register_cpu = getattr(runtime_session, "register_cpu_buffer", None)
         register_gpu = getattr(runtime_session, "register_cuda_buffer", None)
         if not callable(register_cpu) or not callable(register_gpu):
@@ -696,6 +697,7 @@ def _require_runtime_session_client(
     client: TransferIntentClient,
     transfer_context: AdapterTransferContext,
 ) -> None:
+    _require_runtime_session_open(client)
     required_methods = (
         "open_session",
         "register_cpu_buffer",
@@ -728,6 +730,12 @@ def _require_runtime_session_client(
         raise ValueError(
             "offload context session_id must match the runtime session session_id"
         )
+
+
+def _require_runtime_session_open(runtime_session) -> None:
+    closed = getattr(runtime_session, "closed", False)
+    if bool(closed):
+        raise RuntimeError("runtime session is closed")
 
 
 def _validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str, object]:

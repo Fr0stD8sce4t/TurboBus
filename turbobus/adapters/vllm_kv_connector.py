@@ -193,6 +193,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self._closed = True
         closed_prefixes = self._close_saved_prefixes()
         closed_pending_saves = self._close_pending_save_contexts()
+        closed_pending_metadata = self._close_pending_metadata()
         self._backing_pool.close()
         clear_saved_prefixes(self.session_id, job_id=self.job_id)
         clear_metadata = getattr(self, "clear_connector_metadata", None)
@@ -206,6 +207,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "session_id": self.session_id,
                 "prefixes": closed_prefixes,
                 "pending_saves": closed_pending_saves,
+                **closed_pending_metadata,
             }
         )
         self.state = TurboBusKVConnectorState(events=events)
@@ -215,6 +217,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             session_id=self.session_id,
             prefixes=closed_prefixes,
             pending_saves=closed_pending_saves,
+            **closed_pending_metadata,
         )
         self.runtime_session.close()
 
@@ -1015,6 +1018,25 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         for context in contexts:
             self._backing_pool.close_backings(context.cpu_backings)
         return len(contexts)
+
+    def _close_pending_metadata(self) -> dict[str, int]:
+        closed = {
+            "pending_loads": len(self.state.pending_loads),
+            "pending_save_metadata": len(self.state.pending_saves),
+            "pending_save_params": len(self.state.save_params_by_request_id),
+            "save_request_ids": len(self.state.save_request_ids),
+            "saved_request_ids": len(self.state.saved_request_ids),
+            "finished_sending": len(self.state.finished_sending),
+            "finished_recving": len(self.state.finished_recving),
+        }
+        self.state.pending_loads.clear()
+        self.state.pending_saves.clear()
+        self.state.save_params_by_request_id.clear()
+        self.state.save_request_ids.clear()
+        self.state.saved_request_ids.clear()
+        self.state.finished_sending.clear()
+        self.state.finished_recving.clear()
+        return closed
 
     def _adapter_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         return {

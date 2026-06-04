@@ -52,6 +52,7 @@ class VllmKVSlotAdapter:
         wait_timeout_seconds: float | None = None,
         gpu_buffer_id: str = "vllm-kv-gpu",
     ) -> None:
+        _require_runtime_session_open(runtime_session)
         self.client = runtime_session
         self.groups: dict[int, VllmKVGroup] = {group.group_id: group for group in groups}
         self.runtime_session = runtime_session
@@ -287,6 +288,11 @@ def _tensor_nbytes(tensor) -> int:
     if nbytes is not None:
         return int(nbytes)
     return int(tensor.numel() * tensor.element_size())
+
+
+def _require_runtime_session_open(runtime_session) -> None:
+    if bool(getattr(runtime_session, "closed", False)):
+        raise RuntimeError("runtime session is closed")
 
 
 def vllm_block_name(ref: VllmKVBlockRef) -> str:

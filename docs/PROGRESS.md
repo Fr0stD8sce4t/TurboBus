@@ -19,6 +19,9 @@ code remain deferred until the full system implementation pass is complete.
   `offload_d2h()`, the last `AdapterTransferContext.from_runtime_session`
   wrapper was removed, and the vLLM adapter no longer constructs transfer
   contexts itself.
+- The vLLM KV connector now calls `runtime_session.make_vllm_kv_slot_adapter()`
+  directly, and the old `VllmKVSlotAdapter.from_runtime_session()` wrapper was
+  removed.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 

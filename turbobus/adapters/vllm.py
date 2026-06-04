@@ -94,37 +94,6 @@ class VllmKVSlotAdapter:
             raise ValueError("vLLM adapter requires at least one group")
         self._registered_names: set[str] = set()
 
-    @classmethod
-    def from_runtime_session(
-        cls,
-        runtime_session,
-        groups: Iterable[VllmKVGroup],
-        *,
-        workload_kind: WorkloadKind | str = WorkloadKind.KV_CACHE,
-        priority: int = 0,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-        gpu_buffer_id: str = "vllm-kv-gpu",
-    ) -> "VllmKVSlotAdapter":
-        resolved_groups = tuple(groups)
-        if not resolved_groups:
-            raise ValueError("vLLM runtime session adapter requires at least one group")
-        adapter = runtime_session.make_vllm_kv_slot_adapter(
-            resolved_groups,
-            workload_kind=workload_kind,
-            priority=priority,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-            gpu_buffer_id=gpu_buffer_id,
-        )
-        if not isinstance(adapter, cls):
-            raise TypeError(
-                "runtime session vLLM factory must return a VllmKVSlotAdapter"
-            )
-        return adapter
-
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         slots_by_group: dict[int, list[InferenceKVSlot]] = {}
         names = []

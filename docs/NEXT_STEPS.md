@@ -7,9 +7,10 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: real H2D / D2H execution path closure. Offload adapter
-submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
-`offload_d2h()` so the public runtime session API owns the transfer path.
+Current code target: real H2D / D2H execution path closure. Offload and vLLM
+adapter submission should go through `TurboBusRuntimeSession.fetch_h2d()`,
+`offload_d2h()`, and the session-owned vLLM factory so the public runtime
+session API owns the transfer path.
 
 ## Exit Criteria
 
@@ -21,6 +22,8 @@ submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
   with preserved intent identity and adapter metadata.
 - Adapter transfer context and offload / inference / vLLM adapter creation are
   owned solely by `TurboBusRuntimeSession`.
+- The vLLM KV connector no longer goes through the adapter classmethod wrapper;
+  it now calls the session-owned factory directly.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
@@ -28,7 +31,7 @@ submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
 
 `turbobus/runtime_session.py` should own the sole adapter construction path
 that feeds `fetch_h2d()` / `offload_d2h()` and the offload / inference / vLLM
-adapters.
+adapters, including the vLLM KV connector path.
 
 ## Next Entry
 

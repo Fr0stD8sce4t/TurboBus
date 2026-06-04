@@ -634,7 +634,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
     ):
         if not self.state.kv_caches:
             raise RuntimeError("vLLM did not register KV caches for TurboBus")
-        from .vllm import VllmKVSlotAdapter
         from .vllm import make_vllm_layer_groups_from_kv_caches
 
         kv_caches = list(self.state.kv_caches.values())
@@ -644,8 +643,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 f"but vLLM registered {len(kv_caches)} KV cache tensors"
             )
         groups = make_vllm_layer_groups_from_kv_caches(saved.cpu_backings, kv_caches)
-        adapter = VllmKVSlotAdapter.from_runtime_session(
-            self.runtime_session,
+        adapter = self.runtime_session.make_vllm_kv_slot_adapter(
             groups,
             workload_kind=WorkloadKind.KV_CACHE,
             metadata=self._adapter_metadata(
@@ -759,7 +757,6 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         kv_layer,
     ) -> None:
         from .vllm import VllmKVGroup
-        from .vllm import VllmKVSlotAdapter
 
         request = context.request
         group_start = time.perf_counter()
@@ -774,8 +771,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         )
         context.group_ms += (time.perf_counter() - group_start) * 1000.0
         adapter_start = time.perf_counter()
-        adapter = VllmKVSlotAdapter.from_runtime_session(
-            self.runtime_session,
+        adapter = self.runtime_session.make_vllm_kv_slot_adapter(
             [group],
             workload_kind=WorkloadKind.KV_CACHE,
             metadata=self._adapter_metadata(

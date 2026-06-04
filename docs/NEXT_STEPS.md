@@ -72,6 +72,11 @@ experiment work is planned.
   authorizer, executor, status reporter, cleanup coordinator, staging pool,
   and resource binder objects, but external code should use the complete
   authorize-execute-status-cleanup lifecycle entry rather than those internals.
+- Keep the public `turbobus.worker` package focused on worker service and
+  lifecycle entry points. Data-plane requests, worker result models, staging
+  pools, resource binders, CUDA executors, and codec helpers should be imported
+  only by the production modules that own that execution path, not exported as
+  package-level entry points for external callers.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

@@ -29,12 +29,10 @@ from .schema import (
     TransferReceipt,
     WorkloadKind,
 )
-from .worker import (
-    CudaWorkerExecutor,
-    WorkerServiceSocketClient,
-    WorkerDataPlaneResourceBinder,
-    WorkerTransferClient,
-)
+from .worker.cuda_executor import CudaWorkerExecutor
+from .worker.lifecycle import WorkerTransferClient
+from .worker.resources import WorkerDataPlaneResourceBinder
+from .worker.socket_client import WorkerServiceSocketClient
 
 
 @dataclass

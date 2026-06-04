@@ -23,26 +23,28 @@ commands or making server validation a current entry point.
 
 ## Completed This Round
 
-- Audited worker lifecycle ownership during the daemon-first closure
-  pass.
-- Made `WorkerTransferClient` keep its authorizer, executor, status reporter,
-  cleanup coordinator, staging pool, and resource binder as private
-  implementation state.
-- Preserved the full `submit_report_cleanup_lifecycle()` worker entry as the
-  production path for daemon-authorized execution.
-- Confirmed production code no longer reaches into worker client internals to
-  bypass or inspect partial lifecycle components.
+- Audited the public `turbobus.worker` package boundary during the
+  daemon-first closure pass.
+- Removed package-level exports for worker data-plane request/result models,
+  staging pools, resource binders, CUDA executors, and codec helpers.
+- Updated `TurboBusRuntimeSession` to import worker executor, resource binder,
+  lifecycle client, and socket client from the modules that own those
+  implementations.
+- Kept the public worker package focused on worker service and full lifecycle
+  entry points instead of partial data-plane construction tools.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\lifecycle.py
-  turbobus\worker\process.py turbobus\worker\transport.py
-  turbobus\worker\__init__.py turbobus\runtime_session.py` passed.
-- `rg -n "self\.(authorizer|status_reporter|cleanup_coordinator|executor|staging_pool|resource_binder)|\.transfer_client\.(authorizer|status_reporter|cleanup_coordinator|executor|staging_pool|resource_binder)|worker_client\.(authorizer|status_reporter|cleanup_coordinator|executor|staging_pool|resource_binder)"
-  turbobus` found no production access to public worker client internals.
-- `rg -n "_authorizer|_status_reporter|_cleanup_coordinator|_executor|_staging_pool|_resource_binder"
-  turbobus\worker\lifecycle.py` confirmed the worker lifecycle still owns
-  those components privately.
+- `python -m py_compile turbobus\worker\__init__.py
+  turbobus\runtime_session.py turbobus\worker\process.py
+  turbobus\worker\endpoint.py turbobus\worker\socket_client.py
+  turbobus\worker\transport.py` passed.
+- `rg -n "from \.worker import|from turbobus\.worker import" turbobus`
+  found no production imports from the package-level worker export surface.
+- `rg -n "WorkerTransferRequest|WorkerTransferResult|WorkerStagingPool|WorkerDataPlaneResourceBinder|WorkerDataPlaneResourceBinding|WorkerDataPlaneResources|CudaWorkerExecutor|decode_worker_request_envelope|encode_worker_request_envelope"
+  turbobus\worker\__init__.py turbobus\runtime_session.py` confirmed the
+  removed package exports are absent and runtime session imports the needed
+  implementation objects from owning modules.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -53,9 +55,9 @@ commands or making server validation a current entry point.
 - Existing tests still contain old production-path assumptions such as removed
   transfer request, manual reservation, worker shortcut, broad daemon client,
   manual daemon planning, adapter policy hints, old `runtime_engine` imports,
-  public worker internals, and compatibility entry points. Current-stage
-  constraints defer test migration until the system implementation pass is
-  complete.
+  public worker internals, package-level worker data-plane exports, and
+  compatibility entry points. Current-stage constraints defer test migration
+  until the system implementation pass is complete.
 - A final system-code closure audit still needs to continue looking for
   compatibility drift, application-side physical route controls, or public
   bypasses around daemon-issued execution tickets.

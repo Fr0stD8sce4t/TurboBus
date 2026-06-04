@@ -4,10 +4,9 @@ import time
 from collections.abc import Callable, Iterable, Mapping
 
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
+from .intent_execution_support import require_daemon_transfer_complete, require_ok
 from .runtime_engine import RuntimeOptions
-from .schema import ExecutionTicket
-from .transfer import TransferRequest
-from .transfer_execution import require_daemon_transfer_complete, require_ok
+from .schema import ExecutionTicket, TransferIntent
 
 
 def is_direct_only_worker_plan(plan_payload: Mapping[str, object]) -> bool:
@@ -35,10 +34,8 @@ def execute_direct_fallback_transfer(
     daemon_client,
     backend,
     runtime_options: RuntimeOptions,
-    transfer_request: TransferRequest,
+    intent: TransferIntent,
     planned_payload: Mapping[str, object],
-    session_id: str,
-    job_id: str,
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     result_factory: Callable[..., object],
@@ -48,16 +45,16 @@ def execute_direct_fallback_transfer(
     try:
         ticket = _direct_ticket_from_planned_payload(
             planned_payload,
-            transfer_request=transfer_request,
+            intent=intent,
             transfer_id=transfer_id,
-            job_id=job_id,
+            job_id=intent.job_id,
             source_buffer_id=source.buffer_id,
             target_buffer_id=target.buffer_id,
         )
         bytes_completed, completion_evidence = _execute_direct_ticket_plan(
             backend=backend,
             runtime_options=runtime_options,
-            direction=transfer_request.direction.value,
+            direction=intent.direction,
             ticket=ticket,
             source=source,
             target=target,
@@ -70,7 +67,7 @@ def execute_direct_fallback_transfer(
     except Exception as exc:
         failure_payload = {"failure_source": "direct_fallback"}
         failure_resource_evidence = _direct_endpoint_resource_evidence(
-            direction=transfer_request.direction.value,
+            direction=intent.direction,
             source=source,
             target=target,
         )
@@ -110,7 +107,7 @@ def execute_direct_fallback_transfer(
     )
     if not completed.ok:
         completion_failure_resource_evidence = _direct_endpoint_resource_evidence(
-            direction=transfer_request.direction.value,
+            direction=intent.direction,
             source=source,
             target=target,
         )
@@ -149,8 +146,8 @@ def execute_direct_fallback_transfer(
     )
     return result_factory(
         transfer_id=transfer_id,
-        session_id=session_id,
-        job_id=job_id,
+        session_id=intent.session_id,
+        job_id=intent.job_id,
         source_buffer_id=source.buffer_id,
         target_buffer_id=target.buffer_id,
         plan=planned_payload,
@@ -298,7 +295,7 @@ def _run_direct_plan(
 def _direct_ticket_from_planned_payload(
     planned_payload: Mapping[str, object],
     *,
-    transfer_request: TransferRequest,
+    intent: TransferIntent,
     transfer_id: str,
     job_id: str,
     source_buffer_id: str,
@@ -331,11 +328,11 @@ def _direct_ticket_from_planned_payload(
         raise RuntimeError("daemon direct ticket source buffer mismatch")
     if ticket.destination_buffer_id != str(target_buffer_id):
         raise RuntimeError("daemon direct ticket destination buffer mismatch")
-    if ticket.direction != transfer_request.direction.value:
+    if ticket.direction != intent.direction:
         raise RuntimeError("daemon direct ticket direction mismatch")
-    if ticket.total_bytes != transfer_request.total_bytes:
+    if ticket.total_bytes != intent.total_bytes:
         raise RuntimeError("daemon direct ticket byte total mismatch")
-    if not _ticket_ranges_cover_transfer_request(ticket, transfer_request):
+    if not _ticket_ranges_cover_intent(ticket, intent):
         raise RuntimeError("daemon direct ticket ranges mismatch")
     if dict(ticket.plan) != dict(planned_payload.get("plan") or {}):
         raise RuntimeError("daemon direct ticket plan mismatch")
@@ -344,11 +341,11 @@ def _direct_ticket_from_planned_payload(
     return ticket
 
 
-def _ticket_ranges_cover_transfer_request(
+def _ticket_ranges_cover_intent(
     ticket: ExecutionTicket,
-    transfer_request: TransferRequest,
+    intent: TransferIntent,
 ) -> bool:
-    request_ranges = tuple(item.as_dict() for item in transfer_request.ranges)
+    request_ranges = tuple(dict(item) for item in intent.ranges)
     if not request_ranges:
         return False
     ticket_total = 0
@@ -359,7 +356,7 @@ def _ticket_ranges_cover_transfer_request(
             for request_range in request_ranges
         ):
             return False
-    return ticket_total == transfer_request.total_bytes
+    return ticket_total == intent.total_bytes
 
 
 def _range_contains(

@@ -70,28 +70,37 @@ topology snapshot, job, session, receipt state, and error identity, and the
 lower-level vLLM integration entry rejects non-runtime-session objects before
 building KV adapters.
 
+The old route-shaped Python transfer request path is removed from production
+code. Runtime sessions and intent execution use `TransferIntent` ranges
+directly, the daemon socket client no longer exposes `plan_transfer` or
+`plan_transfer_request`, and the daemon dispatch path no longer accepts the
+external `PLAN_TRANSFER` request type. Daemon-internal planning remains only as
+the implementation used after `submit_transfer_intent`.
+
 ## Completed This Round
 
-- Inspected offload, model-loading, training-offload, inference KV, vLLM KV,
-  vLLM integration, and vLLM connector handoff for daemon, worker, backend, or
-  physical-route shortcuts.
-- Added daemon transfer identity fields to `OffloadBlockInfo` so workload
-  adapter state preserves the last intent, receipt, ticket, decision, topology
-  snapshot, job, session, receipt state, and transfer error.
-- Required the lower-level vLLM integration entry to receive an open
-  `TurboBusRuntimeSession`-shaped object before it can build KV adapters.
-- Kept the old compatibility/export-layer files deleted and left server
-  validation deferred.
-- Updated the active plan files to move the next implementation entry to
-  a system-code closure audit.
+- Removed the old `TransferRequest` and `TransferDirection` production module
+  instead of keeping it as a compatibility or export layer.
+- Moved byte range ownership to `turbobus/ranges.py` and execution helper
+  ownership to `turbobus/intent_execution_support.py`.
+- Updated runtime session, buffer registration, intent executor, and direct
+  fallback code to operate on `TransferIntent` data instead of rebuilding old
+  route-shaped transfer requests.
+- Removed the daemon client `plan_transfer` and `plan_transfer_request` public
+  methods and removed the external daemon `PLAN_TRANSFER` dispatch route.
+- Kept server validation, benchmark work, paper validation, experiments, and
+  new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\offload_store.py
-  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
-  turbobus\adapters\inference.py turbobus\adapters\vllm.py
-  turbobus\adapters\vllm_integration.py
-  turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m py_compile turbobus\ranges.py
+  turbobus\intent_execution_support.py turbobus\buffer_registration.py
+  turbobus\runtime_session.py turbobus\intent_executor.py
+  turbobus\direct_fallback.py turbobus\daemon\client.py
+  turbobus\daemon\dispatch.py turbobus\schema.py` passed.
+- `python -c "from turbobus.runtime_session import TurboBusRuntimeSession; from
+  turbobus.intent_executor import WorkerIntentTransferExecutor; from
+  turbobus.ranges import TransferRange; print('closure imports ok')"` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -99,6 +108,10 @@ building KV adapters.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
+- Existing test files still contain old `PLAN_TRANSFER` and `TransferRequest`
+  references. Current-stage constraints defer test migration until the system
+  implementation pass is complete, so this round only removes production-path
+  compatibility drift.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

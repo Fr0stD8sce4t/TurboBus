@@ -87,26 +87,6 @@ def handle_request(
             direction=str(payload.get("direction", "unknown")),
             peer_identity=request.peer_identity,
         )
-    if request.request_type == RequestType.PLAN_TRANSFER:
-        if request.session_id is None:
-            return DaemonResponse(ok=False, error="session_id is required")
-        payload = request.payload
-        total_bytes = int(payload.get("total_bytes", payload.get("bytes", 0)))
-        return daemon.plan_transfer(
-            session_id=request.session_id,
-            total_bytes=total_bytes,
-            chunk_bytes=int(payload.get("chunk_bytes", 16 * 1024 * 1024)),
-            mode=str(payload.get("mode", "pool")),
-            direction=str(payload.get("direction", "h2d")),
-            job_id=str(payload["job_id"]) if "job_id" in payload else None,
-            buffer_ids=payload.get("buffer_ids"),
-            ranges=payload.get("ranges"),
-            intent_id=payload.get("intent_id"),
-            topology_snapshot_id=payload.get("topology_snapshot_id"),
-            workload_kind=str(payload.get("workload_kind", "generic")),
-            priority=int(payload.get("priority", 0)),
-            peer_identity=request.peer_identity,
-        )
     if request.request_type == RequestType.SUBMIT_TRANSFER_INTENT:
         payload = request.payload
         intent_payload = payload.get("intent")

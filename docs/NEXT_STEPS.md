@@ -35,8 +35,9 @@ experiment work is planned.
   runtime session, job, intent, ticket, decision, topology, and receipt
   identity in adapter-visible state.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
-  `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
-  deleted. Do not recreate compatibility export layers.
+  `turbobus/daemon/protocol.py`, `turbobus/worker_managed.py`, and old
+  route-shaped transfer request files deleted. Do not recreate compatibility
+  export layers.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

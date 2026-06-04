@@ -8,7 +8,6 @@ from .schema import (
     TransferReceipt,
     WorkerTransferAuthorizationRequest,
 )
-from .transfer import TransferRequest
 from .worker import (
     WorkerDataPlaneCompletionEnvelope,
     WorkerServiceRequestEnvelope,
@@ -25,28 +24,6 @@ def require_ok(response: DaemonResponse, message: str) -> None:
         raise TypeError("daemon response must be a DaemonResponse")
     if not response.ok:
         raise RuntimeError(response.error or message)
-
-
-def plan_transfer_request(
-    daemon_client,
-    session_id: str,
-    request: TransferRequest,
-    *,
-    mode: str,
-) -> DaemonResponse:
-    planner = getattr(daemon_client, "plan_transfer_request", None)
-    if callable(planner):
-        return planner(session_id, request, mode=mode)
-    return daemon_client.plan_transfer(
-        session_id=session_id,
-        total_bytes=request.total_bytes,
-        chunk_bytes=request.chunk_bytes,
-        mode=mode,
-        direction=request.direction.value,
-        job_id=request.job_id,
-        buffer_ids=list(request.metadata["buffer_ids"]),
-        ranges=[item.as_dict() for item in request.ranges] if request.ranges else None,
-    )
 
 
 def worker_lease_tokens(
@@ -674,7 +651,6 @@ __all__ = [
     "WorkerExecutionResult",
     "cleanup_planned_relay_lease",
     "cleanup_planned_relay_leases",
-    "plan_transfer_request",
     "receipt_from_daemon_payload",
     "require_daemon_transfer_complete",
     "require_ok",

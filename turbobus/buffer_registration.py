@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
+from .intent_execution_support import require_ok
+from .ranges import TransferRange
 from .schema import BufferRegistration
-from .transfer import TransferRange
-from .transfer_execution import require_ok
 
 
 ExecutableBuffer = SharedPinnedCpuBuffer | CudaIpcDeviceBuffer

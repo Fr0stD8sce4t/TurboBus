@@ -15,8 +15,7 @@ from .schema import (
     TransferReceipt,
     WorkerTransferAuthorizationRequest,
 )
-from .transfer import TransferRequest
-from .transfer_execution import (
+from .intent_execution_support import (
     WorkerCompletionEnvelopeError,
     cleanup_planned_relay_leases,
     receipt_from_daemon_payload,
@@ -73,7 +72,6 @@ class WorkerIntentTransferExecutor:
             raise TypeError("intent must be a TransferIntent")
         require_ok(response, "daemon transfer intent submission failed")
         source, target = _intent_buffers(self.buffers, intent)
-        transfer_request = _transfer_request_from_intent(intent)
         payload = _intent_execution_payload(response.payload)
         admission_error = _intent_execution_admission_error(payload)
         if admission_error is not None:
@@ -83,10 +81,8 @@ class WorkerIntentTransferExecutor:
                 daemon_client=daemon_client,
                 backend=self.backend,
                 runtime_options=self.runtime_options,
-                transfer_request=transfer_request,
+                intent=intent,
                 planned_payload=payload,
-                session_id=intent.session_id,
-                job_id=intent.job_id,
                 source=source,
                 target=target,
                 result_factory=WorkerIntentTransferResult,
@@ -164,36 +160,6 @@ def _intent_buffers(
     if source.job_id != intent.job_id or target.job_id != intent.job_id:
         raise ValueError("intent buffers must belong to the intent job")
     return source, target
-
-
-def _transfer_request_from_intent(intent: TransferIntent) -> TransferRequest:
-    return TransferRequest.from_ranges(
-        intent.ranges,
-        chunk_bytes=_intent_chunk_bytes(intent),
-        direction=intent.direction,
-        mode="auto",
-        job_id=intent.job_id,
-        metadata={
-            "buffer_ids": (
-                intent.source_buffer_id,
-                intent.destination_buffer_id,
-            )
-        },
-    )
-
-
-def _intent_chunk_bytes(intent: TransferIntent) -> int:
-    for source in (intent.policy_hints, intent.metadata):
-        if not isinstance(source, Mapping):
-            continue
-        value = source.get("chunk_bytes")
-        if value is None:
-            continue
-        chunk_bytes = int(value)
-        if chunk_bytes <= 0:
-            raise ValueError("chunk_bytes must be positive")
-        return chunk_bytes
-    return max(1, int(intent.total_bytes))
 
 
 def _intent_execution_payload(payload: Mapping[str, object]) -> dict[str, object]:

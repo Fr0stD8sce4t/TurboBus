@@ -14,7 +14,9 @@ from .buffer_registration import (
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .daemon import TurboBusDaemonClient
 from .intent_executor import WorkerIntentTransferExecutor
+from .intent_execution_support import require_ok
 from . import profile as runtime_profile
+from .ranges import TransferRange, range_as_dict
 from .runtime_engine import RuntimeOptions
 from .schema import (
     DaemonResponse,
@@ -22,8 +24,6 @@ from .schema import (
     TransferReceipt,
     WorkloadKind,
 )
-from .transfer import TransferRange
-from .transfer_execution import require_ok
 from .worker import (
     CudaWorkerExecutor,
     WorkerServiceSocketClient,
@@ -345,7 +345,7 @@ class TurboBusRuntimeSession:
         self._ensure_transfer_buffers(source, target)
         self._bootstrap_profile_if_enabled()
         normalized_ranges = tuple(
-            _range_as_dict(item)
+            range_as_dict(item)
             for item in ranges_or_full_buffer(ranges, source.size_bytes, target.size_bytes)
         )
         total_bytes = sum(int(item["bytes"]) for item in normalized_ranges)
@@ -506,32 +506,6 @@ class TurboBusRuntimeSession:
 
 
 __all__ = ["TurboBusRuntimeSession"]
-
-
-def _range_as_dict(
-    item: TransferRange | tuple[int, int, int] | dict,
-) -> dict[str, int]:
-    if isinstance(item, TransferRange):
-        return item.as_dict()
-    if isinstance(item, Mapping):
-        return {
-            "src_offset": int(item["src_offset"]),
-            "dst_offset": int(item["dst_offset"]),
-            "bytes": int(item["bytes"]),
-        }
-    if isinstance(item, tuple) or isinstance(item, list):
-        if len(item) != 3:
-            raise ValueError("range tuples must be (src_offset, dst_offset, bytes)")
-        return {
-            "src_offset": int(item[0]),
-            "dst_offset": int(item[1]),
-            "bytes": int(item[2]),
-        }
-    return {
-        "src_offset": int(getattr(item, "src_offset")),
-        "dst_offset": int(getattr(item, "dst_offset")),
-        "bytes": int(getattr(item, "bytes")),
-    }
 
 
 def _buffer_registration_fingerprint(buffer: ExecutableBuffer) -> tuple[object, ...]:

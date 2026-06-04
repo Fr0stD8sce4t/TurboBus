@@ -11,7 +11,6 @@ from ..schema import (
     TransferIntent,
     WorkerTransferAuthorizationRequest,
 )
-from ..transfer import TransferRequest
 
 
 class TurboBusDaemonClient:
@@ -147,38 +146,6 @@ class TurboBusDaemonClient:
                     "bytes": int(bytes_),
                     "direction": str(direction),
                 },
-            )
-        )
-
-    def plan_transfer(
-        self,
-        session_id: str,
-        total_bytes: int,
-        chunk_bytes: int,
-        mode: str = "pool",
-        direction: str = "h2d",
-        job_id: str | None = None,
-    ) -> DaemonResponse:
-        request = TransferRequest(
-            total_bytes=total_bytes,
-            chunk_bytes=chunk_bytes,
-            mode=mode,
-            direction=direction,
-            job_id=job_id,
-        )
-        return self.plan_transfer_request(session_id, request)
-
-    def plan_transfer_request(
-        self,
-        session_id: str,
-        request: TransferRequest,
-        mode: str | None = None,
-    ) -> DaemonResponse:
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.PLAN_TRANSFER,
-                session_id=str(session_id),
-                payload=request.daemon_payload(mode=mode),
             )
         )
 

@@ -25,7 +25,10 @@ from .intent_execution_support import (
     wait_for_intent_receipt,
     worker_lease_tokens,
 )
-from .worker import WorkerDataPlaneCompletionEnvelope, WorkerTransferLifecycleRecord
+from .worker.models import (
+    WorkerDataPlaneCompletionEnvelope,
+    WorkerTransferLifecycleRecord,
+)
 
 
 @dataclass(frozen=True)

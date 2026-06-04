@@ -47,6 +47,11 @@ experiment work is planned.
   selection entry files deleted. Worker execution entry points must keep the
   full authorize-execute-status-cleanup lifecycle. Do not recreate
   compatibility export layers.
+- Keep raw worker data-plane request and completion schema objects internal to
+  the daemon-authorized worker execution path. The public `turbobus.worker`
+  package should expose service and lifecycle entry points, not objects that
+  let external callers construct data-plane work outside an
+  `ExecutionTicket`.
 - Continue code implementation and refactoring without adding server test
   commands or using server validation as the current entry point.
 

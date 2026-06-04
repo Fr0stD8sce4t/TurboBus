@@ -1,7 +1,3 @@
-from ..schema import (
-    WorkerDataPlaneCompletion,
-    WorkerDataPlaneRequest,
-)
 from .lifecycle import (
     WorkerAuthorizationError,
     WorkerCleanupError,
@@ -59,13 +55,11 @@ __all__ = [
     "WorkerServiceSocketClient",
     "WorkerStatusReportError",
     "build_worker_service_transport",
-    "WorkerDataPlaneCompletion",
     "WorkerDataPlaneCompletionEnvelope",
     "WorkerDataPlaneResourceBinder",
     "WorkerDataPlaneResourceBinding",
     "WorkerDataPlaneResourceError",
     "WorkerDataPlaneResources",
-    "WorkerDataPlaneRequest",
     "CudaWorkerExecutor",
     "WorkerTransferClient",
     "WorkerTransferLifecycleRecord",

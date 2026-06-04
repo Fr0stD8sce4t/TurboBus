@@ -143,7 +143,7 @@ class WorkerIntentTransferExecutor:
                 strict=False,
             )
             raise
-        if worker_execution.final_state == "failed":
+        if worker_execution.final_state in {"failed", "status_failed", "cleanup_failed"}:
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
         if worker_execution.final_state != "complete":
             cleanup_planned_relay_leases(

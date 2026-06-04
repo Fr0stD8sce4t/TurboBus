@@ -7,10 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: isolation and authority hardening. The runtime feedback
-path now feeds scheduler load accounting from live running activity; the next
-step is to harden runtime-session startup so buffer registration rolls back
-any partial daemon registrations if the batch fails.
+Current code target: worker/backend failure cleanup and terminal receipt
+closure. Worker-managed transfers now need to keep terminal failure states on
+the receipt path instead of falling through to route cleanup and an exception.
 
 ## Exit Criteria
 
@@ -23,10 +22,11 @@ any partial daemon registrations if the batch fails.
 
 ## Current Code Work
 
-`TurboBusRuntimeSession._register_pending_buffers()` should clean up any
-buffers it already registered if a later buffer registration fails.
+`WorkerIntentTransferExecutor.execute_transfer_intent()` should wait
+for a receipt when `submit_worker_execution()` returns `status_failed` or
+`cleanup_failed`.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: worker/backend failure cleanup and terminal receipt closure.
+boundary: worker/backend execution status into daemon runtime feedback.

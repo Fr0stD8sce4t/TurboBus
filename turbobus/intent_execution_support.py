@@ -309,7 +309,7 @@ def require_worker_completion_matches_request(
             request,
             slot=completion.staging_slot,
         )
-    elif final_state == "failed":
+    elif final_state in {"failed", "status_failed", "cleanup_failed"}:
         require_failed_worker_completion_matches_request(completion, request)
 
 

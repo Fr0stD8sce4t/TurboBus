@@ -586,28 +586,53 @@ class TurboBusRuntimeSession:
         self._require_open()
         from .offload.context import AdapterTransferContext
 
-        cpu_buffer = self.register_cpu_buffer(cpu_buffer)
-        gpu_buffer = self.register_cuda_buffer(gpu_buffer)
-        session_id = self.open_session()
-        resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
-        if "chunk_bytes" not in resolved_policy_hints:
-            resolved_policy_hints["chunk_bytes"] = int(
-                getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
+        session_was_open = self._session_id is not None
+        cpu_buffer_id = str(getattr(cpu_buffer, "buffer_id", ""))
+        gpu_buffer_id = str(getattr(gpu_buffer, "buffer_id", ""))
+        cpu_buffer_was_registered = cpu_buffer_id in self._buffers
+        gpu_buffer_was_registered = gpu_buffer_id in self._buffers
+        session_id: str | None = None
+        try:
+            gpu_buffer = self.register_cuda_buffer(gpu_buffer)
+            session_id = self.open_session()
+            cpu_buffer = self.register_cpu_buffer(cpu_buffer)
+            resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
+            if "chunk_bytes" not in resolved_policy_hints:
+                resolved_policy_hints["chunk_bytes"] = int(
+                    getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
+                )
+            return AdapterTransferContext(
+                job_id=self.job_id,
+                session_id=session_id,
+                cpu_buffer_id=cpu_buffer.buffer_id,
+                gpu_buffer_id=gpu_buffer.buffer_id,
+                cpu_buffer=cpu_buffer,
+                gpu_buffer=gpu_buffer,
+                workload_kind=workload_kind,
+                priority=priority,
+                policy_hints=resolved_policy_hints,
+                metadata={} if metadata is None else metadata,
+                intent_prefix=intent_prefix,
+                wait_timeout_seconds=wait_timeout_seconds,
             )
-        return AdapterTransferContext(
-            job_id=self.job_id,
-            session_id=session_id,
-            cpu_buffer_id=cpu_buffer.buffer_id,
-            gpu_buffer_id=gpu_buffer.buffer_id,
-            cpu_buffer=cpu_buffer,
-            gpu_buffer=gpu_buffer,
-            workload_kind=workload_kind,
-            priority=priority,
-            policy_hints=resolved_policy_hints,
-            metadata={} if metadata is None else metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
+        except Exception:
+            self._rollback_adapter_transfer_context_buffer(
+                cpu_buffer_id,
+                was_registered=cpu_buffer_was_registered,
+            )
+            self._rollback_adapter_transfer_context_buffer(
+                gpu_buffer_id,
+                was_registered=gpu_buffer_was_registered,
+            )
+            if not session_was_open and self._session_id is not None:
+                try:
+                    self._runtime_daemon_client().close_session(self._session_id)
+                except Exception:
+                    pass
+                self._session_id = None
+                self._relay_gpus = None
+                self._profile_bootstrapped = False
+            raise
 
     def make_offload_store(
         self,
@@ -891,6 +916,33 @@ class TurboBusRuntimeSession:
             if isinstance(buffer, SharedPinnedCpuBuffer):
                 buffer.release()
         return response
+
+    def _rollback_adapter_transfer_context_buffer(
+        self,
+        buffer_id: str,
+        *,
+        was_registered: bool,
+    ) -> None:
+        normalized_id = str(buffer_id)
+        if not normalized_id or was_registered:
+            return
+        if self._session_id is not None and normalized_id in self._registered_buffer_ids:
+            try:
+                self.cleanup_buffer(
+                    normalized_id,
+                    reason="runtime_adapter_context_creation_failed",
+                    force=True,
+                )
+                return
+            except Exception:
+                pass
+        buffer = self._buffers.pop(normalized_id, None)
+        self._registered_buffer_ids.discard(normalized_id)
+        self._registered_buffer_fingerprints.pop(normalized_id, None)
+        if normalized_id in self._owned_cpu_buffer_ids:
+            self._owned_cpu_buffer_ids.discard(normalized_id)
+            if isinstance(buffer, SharedPinnedCpuBuffer):
+                buffer.release()
 
     def _release_owned_cpu_buffers(self) -> None:
         for buffer_id in tuple(self._owned_cpu_buffer_ids):

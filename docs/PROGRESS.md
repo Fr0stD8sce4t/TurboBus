@@ -35,6 +35,8 @@ code remain deferred until the full system implementation pass is complete.
   factory and uses it for the daemon-issued transfer path.
 - `CudaWorkerExecutor.execute()` now binds worker data-plane resources itself
   and runs the real execution path instead of returning an immediate failure.
+- `make_adapter_transfer_context()` now rolls back newly registered buffers if
+  session bootstrap or adapter context creation fails.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -55,6 +57,8 @@ code remain deferred until the full system implementation pass is complete.
   runtime buffer map being live inside the session.
 - Worker execution still depends on CUDA backend/device handle support in the
   active runtime environment.
+- Adapter context creation still depends on the caller providing valid CPU and
+  GPU buffers that can be registered against the active daemon session.
 - Older benchmark and example surfaces still use `TurboBusClient` and have not
   been migrated to the runtime-session-first API yet.
 - Existing tests, examples, and benchmarks still contain old production-path

@@ -33,6 +33,8 @@ session API owns the transfer path.
   daemon-issued transfer path.
 - The CUDA worker executor now binds its own data-plane resources in the
   default execution path instead of failing immediately.
+- Adapter transfer context creation now rolls back newly registered buffers if
+  session bootstrap or context construction fails.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 

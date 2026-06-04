@@ -595,8 +595,28 @@ class FakeDaemonClient:
         return self.cleanup_response
 
     def release_transfer(self, reservation_id: str) -> DaemonResponse:
-        self.release_requests.append(str(reservation_id))
-        return self.release_response
+        reservation_id = str(reservation_id)
+        self.release_requests.append(reservation_id)
+        if self.release_response.payload.get("cleanup_mode") == "release":
+            return self.release_response
+        lease_ids = (reservation_id,)
+        if isinstance(self.response.payload, dict):
+            payload_lease_ids = self.response.payload.get("lease_ids")
+            if payload_lease_ids is not None:
+                lease_ids = tuple(str(item) for item in payload_lease_ids)
+        return DaemonResponse(
+            ok=self.release_response.ok,
+            error=self.release_response.error,
+            payload={
+                "reservation_id": reservation_id,
+                "released_reservation_ids": (reservation_id,),
+                "lease_ids": lease_ids,
+                "cleanup_mode": "release",
+                "transfer_id": "transfer-1",
+                "ticket_id": "ticket-1",
+                "plan_generation": 1,
+            },
+        )
 
 
 class WorkerHelperTest(unittest.TestCase):
@@ -1393,7 +1413,7 @@ class WorkerHelperTest(unittest.TestCase):
         envelope = WorkerDataPlaneCompletionEnvelope.from_lifecycle(lifecycle)
         payload = envelope.as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["transfer_id"], "transfer-1")
         self.assertEqual(payload["lease_id"], "lease-1")
         self.assertEqual(payload["final_state"], "failed")
@@ -1851,7 +1871,9 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(lifecycle.final_state, "complete")
         self.assertEqual(lifecycle.cleanup_target_kind, "reservation")
         self.assertEqual(lifecycle.cleanup_target_id, "lease-1")
-        self.assertEqual(lifecycle.cleanup_response, daemon_client.release_response)
+        self.assertTrue(lifecycle.cleanup_response.ok)
+        self.assertEqual(lifecycle.cleanup_response.payload["cleanup_mode"], "release")
+        self.assertEqual(lifecycle.cleanup_response.payload["reservation_id"], "lease-1")
         self.assertEqual(daemon_client.cleanup_requests, [])
         self.assertEqual(daemon_client.release_requests, ["lease-1"])
         self.assertEqual(lifecycle.status_update["state"], "complete")
@@ -1919,7 +1941,7 @@ class WorkerHelperTest(unittest.TestCase):
             WorkerServiceRequestEnvelope(payload=authorization_request_payload())
         ).as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["final_state"], "failed")
         self.assertEqual(payload["completion"]["worker_result"]["state"], "failed")
         self.assertEqual(payload["completion"]["daemon_status_update"]["state"], "failed")
@@ -1935,7 +1957,7 @@ class WorkerHelperTest(unittest.TestCase):
             WorkerServiceRequestEnvelope(payload=authorization_request_payload())
         ).as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["final_state"], "authorization_failed")
         self.assertIn("denied", payload["error"])
         self.assertIsNone(payload["completion"]["worker_result"])
@@ -1956,7 +1978,7 @@ class WorkerHelperTest(unittest.TestCase):
             WorkerServiceRequestEnvelope(payload=authorization_request_payload())
         ).as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["final_state"], "status_failed")
         self.assertIn("unknown transfer", payload["error"])
         self.assertEqual(payload["completion"]["daemon_status_update"]["state"], "failed")
@@ -1979,7 +2001,7 @@ class WorkerHelperTest(unittest.TestCase):
             WorkerServiceRequestEnvelope(payload=authorization_request_payload())
         ).as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["final_state"], "cleanup_failed")
         self.assertIn("unknown reservation", payload["error"])
         self.assertEqual(payload["completion"]["daemon_status_update"]["state"], "failed")
@@ -2125,7 +2147,7 @@ class WorkerHelperTest(unittest.TestCase):
             WorkerServiceRequestEnvelope(payload=authorization_request_payload())
         )
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "failed")
         self.assertEqual(response["completion"]["worker_result"]["state"], "failed")
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
@@ -2146,7 +2168,7 @@ class WorkerHelperTest(unittest.TestCase):
         decoded = decode_worker_response_envelope(message)
         payload = decoded.as_dict()
 
-        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["ok"])
         self.assertEqual(payload["final_state"], "failed")
         self.assertEqual(payload["completion"]["worker_result"]["state"], "failed")
         self.assertEqual(payload["completion"]["daemon_status_update"]["state"], "failed")
@@ -2182,7 +2204,7 @@ class WorkerHelperTest(unittest.TestCase):
         response_message = handle_worker_service_message(service, request_message)
         response = decode_worker_response_envelope(response_message).as_dict()
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "failed")
         self.assertEqual(response["completion"]["worker_result"]["state"], "failed")
         self.assertEqual(response["completion"]["staging_release"]["slot_id"], "staging-1")
@@ -2218,7 +2240,7 @@ class WorkerHelperTest(unittest.TestCase):
         response_message = handle_worker_service_message(service, request_message)
         response = decode_worker_response_envelope(response_message).as_dict()
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "status_failed")
         self.assertIn("unknown transfer", response["error"])
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
@@ -2243,7 +2265,7 @@ class WorkerHelperTest(unittest.TestCase):
         response_message = endpoint.handle_message(request_message)
         response = decode_worker_response_envelope(response_message).as_dict()
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "failed")
         self.assertEqual(response["completion"]["worker_result"]["state"], "failed")
         self.assertEqual(response["completion"]["staging_release"]["slot_id"], "staging-1")
@@ -2323,7 +2345,7 @@ class WorkerHelperTest(unittest.TestCase):
 
         response = service.handle_envelope_payload(authorization_request_payload())
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "status_failed")
         self.assertIn("unknown transfer", response["error"])
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
@@ -2345,7 +2367,7 @@ class WorkerHelperTest(unittest.TestCase):
 
         response = service.handle_envelope_payload(authorization_request_payload())
 
-        self.assertTrue(response["ok"])
+        self.assertFalse(response["ok"])
         self.assertEqual(response["final_state"], "cleanup_failed")
         self.assertIn("unknown reservation", response["error"])
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")

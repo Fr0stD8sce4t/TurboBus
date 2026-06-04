@@ -439,7 +439,7 @@ class WorkerDataPlaneCompletionEnvelope:
             raise TypeError("lifecycle must be a WorkerTransferLifecycleRecord")
         payload = lifecycle.as_dict()
         return cls(
-            ok=True,
+            ok=worker_lifecycle_completed(lifecycle),
             transfer_id=lifecycle_transfer_id(lifecycle),
             lease_id=lifecycle_lease_id(lifecycle),
             lease_ids=lifecycle_lease_ids(lifecycle),
@@ -535,7 +535,7 @@ class WorkerServiceResponseEnvelope:
         lifecycle: WorkerTransferLifecycleRecord,
     ) -> "WorkerServiceResponseEnvelope":
         return cls(
-            ok=True,
+            ok=worker_lifecycle_completed(lifecycle),
             completion=lifecycle.completion_envelope().as_dict(),
             final_state=lifecycle.final_state,
             error=lifecycle.error,
@@ -630,6 +630,16 @@ def lifecycle_lease_ids(lifecycle: WorkerTransferLifecycleRecord) -> tuple[str, 
     return (lifecycle.authorization_request.lease_id,)
 
 
+def worker_lifecycle_completed(lifecycle: WorkerTransferLifecycleRecord) -> bool:
+    if not isinstance(lifecycle, WorkerTransferLifecycleRecord):
+        raise TypeError("lifecycle must be a WorkerTransferLifecycleRecord")
+    if lifecycle.final_state != WorkerTransferState.COMPLETE.value:
+        return False
+    if lifecycle.result is None:
+        return False
+    return lifecycle.result.state == WorkerTransferState.COMPLETE
+
+
 __all__ = [
     "WorkerDataPlaneCompletionEnvelope",
     "WorkerServiceRequestEnvelope",
@@ -645,4 +655,5 @@ __all__ = [
     "lifecycle_lease_ids",
     "lifecycle_transfer_id",
     "worker_request_lease_ids",
+    "worker_lifecycle_completed",
 ]

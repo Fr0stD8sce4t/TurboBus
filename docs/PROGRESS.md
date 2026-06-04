@@ -14,7 +14,8 @@ owns daemon socket and optional worker socket clients for the production socket
 path while keeping execution on daemon-issued `ExecutionTicket` data. Model
 loading, training offload, and inference KV adapters now have runtime-session
 entry points. Worker service and production process entry points route requests
-through the standard lifecycle.
+through the standard lifecycle, and worker socket completion envelopes now
+report `ok` only when that lifecycle reaches real worker completion.
 vLLM connector save/restore tracing now requires real `TransferReceipt` handles
 before it records receipt, decision, topology, or ticket ids.
 vLLM saved prefixes are keyed by job id, session id, and prefix key, and the
@@ -106,15 +107,20 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Made offload and vLLM adapter context creation reject closed runtime
-  sessions before registering buffers or opening transfer contexts.
-- Made vLLM connector close explicitly clear and report pending load/save
-  metadata and request state before closing its runtime session.
+- Bound worker socket response `ok` to real worker lifecycle completion instead
+  of treating failed authorization, failed execution, failed status reporting,
+  or failed cleanup as successful socket completions.
+- Updated the existing worker lifecycle/transport assertions to preserve daemon
+  status and cleanup evidence while expecting failed worker lifecycles to return
+  non-ok completion envelopes.
 
 ## Validation
 
-- `python -m py_compile turbobus\offload_store.py
-  turbobus\adapters\vllm.py turbobus\adapters\vllm_kv_connector.py` passed.
+- `python -m py_compile turbobus\worker\models.py
+  turbobus\worker\codec.py turbobus\worker\endpoint.py
+  turbobus\worker\lifecycle.py turbobus\worker\socket_client.py
+  turbobus\worker\transport.py turbobus\worker\process.py` passed.
+- `python -m unittest test.python.integration.test_worker_helper` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -125,6 +131,7 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting worker socket/process
-startup and lifecycle ownership while keeping server validation deferred until
-the full system implementation pass is complete.
+Continue the code implementation pass by inspecting daemon peer identity,
+cleanup, and ticket ownership on the production socket path while keeping
+server validation deferred until the full system implementation pass is
+complete.

@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting worker socket/process
-startup and lifecycle ownership. Production worker entry points should route
-requests through the standard authorization, execution, status reporting, and
-cleanup lifecycle without restoring helper export layers, benchmark hooks,
-paper-validation code, compatibility export layers, or server-validation gates.
+Continue the code implementation pass by inspecting daemon peer identity,
+cleanup, and ticket ownership on the production socket path. Keep the work
+focused on daemon/worker authority and isolation; do not add benchmark,
+paper-validation, experiment, compatibility export layer, or server-validation
+code.

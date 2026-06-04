@@ -308,6 +308,15 @@ class VllmTurboBusIntegration:
             self._cpu_backings,
             self.state.kv_caches,
         )
+        factory = getattr(self.runtime_session, "make_vllm_kv_slot_adapter", None)
+        if callable(factory):
+            adapter = factory(groups, **self._runtime_adapter_options)
+            if not isinstance(adapter, VllmKVSlotAdapter):
+                raise TypeError(
+                    "runtime session vLLM adapter factory must return a VllmKVSlotAdapter"
+                )
+            self.state.adapter = adapter
+            return
         self.state.adapter = VllmKVSlotAdapter.from_runtime_session(
             self.runtime_session,
             groups,

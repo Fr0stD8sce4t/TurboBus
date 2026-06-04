@@ -5,7 +5,8 @@ import math
 from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from ..offload_store import AdapterTransferContext, TransferStats
+from ..offload.context import AdapterTransferContext
+from ..offload.stats import TransferStats
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter

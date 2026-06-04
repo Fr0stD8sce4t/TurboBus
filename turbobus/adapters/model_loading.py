@@ -2,14 +2,9 @@ from __future__ import annotations
 
 from typing import Iterable, Mapping
 
-from ..offload_store import (
-    AdapterTransferContext,
-    BlockState,
-    OffloadBatch,
-    OffloadBlock,
-    OffloadBlockInfo,
-    OffloadStore,
-)
+from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
+from ..offload.context import AdapterTransferContext
+from ..offload.store import OffloadBatch, OffloadStore
 from ..schema import WorkloadKind
 
 

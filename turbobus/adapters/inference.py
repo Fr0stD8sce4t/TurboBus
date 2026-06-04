@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from ..offload_store import AdapterTransferContext, OffloadBatch, OffloadStore, TransferStats
+from ..offload.context import AdapterTransferContext
+from ..offload.stats import TransferStats
+from ..offload.store import OffloadBatch, OffloadStore
 from ..schema import WorkloadKind
 
 

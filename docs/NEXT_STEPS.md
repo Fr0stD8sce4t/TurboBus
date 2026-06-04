@@ -30,10 +30,11 @@ experiment work is planned.
   compatibility drift after removing old client, worker, transfer-request,
   reservation, session-relay, worker-shortcut, adapter-alias, planner-helper,
   release-transfer, reschedule-transfer, app-facing execution-status, runtime
-  transfer-mode, backend transfer-mode, and ordinary daemon-client profile entry
-  points, plus offload block alias and worker partial-lifecycle public entry
-  points, ordinary daemon-client runtime/admin operations, buffer manual daemon
-  registration helpers, and pure control re-export files.
+  transfer-mode, backend transfer-mode, ordinary daemon-client profile entry
+  points, offload block alias, worker partial-lifecycle public entry points,
+  ordinary daemon-client runtime/admin operations, buffer manual daemon
+  registration helpers, pure control re-export files, and the old
+  `turbobus/offload_store.py` monolith.
 - Remove remaining broad daemon-client fallback behavior from runtime-session
   role clients; socket-backed sessions may derive role clients from socket path,
   but custom object sessions must provide explicit runtime, profile, and
@@ -50,6 +51,10 @@ experiment work is planned.
   `submit_transfer_intent()` and `wait_transfer_receipt()`, because that can
   bypass runtime-owned buffer registration, profile bootstrap, worker
   execution, and cleanup wiring.
+- Keep offload implementation split by real ownership under `turbobus/offload/`:
+  context and policy validation, block state, receipt handles, transfer stats,
+  and store submission logic should live in their owning modules. Do not
+  recreate `turbobus/offload_store.py` as a compatibility export layer.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, `turbobus/worker_managed.py`, and old
   route-shaped transfer request, manual relay reservation, or session relay

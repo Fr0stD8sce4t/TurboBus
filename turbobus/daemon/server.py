@@ -604,6 +604,7 @@ class TurboBusDaemon:
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
             transfer_id = self._reservation_transfers.get(reservation_key)
+            release_evidence: dict[str, object] = {}
             if transfer_id is not None:
                 status = self._transfer_statuses.get(transfer_id)
                 if status is None:
@@ -615,10 +616,24 @@ class TurboBusDaemon:
                 )
                 if evidence_error is not None:
                     return DaemonResponse(ok=False, error=evidence_error)
+                if self._intent_requires_execution_evidence_locked(transfer_id):
+                    try:
+                        ticket = self._completion_ticket_for_transfer_locked(
+                            transfer_id
+                        )
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    release_evidence = {
+                        "transfer_id": transfer_id,
+                        "ticket_id": ticket.ticket_id,
+                        "plan_generation": ticket.metadata.get("plan_generation"),
+                        "lease_ids": ticket.lease_ids,
+                    }
             reservation = self._release_reservation_locked(reservation_id)
             if reservation is None:
                 return DaemonResponse(ok=False, error="unknown reservation")
             released_reservation_id = reservation.reservation_id
+            released_at = time.time()
             promoted = self._promote_delayed_transfers_locked(now=time.time())
             return DaemonResponse(
                 ok=True,
@@ -627,7 +642,9 @@ class TurboBusDaemon:
                     "released_reservation_ids": (released_reservation_id,),
                     "cleanup_kind": "reservation",
                     "cleanup_mode": "release",
+                    "released_at": released_at,
                     "promoted_transfers": promoted,
+                    **release_evidence,
                 },
             )
 

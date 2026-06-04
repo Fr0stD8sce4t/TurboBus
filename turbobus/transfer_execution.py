@@ -306,9 +306,12 @@ def require_worker_completion_matches_request(
             raise WorkerCompletionEnvelopeError(
                 "worker completion missing daemon release response"
             )
+        worker_metadata = _worker_result_metadata(completion.worker_result)
         require_worker_release_response_matches_request(
             completion.daemon_cleanup_response,
             request,
+            expected_ticket_id=worker_metadata.get("ticket_id"),
+            expected_plan_generation=worker_metadata.get("plan_generation"),
         )
         require_worker_staging_slot_matches_request(
             completion.staging_slot,
@@ -335,6 +338,15 @@ def require_worker_mapping_matches_request(
     lease_id = payload.get("lease_id")
     if lease_id is not None and str(lease_id) != request.lease_id:
         raise WorkerCompletionEnvelopeError(f"{label} lease mismatch")
+
+
+def _worker_result_metadata(
+    worker_result: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    if not isinstance(worker_result, Mapping):
+        return {}
+    metadata = worker_result.get("metadata")
+    return metadata if isinstance(metadata, Mapping) else {}
 
 
 def require_worker_daemon_response_matches_request(
@@ -383,6 +395,9 @@ def require_worker_daemon_response_completed_bytes(
 def require_worker_release_response_matches_request(
     response: Mapping[str, object],
     request: WorkerTransferAuthorizationRequest,
+    *,
+    expected_ticket_id: object | None = None,
+    expected_plan_generation: object | None = None,
 ) -> None:
     if not bool(response.get("ok", False)):
         raise WorkerCompletionEnvelopeError(
@@ -420,6 +435,13 @@ def require_worker_release_response_matches_request(
         released_reservation_ids,
         request,
         label="worker daemon release response",
+    )
+    require_worker_release_evidence_matches_request(
+        payload,
+        request,
+        label="worker daemon release response",
+        expected_ticket_id=expected_ticket_id,
+        expected_plan_generation=expected_plan_generation,
     )
     lease_responses = payload.get("lease_responses")
     if lease_responses is not None:
@@ -459,6 +481,60 @@ def require_worker_release_response_matches_request(
                 raise WorkerCompletionEnvelopeError(
                     "worker daemon release response lease response reservation was not released"
                 )
+            require_worker_release_evidence_matches_request(
+                lease_payload,
+                request,
+                label="worker daemon release response lease response",
+                expected_ticket_id=expected_ticket_id,
+                expected_plan_generation=expected_plan_generation,
+            )
+
+
+def require_worker_release_evidence_matches_request(
+    payload: Mapping[str, object],
+    request: WorkerTransferAuthorizationRequest,
+    *,
+    label: str,
+    expected_ticket_id: object | None = None,
+    expected_plan_generation: object | None = None,
+) -> None:
+    transfer_id = payload.get("transfer_id")
+    if transfer_id is None or str(transfer_id) != request.transfer_id:
+        raise WorkerCompletionEnvelopeError(f"{label} transfer evidence mismatch")
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None or not str(ticket_id).strip():
+        raise WorkerCompletionEnvelopeError(f"{label} missing ticket evidence")
+    if expected_ticket_id is not None and str(ticket_id) != str(expected_ticket_id):
+        raise WorkerCompletionEnvelopeError(f"{label} ticket evidence mismatch")
+    generation = payload.get("plan_generation")
+    if generation is None:
+        raise WorkerCompletionEnvelopeError(f"{label} missing plan generation evidence")
+    try:
+        normalized_generation = int(generation)
+        if normalized_generation <= 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise WorkerCompletionEnvelopeError(
+            f"{label} invalid plan generation evidence"
+        ) from exc
+    if expected_plan_generation is not None:
+        try:
+            expected_generation = int(expected_plan_generation)
+        except (TypeError, ValueError) as exc:
+            raise WorkerCompletionEnvelopeError(
+                f"{label} invalid expected plan generation evidence"
+            ) from exc
+        if normalized_generation != expected_generation:
+            raise WorkerCompletionEnvelopeError(
+                f"{label} plan generation evidence mismatch"
+            )
+    lease_ids = payload.get("lease_ids")
+    if lease_ids is None:
+        return
+    if isinstance(lease_ids, (str, bytes)) or not isinstance(lease_ids, Iterable):
+        raise WorkerCompletionEnvelopeError(f"{label} lease_ids evidence is invalid")
+    if request.lease_id not in {str(item) for item in lease_ids}:
+        raise WorkerCompletionEnvelopeError(f"{label} lease_ids evidence mismatch")
 
 
 def require_released_reservation_ids(

@@ -62,6 +62,11 @@ Successful worker completion cleanup now requires daemon release evidence:
 daemon `release_transfer()` returns an explicit release payload, and worker
 completion envelope validation rejects skipped cleanup, generic cleanup, or
 missing released-reservation evidence.
+Daemon release responses for completed intent transfers now include transfer id,
+ticket id, plan generation, lease ids, and release time. Worker cleanup
+aggregation verifies that all completed-release responses refer to the same
+daemon-issued ticket and plan generation, and worker completion envelope
+validation checks release evidence against the worker result metadata.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -81,14 +86,15 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Tightened forced cleanup for missing job, buffer, and session targets so
-  authenticated peers must still match residual transfer ownership evidence.
-- Kept socket cleanup on daemon-owned peer identity and did not add benchmark,
-  paper-validation, server-validation, or compatibility entry points.
+- Added daemon release evidence for completed intent transfers: transfer id,
+  ticket id, plan generation, lease ids, and release timestamp.
+- Tightened worker cleanup aggregation and completion-envelope validation so
+  release evidence must match the daemon ticket used by the worker result.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py` passed.
+- `python -m py_compile turbobus\daemon\server.py turbobus\worker\lifecycle.py
+  turbobus\transfer_execution.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -99,6 +105,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting worker cleanup envelopes
-and daemon release responses while keeping server validation deferred until the
-full system implementation pass is complete.
+Continue the code implementation pass by inspecting worker data-plane resource
+lifecycle while keeping server validation deferred until the full system
+implementation pass is complete.

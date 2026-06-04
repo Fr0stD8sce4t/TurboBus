@@ -395,6 +395,7 @@ class WorkerTransferCleanupCoordinator:
             raise WorkerCleanupError("daemon client cannot clean worker transfer")
         responses: list[dict[str, object]] = []
         released_ids: list[str] = []
+        release_evidence: dict[str, object] = {}
         errors: list[str] = []
         for lease_id in lease_ids:
             if release_completed:
@@ -409,6 +410,12 @@ class WorkerTransferCleanupCoordinator:
             responses.append(asdict(response))
             if response.ok:
                 payload = response.payload if isinstance(response.payload, Mapping) else {}
+                if release_completed:
+                    _merge_release_evidence(
+                        release_evidence,
+                        payload,
+                        lease_id=lease_id,
+                    )
                 reservation_id = payload.get("reservation_id")
                 released_ids.append(
                     str(reservation_id) if reservation_id is not None else str(lease_id)
@@ -425,6 +432,7 @@ class WorkerTransferCleanupCoordinator:
             "cleanup_kind": target_kind,
             "reason": reason,
             "cleanup_mode": "release" if release_completed else "cleanup",
+            **release_evidence,
         }
         return DaemonResponse(ok=True, payload=payload)
 
@@ -787,6 +795,43 @@ def validate_worker_completion_bytes(
         },
     )
     return _worker_result_with_ticket_binding(request, failed)
+
+
+def _merge_release_evidence(
+    merged: dict[str, object],
+    payload: Mapping[str, object],
+    *,
+    lease_id: str,
+) -> None:
+    if payload.get("cleanup_mode") != "release":
+        raise WorkerCleanupError("completed worker release was not a daemon release")
+    for key in ("transfer_id", "ticket_id", "plan_generation"):
+        value = payload.get(key)
+        if value is None:
+            raise WorkerCleanupError(f"completed worker release missing {key}")
+        try:
+            normalized: object = (
+                int(value) if key == "plan_generation" else str(value)
+            )
+        except (TypeError, ValueError) as exc:
+            raise WorkerCleanupError(
+                f"completed worker release invalid {key}"
+            ) from exc
+        existing = merged.get(key)
+        if existing is not None and existing != normalized:
+            raise WorkerCleanupError(f"completed worker release {key} mismatch")
+        merged[key] = normalized
+    response_lease_ids = payload.get("lease_ids")
+    if response_lease_ids is not None:
+        if isinstance(response_lease_ids, (str, bytes)):
+            raise WorkerCleanupError("completed worker release lease_ids are invalid")
+        expected_lease_ids = tuple(str(item) for item in response_lease_ids)
+        if str(lease_id) not in expected_lease_ids:
+            raise WorkerCleanupError("completed worker release lease_ids mismatch")
+        existing_lease_ids = merged.get("lease_ids")
+        if existing_lease_ids is not None and existing_lease_ids != expected_lease_ids:
+            raise WorkerCleanupError("completed worker release lease set mismatch")
+        merged["lease_ids"] = expected_lease_ids
 
 
 def _worker_result_with_ticket_binding(

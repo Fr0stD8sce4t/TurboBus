@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting worker cleanup envelopes
-and daemon release responses. Worker cleanup should remain tied to
-daemon-issued lease, ticket, staging, and release evidence without restoring
-application-side route controls, compatibility export layers, benchmark hooks,
-or server-validation gates.
+Continue the code implementation pass by inspecting worker data-plane resource
+lifecycle. Shared pinned CPU buffers and CUDA IPC GPU buffers should be bound,
+closed, and released through daemon-authorized worker requests without
+restoring application-side route controls, compatibility export layers,
+benchmark hooks, or server-validation gates.

@@ -83,24 +83,32 @@ production entry points. Applications and socket clients can no longer submit a
 `relay_gpu`; relay leases are created inside daemon scheduling after a
 `TransferIntent` has been accepted.
 
+Session relay selection is now daemon-owned. Runtime sessions register only
+the target CUDA device discovered from registered buffers; the daemon chooses
+eligible relay GPUs from its configured relay pool and topology inventory, then
+returns the selected relay set in the session record for profile bootstrap and
+receipt identity.
+
 ## Completed This Round
 
-- Removed the daemon client `reserve_transfer` method so public Python clients
-  cannot reserve a chosen relay GPU.
-- Removed the external daemon `RESERVE_TRANSFER` request type and dispatch
-  branch.
-- Removed the public daemon `reserve_transfer` method while preserving
-  daemon-internal scheduler lease creation and worker lease validation/release.
+- Removed `relay_gpus` from the daemon client `register_session` call.
+- Removed session relay selection from the daemon socket `REGISTER_SESSION`
+  payload path.
+- Changed daemon `register_session` to derive relays from daemon topology and
+  relay quotas, while returning the selected set in the session payload.
+- Changed runtime session startup to consume daemon-selected relays from the
+  registered session record instead of discovering and resubmitting them.
+- Removed caller-provided relay candidates from daemon relay discovery.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\client.py
-  turbobus\daemon\dispatch.py turbobus\daemon\server.py turbobus\schema.py`
-  passed.
-- `rg -n "reserve_transfer\(|RequestType\.RESERVE_TRANSFER|RESERVE_TRANSFER|ISSUE_LEASE|issue_lease"
-  turbobus` found only daemon-internal `_issue_lease_token_locked`.
+- `python -m py_compile turbobus\runtime_session.py
+  turbobus\daemon\client.py turbobus\daemon\dispatch.py
+  turbobus\daemon\server.py` passed.
+- `rg -n "requested_relays=payload|payload\.get\(\"relay_gpus\"|payload\[\"relay_gpus\"\]|register_session\([^\n]*relay|discover_relays\([^\n]*relay"
+  turbobus` found no old relay-selection payload path.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -112,6 +120,9 @@ production entry points. Applications and socket clients can no longer submit a
   references plus old manual reservation checks. Current-stage constraints
   defer test migration until the system implementation pass is complete, so
   this round only removes production-path compatibility drift.
+- Existing tests may also still expect session registration to accept
+  caller-provided relay lists; current-stage constraints defer test migration
+  until the system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

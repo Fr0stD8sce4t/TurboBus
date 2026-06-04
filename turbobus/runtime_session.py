@@ -147,14 +147,16 @@ class TurboBusRuntimeSession:
                 "target GPU is not known; register a CUDA buffer before opening "
                 "the daemon session"
             )
-        relay_gpus = self._relay_gpus_for_session()
         response = self.daemon_client.register_session(
             int(self._target_gpu),
-            list(relay_gpus),
             int(self.max_inflight_chunks),
         )
         require_ok(response, "daemon session registration failed")
-        session_id = str(response.payload["session"]["session_id"])
+        session_payload = response.payload["session"]
+        session_id = str(session_payload["session_id"])
+        self._relay_gpus = tuple(
+            int(gpu) for gpu in session_payload.get("relay_gpus", ()) or ()
+        )
         require_ok(
             self.daemon_client.register_job(
                 job_id=self.job_id,

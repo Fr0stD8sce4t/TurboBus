@@ -43,13 +43,11 @@ class TurboBusDaemonClient:
     def register_session(
         self,
         target_gpu: int,
-        relay_gpus: list[int],
         max_inflight_chunks: int = 8,
         connection_scoped: bool = False,
     ) -> DaemonResponse:
         payload = {
             "target_gpu": int(target_gpu),
-            "relay_gpus": [int(gpu) for gpu in relay_gpus],
             "max_inflight_chunks": int(max_inflight_chunks),
         }
         if connection_scoped:
@@ -282,13 +280,10 @@ class TurboBusDaemonClient:
     def discover_relays(
         self,
         target_gpu: int | None = None,
-        relay_gpus: list[int] | None = None,
     ) -> DaemonResponse:
         payload: dict[str, object] = {}
         if target_gpu is not None:
             payload["target_gpu"] = int(target_gpu)
-        if relay_gpus is not None:
-            payload["relay_gpus"] = [int(gpu) for gpu in relay_gpus]
         return self.send(
             DaemonRequest(
                 request_type=RequestType.DISCOVER_RELAYS,

@@ -46,7 +46,6 @@ def handle_request(
         target_gpu = payload.get("target_gpu")
         return daemon.discover_relays(
             target_gpu=None if target_gpu is None else int(target_gpu),
-            requested_relays=payload.get("relay_gpus"),
         )
     if request.request_type == RequestType.REAP_EXPIRED_LEASES:
         payload = request.payload
@@ -62,7 +61,6 @@ def handle_request(
         payload = request.payload
         return daemon.register_session(
             target_gpu=int(payload["target_gpu"]),
-            requested_relays=payload.get("relay_gpus", []),
             max_inflight_chunks=int(payload.get("max_inflight_chunks", 8)),
             peer_identity=request.peer_identity,
             connection_scoped=bool(payload.get("connection_scoped", False)),

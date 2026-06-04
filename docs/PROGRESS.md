@@ -14,9 +14,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Worker lifecycle status-report failure now retries the terminal daemon
-  status update after cleanup, so failure evidence can still reach the daemon
-  and close the receipt path even when the first report fails.
+- Runtime-session startup now rolls back a partially registered daemon session
+  if job registration fails, so the public session API does not leak a half-
+  open session on startup errors.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
@@ -37,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: delete the old
-`turbobus/client_transfer.py` export layer.
+Continue with one concrete implementation boundary: worker/backend failure
+cleanup and terminal receipt closure.

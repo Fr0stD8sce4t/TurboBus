@@ -231,24 +231,34 @@ class TurboBusRuntimeSession:
                 "target GPU is not known; register a CUDA buffer before opening "
                 "the daemon session"
             )
-        response = self._runtime_daemon_client().register_session(
-            int(self._target_gpu),
-            int(self.max_inflight_chunks),
-        )
-        require_ok(response, "daemon session registration failed")
-        session_payload = response.payload["session"]
-        session_id = str(session_payload["session_id"])
-        self._relay_gpus = tuple(
-            int(gpu) for gpu in session_payload.get("relay_gpus", ()) or ()
-        )
-        require_ok(
-            self._runtime_daemon_client().register_job(
-                job_id=self.job_id,
-                user_id=self.user_id,
-                session_id=session_id,
-            ),
-            "daemon job registration failed",
-        )
+        session_id: str | None = None
+        try:
+            response = self._runtime_daemon_client().register_session(
+                int(self._target_gpu),
+                int(self.max_inflight_chunks),
+            )
+            require_ok(response, "daemon session registration failed")
+            session_payload = response.payload["session"]
+            session_id = str(session_payload["session_id"])
+            relay_gpus = tuple(
+                int(gpu) for gpu in session_payload.get("relay_gpus", ()) or ()
+            )
+            require_ok(
+                self._runtime_daemon_client().register_job(
+                    job_id=self.job_id,
+                    user_id=self.user_id,
+                    session_id=session_id,
+                ),
+                "daemon job registration failed",
+            )
+        except Exception:
+            if session_id is not None:
+                try:
+                    self._runtime_daemon_client().close_session(session_id)
+                except Exception:
+                    pass
+            raise
+        self._relay_gpus = relay_gpus
         self._session_id = session_id
         return session_id
 

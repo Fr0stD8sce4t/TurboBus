@@ -9,8 +9,8 @@ System implementation before experiments.
 
 Current code target: isolation and authority hardening. The runtime feedback
 path now feeds scheduler load accounting from live running activity; the next
-step is to keep worker failure cleanup able to close receipts even when the
-first status report fails, so cleanup and receipt closure stay coupled.
+step is to harden runtime-session startup so partial daemon session
+registration is rolled back if job registration fails.
 
 ## Exit Criteria
 
@@ -23,11 +23,10 @@ first status report fails, so cleanup and receipt closure stay coupled.
 
 ## Current Code Work
 
-When worker status reporting fails after execution, retry the terminal
-`transfer_status()` update after cleanup so the daemon still receives the
-failure evidence needed to close the receipt path.
+`TurboBusRuntimeSession.open_session()` should close the daemon session if
+job registration fails, so startup does not leak a half-open runtime session.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: delete the old `turbobus/client_transfer.py` export layer.
+boundary: worker/backend failure cleanup and terminal receipt closure.

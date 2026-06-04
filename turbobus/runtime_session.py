@@ -12,7 +12,11 @@ from .buffer_registration import (
     register_executable_buffer,
 )
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from .daemon import TurboBusDaemonClient, TurboBusDaemonExecutionClient
+from .daemon import (
+    TurboBusDaemonClient,
+    TurboBusDaemonExecutionClient,
+    TurboBusDaemonProfileClient,
+)
 from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
 from . import profile as runtime_profile
@@ -38,6 +42,7 @@ class TurboBusRuntimeSession:
     job_id: str
     user_id: str | None = None
     execution_daemon_client: object | None = None
+    profile_daemon_client: object | None = None
     worker_client: object | None = None
     max_inflight_chunks: int = 8
     backend: object = default_cuda_backend
@@ -77,6 +82,7 @@ class TurboBusRuntimeSession:
         job_id: str,
         user_id: str | None = None,
         execution_daemon_client: object | None = None,
+        profile_daemon_client: object | None = None,
         worker_client: object | None = None,
         max_inflight_chunks: int = 8,
         backend=default_cuda_backend,
@@ -89,11 +95,19 @@ class TurboBusRuntimeSession:
                 if socket_path is not None
                 else daemon_client
             )
+        if profile_daemon_client is None:
+            socket_path = getattr(daemon_client, "socket_path", None)
+            profile_daemon_client = (
+                TurboBusDaemonProfileClient(str(socket_path))
+                if socket_path is not None
+                else daemon_client
+            )
         session = cls(
             daemon_client=daemon_client,
             job_id=str(job_id),
             user_id=user_id,
             execution_daemon_client=execution_daemon_client,
+            profile_daemon_client=profile_daemon_client,
             worker_client=worker_client,
             max_inflight_chunks=int(max_inflight_chunks),
             backend=backend,
@@ -128,6 +142,7 @@ class TurboBusRuntimeSession:
             execution_daemon_client=TurboBusDaemonExecutionClient(
                 str(daemon_socket_path)
             ),
+            profile_daemon_client=TurboBusDaemonProfileClient(str(daemon_socket_path)),
             worker_client=worker_client,
             max_inflight_chunks=max_inflight_chunks,
             backend=backend,
@@ -300,7 +315,7 @@ class TurboBusRuntimeSession:
         self.open_session()
         relays = self._relay_gpus_for_session()
         profile, response = runtime_profile.bootstrap_daemon_profile(
-            self.daemon_client,
+            self.profile_daemon_client,
             self.backend,
             self.runtime_options,
             target_gpu=int(self._target_gpu),
@@ -467,7 +482,7 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._relay_gpus is not None:
             return self._relay_gpus
-        discovery = getattr(self.daemon_client, "discover_relays", None)
+        discovery = getattr(self.profile_daemon_client, "discover_relays", None)
         if not callable(discovery):
             raise RuntimeError(
                 "daemon client must support relay discovery for runtime sessions"

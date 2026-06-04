@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .schema import TransferMode
-
 try:
     from . import _turbobus
 except ImportError as exc:  # pragma: no cover - depends on local build
@@ -34,22 +32,3 @@ def require_extension() -> None:
             "turbobus native extension is not available. Build cpp/_turbobus "
             "before using the runtime."
         ) from _IMPORT_ERROR
-
-
-def native_transfer_mode(mode: TransferMode | str) -> Any:
-    native = native_module()
-    if not isinstance(mode, TransferMode):
-        mode = TransferMode(mode)
-    if mode is TransferMode.POOL:
-        return native.TransferMode.Pool
-    if mode is TransferMode.DIRECT:
-        return native.TransferMode.DirectOnly
-    if mode is TransferMode.RELAY:
-        return native.TransferMode.RelayOnly
-    raise ValueError(f"unsupported transfer mode: {mode}")
-
-
-def runtime_transfer_mode_value(mode: TransferMode | str) -> Any:
-    if _turbobus is None:
-        return TransferMode(mode)
-    return native_transfer_mode(mode)

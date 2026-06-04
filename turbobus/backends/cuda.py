@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 from .. import native_plan, native_runtime, tensor_validation
-from ..schema import TransferMode
 
 
 class CudaNativeBackend:
@@ -39,9 +38,6 @@ class CudaNativeBackend:
         if not callable(setter):
             raise RuntimeError("native runtime does not support CUDA device selection")
         setter(device)
-
-    def transfer_mode_value(self, mode: TransferMode | str) -> Any:
-        return self._native_runtime.runtime_transfer_mode_value(mode)
 
     def create_runtime(self, options: Any) -> Any:
         self.require_available()

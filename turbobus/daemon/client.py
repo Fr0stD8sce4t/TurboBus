@@ -171,6 +171,19 @@ class TurboBusDaemonClient(_DaemonSocketClientBase):
             )
         )
 
+    def reap_expired_leases(self, now: float | None = None) -> DaemonResponse:
+        payload: dict[str, object] = {}
+        if now is not None:
+            payload["now"] = float(now)
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.REAP_EXPIRED_LEASES,
+                payload=payload,
+            )
+        )
+
+
+class TurboBusDaemonProfileClient(_DaemonSocketClientBase):
     def discover_relays(
         self,
         target_gpu: int | None = None,
@@ -181,17 +194,6 @@ class TurboBusDaemonClient(_DaemonSocketClientBase):
         return self.send(
             DaemonRequest(
                 request_type=RequestType.DISCOVER_RELAYS,
-                payload=payload,
-            )
-        )
-
-    def reap_expired_leases(self, now: float | None = None) -> DaemonResponse:
-        payload: dict[str, object] = {}
-        if now is not None:
-            payload["now"] = float(now)
-        return self.send(
-            DaemonRequest(
-                request_type=RequestType.REAP_EXPIRED_LEASES,
                 payload=payload,
             )
         )

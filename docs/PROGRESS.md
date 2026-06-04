@@ -109,33 +109,44 @@ lifecycle cleanup paths.
 
 The daemon socket client surface is now split by role. `TurboBusDaemonClient`
 keeps application/runtime control operations such as registration, intent
-submission, receipt waits, topology, and profile bootstrap. Execution-only
+submission, receipt waits, and daemon inventory/admin operations. Execution-only
 operations such as worker authorization, status updates, lease validation, and
 cleanup live on `TurboBusDaemonExecutionClient`, which is used by the runtime
-executor and worker service. Worker cleanup responses now use cleanup
-terminology instead of the removed manual release path.
+executor and worker service. Target/relay profile bootstrap operations live on
+`TurboBusDaemonProfileClient`, which is owned by the runtime session rather
+than the ordinary app-facing daemon client.
+
+The app-visible runtime/backend transfer-mode controls are removed from
+production code. `RuntimeOptions` no longer accepts `transfer_mode`, the CUDA
+backend no longer exposes `transfer_mode_value()`, and native transfer-mode
+conversion helpers are gone. Native runtime initialization still enables the
+pool-capable default; direct, relay, and pooled execution remain scheduler
+outcomes carried in daemon-issued plans.
 
 ## Completed This Round
 
-- Split execution-only daemon socket methods out of `TurboBusDaemonClient` into
-  `TurboBusDaemonExecutionClient`.
-- Routed `TurboBusRuntimeSession`, direct fallback, and worker service startup
-  through the execution daemon client for status, lease validation,
-  authorization, and cleanup.
-- Replaced worker completion cleanup validation from old release response
-  semantics to cleanup response semantics.
+- Removed app-facing transfer-mode controls from runtime options, CUDA backend,
+  and native Python helpers while keeping scheduler-owned `TransferMode`
+  planning internals.
+- Split target/relay profile bootstrap socket methods into
+  `TurboBusDaemonProfileClient` and routed `TurboBusRuntimeSession` profile
+  bootstrap and relay discovery through that client.
+- Deleted the unused old native `TransferHandle` wrapper from
+  `runtime_engine.py`; production transfers continue to return
+  `TransferReceipt`.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\client.py turbobus\daemon\__init__.py
-  turbobus\api\client.py turbobus\runtime_session.py
-  turbobus\worker\process.py turbobus\worker\lifecycle.py
-  turbobus\direct_fallback.py turbobus\intent_executor.py
-  turbobus\intent_execution_support.py` passed.
-- Targeted `rg` checks found no remaining production manual-release helper
-  calls or release-response worker cleanup semantics.
+- `python -m py_compile turbobus\runtime_engine.py turbobus\native_runtime.py
+  turbobus\backends\base.py turbobus\backends\cuda.py
+  turbobus\daemon\client.py turbobus\daemon\__init__.py
+  turbobus\runtime_session.py turbobus\profile.py` passed.
+- Targeted `rg` checks found no remaining production
+  `transfer_mode_value`, `native_transfer_mode`, `runtime_transfer_mode_value`,
+  or old `runtime_engine.TransferHandle` definitions. Profile methods now
+  remain only on `TurboBusDaemonProfileClient` and daemon server handlers.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -162,6 +173,9 @@ terminology instead of the removed manual release path.
   system implementation pass is complete.
 - Existing tests may still instantiate `TurboBusClient` with a transfer
   executor but without an execution daemon client. Current-stage constraints
+  defer test migration until the system implementation pass is complete.
+- Existing tests may still refer to removed runtime/backend transfer-mode
+  helper APIs or the old native `TransferHandle`. Current-stage constraints
   defer test migration until the system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning

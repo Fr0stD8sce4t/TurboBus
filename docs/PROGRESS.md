@@ -2,8 +2,8 @@
 
 ## Current State
 
-Current main target: worker/backend failure cleanup and terminal receipt
-closure with runtime feedback capture.
+Current main target: session/job/buffer registration into the TransferIntent
+execution path.
 
 The daemon-first path remains the production route:
 `TransferIntent` submission, daemon scheduling, daemon-issued
@@ -15,15 +15,15 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Terminal worker/backend completion evidence now refreshes the daemon runtime
-  queue record, so the runtime snapshot reflects the execution source and
-  evidence after supplemental terminal updates.
+- Offload adapter submissions now re-confirm the runtime session and pending
+  buffer registrations before submitting a transfer intent, so the adapter
+  path stays tied to the live runtime session.
 - Added no test, experiment, benchmark, paper-validation, server-validation,
   or compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile turbobus/daemon/server.py` passed.
+- `python -m py_compile turbobus/offload/store.py` passed.
 - `git diff --check` passed.
 
 ## Remaining Risk
@@ -37,5 +37,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Continue with one concrete implementation boundary: session/job/buffer
-registration into the TransferIntent execution path.
+Continue with one concrete implementation boundary: `WorkerIntentTransferExecutor`
+and the daemon-issued worker path.

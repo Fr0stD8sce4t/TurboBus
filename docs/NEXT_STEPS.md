@@ -7,10 +7,10 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: worker/backend failure cleanup and terminal receipt
-closure. Terminal worker/backend completion evidence now needs to flow into
-the daemon runtime record so runtime feedback and scheduler views reflect the
-real execution source.
+Current code target: session/job/buffer registration into the TransferIntent
+execution path. Adapter submissions now need to re-confirm the runtime
+session and pending buffer registrations at submit time, not only when the
+context is created.
 
 ## Exit Criteria
 
@@ -23,12 +23,10 @@ real execution source.
 
 ## Current Code Work
 
-`turbobus/daemon/server.py` should retain terminal `completion_source` and
-`completion_evidence` in the runtime queue record and bump the runtime state
-version when supplemental evidence arrives.
+`turbobus/offload/store.py` should refresh the runtime session and pending
+buffer registrations before it submits a transfer intent.
 
 ## Next Entry
 
 After this target is complete, continue with one concrete implementation
-boundary: session/job/buffer registration into the TransferIntent execution
-path.
+boundary: `WorkerIntentTransferExecutor` and the daemon-issued worker path.

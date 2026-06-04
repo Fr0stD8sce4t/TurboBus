@@ -304,6 +304,10 @@ class OffloadStore:
         ranges: Iterable[dict[str, int]],
     ) -> ReceiptTransferHandle:
         require_runtime_session_open(self.client)
+        self.client.open_session()
+        register_pending_buffers = getattr(self.client, "_register_pending_buffers", None)
+        if callable(register_pending_buffers):
+            register_pending_buffers()
         direction = _direction_for_operation(operation)
         ranges_tuple = tuple(dict(item) for item in ranges)
         total_bytes = sum(item["bytes"] for item in ranges_tuple)

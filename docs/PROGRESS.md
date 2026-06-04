@@ -50,6 +50,10 @@ Completed intent transfers now archive the execution ticket used for verified
 worker/backend completion, then remove it from the active ticket map so it
 cannot be reused for later execution while receipts and release checks still
 have ticket evidence.
+Failed or canceled intent transfers that come from worker/backend status
+updates now also archive the daemon-issued ticket used by the terminal status
+evidence, so their receipts keep ticket, transfer, and plan-generation binding
+without leaving the ticket active for later execution.
 Successful worker completion cleanup now requires daemon release evidence:
 daemon `release_transfer()` returns an explicit release payload, and worker
 completion envelope validation rejects skipped cleanup, generic cleanup, or
@@ -73,15 +77,15 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added daemon-owned delayed admission promotion after relay resources are
-  released or reaped.
-- Promotion re-runs scheduler state, advances `plan_generation`, commits new
-  leases, and issues fresh `ExecutionTicket` data without application route
-  selection.
+- Archived daemon-issued tickets for worker/backend failed or canceled terminal
+  status updates after validating their ticket evidence.
+- Added receipt metadata that exposes execution-ticket id, evidence-ticket id,
+  evidence transfer id, and evidence plan generation for terminal receipts.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py` passed.
+- `python -m py_compile turbobus\daemon\server.py turbobus\daemon\receipts.py`
+  passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -92,5 +96,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting worker/backend execution
-evidence and receipt completion while keeping server validation deferred.
+Continue the code implementation pass by inspecting daemon peer identity,
+cleanup ownership, and socket request handling while keeping server validation
+deferred until the full system implementation pass is complete.

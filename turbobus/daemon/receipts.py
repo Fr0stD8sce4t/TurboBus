@@ -169,6 +169,9 @@ def receipt_for_transfer(
     if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
         error = error or f"transfer {status.state.value}"
     evidence = dict(completion_evidence or {})
+    evidence_ticket_id = evidence.get("ticket_id")
+    evidence_transfer_id = evidence.get("transfer_id")
+    evidence_plan_generation = _optional_int(evidence.get("plan_generation"))
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -203,8 +206,27 @@ def receipt_for_transfer(
             "verification_method": evidence.get("verification_method"),
             "source_digest": evidence.get("source_digest"),
             "destination_digest": evidence.get("destination_digest"),
+            "execution_ticket_id": None if ticket is None else ticket.ticket_id,
+            "evidence_ticket_id": (
+                None if evidence_ticket_id is None else str(evidence_ticket_id)
+            ),
+            "evidence_transfer_id": (
+                None if evidence_transfer_id is None else str(evidence_transfer_id)
+            ),
+            "evidence_plan_generation": (
+                None if evidence_plan_generation is None else evidence_plan_generation
+            ),
         },
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [

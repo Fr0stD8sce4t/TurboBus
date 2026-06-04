@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting worker/backend execution
-evidence and receipt completion. Completion should remain tied to real
-worker/backend status, ticket evidence, release evidence, and receipt metadata
-without benchmark hooks, server-validation gates, or application-side route
-controls.
+Continue the code implementation pass by inspecting daemon peer identity,
+cleanup ownership, and socket request handling. Cleanup and receipt access
+should remain tied to the authenticated transfer owner without restoring
+application-side route controls, compatibility export layers, benchmark hooks,
+or server-validation gates.

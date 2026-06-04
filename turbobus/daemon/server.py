@@ -782,6 +782,11 @@ class TurboBusDaemon:
                             expected_ticket=ticket,
                         )
                     )
+                    if updated.state in {
+                        TransferStatusState.FAILED,
+                        TransferStatusState.CANCELED,
+                    }:
+                        completion_ticket = ticket
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
             self._transfer_statuses[updated.transfer_id] = updated
@@ -789,6 +794,10 @@ class TurboBusDaemon:
                 TransferStatusState.FAILED,
                 TransferStatusState.CANCELED,
             }:
+                if completion_ticket is not None:
+                    self._transfer_completion_tickets[updated.transfer_id] = (
+                        completion_ticket
+                    )
                 self._mark_transfer_admission_terminal_locked(
                     updated.transfer_id,
                     updated.state,

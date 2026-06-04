@@ -1156,6 +1156,20 @@ class TurboBusDaemon:
             dst_buffer = self._buffers.get(request.dst_buffer_id)
             if src_buffer is None or dst_buffer is None:
                 return DaemonResponse(ok=False, error="unknown buffer")
+            session = self._sessions.get(request.session_id)
+            if session is None:
+                return DaemonResponse(ok=False, error="transfer session is unavailable")
+            relay_eligibility = self._relay_eligibility_for_session_locked(session)
+            planning_relays = tuple(
+                int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
+            )
+            profile_entry = self._profile_cache.get(
+                self._profile_key(session.target_gpu, planning_relays)
+            )
+            if profile_entry is None and planning_relays != tuple(session.relay_gpus):
+                profile_entry = self._profile_cache.get(
+                    self._profile_key(session.target_gpu, session.relay_gpus)
+                )
             try:
                 self._validate_peer_owns_buffer_locked(
                     buffer_id=src_buffer.buffer_id,
@@ -1204,11 +1218,11 @@ class TurboBusDaemon:
                     reservation=related_reservation,
                     lease=related_lease,
                     staging_record=staging_records[related_lease.lease_id],
-                    ticket=ticket,
-                    state=status.state,
-                    reason="worker_authorized",
-                    bytes_completed=status.bytes_completed,
-                    now=now,
+                ticket=ticket,
+                state=status.state,
+                reason="worker_authorized",
+                bytes_completed=status.bytes_completed,
+                now=now,
                 )
             decision = self._scheduling_decisions.get(request.transfer_id)
             return DaemonResponse(
@@ -1228,6 +1242,17 @@ class TurboBusDaemon:
                         request.transfer_id,
                         0,
                     ),
+                    "planning": {
+                        "target_gpu": session.target_gpu,
+                        "profile_key": self._profile_key(
+                            session.target_gpu,
+                            planning_relays,
+                        ),
+                        "profile_entry": (
+                            None if profile_entry is None else dict(profile_entry)
+                        ),
+                        "relay_eligibility": relay_eligibility,
+                    },
                     "staging_record": dict(staging_records[lease.lease_id]),
                     "staging_records": [
                         dict(staging_records[item.lease_id])
@@ -1852,6 +1877,13 @@ class TurboBusDaemon:
         relay_eligibility: dict[str, object],
         reservations: list[TransferReservation],
     ) -> dict[str, object]:
+        profile_entry = self._profile_cache.get(
+            self._profile_key(session.target_gpu, planning_relays)
+        )
+        if profile_entry is None and planning_relays != tuple(session.relay_gpus):
+            profile_entry = self._profile_cache.get(
+                self._profile_key(session.target_gpu, session.relay_gpus)
+            )
         admission = dict(self._transfer_admissions.get(str(transfer_id), {}))
         ticket_id = self._transfer_tickets.get(str(transfer_id))
         ticket = None if ticket_id is None else self._execution_tickets[ticket_id]
@@ -1861,6 +1893,7 @@ class TurboBusDaemon:
             status=status,
             session=session,
             profile_key=self._profile_key(session.target_gpu, planning_relays),
+            profile_entry=profile_entry,
             relay_eligibility=relay_eligibility,
             reservations=reservations,
             admission=admission,

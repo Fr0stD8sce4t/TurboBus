@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from ..backends.cuda import default_cuda_backend
+from ..profiling.daemon_format import profile_from_daemon_entry
 from ..runtime_options import RuntimeOptions
 from . import validation as worker_validation
 from .models import (
@@ -77,6 +78,12 @@ class CudaWorkerExecutor:
                 runtime,
                 int(target_device),
                 _relay_gpus_for_request(request),
+            )
+            _install_daemon_profile_if_available(
+                backend=self.backend,
+                runtime=runtime,
+                request=request,
+                target_device=int(target_device),
             )
             if request.data_plane.direction == "h2d":
                 handle = self.backend.fetch_plan_to_gpu(
@@ -199,6 +206,23 @@ def _worker_plan_payload(
         raise ValueError("CUDA worker executor requires a daemon-issued transfer plan")
     _require_ticket_authorizes_current_worker_plan(request)
     return _relay_scoped_daemon_plan_payload(request, int(target_device))
+
+
+def _install_daemon_profile_if_available(
+    *,
+    backend,
+    runtime,
+    request: WorkerTransferRequest,
+    target_device: int,
+) -> None:
+    profile_entry = request.data_plane.metadata.get("daemon_profile_entry")
+    if not isinstance(profile_entry, dict):
+        return
+    profile = profile_from_daemon_entry({"profile": profile_entry}, int(target_device))
+    setter = getattr(backend, "set_cached_profile", None)
+    if not callable(setter):
+        raise RuntimeError("CUDA backend does not support cached profile installation")
+    setter(runtime, profile)
 
 
 def _require_ticket_authorizes_current_worker_plan(

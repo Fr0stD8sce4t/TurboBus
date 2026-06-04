@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from typing import Any
 
 from ..schema import (
     BufferRegistration,
@@ -59,6 +60,18 @@ class WorkerTransferRequest:
         if not isinstance(ticket_payload, Mapping):
             raise ValueError("execution ticket payload must include ticket")
         decision_payload = payload.get("decision")
+        planning_payload = payload.get("planning")
+        data_plane_metadata: dict[str, object] = {}
+        if isinstance(planning_payload, Mapping):
+            profile_entry = planning_payload.get("profile_entry")
+            if isinstance(profile_entry, Mapping):
+                data_plane_metadata["daemon_profile_entry"] = dict(profile_entry)
+            profile_key = planning_payload.get("profile_key")
+            if profile_key is not None:
+                data_plane_metadata["daemon_profile_key"] = str(profile_key)
+            relay_eligibility = planning_payload.get("relay_eligibility")
+            if isinstance(relay_eligibility, Mapping):
+                data_plane_metadata["relay_eligibility"] = dict(relay_eligibility)
         return cls.from_execution_ticket(
             ExecutionTicket(**dict(ticket_payload)),
             src_buffer=buffer_from_payload(payload["src_buffer"]),
@@ -74,6 +87,7 @@ class WorkerTransferRequest:
                 else SchedulingDecision(**dict(decision_payload))
             ),
             plan_generation=payload.get("plan_generation"),
+            data_plane_metadata=data_plane_metadata,
             now=now,
         )
 
@@ -101,6 +115,7 @@ class WorkerTransferRequest:
         transfer_id: str | None = None,
         decision: SchedulingDecision | None = None,
         plan_generation: object | None = None,
+        data_plane_metadata: Mapping[str, Any] | None = None,
         now: float | None = None,
     ) -> "WorkerTransferRequest":
         worker_validation.validate_ticket_matches_buffers(ticket, src_buffer, dst_buffer)
@@ -157,6 +172,8 @@ class WorkerTransferRequest:
                 relay_gpus=resolved_relays,
             ),
         }
+        if data_plane_metadata:
+            metadata.update(dict(data_plane_metadata))
         if now is not None:
             metadata["ticket_authorized_at"] = float(now)
         data_plane = WorkerDataPlaneRequest.from_authorization(

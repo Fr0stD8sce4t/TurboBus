@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .intent_execution_support import require_daemon_transfer_complete, require_ok
+from .profiling.daemon_format import profile_from_daemon_entry
 from .runtime_options import RuntimeOptions
 from .schema import ExecutionTicket, TransferIntent
 
@@ -236,6 +237,12 @@ def _run_direct_plan(
     native_plan = backend.make_transfer_plan(plan_payload)
     runtime = backend.create_runtime(runtime_options)
     backend.initialize_runtime(runtime, int(target_device), [])
+    _install_daemon_profile_if_available(
+        backend=backend,
+        runtime=runtime,
+        plan_payload=plan_payload,
+        target_device=int(target_device),
+    )
     host_buffer.register_for_cuda(backend)
     host_ptr = host_buffer.address
     try:
@@ -649,6 +656,26 @@ def _require_direct_plan_matches_target(
 def _require_device_pointer(buffer: CudaIpcDeviceBuffer) -> None:
     if buffer.device_ptr is None or int(buffer.device_ptr) <= 0:
         raise ValueError("direct fallback requires a local CUDA device pointer")
+
+
+def _install_daemon_profile_if_available(
+    *,
+    backend,
+    runtime,
+    plan_payload: Mapping[str, object],
+    target_device: int,
+) -> None:
+    planning = plan_payload.get("planning")
+    if not isinstance(planning, Mapping):
+        return
+    profile_entry = planning.get("profile_entry")
+    if not isinstance(profile_entry, Mapping):
+        return
+    profile = profile_from_daemon_entry({"profile": profile_entry}, int(target_device))
+    setter = getattr(backend, "set_cached_profile", None)
+    if not callable(setter):
+        raise RuntimeError("CUDA backend does not support cached profile installation")
+    setter(runtime, profile)
 
 
 __all__ = [

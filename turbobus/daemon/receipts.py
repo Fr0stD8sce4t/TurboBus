@@ -115,6 +115,7 @@ def planned_transfer_payload(
     status: TransferStatus,
     session: Session,
     profile_key: str,
+    profile_entry: Mapping[str, object] | None,
     relay_eligibility: dict[str, object],
     reservations: list[TransferReservation],
     admission: dict[str, object],
@@ -139,6 +140,9 @@ def planned_transfer_payload(
         "planning": {
             "target_gpu": session.target_gpu,
             "profile_key": profile_key,
+            "profile_entry": (
+                None if profile_entry is None else dict(profile_entry)
+            ),
             "relay_eligibility": relay_eligibility,
         },
         "reservations": [asdict(reservation) for reservation in reservations],

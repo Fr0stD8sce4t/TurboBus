@@ -64,7 +64,7 @@ class CudaWorkerExecutor:
                 "CUDA worker executor requires a GPU device index",
                 resources=resources,
             )
-        resource_evidence = _resource_evidence(resources)
+        resource_evidence = _resource_evidence(request, resources)
 
         try:
             plan_payload = _worker_plan_payload(request, int(target_device))
@@ -370,7 +370,7 @@ def _failed_result(
             "src_buffer_id": request.authorization.src_buffer.buffer_id,
             "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
             "staging_slot_id": staging_slot.slot_id,
-            **_resource_evidence_metadata(resources),
+            **_resource_evidence_metadata(resources, request),
             **_ticket_binding_metadata(request),
         },
     )
@@ -396,19 +396,38 @@ def _ticket_binding_metadata(
 
 
 def _resource_evidence(
+    request: WorkerTransferRequest,
     resources: WorkerDataPlaneResources,
 ) -> dict[str, object]:
     evidence = resources.as_dict()
     evidence.setdefault("evidence_source", "worker_data_plane_resources")
+    evidence.update(_ticket_resource_binding_metadata(request))
     return evidence
 
 
 def _resource_evidence_metadata(
     resources: WorkerDataPlaneResources | None,
+    request: WorkerTransferRequest | None = None,
 ) -> dict[str, object]:
     if resources is None:
         return {}
-    return {"resource_evidence": _resource_evidence(resources)}
+    if request is None:
+        evidence = resources.as_dict()
+        evidence.setdefault("evidence_source", "worker_data_plane_resources")
+    else:
+        evidence = _resource_evidence(request, resources)
+    return {"resource_evidence": evidence}
+
+
+def _ticket_resource_binding_metadata(
+    request: WorkerTransferRequest,
+) -> dict[str, object]:
+    metadata = _ticket_binding_metadata(request)
+    metadata.setdefault("source_buffer_id", request.ticket.source_buffer_id)
+    metadata.setdefault("destination_buffer_id", request.ticket.destination_buffer_id)
+    metadata.setdefault("ticket_job_id", request.ticket.job_id)
+    metadata.setdefault("ticket_session_id", request.ticket.session_id)
+    return metadata
 
 
 def _stats_int(stats: Any, field_name: str, default: int) -> int:

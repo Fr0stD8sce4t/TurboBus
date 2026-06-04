@@ -74,6 +74,11 @@ def execute_direct_fallback_transfer(
             source=source,
             target=target,
         )
+        if failure_resource_evidence is not None and ticket is not None:
+            failure_resource_evidence = _resource_evidence_with_ticket_binding(
+                failure_resource_evidence,
+                ticket=ticket,
+            )
         if failure_resource_evidence is not None:
             failure_payload["resource_evidence"] = failure_resource_evidence
         failure_evidence = (
@@ -109,6 +114,11 @@ def execute_direct_fallback_transfer(
             source=source,
             target=target,
         )
+        if completion_failure_resource_evidence is not None:
+            completion_failure_resource_evidence = _resource_evidence_with_ticket_binding(
+                completion_failure_resource_evidence,
+                ticket=ticket,
+            )
         daemon_client.transfer_status(
             transfer_id,
             state="failed",
@@ -176,6 +186,7 @@ def _execute_direct_ticket_plan(
             runtime_options=runtime_options,
             target_device=target.device_index,
             plan_payload=plan_payload,
+            ticket=ticket,
             host_buffer=source,
             source=source,
             target=target,
@@ -193,6 +204,7 @@ def _execute_direct_ticket_plan(
         runtime_options=runtime_options,
         target_device=source.device_index,
         plan_payload=plan_payload,
+        ticket=ticket,
         host_buffer=target,
         source=source,
         target=target,
@@ -208,6 +220,7 @@ def _run_direct_plan(
     runtime_options: RuntimeOptions,
     target_device: int,
     plan_payload: Mapping[str, object],
+    ticket: ExecutionTicket,
     host_buffer: SharedPinnedCpuBuffer,
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
     target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
@@ -274,6 +287,7 @@ def _run_direct_plan(
                     device_ptr=int(device_ptr),
                     device_bytes=int(device_bytes),
                     target_device=int(target_device),
+                    ticket=ticket,
                 ),
             ),
         )
@@ -436,6 +450,7 @@ def _direct_resource_evidence(
     device_ptr: int,
     device_bytes: int,
     target_device: int,
+    ticket: ExecutionTicket,
 ) -> dict[str, object]:
     endpoint_evidence = _direct_endpoint_resource_evidence(
         direction=direction,
@@ -454,7 +469,7 @@ def _direct_resource_evidence(
             "cuda_host_registered": True,
         }
     )
-    return evidence
+    return _resource_evidence_with_ticket_binding(evidence, ticket=ticket)
 
 
 def _direct_endpoint_resource_evidence(
@@ -525,6 +540,26 @@ def _completion_evidence_with_ticket_binding(
     plan_generation = ticket.metadata.get("plan_generation")
     if plan_generation is not None:
         bound.setdefault("plan_generation", int(plan_generation))
+    return bound
+
+
+def _resource_evidence_with_ticket_binding(
+    evidence: Mapping[str, object],
+    *,
+    ticket: ExecutionTicket,
+) -> dict[str, object]:
+    bound = dict(evidence)
+    bound.setdefault("ticket_id", ticket.ticket_id)
+    transfer_id = ticket.metadata.get("transfer_id")
+    if transfer_id is not None:
+        bound.setdefault("transfer_id", str(transfer_id))
+    plan_generation = ticket.metadata.get("plan_generation")
+    if plan_generation is not None:
+        bound.setdefault("plan_generation", int(plan_generation))
+    bound.setdefault("source_buffer_id", ticket.source_buffer_id)
+    bound.setdefault("destination_buffer_id", ticket.destination_buffer_id)
+    bound.setdefault("ticket_job_id", ticket.job_id)
+    bound.setdefault("ticket_session_id", ticket.session_id)
     return bound
 
 

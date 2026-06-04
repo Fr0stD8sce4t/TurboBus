@@ -7,29 +7,29 @@ state instead of appending history.
 
 System implementation before experiments.
 
-The next task is to tighten native/data-plane resource ownership across direct
-fallback and worker CUDA execution so shared pinned CPU buffers and CUDA IPC
-GPU buffers remain bound to daemon-issued `ExecutionTicket` data and cleaned up
-through the unified runtime session path.
+The next task is to tighten daemon ticket, receipt, and cleanup state
+consistency so completed or failed intent transfers retain one authoritative
+daemon-issued ticket identity from scheduling through status update and cleanup.
 
 ## Exit Criteria
 
-- Direct fallback and worker CUDA execution continue to execute only
-  daemon-issued plans and tickets.
-- Shared pinned CPU buffer registration and CUDA IPC device handle ownership
-  remain tied to runtime-session registered buffers.
-- Resource evidence recorded in completion metadata reflects the buffers and
-  ticket used by the daemon-issued execution.
+- Daemon status updates reject stale or mismatched ticket evidence for both
+  worker and backend completion paths.
+- Transfer receipts expose completion evidence, ticket identity, and cleanup
+  state without accepting intent-only or synthetic completion.
+- Cleanup removes ticket, lease, and receipt state consistently after completed
+  or failed runtime-session transfers.
 - No benchmark, paper-validation, experiment, server-validation, compatibility
   shim, or export layer code is added during this pass.
 
 ## Current Code Work
 
-- Inspect `turbobus/direct_fallback.py`, `turbobus/worker/resources.py`,
-  `turbobus/worker/cuda_executor.py`, and `turbobus/buffer_registration.py`
-  for resource ownership and cleanup consistency.
-- Keep profile bootstrap owned by `TurboBusRuntimeSession` and daemon profile
-  APIs; profile target/relay data must match daemon-discovered session relays.
+- Inspect `turbobus/daemon/server.py`, `turbobus/daemon/dispatch.py`,
+  `turbobus/transfer_execution.py`, and `turbobus/runtime_session.py` for
+  ticket, receipt, and cleanup consistency.
+- Keep direct fallback and worker CUDA resource evidence bound to the
+  daemon-issued ticket, transfer id, plan generation, and registered source and
+  destination buffers.
 - Keep the old `client_transfer.py`, `turbobus/worker/helper.py`,
   `turbobus/daemon/protocol.py`, and `turbobus/worker_managed.py` files
   deleted. Do not recreate compatibility export layers.
@@ -38,7 +38,7 @@ through the unified runtime session path.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting direct fallback and worker
-CUDA resource ownership. Keep the work focused on system code; defer tests,
+Continue the code implementation pass by inspecting daemon ticket, receipt, and
+cleanup state consistency. Keep the work focused on system code; defer tests,
 benchmarks, paper-validation, experiments, and server validation until the full
 system implementation pass is complete.

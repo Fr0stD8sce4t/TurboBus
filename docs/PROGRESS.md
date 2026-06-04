@@ -29,6 +29,12 @@ through the standard worker lifecycle, and the old worker-managed manual
 target/relay client entry has been removed instead of kept as a compatibility
 layer.
 
+Direct fallback and worker CUDA execution both bind resource evidence to the
+same daemon-issued ticket data used by status evidence: ticket id, transfer id,
+plan generation, source buffer, destination buffer, job, and session. That
+keeps shared pinned CPU buffers and CUDA IPC GPU handles tied to the
+runtime-session registered buffers recorded by the daemon-issued execution.
+
 Server-only validation remains deferred until after the full system
 implementation pass. Current code work should continue through code reading,
 implementation, refactoring, and existing minimal local checks without adding
@@ -36,22 +42,20 @@ server test commands or server-validation gates.
 
 ## Completed This Round
 
-- Tightened daemon profile storage so profile `target_device`, relay
-  `target_device`, and relay device set must match the daemon profile key.
-- Added runtime-side daemon profile validation before `put_profile`, binding
-  native profile output to the `TurboBusRuntimeSession` target GPU and
-  daemon-discovered relay set.
-- Added cached daemon profile target validation before converting it back into
-  a runtime/native profile object.
-- Updated active plan files to move the next implementation entry to
-  direct-fallback and worker CUDA resource ownership.
+- Added ticket binding to direct fallback resource evidence for successful
+  backend completion and backend failure status updates.
+- Added ticket binding to worker CUDA resource evidence for successful
+  execution and bound-resource failure results.
+- Kept the old compatibility/export-layer files deleted and left server
+  validation deferred.
+- Updated the active plan files to move the next implementation entry to
+  daemon ticket, receipt, and cleanup state consistency.
 
 ## Validation
 
-- `python -m py_compile turbobus\profile.py turbobus\daemon\profiles.py
-  turbobus\runtime_session.py turbobus\runtime_engine.py
-  turbobus\backends\cuda.py turbobus\daemon\server.py
-  turbobus\daemon\dispatch.py` passed.
+- `python -m py_compile turbobus\direct_fallback.py
+  turbobus\worker\resources.py turbobus\worker\cuda_executor.py
+  turbobus\buffer_registration.py turbobus\intent_executor.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -59,11 +63,11 @@ server test commands or server-validation gates.
 - CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
-- Direct fallback and worker CUDA resource ownership still need inspection to
-  keep shared pinned CPU and CUDA IPC GPU buffers tied to daemon-issued tickets.
+- Daemon ticket, receipt, and cleanup state consistency still needs inspection
+  before moving to the next system-code target.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting direct fallback and worker
-CUDA resource ownership while keeping server validation deferred until the full
-system implementation pass is complete.
+Continue the code implementation pass by inspecting daemon ticket, receipt, and
+cleanup state consistency while keeping server validation deferred until the
+full system implementation pass is complete.

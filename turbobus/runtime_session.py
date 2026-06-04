@@ -793,13 +793,14 @@ class TurboBusRuntimeSession:
             intent_daemon=self.daemon_client,
             execution_daemon=self._execution_daemon_client(),
         )
-        return self._runtime_transfer_executor().execute_transfer_intent(
+        return self.make_worker_intent_transfer_executor().execute_transfer_intent(
             intent,
             response,
             execution_view,
         )
 
-    def _runtime_transfer_executor(self) -> WorkerIntentTransferExecutor:
+    def make_worker_intent_transfer_executor(self) -> WorkerIntentTransferExecutor:
+        """Return the session-owned worker intent executor."""
         self._require_open()
         if self._transfer_executor is not None:
             return self._transfer_executor
@@ -820,6 +821,8 @@ class TurboBusRuntimeSession:
             runtime_options=self.runtime_options,
         )
         return self._transfer_executor
+
+    _runtime_transfer_executor = make_worker_intent_transfer_executor
 
     def _register_pending_buffers(self) -> None:
         self._require_open()

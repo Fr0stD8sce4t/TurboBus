@@ -29,14 +29,16 @@ session API owns the transfer path.
   the first transfer path is used.
 - Session close now cleans daemon-registered buffers before closing the
   session, so buffer ownership retires through the runtime session API.
+- The runtime session now exposes a worker intent executor factory for the
+  daemon-issued transfer path.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
 `turbobus/runtime_session.py` should own the sole adapter construction path
-that feeds `fetch_h2d()` / `offload_d2h()` and the offload / inference / vLLM
-adapters, including the vLLM KV connector path.
+that feeds `fetch_h2d()` / `offload_d2h()`, the worker intent executor, and
+the offload / inference / vLLM adapters, including the vLLM KV connector path.
 
 ## Next Entry
 

@@ -31,6 +31,8 @@ code remain deferred until the full system implementation pass is complete.
   profile is already installed and `force=False`.
 - `TurboBusRuntimeSession.close()` now cleans daemon-registered buffers before
   closing the session, instead of only dropping local references.
+- `TurboBusRuntimeSession` now exposes a session-owned worker intent executor
+  factory and uses it for the daemon-issued transfer path.
 - Kept the round free of new test, experiment, benchmark, paper-validation,
   server-validation, or compatibility export-layer code.
 
@@ -47,6 +49,8 @@ code remain deferred until the full system implementation pass is complete.
   RPCs that have not been server-verified in this session.
 - Buffer cleanup on close still depends on daemon cleanup RPC success for the
   registered buffers in the active session.
+- The worker intent executor remains dependent on the worker client and
+  runtime buffer map being live inside the session.
 - Older benchmark and example surfaces still use `TurboBusClient` and have not
   been migrated to the runtime-session-first API yet.
 - Existing tests, examples, and benchmarks still contain old production-path

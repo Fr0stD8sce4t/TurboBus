@@ -36,6 +36,12 @@ worker/backend completion, and `TransferReceipt`.
   provide explicit runtime, profile, and execution daemon clients.
 - Keep worker/backend transfer executors owned by `TurboBusRuntimeSession`.
   `TurboBusClient` should submit intents and wait for receipts only.
+- Keep `turbobus.worker` package-level exports limited to worker service,
+  socket, process, endpoint, and transport entry points. Worker lifecycle
+  clients and authorization helpers should stay in their owning modules.
+- Keep `turbobus.daemon` package-level exports focused on production daemon
+  startup. Daemon role clients should be imported by production owners from
+  `turbobus.daemon.client`, not exposed as app-facing package shortcuts.
 - Keep offload and framework adapters bound to real `TurboBusRuntimeSession`
   instances, not duck-typed clients that can bypass runtime-owned registration,
   profile bootstrap, worker execution, or cleanup.

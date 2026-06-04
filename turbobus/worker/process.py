@@ -4,7 +4,7 @@ import argparse
 from threading import Event
 from typing import Sequence
 
-from ..daemon import TurboBusDaemonExecutionClient
+from ..daemon.client import TurboBusDaemonExecutionClient
 from .endpoint import WorkerServiceEndpoint
 from .lifecycle import WorkerTransferClient, WorkerTransferService
 from .transport import WorkerServiceUnixSocketTransport

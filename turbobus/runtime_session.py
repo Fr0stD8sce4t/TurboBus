@@ -12,7 +12,7 @@ from .buffer_registration import (
     register_executable_buffer,
 )
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from .daemon import (
+from .daemon.client import (
     TurboBusDaemonClient,
     TurboBusDaemonExecutionClient,
     TurboBusDaemonProfileClient,

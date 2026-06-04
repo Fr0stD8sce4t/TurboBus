@@ -16,24 +16,27 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Completed This Round
 
-- Split runtime-session support responsibilities into owning modules under
-  `turbobus/runtime/`.
-- Moved daemon execution view, buffer registration fingerprinting, runtime
-  buffer intent validation, receipt validation, role-client resolution, and
-  session cleanup state out of `turbobus/runtime_session.py`.
-- Kept `turbobus/runtime_session.py` focused on the public
-  `TurboBusRuntimeSession` flow: session open, buffer registration, profile
-  bootstrap, intent execution, receipt validation, and close.
-- Preserved the rule that custom object sessions without a daemon socket path
-  must provide explicit runtime, profile, and execution daemon clients.
+- Tightened public worker and daemon package boundaries as one system API pass.
+- Removed worker lifecycle client, service, error, and authorization parser
+  exports from `turbobus.worker`; those remain in their owning lifecycle module.
+- Kept worker package-level access focused on service process, socket client,
+  endpoint, and transport entry points.
+- Removed daemon role-client and manual daemon constructor exports from
+  `turbobus.daemon`; production owners now import daemon role clients directly
+  from `turbobus.daemon.client`.
+- Kept `TurboBusRuntimeSession` and worker process startup wired to the owning
+  daemon-client module rather than package-level shortcuts.
 - Added no test, experiment, benchmark, paper-validation, server-validation, or
   compatibility export-layer code.
 
 ## Validation
 
-- `python -m py_compile` passed for the updated runtime-session modules and
-  directly related runtime entry files.
-- Searches found no old private runtime helper names left in production code.
+- `python -m py_compile` passed for the updated daemon, worker, runtime
+  session, and top-level import modules.
+- Searches found no production import from `turbobus.worker` package-level
+  worker internals.
+- Searches found no production daemon role-client import through
+  `turbobus.daemon` package-level shortcuts.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -47,6 +50,8 @@ code remain deferred until the full system implementation pass is complete.
 - The closure audit still needs to continue across daemon, worker, scheduler,
   runtime, and adapter boundaries for remaining compatibility drift or public
   bypasses.
+- Tests still import old worker and daemon package-level internals; current
+  constraints defer test migration until system implementation is complete.
 
 ## Next Main Target
 

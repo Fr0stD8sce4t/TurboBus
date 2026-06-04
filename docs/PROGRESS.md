@@ -101,26 +101,27 @@ Delayed relay admissions now promote from daemon-owned resource changes:
 reservation release, cleanup, failure/cancel cleanup, and expired lease reaping
 scan delayed transfers, re-run daemon scheduling, advance plan generation, and
 issue fresh leases/tickets only when relay resources are available.
+Repeated submission of an already completed intent now returns the archived
+daemon-issued execution ticket used for the receipt instead of looking only in
+the active ticket map.
 The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
 layers have also been removed. Server-only validation is deferred until after
 the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Bound worker socket response `ok` to real worker lifecycle completion instead
-  of treating failed authorization, failed execution, failed status reporting,
-  or failed cleanup as successful socket completions.
-- Updated the existing worker lifecycle/transport assertions to preserve daemon
-  status and cleanup evidence while expecting failed worker lifecycles to return
-  non-ok completion envelopes.
+- Bound repeated `submit_transfer_intent()` responses to the same daemon ticket
+  resolver used by receipts, so completed transfers return archived
+  daemon-issued ticket evidence instead of indexing only active tickets.
+- Extended the existing daemon intent completion path assertion to cover
+  repeated submission after worker completion and ticket archival.
 
 ## Validation
 
-- `python -m py_compile turbobus\worker\models.py
-  turbobus\worker\codec.py turbobus\worker\endpoint.py
-  turbobus\worker\lifecycle.py turbobus\worker\socket_client.py
-  turbobus\worker\transport.py turbobus\worker\process.py` passed.
-- `python -m unittest test.python.integration.test_worker_helper` passed.
+- `python -m py_compile turbobus\daemon\server.py
+  turbobus\daemon\dispatch.py turbobus\daemon\client.py
+  turbobus\daemon\receipts.py` passed.
+- `python -m unittest test.python.integration.test_daemon_state` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -131,7 +132,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting daemon peer identity,
-cleanup, and ticket ownership on the production socket path while keeping
-server validation deferred until the full system implementation pass is
-complete.
+Continue the code implementation pass by inspecting runtime session receipt
+cleanup and daemon ticket ownership together while keeping server validation
+deferred until the full system implementation pass is complete.

@@ -3638,6 +3638,13 @@ class DaemonStateTest(unittest.TestCase):
         self.assertEqual(completed.state, TransferStatusState.COMPLETE)
         self.assertEqual(completed.bytes_completed, 64)
         self.assertEqual(completed.decision_id, receipt.decision_id)
+        repeated = daemon.submit_transfer_intent(intent)
+
+        self.assertTrue(repeated.ok)
+        repeated_receipt = TransferReceipt(**repeated.payload["receipt"])
+        self.assertEqual(repeated.payload["transfer_id"], transfer_id)
+        self.assertEqual(repeated_receipt.state, TransferStatusState.COMPLETE)
+        self.assertEqual(repeated.payload["ticket"]["ticket_id"], ticket["ticket_id"])
 
     def test_submit_transfer_intent_rejects_physical_policy_hints(self) -> None:
         daemon = _daemon(relay_gpus=[1])

@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting daemon peer identity,
-cleanup, and ticket ownership on the production socket path. Keep the work
-focused on daemon/worker authority and isolation; do not add benchmark,
-paper-validation, experiment, compatibility export layer, or server-validation
-code.
+Continue the code implementation pass by inspecting runtime session receipt
+cleanup and daemon ticket ownership together. Keep the work focused on
+daemon-issued execution evidence and application-visible `TransferReceipt`
+state; do not add benchmark, paper-validation, experiment, compatibility export
+layer, or server-validation code.

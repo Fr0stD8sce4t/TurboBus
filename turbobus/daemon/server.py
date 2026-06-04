@@ -943,17 +943,15 @@ class TurboBusDaemon:
                     receipt = self._receipt_for_intent_locked(intent.intent_id)
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-                ticket_id = self._transfer_tickets.get(existing_transfer_id)
+                ticket = self._receipt_execution_ticket_for_transfer_locked(
+                    existing_transfer_id
+                )
                 return DaemonResponse(
                     ok=True,
                     payload={
                         "receipt": asdict(receipt),
                         "transfer_id": existing_transfer_id,
-                        "ticket": (
-                            None
-                            if ticket_id is None
-                            else asdict(self._execution_tickets[ticket_id])
-                        ),
+                        "ticket": None if ticket is None else asdict(ticket),
                     },
                 )
 

@@ -134,6 +134,7 @@ class ReceiptTransferHandle:
     client: TransferIntentClient
     intent: TransferIntent
     receipt: TransferReceipt
+    transfer_context: AdapterTransferContext | None = None
     wait_timeout_seconds: float | None = None
     wait_calls: int = 0
     _waited: bool = field(default=False, init=False, repr=False)
@@ -145,15 +146,18 @@ class ReceiptTransferHandle:
     def wait(self) -> TransferReceipt:
         if self._waited:
             return self.receipt
+        _require_runtime_session_open(self.client)
         self.receipt = self.client.wait_transfer_receipt(
             self.intent.intent_id,
             timeout_seconds=self.wait_timeout_seconds,
         )
         if not isinstance(self.receipt, TransferReceipt):
             raise TypeError("wait_transfer_receipt must return a TransferReceipt")
-        if self.receipt.intent_id != self.intent.intent_id:
-            raise ValueError("receipt intent_id does not match transfer intent")
-        require_complete_receipt_evidence(self.receipt)
+        _validate_adapter_receipt(
+            self.receipt,
+            self.intent,
+            transfer_context=self.transfer_context,
+        )
         self.wait_calls += 1
         self._waited = True
         state = TransferStatusState(self.receipt.state)
@@ -616,6 +620,7 @@ class OffloadStore:
         operation: str,
         ranges: Iterable[dict[str, int]],
     ) -> ReceiptTransferHandle:
+        _require_runtime_session_open(self.client)
         direction = _direction_for_operation(operation)
         ranges_tuple = tuple(dict(item) for item in ranges)
         total_bytes = sum(item["bytes"] for item in ranges_tuple)
@@ -647,13 +652,16 @@ class OffloadStore:
         receipt = self.client.submit_transfer_intent(intent)
         if not isinstance(receipt, TransferReceipt):
             raise TypeError("submit_transfer_intent must return a TransferReceipt")
-        if receipt.intent_id != intent.intent_id:
-            raise ValueError("receipt intent_id does not match transfer intent")
-        require_complete_receipt_evidence(receipt)
+        _validate_adapter_receipt(
+            receipt,
+            intent,
+            transfer_context=self.transfer_context,
+        )
         return ReceiptTransferHandle(
             client=self.client,
             intent=intent,
             receipt=receipt,
+            transfer_context=self.transfer_context,
             wait_timeout_seconds=self.transfer_context.wait_timeout_seconds,
         )
 
@@ -736,6 +744,31 @@ def _require_runtime_session_open(runtime_session) -> None:
     closed = getattr(runtime_session, "closed", False)
     if bool(closed):
         raise RuntimeError("runtime session is closed")
+
+
+def _validate_adapter_receipt(
+    receipt: TransferReceipt,
+    intent: TransferIntent,
+    *,
+    transfer_context: AdapterTransferContext | None = None,
+) -> None:
+    if receipt.intent_id != intent.intent_id:
+        raise ValueError("receipt intent_id does not match transfer intent")
+    if receipt.job_id != intent.job_id:
+        raise ValueError("receipt job_id does not match transfer intent")
+    if receipt.session_id != intent.session_id:
+        raise ValueError("receipt session_id does not match transfer intent")
+    if transfer_context is not None:
+        if receipt.job_id != transfer_context.job_id:
+            raise ValueError("receipt job_id does not match adapter context")
+        if receipt.session_id != transfer_context.session_id:
+            raise ValueError("receipt session_id does not match adapter context")
+    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+    for key in ("execution_ticket_id", "evidence_ticket_id"):
+        ticket_id = metadata.get(key)
+        if ticket_id is not None and str(ticket_id) != receipt.ticket_id:
+            raise ValueError(f"receipt {key} does not match receipt ticket_id")
+    require_complete_receipt_evidence(receipt)
 
 
 def _validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str, object]:

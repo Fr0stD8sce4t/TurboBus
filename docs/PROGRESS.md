@@ -6,135 +6,66 @@ Current main target: system implementation before experiments.
 
 The system-level runtime path submits `TransferIntent`, uses daemon scheduling,
 issues `ExecutionTicket` plans, and keeps the old `client_transfer.py` file
-deleted. `TurboBusRuntimeSession.open()` is now the public system entry without
-application-side relay selection: the target GPU is bound from registered CUDA
-buffers and relay eligibility is discovered from the daemon before session
-registration and profile bootstrap. `TurboBusRuntimeSession.open_socket()` now
-owns daemon socket and optional worker socket clients for the production socket
-path while keeping execution on daemon-issued `ExecutionTicket` data. Model
-loading, training offload, and inference KV adapters now have runtime-session
-entry points. Worker service and production process entry points route requests
-through the standard lifecycle, and worker socket completion envelopes now
-report `ok` only when that lifecycle reaches real worker completion.
-vLLM connector save/restore tracing now requires real `TransferReceipt` handles
-before it records receipt, decision, topology, or ticket ids.
-vLLM saved prefixes are keyed by job id, session id, and prefix key, and the
-connector binds externally created saved prefixes to its own job before storing
-them.
-Runtime session close now clears local buffer, target, relay, client, profile,
-and registered-buffer state after daemon close succeeds, and also clears local
-pending state when no daemon session was opened.
-vLLM connector close now releases connector-owned saved prefixes, pending save
-contexts, pooled CPU backings, connector metadata, global prefix-store entries
-for the connector job/session, and its runtime session.
-Daemon socket receipt wait and transfer reschedule paths now enforce
-authenticated peer ownership before returning receipt state or replacing a
-daemon-issued plan.
-Daemon worker authorization responses now include an authorization timestamp,
-and worker authorization rejects expired `ExecutionTicket` data before worker
-execution can start. Direct fallback also rejects expired or malformed
-daemon-issued tickets before invoking the backend, and the CUDA worker executor
-re-checks daemon-authorized ticket freshness before converting a daemon plan
-into a native backend plan.
-Daemon job, buffer, and session cleanup now retires the affected transfer from
-the runtime scheduling queue after canceling any non-terminal state, while
-leaving terminal status and audit data available for control-plane inspection.
-Model loading, training offload, inference KV, vLLM KV, vLLM connector
-save/restore, and lower-level vLLM integration paths now construct their
-workload adapters from `TurboBusRuntimeSession` instead of requiring
-application code to assemble daemon clients or adapter transfer contexts.
-`OffloadStore` now accepts only runtime-session-owned clients whose job and
-session identity match the adapter context, and closed runtime sessions reject
-later buffer registration, transfer submission, receipt wait, and profile
-bootstrap calls.
-Completed intent transfers now archive the execution ticket used for verified
-worker/backend completion, then remove it from the active ticket map so it
-cannot be reused for later execution while receipts and release checks still
-have ticket evidence.
-Failed or canceled intent transfers that come from worker/backend status
-updates now also archive the daemon-issued ticket used by the terminal status
-evidence, so their receipts keep ticket, transfer, and plan-generation binding
-without leaving the ticket active for later execution.
-Forced cleanup of missing job, buffer, or session targets now requires residual
-transfer ownership evidence when the daemon has an authenticated peer. Unknown
-cleanup targets cannot produce successful ownerless cleanup records on the
-daemon socket path.
-Successful worker completion cleanup now requires daemon release evidence:
-daemon `release_transfer()` returns an explicit release payload, and worker
-completion envelope validation rejects skipped cleanup, generic cleanup, or
-missing released-reservation evidence.
-Daemon release responses for completed intent transfers now include transfer id,
-ticket id, plan generation, lease ids, and release time. Worker cleanup
-aggregation verifies that all completed-release responses refer to the same
-daemon-issued ticket and plan generation, and worker completion envelope
-validation checks release evidence against the worker result metadata.
-Worker data-plane resources now own the CUDA IPC device handle opened for the
-daemon-authorized request. Closing the resources closes CUDA host registration,
-shared CPU memory, and the device IPC handle, while the binding remains a
-fallback cleanup path.
-CUDA worker execution now snapshots the daemon-authorized CPU/GPU data-plane
-resources while they are open and attaches that resource evidence to worker
-success, bound failure, daemon completion evidence, and receipt metadata.
-Direct fallback now snapshots the runtime-owned CPU/GPU endpoint resources used
-for a daemon-issued direct `ExecutionTicket`, includes that resource evidence in
-backend completion/failure evidence, and preserves backend expected-byte
-evidence in daemon receipts.
-Runtime-session intent submission now validates that custom and generated
-`TransferIntent` objects use runtime-owned CPU/GPU buffers with matching
-direction and byte ranges. Runtime receipt waits are limited to intents that
-were successfully submitted through that session.
-Adapter-owned runtime-session paths now explicitly reject closed runtime
-sessions before creating offload or vLLM slot transfer contexts. vLLM connector
-close now clears and reports pending load/save metadata, saved/sending/receiving
-request sets, pending save parameters, prefix state, pending save backings, and
-the owned runtime session through the unified session API.
-Terminal receipt waits now keep authenticated transfer-owner evidence at plan
-time, so a completed or canceled transfer can still be read by its owner after
-job, session, or buffer cleanup removes active ownership state. Cleaned
-transfers remain retired from scheduling and worker execution state.
-Scheduler runtime feedback now treats active relay paths, live relay leases,
-active reservations, and worker staging records as busy relay state for
-admission and next-plan decisions. Runtime summaries and scheduling metadata
-record those busy relays so daemon decisions are tied to live control-plane
-state rather than benchmark hints.
-Delayed relay admissions now promote from daemon-owned resource changes:
-reservation release, cleanup, failure/cancel cleanup, and expired lease reaping
-scan delayed transfers, re-run daemon scheduling, advance plan generation, and
-issue fresh leases/tickets only when relay resources are available.
-Repeated submission of an already completed intent now returns the archived
-daemon-issued execution ticket used for the receipt instead of looking only in
-the active ticket map.
-Runtime-session submit and wait paths now verify returned receipts belong to
-the runtime job/session and that receipt ticket metadata matches the receipt's
-daemon-issued ticket id before the application consumes them.
-The old `turbobus/worker/helper.py` and `turbobus/daemon/protocol.py` export
-layers have also been removed. Server-only validation is deferred until after
-the system implementation pass, so it no longer blocks code work in this stage.
+deleted. `TurboBusRuntimeSession.open()` and `open_socket()` are the public
+system entries: they own daemon clients, optional worker socket clients,
+session/job/buffer registration, profile bootstrap, intent submission, and
+receipt waits without application-side relay selection.
+
+Model loading, training offload, inference KV, vLLM KV, vLLM connector, and
+lower-level vLLM integration paths now construct their workload adapters from
+`TurboBusRuntimeSession` instead of requiring application code to assemble
+daemon clients, transfer contexts, or buffer registration manually.
+`OffloadStore` accepts only runtime-session-owned clients whose job and session
+identity match the adapter context.
+
+Runtime-session submit and wait paths verify returned receipts belong to the
+runtime job/session and that receipt ticket metadata matches the daemon-issued
+ticket id before the application consumes them. Adapter-owned offload handles
+now apply the same ownership checks on submit and wait, and reject closed
+runtime sessions before submitting or waiting for receipt state.
+
+Daemon, scheduler, worker, and backend paths keep execution bound to
+daemon-issued tickets. Completed transfer tickets are archived for receipt and
+release evidence, removed from active execution-ticket state, and cleanup paths
+retire affected transfers from runtime scheduling while keeping terminal
+receipt data available to authenticated owners.
+
+Server-only validation remains deferred until after the full system
+implementation pass. Current code work should continue through code reading,
+implementation, refactoring, and existing minimal local checks without adding
+server test commands or server-validation gates.
 
 ## Completed This Round
 
-- Added runtime-session receipt ownership validation for both submit and wait:
-  intent id, job id, session id, and daemon ticket metadata must match the
-  active runtime session before returning a `TransferReceipt`.
+- Bound `ReceiptTransferHandle` to its runtime-session-owned client before
+  submit and wait, so closed sessions cannot accept later adapter transfer
+  operations.
+- Added adapter-level receipt validation for intent id, job id, session id,
+  adapter context ownership, daemon ticket metadata, and complete-receipt
+  evidence before adapter code consumes a `TransferReceipt`.
+- Updated the active plan files to keep the next entry on daemon cleanup,
+  release, and delayed admission system code, with server validation deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\runtime_session.py turbobus\api\client.py
-  turbobus\api\receipts.py turbobus\offload_store.py` passed.
-- `python -m unittest test.python.unit.test_public_client_api` passed.
+- `python -m py_compile turbobus\offload_store.py
+  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
+  turbobus\adapters\inference.py turbobus\adapters\vllm.py
+  turbobus\adapters\vllm_kv_connector.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
-- `python -m unittest test.python.unit.test_offload_store` was not used as a
-  passing check because its existing fake client lacks the runtime-session API
-  now required by `OffloadStore`.
 
 ## Remaining Risk
 
-- CUDA/native execution, vLLM integration behavior, relay/pooled execution, and
+- CUDA/native execution, vLLM runtime behavior, relay/pooled execution, and
   server-only behavior remain deferred until the full system implementation
   pass is complete.
+- Existing unit coverage may still include old fake-client assumptions for
+  `OffloadStore`; do not weaken production runtime-session ownership checks to
+  satisfy those fake clients during this implementation stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting adapter runtime-session
-ownership and receipt handle cleanup while keeping server validation deferred
-until the full system implementation pass is complete.
+Continue the code implementation pass by inspecting daemon cleanup, release,
+and delayed admission paths for stale execution-ticket or scheduling-state
+reuse while keeping server validation deferred until the full system
+implementation pass is complete.

@@ -68,8 +68,8 @@ continue to submit `TransferIntent` and consume `TransferReceipt`.
 
 ## Next Entry
 
-Continue the code implementation pass by inspecting worker data-plane resource
-lifecycle. Shared pinned CPU buffers and CUDA IPC GPU buffers should be bound,
-closed, and released through daemon-authorized worker requests without
-restoring application-side route controls, compatibility export layers,
-benchmark hooks, or server-validation gates.
+Continue the code implementation pass by inspecting CUDA worker executor
+resource evidence and transfer metadata. Backend execution should keep using
+daemon-authorized resources and should report resource, ticket, plan, and byte
+evidence without restoring application-side route controls, compatibility
+export layers, benchmark hooks, or server-validation gates.

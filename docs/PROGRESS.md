@@ -67,6 +67,10 @@ ticket id, plan generation, lease ids, and release time. Worker cleanup
 aggregation verifies that all completed-release responses refer to the same
 daemon-issued ticket and plan generation, and worker completion envelope
 validation checks release evidence against the worker result metadata.
+Worker data-plane resources now own the CUDA IPC device handle opened for the
+daemon-authorized request. Closing the resources closes CUDA host registration,
+shared CPU memory, and the device IPC handle, while the binding remains a
+fallback cleanup path.
 Terminal receipt waits now keep authenticated transfer-owner evidence at plan
 time, so a completed or canceled transfer can still be read by its owner after
 job, session, or buffer cleanup removes active ownership state. Cleaned
@@ -86,15 +90,16 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Completed This Round
 
-- Added daemon release evidence for completed intent transfers: transfer id,
-  ticket id, plan generation, lease ids, and release timestamp.
-- Tightened worker cleanup aggregation and completion-envelope validation so
-  release evidence must match the daemon ticket used by the worker result.
+- Moved CUDA IPC device-handle ownership into `WorkerDataPlaneResources`, so
+  direct resource close now releases the IPC handle as well as the shared CPU
+  buffer and CUDA host registration.
+- Kept `WorkerDataPlaneResourceBinding` as a fallback cleanup path and exposed
+  resource lifecycle state in resource metadata.
 
 ## Validation
 
-- `python -m py_compile turbobus\daemon\server.py turbobus\worker\lifecycle.py
-  turbobus\transfer_execution.py` passed.
+- `python -m py_compile turbobus\worker\resources.py
+  turbobus\worker\lifecycle.py turbobus\worker\cuda_executor.py` passed.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -105,6 +110,6 @@ the system implementation pass, so it no longer blocks code work in this stage.
 
 ## Next Main Target
 
-Continue the code implementation pass by inspecting worker data-plane resource
-lifecycle while keeping server validation deferred until the full system
-implementation pass is complete.
+Continue the code implementation pass by inspecting CUDA worker executor
+resource evidence and transfer metadata while keeping server validation
+deferred until the full system implementation pass is complete.

@@ -18,7 +18,15 @@ class WorkerDataPlaneResources:
     device_ptr: int
     device_bytes: int
     cuda_host_registered: bool = False
+    cuda_backend: object | None = field(default=None, repr=False, compare=False)
+    device_index: int | None = None
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
+    _device_ipc_closed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def host_ptr(self) -> int:
@@ -67,8 +75,24 @@ class WorkerDataPlaneResources:
     def close(self) -> None:
         if self._closed:
             return
-        self.cpu_buffer.close()
-        object.__setattr__(self, "_closed", True)
+        try:
+            self.cpu_buffer.close()
+        finally:
+            try:
+                self.close_device_ipc_handle()
+            finally:
+                object.__setattr__(self, "_closed", True)
+
+    def close_device_ipc_handle(self) -> None:
+        if self._device_ipc_closed:
+            return
+        try:
+            backend = self.cuda_backend
+            if backend is not None:
+                _set_cuda_device_index(backend, self.device_index)
+                backend.close_device_ipc_handle(self.device_ptr)
+        finally:
+            object.__setattr__(self, "_device_ipc_closed", True)
 
     def as_dict(self) -> dict[str, object]:
         cpu_handle = (
@@ -98,8 +122,10 @@ class WorkerDataPlaneResources:
             "device_handle_type": device_handle.handle_type,
             "device_ptr": self.device_ptr,
             "device_bytes": self.device_bytes,
+            "device_index": self.device_index,
             "device_buffer_role": self.device_buffer_role,
             "cuda_host_registered": self.cuda_host_registered,
+            "device_ipc_closed": self._device_ipc_closed,
             "closed": self.closed,
         }
 
@@ -149,6 +175,8 @@ class WorkerDataPlaneResourceBinding:
                 device_ptr=self._device_ptr,
                 device_bytes=device_handle.size_bytes,
                 cuda_host_registered=self.register_cuda_host,
+                cuda_backend=self.backend,
+                device_index=self._device_index,
             )
             return self._resources
         except Exception as exc:
@@ -172,10 +200,11 @@ class WorkerDataPlaneResourceBinding:
             resources = self._resources
             self._resources = None
             if resources is not None:
-                _set_cuda_device_index(self.backend, self._device_index)
                 resources.close()
+                self._device_ptr = None
         finally:
             if self._device_ptr is not None:
+                _set_cuda_device_index(self.backend, self._device_index)
                 self.backend.close_device_ipc_handle(self._device_ptr)
                 self._device_ptr = None
             self._device_index = None

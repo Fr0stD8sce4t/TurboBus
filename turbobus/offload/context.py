@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 import uuid
 
+from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 
@@ -14,6 +15,8 @@ class AdapterTransferContext:
     session_id: str
     cpu_buffer_id: str
     gpu_buffer_id: str
+    cpu_buffer: SharedPinnedCpuBuffer | object = field(repr=False, compare=False)
+    gpu_buffer: CudaIpcDeviceBuffer | object = field(repr=False, compare=False)
     workload_kind: WorkloadKind | str = WorkloadKind.GENERIC
     priority: int = 0
     policy_hints: Mapping[str, object] = field(default_factory=dict)
@@ -86,6 +89,8 @@ class AdapterTransferContext:
             session_id=session_id,
             cpu_buffer_id=cpu_buffer.buffer_id,
             gpu_buffer_id=gpu_buffer.buffer_id,
+            cpu_buffer=cpu_buffer,
+            gpu_buffer=gpu_buffer,
             workload_kind=workload_kind,
             priority=priority,
             policy_hints=resolved_policy_hints,

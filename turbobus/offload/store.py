@@ -310,22 +310,31 @@ class OffloadStore:
         ranges_tuple = tuple(dict(item) for item in ranges)
         total_bytes = sum(item["bytes"] for item in ranges_tuple)
         if direction == "h2d":
-            source_buffer_id = self.transfer_context.cpu_buffer_id
-            destination_buffer_id = self.transfer_context.gpu_buffer_id
+            source_buffer = self.transfer_context.cpu_buffer
+            destination_buffer = self.transfer_context.gpu_buffer
         else:
-            source_buffer_id = self.transfer_context.gpu_buffer_id
-            destination_buffer_id = self.transfer_context.cpu_buffer_id
+            source_buffer = self.transfer_context.gpu_buffer
+            destination_buffer = self.transfer_context.cpu_buffer
         metadata = {
             **self.transfer_context.metadata,
             "operation": operation,
             "block_names": [block.name for block in blocks],
         }
+        intent_id = self._next_intent_id(operation)
         intent = TransferIntent(
-            intent_id=self._next_intent_id(operation),
+            intent_id=intent_id,
             job_id=self.transfer_context.job_id,
             session_id=self.transfer_context.session_id,
-            source_buffer_id=source_buffer_id,
-            destination_buffer_id=destination_buffer_id,
+            source_buffer_id=(
+                self.transfer_context.cpu_buffer_id
+                if direction == "h2d"
+                else self.transfer_context.gpu_buffer_id
+            ),
+            destination_buffer_id=(
+                self.transfer_context.gpu_buffer_id
+                if direction == "h2d"
+                else self.transfer_context.cpu_buffer_id
+            ),
             direction=direction,
             total_bytes=total_bytes,
             ranges=ranges_tuple,
@@ -334,9 +343,25 @@ class OffloadStore:
             policy_hints=self.transfer_context.policy_hints,
             metadata=metadata,
         )
-        receipt = self.client.submit_transfer_intent(intent)
+        transfer_method = (
+            self.client.fetch_h2d if direction == "h2d" else self.client.offload_d2h
+        )
+        receipt = transfer_method(
+            source_buffer,
+            destination_buffer,
+            ranges=ranges_tuple,
+            chunk_bytes=int(self.transfer_context.policy_hints.get(
+                "chunk_bytes",
+                getattr(self.client.runtime_options, "chunk_bytes", 16 * 1024 * 1024),
+            )),
+            workload_kind=self.transfer_context.workload_kind,
+            priority=self.transfer_context.priority,
+            metadata=metadata,
+            policy_hints=self.transfer_context.policy_hints,
+            intent_id=intent_id,
+        )
         if not isinstance(receipt, TransferReceipt):
-            raise TypeError("submit_transfer_intent must return a TransferReceipt")
+            raise TypeError("fetch_h2d/offload_d2h must return a TransferReceipt")
         validate_adapter_receipt(
             receipt,
             intent,

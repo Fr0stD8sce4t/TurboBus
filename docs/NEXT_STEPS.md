@@ -7,10 +7,9 @@ state instead of appending history.
 
 System implementation before experiments.
 
-Current code target: isolation and authority hardening around daemon session
-close handling. Missing-session close paths in `turbobus/daemon/server.py`
-must validate retired session ownership before returning a no-op or unknown
-response.
+Current code target: real H2D / D2H execution path closure. Offload adapter
+submission should go through `TurboBusRuntimeSession.fetch_h2d()` and
+`offload_d2h()` so the public runtime session API owns the transfer path.
 
 ## Exit Criteria
 
@@ -18,15 +17,15 @@ response.
   session, or buffer.
 - Scheduler feedback continues to consume live runtime state rather than
   static plan output.
-- Missing-session close handling validates retired session ownership before it
-  returns a no-op or unknown response.
+- Offload adapter submissions use the public runtime session H2D / D2H methods
+  with preserved intent identity and adapter metadata.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/daemon/server.py` session close handling should validate retired
-session ownership before responding to already-closed sessions.
+`turbobus/runtime_session.py` and `turbobus/offload/store.py` should carry the
+offload adapter transfer path through `fetch_h2d()` / `offload_d2h()`.
 
 ## Next Entry
 

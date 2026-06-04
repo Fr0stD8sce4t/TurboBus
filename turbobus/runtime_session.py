@@ -326,6 +326,8 @@ class TurboBusRuntimeSession:
         workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
         priority: int = 0,
         metadata: Mapping[str, object] | None = None,
+        policy_hints: Mapping[str, object] | None = None,
+        intent_id: str | None = None,
     ) -> TransferReceipt:
         return self._submit_transfer_intent(
             source,
@@ -336,6 +338,8 @@ class TurboBusRuntimeSession:
             workload_kind=workload_kind,
             priority=priority,
             metadata=metadata,
+            policy_hints=policy_hints,
+            intent_id=intent_id,
         )
 
     def offload_d2h(
@@ -348,6 +352,8 @@ class TurboBusRuntimeSession:
         workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
         priority: int = 0,
         metadata: Mapping[str, object] | None = None,
+        policy_hints: Mapping[str, object] | None = None,
+        intent_id: str | None = None,
     ) -> TransferReceipt:
         return self._submit_transfer_intent(
             source,
@@ -358,6 +364,8 @@ class TurboBusRuntimeSession:
             workload_kind=workload_kind,
             priority=priority,
             metadata=metadata,
+            policy_hints=policy_hints,
+            intent_id=intent_id,
         )
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
@@ -496,6 +504,8 @@ class TurboBusRuntimeSession:
         workload_kind: WorkloadKind | str,
         priority: int,
         metadata: Mapping[str, object] | None,
+        policy_hints: Mapping[str, object] | None = None,
+        intent_id: str | None = None,
     ) -> TransferReceipt:
         self._require_open()
         self._ensure_transfer_buffers(source, target)
@@ -510,8 +520,14 @@ class TurboBusRuntimeSession:
             if chunk_bytes is None
             else int(chunk_bytes)
         )
+        resolved_policy_hints = dict({} if policy_hints is None else policy_hints)
+        resolved_policy_hints["chunk_bytes"] = resolved_chunk_bytes
         intent = TransferIntent(
-            intent_id=f"intent-{uuid.uuid4().hex}",
+            intent_id=(
+                f"intent-{uuid.uuid4().hex}"
+                if intent_id is None
+                else str(intent_id)
+            ),
             job_id=self.job_id,
             session_id=self.session_id,
             source_buffer_id=source.buffer_id,
@@ -521,7 +537,7 @@ class TurboBusRuntimeSession:
             ranges=normalized_ranges,
             workload_kind=workload_kind,
             priority=int(priority),
-            policy_hints={"chunk_bytes": resolved_chunk_bytes},
+            policy_hints=resolved_policy_hints,
             metadata={} if metadata is None else dict(metadata),
         )
         self._validate_intent_uses_runtime_buffers(intent)

@@ -13,7 +13,7 @@ from .models import (
     WorkerTransferResult,
     WorkerTransferState,
 )
-from .resources import WorkerDataPlaneResources
+from .resources import WorkerDataPlaneResourceBinder, WorkerDataPlaneResources
 from .staging_pool import WorkerStagingSlot
 
 
@@ -35,11 +35,8 @@ class CudaWorkerExecutor:
         staging_slot: WorkerStagingSlot,
     ) -> WorkerTransferResult:
         _validate_request_and_slot(request, staging_slot)
-        return _failed_result(
-            request,
-            staging_slot,
-            "CUDA worker execution requires bound data-plane resources",
-        )
+        with WorkerDataPlaneResourceBinder(backend=self.backend).bind(request) as resources:
+            return self.execute_bound(request, staging_slot, resources)
 
     def execute_bound(
         self,

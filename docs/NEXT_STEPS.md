@@ -31,6 +31,8 @@ session API owns the transfer path.
   session, so buffer ownership retires through the runtime session API.
 - The runtime session now exposes a worker intent executor factory for the
   daemon-issued transfer path.
+- The CUDA worker executor now binds its own data-plane resources in the
+  default execution path instead of failing immediately.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 

@@ -101,30 +101,32 @@ and module-level planner helper functions that could look like public
 application planning APIs have been removed. Scheduler code still owns planning
 through `PlannerEngine`.
 
+The daemon control plane no longer exposes old manual release or reschedule
+requests. `RESCHEDULE_TRANSFER` and `RELEASE_TRANSFER` request types, daemon
+socket client helpers, dispatch routes, and daemon public methods were removed.
+Lease release remains available only through daemon cleanup and worker
+lifecycle cleanup paths.
+
 ## Completed This Round
 
-- Removed adapter/offload compatibility aliases:
-  `OffloadManager`, `KVBlockStore`, `ModelLoader`, `TrainingOffloadStore`,
-  `FrameworkKVSlot`, `FrameworkKVSlotAdapter`, and short vLLM helper aliases.
-- Removed `TurboBusClient.submit()` and `TurboBusClient.submit_transfer()` so
-  the public client names the required `TransferIntent` submission path.
-- Removed module-level `planner_engine.plan_transfer()` and
-  `planner_engine.plan_transfer_ranges()` helper entry points while keeping
-  scheduler-owned `PlannerEngine` planning intact.
+- Removed `RESCHEDULE_TRANSFER` and `RELEASE_TRANSFER` from the daemon request
+  schema.
+- Removed daemon socket client helpers and dispatch routes for manual transfer
+  reschedule and release.
+- Removed daemon public `reschedule_transfer()` and `release_transfer()` methods
+  plus dead reschedule state helpers.
 - Kept server validation, benchmark work, paper validation, experiments, and
   new test code deferred.
 
 ## Validation
 
-- `python -m py_compile turbobus\api\client.py turbobus\offload_store.py
-  turbobus\adapters\__init__.py turbobus\adapters\inference.py
-  turbobus\adapters\model_loading.py turbobus\adapters\training_offload.py
-  turbobus\adapters\vllm.py` passed.
-- `python -m py_compile turbobus\planner_engine.py
-  turbobus\scheduler\daemon.py turbobus\daemon\server.py` passed.
-- Targeted `rg` checks found no remaining production definitions or imports for
-  the removed aliases, client shortcut methods, or module-level planner helper
-  entry points.
+- `python -m py_compile turbobus\schema.py turbobus\daemon\client.py
+  turbobus\daemon\dispatch.py turbobus\daemon\server.py
+  turbobus\worker\lifecycle.py turbobus\intent_execution_support.py
+  turbobus\direct_fallback.py turbobus\runtime_session.py` passed.
+- Targeted `rg` checks found no remaining production `RESCHEDULE_TRANSFER`,
+  `RELEASE_TRANSFER`, `reschedule_transfer()`, `release_transfer()`, or
+  reschedule state-helper entry points.
 - `git diff --check` passed with only Git line-ending conversion warnings.
 
 ## Remaining Risk
@@ -146,6 +148,9 @@ through `PlannerEngine`.
   `TurboBusClient.submit()`/`submit_transfer()`. Current-stage constraints
   prefer removing compatibility names from production code before migrating
   tests.
+- Existing tests may still reference removed manual release or reschedule
+  request types. Current-stage constraints defer test migration until the
+  system implementation pass is complete.
 - A final system-code closure audit still needs to look for remaining
   compatibility drift or application-side route selection before planning
   tests, benchmarks, paper validation, server validation, or experiments.

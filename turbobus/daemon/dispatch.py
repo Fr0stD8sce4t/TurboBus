@@ -89,22 +89,6 @@ def handle_request(
             timeout_seconds=payload.get("timeout_seconds"),
             peer_identity=request.peer_identity,
         )
-    if request.request_type == RequestType.RESCHEDULE_TRANSFER:
-        payload = request.payload
-        return daemon.reschedule_transfer(
-            transfer_id=str(payload["transfer_id"]),
-            now=payload.get("now"),
-            peer_identity=request.peer_identity,
-        )
-    if request.request_type == RequestType.RELEASE_TRANSFER:
-        payload = request.payload
-        reservation_id = payload.get("reservation_id")
-        if reservation_id is None:
-            return DaemonResponse(ok=False, error="reservation_id is required")
-        return daemon.release_transfer(
-            str(reservation_id),
-            peer_identity=request.peer_identity,
-        )
     if request.request_type == RequestType.TRANSFER_STATUS:
         payload = request.payload
         return daemon.transfer_status(

@@ -180,6 +180,8 @@ def receipt_for_transfer(
     evidence_expected_bytes = _optional_int(evidence.get("expected_bytes"))
     resource_evidence = evidence.get("resource_evidence")
     execution_path_evidence = evidence.get("execution_path_evidence")
+    direct_completion_evidence = evidence.get("direct_completion_evidence")
+    relay_completion_evidence = evidence.get("relay_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
@@ -238,6 +240,17 @@ def receipt_for_transfer(
                 if isinstance(execution_path_evidence, Mapping)
                 else None
             ),
+            "direct_completion_evidence": (
+                dict(direct_completion_evidence)
+                if isinstance(direct_completion_evidence, Mapping)
+                else None
+            ),
+            "relay_completion_evidence": (
+                dict(relay_completion_evidence)
+                if isinstance(relay_completion_evidence, Mapping)
+                else None
+            ),
+            "completion_evidence": dict(evidence),
             "cleanup_evidence": (
                 dict(cleanup_evidence)
                 if isinstance(cleanup_evidence, Mapping)

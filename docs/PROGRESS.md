@@ -20,6 +20,11 @@ daemon status, and `WorkerTransferService` passes that choice into the worker
 lifecycle so mixed pooled relay completion can be returned for executor-side
 merge.
 
+Daemon terminal completion now keeps executed direct plus relay evidence in
+receipt metadata and runtime feedback summaries. Runtime feedback records
+terminal executed direct/relay bytes from completion evidence rather than
+static plan output.
+
 Server validation, benchmark work, paper validation, experiments, and new test
 code remain deferred until the full system implementation pass is complete.
 
@@ -36,6 +41,9 @@ code remain deferred until the full system implementation pass is complete.
 - Worker socket request envelopes now preserve `report_terminal_status`, and
   socket worker clients can participate in mixed pooled direct-plus-relay
   execution without independently completing the whole transfer.
+- Daemon completion evidence now preserves mixed direct and relay child
+  completion records, exposes direct/relay evidence on receipts, and summarizes
+  terminal executed direct/relay bytes in runtime feedback.
 - Worker CUDA execution scopes relay work to authorized relay assignments, while
   direct backend execution scopes native plans to direct assignments from the
   same daemon-issued ticket.
@@ -55,6 +63,8 @@ code remain deferred until the full system implementation pass is complete.
   turbobus/worker/models.py turbobus/worker/codec.py
   turbobus/worker/lifecycle.py turbobus/worker/socket_client.py
   turbobus/worker/endpoint.py` passed.
+- `python -m py_compile turbobus/daemon/server.py
+  turbobus/daemon/receipts.py` passed.
 - `git diff --check` passed for the current code and documentation update,
   with CRLF normalization warnings on edited files.
 - Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
@@ -66,8 +76,8 @@ code remain deferred until the full system implementation pass is complete.
   end-to-end CUDA/server confirmation after the system path is complete.
 - Mixed pooled completion still needs full end-to-end CUDA/server confirmation
   after the system path is complete.
-- Runtime-state feedback still depends on server-side observation paths that
-  have not been server-verified in this session.
+- Runtime feedback now includes terminal executed path evidence, but its
+  server-side observation path has not been server-verified in this session.
 - Profile bootstrap still depends on CUDA/backend behavior and daemon profile
   RPCs that have not been server-verified in this session.
 - Shared pinned CPU and CUDA IPC GPU buffer lifecycle behavior still needs
@@ -87,5 +97,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Preserve mixed direct-plus-relay completion evidence in daemon receipts and
-runtime feedback without adding application-side route controls.
+Close shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence through
+worker/backend completion, daemon receipts, and runtime-session cleanup.

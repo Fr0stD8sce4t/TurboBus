@@ -922,8 +922,14 @@ class TurboBusDaemon:
                 self._transfer_completion_sources[updated.transfer_id] = (
                     normalized_completion_source
                 )
+                existing_evidence = self._transfer_completion_evidence.get(
+                    updated.transfer_id
+                )
                 self._transfer_completion_evidence[updated.transfer_id] = (
-                    normalized_completion_evidence
+                    _merge_completion_evidence(
+                        existing_evidence,
+                        normalized_completion_evidence,
+                    )
                 )
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
             removed = _empty_removed_summary()
@@ -1019,9 +1025,10 @@ class TurboBusDaemon:
         except ValueError as exc:
             return DaemonResponse(ok=False, error=str(exc))
         existing = dict(self._transfer_completion_evidence.get(status.transfer_id, {}))
-        existing.update(supplemental)
         self._transfer_completion_sources[status.transfer_id] = normalized_completion_source
-        self._transfer_completion_evidence[status.transfer_id] = existing
+        self._transfer_completion_evidence[status.transfer_id] = (
+            _merge_completion_evidence(existing, supplemental)
+        )
         self._archive_transfer_receipt_state_locked(status.transfer_id)
         self._refresh_transfer_queue_record_locked(status.transfer_id)
         return DaemonResponse(ok=True)
@@ -2711,6 +2718,9 @@ class TurboBusDaemon:
         }
         completion_source_counts: dict[str, int] = {}
         terminal_completion_source_counts: dict[str, int] = {}
+        terminal_execution_evidence = _terminal_execution_evidence_from_records(
+            transfer_records
+        )
         for key, value in path_summary.items():
             if not key.endswith(":relay"):
                 continue
@@ -2792,6 +2802,7 @@ class TurboBusDaemon:
                 "busy_relays": busy_relays,
                 "completion_source_counts": completion_source_counts,
                 "terminal_completion_source_counts": terminal_completion_source_counts,
+                "terminal_execution_evidence": terminal_execution_evidence,
                 "queued_bytes_by_direction": queued_by_direction,
                 "active_bytes_by_direction": active_by_direction,
                 "active_paths": path_summary,
@@ -4821,6 +4832,9 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     relay_path_summary = {"path_count": 0, "chunk_count": 0, "bytes_total": 0}
     completion_source_counts: dict[str, int] = {}
     terminal_completion_source_counts: dict[str, int] = {}
+    terminal_execution_evidence = _terminal_execution_evidence_from_records(
+        runtime_state.get("transfers", ())
+    )
     active_by_direction = _transfer_bytes_by_direction(
         runtime_state.get("active_transfers", ()),
         include_remaining=True,
@@ -4894,10 +4908,40 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "active_resource_usage": active_resource_usage,
             "completion_source_counts": completion_source_counts,
             "terminal_completion_source_counts": terminal_completion_source_counts,
+            "terminal_execution_evidence": terminal_execution_evidence,
         }
     )
     runtime_state["active_resource_usage"] = active_resource_usage
     runtime_state["summary"] = summary_copy
+
+
+def _terminal_execution_evidence_from_records(
+    records: object,
+) -> dict[str, int]:
+    result = {
+        "direct_bytes": 0,
+        "direct_chunks": 0,
+        "relay_bytes": 0,
+        "relay_chunks": 0,
+    }
+    for record in _runtime_mapping_records(records):
+        if str(record.get("state")) not in {
+            TransferStatusState.COMPLETE.value,
+            TransferStatusState.FAILED.value,
+            TransferStatusState.CANCELED.value,
+        }:
+            continue
+        evidence = record.get("completion_evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        path_evidence = evidence.get("execution_path_evidence")
+        if not isinstance(path_evidence, Mapping):
+            continue
+        result["direct_bytes"] += int(path_evidence.get("direct_bytes", 0) or 0)
+        result["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
+        result["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
+        result["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
+    return result
 
 
 def _transfer_bytes_by_direction(
@@ -5090,6 +5134,8 @@ def _normalize_completion_evidence(
         evidence,
         expected_bytes=expected,
     )
+    direct_completion_evidence = evidence.get("direct_completion_evidence")
+    relay_completion_evidence = evidence.get("relay_completion_evidence")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -5124,8 +5170,44 @@ def _normalize_completion_evidence(
             if not path_evidence
             else {"execution_path_evidence": path_evidence}
         ),
+        **(
+            {}
+            if not isinstance(direct_completion_evidence, Mapping)
+            else {"direct_completion_evidence": dict(direct_completion_evidence)}
+        ),
+        **(
+            {}
+            if not isinstance(relay_completion_evidence, Mapping)
+            else {"relay_completion_evidence": dict(relay_completion_evidence)}
+        ),
         **ticket_binding,
     }
+
+
+def _merge_completion_evidence(
+    existing: Mapping[str, object] | None,
+    incoming: Mapping[str, object],
+) -> dict[str, object]:
+    if not isinstance(existing, Mapping):
+        return dict(incoming)
+    merged = dict(existing)
+    merged.update(dict(incoming))
+    for field_name in (
+        "resource_evidence",
+        "execution_path_evidence",
+        "direct_completion_evidence",
+        "relay_completion_evidence",
+        "cleanup",
+    ):
+        previous = existing.get(field_name)
+        current = incoming.get(field_name)
+        if isinstance(previous, Mapping) and isinstance(current, Mapping):
+            nested = dict(previous)
+            nested.update(dict(current))
+            merged[field_name] = nested
+        elif isinstance(previous, Mapping) and field_name not in incoming:
+            merged[field_name] = dict(previous)
+    return merged
 
 
 def _normalize_execution_path_evidence(

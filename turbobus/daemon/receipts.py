@@ -179,6 +179,7 @@ def receipt_for_transfer(
     evidence_plan_generation = _optional_int(evidence.get("plan_generation"))
     evidence_expected_bytes = _optional_int(evidence.get("expected_bytes"))
     resource_evidence = evidence.get("resource_evidence")
+    execution_path_evidence = evidence.get("execution_path_evidence")
     cleanup_evidence = evidence.get("cleanup")
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
@@ -230,6 +231,11 @@ def receipt_for_transfer(
             "resource_evidence": (
                 dict(resource_evidence)
                 if isinstance(resource_evidence, Mapping)
+                else None
+            ),
+            "execution_path_evidence": (
+                dict(execution_path_evidence)
+                if isinstance(execution_path_evidence, Mapping)
                 else None
             ),
             "cleanup_evidence": (

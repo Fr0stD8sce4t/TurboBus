@@ -140,12 +140,25 @@ def _status_evidence_for_result(
                 completion_evidence.setdefault(key, metadata[key])
         return completion_evidence
     evidence_keys = {
+        "executor",
+        "path",
+        "plan_source",
+        "target_device",
         "verified_bytes",
         "content_match",
         "verification_source",
         "verification_method",
         "source_digest",
         "destination_digest",
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+        "relay_gpu",
+        "relay_gpus",
+        "src_buffer_id",
+        "dst_buffer_id",
+        "staging_slot_id",
         "resource_evidence",
         "ticket_id",
         "transfer_id",
@@ -464,6 +477,7 @@ class WorkerTransferClient:
         self,
         request: WorkerTransferAuthorizationRequest,
         cleanup_target_kind: str = "reservation",
+        report_terminal_status: bool = True,
     ) -> WorkerTransferLifecycleRecord:
         try:
             worker_request = self._authorize(request)
@@ -556,47 +570,64 @@ class WorkerTransferClient:
                 exc,
             )
         status_update = daemon_status_update_for_result(result)
-        try:
-            status_response = self._status_reporter.report(result)
-        except WorkerStatusReportError as exc:
-            staging_release = self._staging_pool.release(
-                staging_slot.slot_id,
-                worker_request.data_plane,
-            )
-            cleanup_target_id = cleanup_target_id_for_worker_request(
-                cleanup_target_kind,
-                worker_request,
-            )
+        status_response: DaemonResponse | None = None
+        if report_terminal_status:
             try:
-                cleanup_response = (
-                    self._cleanup_coordinator.cleanup_status_report_failure(
-                        worker_request,
-                        target_kind=cleanup_target_kind,
-                    )
+                status_response = self._status_reporter.report(result)
+            except WorkerStatusReportError as exc:
+                staging_release = self._staging_pool.release(
+                    staging_slot.slot_id,
+                    worker_request.data_plane,
                 )
-            except WorkerCleanupError as cleanup_exc:
-                return WorkerTransferLifecycleRecord(
-                    authorization_request=request,
-                    worker_request=worker_request,
-                    staging_slot=staging_slot,
-                    running_update=running_update,
-                    running_response=running_response,
-                    staging_release=staging_release,
-                    result=result,
-                    status_update=status_update,
-                    cleanup_target_kind=cleanup_target_kind,
-                    cleanup_target_id=cleanup_target_id,
-                    final_state="cleanup_failed",
-                    error=str(cleanup_exc),
-                )
-            try:
-                status_response = self._report_cleanup_evidence(
+                cleanup_target_id = cleanup_target_id_for_worker_request(
+                    cleanup_target_kind,
                     worker_request,
-                    result,
-                    cleanup_response,
-                    current_status_response=cleanup_response,
                 )
-            except WorkerStatusReportError as report_exc:
+                try:
+                    cleanup_response = (
+                        self._cleanup_coordinator.cleanup_status_report_failure(
+                            worker_request,
+                            target_kind=cleanup_target_kind,
+                        )
+                    )
+                except WorkerCleanupError as cleanup_exc:
+                    return WorkerTransferLifecycleRecord(
+                        authorization_request=request,
+                        worker_request=worker_request,
+                        staging_slot=staging_slot,
+                        running_update=running_update,
+                        running_response=running_response,
+                        staging_release=staging_release,
+                        result=result,
+                        status_update=status_update,
+                        cleanup_target_kind=cleanup_target_kind,
+                        cleanup_target_id=cleanup_target_id,
+                        final_state="cleanup_failed",
+                        error=str(cleanup_exc),
+                    )
+                try:
+                    status_response = self._report_cleanup_evidence(
+                        worker_request,
+                        result,
+                        cleanup_response,
+                        current_status_response=cleanup_response,
+                    )
+                except WorkerStatusReportError as report_exc:
+                    return WorkerTransferLifecycleRecord(
+                        authorization_request=request,
+                        worker_request=worker_request,
+                        staging_slot=staging_slot,
+                        running_update=running_update,
+                        running_response=running_response,
+                        staging_release=staging_release,
+                        result=result,
+                        status_update=status_update,
+                        cleanup_response=cleanup_response,
+                        cleanup_target_kind=cleanup_target_kind,
+                        cleanup_target_id=cleanup_target_id,
+                        final_state="status_failed",
+                        error=str(report_exc),
+                    )
                 return WorkerTransferLifecycleRecord(
                     authorization_request=request,
                     worker_request=worker_request,
@@ -606,28 +637,62 @@ class WorkerTransferClient:
                     staging_release=staging_release,
                     result=result,
                     status_update=status_update,
-                    cleanup_response=cleanup_response,
+                    status_response=status_response,
                     cleanup_target_kind=cleanup_target_kind,
                     cleanup_target_id=cleanup_target_id,
-                    final_state="status_failed",
-                    error=str(report_exc),
+                    cleanup_response=cleanup_response,
+                    final_state=result.state.value,
+                    error=str(exc),
                 )
-            return WorkerTransferLifecycleRecord(
-                authorization_request=request,
-                worker_request=worker_request,
-                staging_slot=staging_slot,
-                running_update=running_update,
-                running_response=running_response,
-                staging_release=staging_release,
-                result=result,
-                status_update=status_update,
-                status_response=status_response,
-                cleanup_target_kind=cleanup_target_kind,
-                cleanup_target_id=cleanup_target_id,
-                cleanup_response=cleanup_response,
-                final_state=result.state.value,
-                error=str(exc),
-            )
+        elif result.state is WorkerTransferState.FAILED:
+            try:
+                status_response = self._status_reporter.report(result)
+            except WorkerStatusReportError as exc:
+                staging_release = self._staging_pool.release(
+                    staging_slot.slot_id,
+                    worker_request.data_plane,
+                )
+                cleanup_target_id = cleanup_target_id_for_worker_request(
+                    cleanup_target_kind,
+                    worker_request,
+                )
+                try:
+                    cleanup_response = (
+                        self._cleanup_coordinator.cleanup_status_report_failure(
+                            worker_request,
+                            target_kind=cleanup_target_kind,
+                        )
+                    )
+                except WorkerCleanupError as cleanup_exc:
+                    return WorkerTransferLifecycleRecord(
+                        authorization_request=request,
+                        worker_request=worker_request,
+                        staging_slot=staging_slot,
+                        running_update=running_update,
+                        running_response=running_response,
+                        staging_release=staging_release,
+                        result=result,
+                        status_update=status_update,
+                        cleanup_target_kind=cleanup_target_kind,
+                        cleanup_target_id=cleanup_target_id,
+                        final_state="cleanup_failed",
+                        error=str(cleanup_exc),
+                    )
+                return WorkerTransferLifecycleRecord(
+                    authorization_request=request,
+                    worker_request=worker_request,
+                    staging_slot=staging_slot,
+                    running_update=running_update,
+                    running_response=running_response,
+                    staging_release=staging_release,
+                    result=result,
+                    status_update=status_update,
+                    cleanup_target_kind=cleanup_target_kind,
+                    cleanup_target_id=cleanup_target_id,
+                    cleanup_response=cleanup_response,
+                    final_state="status_failed",
+                    error=str(exc),
+                )
         cleanup_target_id = (
             worker_request.authorization.lease_id
             if result.state == WorkerTransferState.COMPLETE
@@ -661,6 +726,25 @@ class WorkerTransferClient:
                 cleanup_target_id=cleanup_target_id,
                 final_state="cleanup_failed",
                 error=str(exc),
+            )
+        if not report_terminal_status and result.state is WorkerTransferState.COMPLETE:
+            staging_release = self._staging_pool.release(
+                staging_slot.slot_id,
+                worker_request.data_plane,
+            )
+            return WorkerTransferLifecycleRecord(
+                authorization_request=request,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
+                staging_release=staging_release,
+                result=result,
+                cleanup_target_kind=cleanup_target_kind,
+                cleanup_target_id=cleanup_target_id,
+                cleanup_response=cleanup_response,
+                final_state=result.state.value,
+                error=result.error,
             )
         status_response = self._report_cleanup_evidence(
             worker_request,
@@ -953,17 +1037,7 @@ def _cleanup_completion_evidence(
 
 
 def expected_worker_completion_bytes(request: WorkerTransferRequest) -> int:
-    plan = request.data_plane.plan
-    total_bytes = 0
-    for assignment in plan.get("assignments", ()) or ():
-        if not isinstance(assignment, Mapping):
-            raise ValueError("daemon plan assignment must be an object")
-        for chunk in assignment.get("chunks", ()) or ():
-            if not isinstance(chunk, Mapping):
-                raise ValueError("daemon plan chunk must be an object")
-            total_bytes += int(chunk["bytes"])
-    if total_bytes <= 0:
-        total_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
+    total_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
     if total_bytes <= 0:
         raise ValueError("daemon worker plan has no bytes to complete")
     return total_bytes

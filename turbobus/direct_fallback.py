@@ -162,6 +162,43 @@ def execute_direct_fallback_transfer(
     )
 
 
+def execute_direct_ticket_plan(
+    *,
+    backend,
+    runtime_options: RuntimeOptions,
+    intent: TransferIntent,
+    planned_payload: Mapping[str, object],
+    source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+) -> tuple[int, dict[str, object]]:
+    transfer_id = str(planned_payload["transfer_id"])
+    ticket = _direct_ticket_from_planned_payload(
+        planned_payload,
+        intent=intent,
+        transfer_id=transfer_id,
+        job_id=intent.job_id,
+        source_buffer_id=source.buffer_id,
+        target_buffer_id=target.buffer_id,
+        allow_relay_leases=True,
+    )
+    bytes_completed, completion_evidence = _execute_direct_ticket_plan(
+        backend=backend,
+        runtime_options=runtime_options,
+        direction=intent.direction,
+        ticket=ticket,
+        planned_payload=planned_payload,
+        source=source,
+        target=target,
+    )
+    return (
+        bytes_completed,
+        _completion_evidence_with_ticket_binding(
+            completion_evidence,
+            ticket=ticket,
+        ),
+    )
+
+
 def _execute_direct_ticket_plan(
     *,
     backend,
@@ -174,7 +211,7 @@ def _execute_direct_ticket_plan(
 ) -> tuple[int, dict[str, object]]:
     if not isinstance(ticket, ExecutionTicket):
         raise TypeError("direct fallback requires a daemon-issued ExecutionTicket")
-    plan_payload = dict(ticket.plan)
+    plan_payload = _direct_scoped_plan_payload(ticket.plan)
     planning = planned_payload.get("planning")
     if isinstance(planning, Mapping):
         plan_payload["planning"] = dict(planning)
@@ -312,6 +349,7 @@ def _direct_ticket_from_planned_payload(
     job_id: str,
     source_buffer_id: str,
     target_buffer_id: str,
+    allow_relay_leases: bool = False,
 ) -> ExecutionTicket:
     ticket_payload = planned_payload.get("ticket")
     if not isinstance(ticket_payload, Mapping):
@@ -348,7 +386,7 @@ def _direct_ticket_from_planned_payload(
         raise RuntimeError("daemon direct ticket ranges mismatch")
     if dict(ticket.plan) != dict(planned_payload.get("plan") or {}):
         raise RuntimeError("daemon direct ticket plan mismatch")
-    if ticket.lease_ids:
+    if ticket.lease_ids and not allow_relay_leases:
         raise RuntimeError("daemon direct ticket must not include relay leases")
     return ticket
 
@@ -433,6 +471,7 @@ def _direct_plan_completion_evidence(
     verifier = getattr(backend, "verify_transfer", None)
     if not callable(verifier):
         raise RuntimeError("direct backend must support transfer verification")
+    normalized_ranges = tuple(ranges)
     evidence = dict(
         verifier(
             target_device=int(target_device),
@@ -441,11 +480,19 @@ def _direct_plan_completion_evidence(
             host_bytes=int(host_bytes),
             device_ptr=int(device_ptr),
             device_bytes=int(device_bytes),
-            ranges=tuple(ranges),
+            ranges=normalized_ranges,
         )
     )
     evidence.setdefault("expected_bytes", int(expected_bytes))
     evidence.setdefault("resource_evidence", dict(resource_evidence))
+    evidence.setdefault("executor", "direct_backend")
+    evidence.setdefault("plan_source", "daemon")
+    evidence.setdefault("path", f"direct_{str(direction).lower()}")
+    evidence.setdefault("target_device", int(target_device))
+    evidence.setdefault("direct_bytes", int(expected_bytes))
+    evidence.setdefault("direct_chunks", len(normalized_ranges))
+    evidence.setdefault("relay_bytes", 0)
+    evidence.setdefault("relay_chunks", 0)
     return evidence
 
 
@@ -590,6 +637,50 @@ def _plan_transfer_ranges(plan_payload: Mapping[str, object]) -> tuple[dict[str,
     return tuple(ranges)
 
 
+def _direct_scoped_plan_payload(plan_payload: Mapping[str, object]) -> dict[str, object]:
+    source_plan = dict(plan_payload)
+    assignments: list[dict[str, object]] = []
+    total_bytes = 0
+    for assignment in source_plan.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            raise RuntimeError("daemon direct plan assignment must be a mapping")
+        path = assignment.get("path")
+        if not isinstance(path, Mapping):
+            raise RuntimeError("daemon direct plan assignment has no path")
+        if str(path.get("kind", "")).lower() != "direct":
+            continue
+        chunks: list[dict[str, int]] = []
+        for chunk in assignment.get("chunks", ()) or ():
+            if not isinstance(chunk, Mapping):
+                raise RuntimeError("daemon direct plan chunk must be a mapping")
+            chunks.append(
+                {
+                    "src_offset": int(chunk["src_offset"]),
+                    "dst_offset": int(chunk["dst_offset"]),
+                    "bytes": int(chunk["bytes"]),
+                }
+            )
+        if not chunks:
+            continue
+        chunk_bytes = sum(int(chunk["bytes"]) for chunk in chunks)
+        total_bytes += chunk_bytes
+        assignments.append(
+            {
+                "path": dict(path),
+                "chunks": chunks,
+                "bytes": chunk_bytes,
+                "chunk_count": len(chunks),
+            }
+        )
+    if not assignments:
+        raise RuntimeError("daemon direct plan has no direct assignments")
+    return {
+        "total_bytes": total_bytes,
+        "chunk_bytes": int(source_plan.get("chunk_bytes", total_bytes)),
+        "assignments": assignments,
+    }
+
+
 def _stats_value(stats, field_name: str):
     value = getattr(stats, field_name, None)
     if value is None and isinstance(stats, Mapping):
@@ -623,7 +714,10 @@ def _require_direct_plan_matches_target(
         path = assignment.get("path")
         if not isinstance(path, Mapping):
             raise RuntimeError("daemon direct plan assignment has no path")
-        if str(path.get("kind", "")).lower() != "direct":
+        path_kind = str(path.get("kind", "")).lower()
+        if path_kind == "relay":
+            continue
+        if path_kind != "direct":
             raise RuntimeError("daemon direct fallback requires direct paths")
         if str(path.get("direction", "")).lower() != expected_direction:
             raise RuntimeError("daemon direct plan direction does not match request")
@@ -684,6 +778,7 @@ def _install_daemon_profile_if_available(
 
 
 __all__ = [
+    "execute_direct_ticket_plan",
     "execute_direct_fallback_transfer",
     "is_direct_only_worker_plan",
 ]

@@ -148,21 +148,31 @@ def submit_worker_execution(
     request: WorkerTransferAuthorizationRequest,
     *,
     expected_bytes: int,
+    report_terminal_status: bool = True,
 ) -> WorkerExecutionResult:
     lifecycle_submitter = getattr(worker_client, "submit_report_cleanup_lifecycle", None)
     if callable(lifecycle_submitter):
-        lifecycle = lifecycle_submitter(request, cleanup_target_kind="reservation")
+        lifecycle = lifecycle_submitter(
+            request,
+            cleanup_target_kind="reservation",
+            report_terminal_status=bool(report_terminal_status),
+        )
         completion = lifecycle.completion_envelope()
         require_worker_completion_matches_request(
             completion,
             request,
             expected_bytes=expected_bytes,
+            expect_terminal_status=bool(report_terminal_status),
         )
         return WorkerExecutionResult(
             final_state=lifecycle.final_state,
             error=lifecycle.error,
             lifecycle=lifecycle,
             completion=completion,
+        )
+    if not report_terminal_status:
+        raise TypeError(
+            "worker_client must support deferred terminal status for mixed pooled transfers"
         )
     envelope_submitter = getattr(worker_client, "submit_envelope", None)
     if callable(envelope_submitter):
@@ -187,6 +197,7 @@ def submit_worker_execution(
             completion,
             request,
             expected_bytes=expected_bytes,
+            expect_terminal_status=True,
         )
         return WorkerExecutionResult(
             final_state=completion.final_state,
@@ -202,6 +213,7 @@ def require_worker_completion_matches_request(
     request: WorkerTransferAuthorizationRequest,
     *,
     expected_bytes: int,
+    expect_terminal_status: bool = True,
 ) -> None:
     if not isinstance(completion, WorkerDataPlaneCompletionEnvelope):
         raise WorkerCompletionEnvelopeError(
@@ -265,32 +277,42 @@ def require_worker_completion_matches_request(
             int(expected_bytes),
             label="worker result",
         )
-        if completion.daemon_status_update is None:
-            raise WorkerCompletionEnvelopeError(
-                "worker completion missing daemon status update"
+        if expect_terminal_status:
+            if completion.daemon_status_update is None:
+                raise WorkerCompletionEnvelopeError(
+                    "worker completion missing daemon status update"
+                )
+            if completion.daemon_status_response is None:
+                raise WorkerCompletionEnvelopeError(
+                    "worker completion missing daemon status response"
+                )
+            update_state = state_text(completion.daemon_status_update.get("state", ""))
+            if update_state != "complete":
+                raise WorkerCompletionEnvelopeError(
+                    "worker daemon status update did not complete"
+                )
+            require_worker_completed_bytes(
+                completion.daemon_status_update,
+                int(expected_bytes),
+                label="worker daemon status update",
             )
-        if completion.daemon_status_response is None:
-            raise WorkerCompletionEnvelopeError(
-                "worker completion missing daemon status response"
+            if not bool(completion.daemon_status_response.get("ok", False)):
+                raise WorkerCompletionEnvelopeError(
+                    "worker daemon status response was not ok"
+                )
+            require_worker_daemon_response_completed_bytes(
+                completion.daemon_status_response,
+                int(expected_bytes),
             )
-        update_state = state_text(completion.daemon_status_update.get("state", ""))
-        if update_state != "complete":
-            raise WorkerCompletionEnvelopeError(
-                "worker daemon status update did not complete"
-            )
-        require_worker_completed_bytes(
-            completion.daemon_status_update,
-            int(expected_bytes),
-            label="worker daemon status update",
-        )
-        if not bool(completion.daemon_status_response.get("ok", False)):
-            raise WorkerCompletionEnvelopeError(
-                "worker daemon status response was not ok"
-            )
-        require_worker_daemon_response_completed_bytes(
-            completion.daemon_status_response,
-            int(expected_bytes),
-        )
+        else:
+            if completion.daemon_status_update is not None:
+                raise WorkerCompletionEnvelopeError(
+                    "deferred worker completion should not include terminal status update"
+                )
+            if completion.daemon_status_response is not None:
+                raise WorkerCompletionEnvelopeError(
+                    "deferred worker completion should not include terminal status response"
+                )
         if completion.daemon_cleanup_response is None:
             raise WorkerCompletionEnvelopeError(
                 "worker completion missing daemon cleanup response"

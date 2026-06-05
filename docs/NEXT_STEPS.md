@@ -7,21 +7,18 @@ completed state instead of appending history.
 
 Real H2D / D2H execution path closure before experiments.
 
-Current code target: daemon-issued mixed pooled transfer execution. A single
-`TransferIntent` whose scheduler decision contains direct and relay
-assignments must execute all assigned chunks, report worker/backend evidence,
-clean up daemon and worker state, and return one valid `TransferReceipt`.
+Current code target: production worker/socket closure for daemon-issued mixed
+pooled transfer execution. The in-process runtime path now splits direct and
+relay assignments from one daemon plan, executes direct chunks through backend
+exact-plan code, executes relay chunks through worker authorization and cleanup,
+and reports one merged daemon completion.
 
 ## Exit Criteria
 
-- `WorkerIntentTransferExecutor` executes daemon-planned direct-only,
-  relay-only, and mixed pooled plans without choosing physical routes.
-- Direct assignments in a pooled plan are executed by backend exact-plan code
-  under the daemon-issued ticket, not by application-side path choice.
-- Relay assignments in the same pooled plan are executed through worker
-  authorization, worker CUDA execution, status reporting, and cleanup.
-- Daemon terminal status and receipt metadata include real completion or
-  explicit failure evidence for every planned byte.
+- Worker socket execution can use the same deferred-terminal mixed pooled path
+  as the in-process `WorkerTransferClient`.
+- Daemon terminal status and receipt metadata include merged real completion
+  or explicit failure evidence for every planned byte.
 - Runtime feedback observes queued/running/active direct and relay paths from
   daemon state, not static plan output alone.
 - Buffer registration and cleanup keep shared pinned CPU and CUDA IPC GPU
@@ -44,13 +41,15 @@ Focus on the production transfer boundary:
 - `turbobus/runtime_session.py`
 - `cpp/src/executor_cuda.cu`
 
-The main implementation gap is that direct-only and relay-worker execution
-exist as separate paths, while mixed pooled direct-plus-relay execution still
-needs one daemon-issued transfer lifecycle and one receipt.
+The main implementation gap is now the production worker socket boundary:
+socket worker requests still need a deferred-terminal mode so relay workers can
+return relay completion and cleanup evidence without independently completing
+the whole transfer before `WorkerIntentTransferExecutor` merges direct and relay
+evidence.
 
 ## Next Entry
 
-Start at `WorkerIntentTransferExecutor.execute_transfer_intent()`: keep daemon
-plans authoritative, split execution by daemon assignment type, execute direct
-and relay chunks for the same transfer, and report combined completion or
-explicit failure back to the daemon.
+Start at the worker socket request/envelope path and carry the existing
+deferred-terminal mixed pooled mode through `WorkerServiceSocketClient`,
+`WorkerServiceEndpoint`, and `WorkerTransferService` without adding
+application-side route controls.

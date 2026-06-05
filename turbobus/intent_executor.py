@@ -7,7 +7,11 @@ import time
 from .backends.cuda import default_cuda_backend
 from .buffer_registration import ExecutableBuffer
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from .direct_fallback import execute_direct_fallback_transfer, is_direct_only_worker_plan
+from .direct_fallback import (
+    execute_direct_fallback_transfer,
+    execute_direct_ticket_plan,
+    is_direct_only_worker_plan,
+)
 from .runtime_options import RuntimeOptions
 from .schema import (
     DaemonResponse,
@@ -96,6 +100,33 @@ class WorkerIntentTransferExecutor:
                 result_factory=WorkerIntentTransferResult,
             )
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
+        direct_plan_bytes = _plan_assignment_bytes(payload, "direct")
+        relay_plan_bytes = _plan_assignment_bytes(payload, "relay")
+        direct_completion_evidence: Mapping[str, object] | None = None
+        if direct_plan_bytes and relay_plan_bytes:
+            direct_bytes_completed, direct_completion_evidence = (
+                execute_direct_ticket_plan(
+                    backend=self.backend,
+                    runtime_options=self.runtime_options,
+                    intent=intent,
+                    planned_payload=payload,
+                    source=source,
+                    target=target,
+                )
+            )
+            if int(direct_bytes_completed) != int(direct_plan_bytes):
+                raise RuntimeError(
+                    "direct mixed-pooled execution completed "
+                    f"{direct_bytes_completed} of {direct_plan_bytes} daemon-planned bytes"
+                )
+            running = daemon_client.transfer_status(
+                str(payload["transfer_id"]),
+                state="running",
+                bytes_completed=int(direct_bytes_completed),
+                completion_source="backend",
+                completion_evidence=direct_completion_evidence,
+            )
+            require_ok(running, "daemon mixed-pooled direct progress update failed")
         lease_tokens = _payload_lease_tokens(payload)
         if not lease_tokens:
             return receipt_from_daemon_payload(
@@ -125,7 +156,14 @@ class WorkerIntentTransferExecutor:
             worker_execution = submit_worker_execution(
                 self.worker_client,
                 authorization_request,
-                expected_bytes=int(intent.total_bytes),
+                expected_bytes=(
+                    int(relay_plan_bytes)
+                    if int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
+                    else int(intent.total_bytes)
+                ),
+                report_terminal_status=not (
+                    int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
+                ),
             )
         except WorkerCompletionEnvelopeError:
             cleanup_planned_relay_leases(
@@ -134,13 +172,25 @@ class WorkerIntentTransferExecutor:
                 reason="worker_completion_invalid",
                 strict=False,
             )
+            _mark_mixed_transfer_failed(
+                daemon_client,
+                payload,
+                error="mixed pooled worker completion invalid",
+                completion_evidence=direct_completion_evidence,
+            )
             raise
-        except Exception:
+        except Exception as exc:
             cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_execution_exception",
                 strict=False,
+            )
+            _mark_mixed_transfer_failed(
+                daemon_client,
+                payload,
+                error=str(exc) or exc.__class__.__name__,
+                completion_evidence=direct_completion_evidence,
             )
             raise
         if worker_execution.final_state == "authorization_failed":
@@ -194,6 +244,22 @@ class WorkerIntentTransferExecutor:
             raise RuntimeError(
                 worker_execution.error or "worker-managed intent transfer did not complete"
             )
+        if int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0:
+            worker_evidence = _worker_completion_evidence(worker_execution.completion)
+            completion = daemon_client.transfer_status(
+                str(payload["transfer_id"]),
+                state="complete",
+                bytes_completed=int(intent.total_bytes),
+                completion_source="worker",
+                completion_evidence=_merge_mixed_completion_evidence(
+                    direct_completion_evidence,
+                    worker_evidence,
+                    expected_bytes=int(intent.total_bytes),
+                    direct_bytes=int(direct_plan_bytes),
+                    relay_bytes=int(relay_plan_bytes),
+                ),
+            )
+            require_ok(completion, "daemon mixed-pooled completion update failed")
         return wait_for_intent_receipt(daemon_client, intent.intent_id)
 
 
@@ -296,6 +362,150 @@ def _validate_intent_lease_tokens(
             raise TypeError("daemon lease validation must return a DaemonResponse")
         if not response.ok:
             raise RuntimeError(response.error or "intent lease validation failed")
+
+
+def _plan_assignment_bytes(
+    payload: Mapping[str, object],
+    path_kind: str,
+) -> int:
+    plan = payload.get("plan")
+    if not isinstance(plan, Mapping):
+        return 0
+    total = 0
+    for assignment in plan.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            continue
+        path = assignment.get("path")
+        if not isinstance(path, Mapping):
+            continue
+        if str(path.get("kind", "")).lower() != str(path_kind).lower():
+            continue
+        assignment_bytes = assignment.get("bytes")
+        if assignment_bytes is not None:
+            total += int(assignment_bytes)
+            continue
+        for chunk in assignment.get("chunks", ()) or ():
+            if isinstance(chunk, Mapping):
+                total += int(chunk.get("bytes", 0))
+    return total
+
+
+def _plan_assignment_chunks(
+    payload: Mapping[str, object],
+    path_kind: str,
+) -> int:
+    plan = payload.get("plan")
+    if not isinstance(plan, Mapping):
+        return 0
+    total = 0
+    for assignment in plan.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            continue
+        path = assignment.get("path")
+        if not isinstance(path, Mapping):
+            continue
+        if str(path.get("kind", "")).lower() != str(path_kind).lower():
+            continue
+        chunks = assignment.get("chunks", ()) or ()
+        total += len(chunks) if not isinstance(chunks, (str, bytes)) else 0
+    return total
+
+
+def _worker_completion_evidence(
+    completion: WorkerDataPlaneCompletionEnvelope | None,
+) -> Mapping[str, object]:
+    if completion is None or completion.worker_result is None:
+        raise RuntimeError("mixed-pooled worker completion missing worker result")
+    metadata = completion.worker_result.get("metadata")
+    if isinstance(metadata, Mapping):
+        nested = metadata.get("completion_evidence")
+        if isinstance(nested, Mapping):
+            merged = dict(nested)
+            for key, value in metadata.items():
+                merged.setdefault(str(key), value)
+            return merged
+        return dict(metadata)
+    raise RuntimeError("mixed-pooled worker completion missing evidence")
+
+
+def _merge_mixed_completion_evidence(
+    direct_evidence: Mapping[str, object] | None,
+    worker_evidence: Mapping[str, object],
+    *,
+    expected_bytes: int,
+    direct_bytes: int,
+    relay_bytes: int,
+) -> dict[str, object]:
+    if not isinstance(direct_evidence, Mapping):
+        raise RuntimeError("mixed-pooled direct completion missing evidence")
+    expected = int(expected_bytes)
+    direct = int(direct_bytes)
+    relay = int(relay_bytes)
+    if direct + relay != expected:
+        raise RuntimeError(
+            f"mixed-pooled byte split mismatch: {direct} + {relay} != {expected}"
+        )
+    direct_resource = direct_evidence.get("resource_evidence")
+    worker_resource = worker_evidence.get("resource_evidence")
+    evidence = {
+        "verified_bytes": expected,
+        "expected_bytes": expected,
+        "content_match": bool(direct_evidence.get("content_match", False))
+        and bool(worker_evidence.get("content_match", False)),
+        "verification_source": "mixed_pooled_worker_backend",
+        "verification_method": "direct_and_relay_completion",
+        "executor": "mixed_worker_backend",
+        "plan_source": "daemon",
+        "path": "mixed_pooled",
+        "direct_bytes": direct,
+        "direct_chunks": int(direct_evidence.get("direct_chunks", 0)),
+        "relay_bytes": relay,
+        "relay_chunks": int(worker_evidence.get("relay_chunks", 0)),
+        "target_device": int(
+            worker_evidence.get(
+                "target_device",
+                direct_evidence.get("target_device", -1),
+            )
+        ),
+        "resource_evidence": {
+            "direct": dict(direct_resource) if isinstance(direct_resource, Mapping) else {},
+            "relay": dict(worker_resource) if isinstance(worker_resource, Mapping) else {},
+        },
+        "direct_completion_evidence": dict(direct_evidence),
+        "relay_completion_evidence": dict(worker_evidence),
+    }
+    if worker_evidence.get("relay_gpu") is not None:
+        evidence["relay_gpu"] = int(worker_evidence["relay_gpu"])
+    if worker_evidence.get("relay_gpus") is not None:
+        evidence["relay_gpus"] = tuple(int(item) for item in worker_evidence["relay_gpus"])
+    for key in ("ticket_id", "transfer_id", "plan_generation"):
+        if key in worker_evidence:
+            evidence[key] = worker_evidence[key]
+        elif key in direct_evidence:
+            evidence[key] = direct_evidence[key]
+    return evidence
+
+
+def _mark_mixed_transfer_failed(
+    daemon_client,
+    payload: Mapping[str, object],
+    *,
+    error: str,
+    completion_evidence: Mapping[str, object] | None,
+) -> None:
+    if not isinstance(completion_evidence, Mapping):
+        return
+    transfer_id = payload.get("transfer_id")
+    if transfer_id is None:
+        return
+    daemon_client.transfer_status(
+        str(transfer_id),
+        state="failed",
+        bytes_completed=int(completion_evidence.get("direct_bytes", 0) or 0),
+        error=error,
+        completion_source="backend",
+        completion_evidence=completion_evidence,
+    )
 
 
 __all__ = ["WorkerIntentTransferExecutor"]

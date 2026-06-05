@@ -269,7 +269,7 @@ def _relay_scoped_daemon_plan_payload(
                 raise ValueError("daemon plan relay is not authorized by worker ticket")
             plan_path["relay_device"] = relay_gpu
         else:
-            plan_path["relay_device"] = -1
+            continue
         plan_path["enabled"] = True
         chunks = []
         for chunk in assignment.get("chunks", ()) or ():
@@ -298,13 +298,10 @@ def _relay_scoped_daemon_plan_payload(
         )
     if not assignments:
         raise ValueError("daemon plan has no authorized relay chunks")
-    declared_total_bytes = int(source_plan.get("total_bytes", total_bytes))
-    if declared_total_bytes != total_bytes:
-        raise ValueError("daemon plan total bytes do not match assigned chunks")
     if tuple(relay_ranges) != request.data_plane.ranges:
         raise ValueError("authorized ranges do not match daemon plan")
     return {
-        "total_bytes": declared_total_bytes,
+        "total_bytes": total_bytes,
         "chunk_bytes": int(
             source_plan.get("chunk_bytes", request.data_plane.staging.max_chunk_bytes)
         ),

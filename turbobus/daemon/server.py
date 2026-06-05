@@ -5086,6 +5086,10 @@ def _normalize_completion_evidence(
         expected_ticket=expected_ticket,
     )
     resource_evidence = evidence.get("resource_evidence")
+    path_evidence = _normalize_execution_path_evidence(
+        evidence,
+        expected_bytes=expected,
+    )
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -5115,8 +5119,58 @@ def _normalize_completion_evidence(
             if not isinstance(resource_evidence, Mapping)
             else {"resource_evidence": dict(resource_evidence)}
         ),
+        **(
+            {}
+            if not path_evidence
+            else {"execution_path_evidence": path_evidence}
+        ),
         **ticket_binding,
     }
+
+
+def _normalize_execution_path_evidence(
+    evidence: Mapping[str, object],
+    *,
+    expected_bytes: int,
+    require_total_match: bool = True,
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    int_fields = (
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+        "target_device",
+        "relay_gpu",
+    )
+    for field_name in int_fields:
+        if field_name in evidence and evidence[field_name] is not None:
+            result[field_name] = int(evidence[field_name])
+    relay_gpus = evidence.get("relay_gpus")
+    if relay_gpus is not None:
+        if isinstance(relay_gpus, (str, bytes)) or not isinstance(relay_gpus, Iterable):
+            raise ValueError("execution path evidence relay_gpus must be iterable")
+        result["relay_gpus"] = tuple(int(item) for item in relay_gpus)
+    for field_name in (
+        "executor",
+        "path",
+        "plan_source",
+        "src_buffer_id",
+        "dst_buffer_id",
+        "staging_slot_id",
+    ):
+        value = evidence.get(field_name)
+        if value is not None:
+            result[field_name] = str(value)
+    direct_bytes = result.get("direct_bytes")
+    relay_bytes = result.get("relay_bytes")
+    if require_total_match and direct_bytes is not None and relay_bytes is not None:
+        path_bytes = int(direct_bytes) + int(relay_bytes)
+        if path_bytes != int(expected_bytes):
+            raise ValueError(
+                f"execution path byte evidence mismatch: {path_bytes} != {int(expected_bytes)}"
+            )
+    return result
 
 
 def _normalize_status_ticket_evidence(
@@ -5136,6 +5190,13 @@ def _normalize_status_ticket_evidence(
     resource_evidence = evidence.get("resource_evidence")
     if isinstance(resource_evidence, Mapping):
         ticket_binding["resource_evidence"] = dict(resource_evidence)
+    path_evidence = _normalize_execution_path_evidence(
+        evidence,
+        expected_bytes=int(evidence.get("expected_bytes", 0) or 0),
+        require_total_match=False,
+    )
+    if path_evidence:
+        ticket_binding["execution_path_evidence"] = path_evidence
     return ticket_binding
 
 

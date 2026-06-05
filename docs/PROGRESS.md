@@ -36,6 +36,12 @@ serving requests: it fetches daemon-owned topology inventory and daemon
 identity state, rejects synthetic production topology, and attaches worker
 startup evidence to worker completion or explicit failure metadata.
 
+Scheduler planning now consumes live runtime load, not only static profiles:
+daemon runtime feedback exposes per-relay load, and `DaemonScheduler` adjusts
+direct and relay effective bandwidth from queued/running/active transfers,
+relay leases, staging records, completion source pressure, and job-weighted
+fairness state before choosing direct, relay, or mixed pooled paths.
+
 Server validation, benchmark work, paper validation, experiments, and new test
 code remain deferred until the full system implementation pass is complete.
 
@@ -62,6 +68,9 @@ code remain deferred until the full system implementation pass is complete.
   rejects synthetic topology sources, records daemon-observed peer identity
   where available, and carries that startup evidence into worker result and
   daemon completion evidence.
+- Scheduler load accounting now turns daemon runtime state into direct and
+  per-relay pressure, applies those pressures to planning bandwidths, and
+  records the load adjustments in scheduling decision metadata.
 - Worker CUDA execution scopes relay work to authorized relay assignments, while
   direct backend execution scopes native plans to direct assignments from the
   same daemon-issued ticket.
@@ -92,6 +101,10 @@ code remain deferred until the full system implementation pass is complete.
   turbobus/worker/__init__.py turbobus/worker/process.py
   turbobus/worker/lifecycle.py turbobus/worker/endpoint.py
   turbobus/worker/socket_client.py turbobus/intent_executor.py` passed.
+- `python -m py_compile turbobus/scheduler/load_feedback.py
+  turbobus/scheduler/daemon.py turbobus/daemon/server.py
+  turbobus/daemon/leases.py turbobus/intent_executor.py
+  turbobus/runtime_session.py` passed.
 - `git diff --check` passed for the current code and documentation update,
   with CRLF normalization warnings on edited files.
 - Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
@@ -106,6 +119,9 @@ code remain deferred until the full system implementation pass is complete.
   after the system path is complete.
 - Runtime feedback now includes terminal executed path evidence, but its
   server-side observation path has not been server-verified in this session.
+- Scheduler load feedback now consumes daemon runtime state in code, but its
+  effect on real multi-job CUDA/server scheduling still needs confirmation
+  after the system path is complete.
 - Profile bootstrap still depends on CUDA/backend behavior and daemon profile
   RPCs that have not been server-verified in this session.
 - Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence is now wired
@@ -126,6 +142,6 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Close scheduler load feedback and relay isolation so daemon planning consumes
-real queued/running/active transfer state, relay leases, staging usage,
-completion source history, and job weights.
+Close framework adapter paths so offload, inference, model-loading, training,
+and vLLM code submit intent and consume receipts through
+`TurboBusRuntimeSession` without physical route controls.

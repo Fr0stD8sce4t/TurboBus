@@ -47,6 +47,7 @@ class _RelayPolicy:
     available_relays: tuple[int, ...]
     deferred_relays: tuple[dict[str, object], ...]
     filtered_relays: tuple[dict[str, object], ...]
+    load_adjustments: tuple[dict[str, object], ...]
     defer_relay_admission: bool
 
     def as_dict(self) -> dict[str, object]:
@@ -54,6 +55,7 @@ class _RelayPolicy:
             "available_relays": self.available_relays,
             "deferred_relays": self.deferred_relays,
             "filtered_relays": self.filtered_relays,
+            "load_adjustments": self.load_adjustments,
             "defer_relay_admission": self.defer_relay_admission,
         }
 
@@ -223,6 +225,7 @@ class DaemonScheduler:
             available_relays=(),
             deferred_relays=(),
             filtered_relays=(),
+            load_adjustments=(),
             defer_relay_admission=bool(defer_relay_admission),
         )
         payload = _profile_payload(profile_entry)
@@ -237,6 +240,7 @@ class DaemonScheduler:
         deferred_relays = []
         deferred_relay_profiles = []
         filtered_relays: list[dict[str, object]] = []
+        load_adjustments: list[dict[str, object]] = []
         allowed_relays = set(int(gpu) for gpu in session.relay_gpus)
         for relay in payload.get("relays", []) or []:
             if not isinstance(relay, Mapping):
@@ -275,6 +279,11 @@ class DaemonScheduler:
                 ),
                 p2p_enabled=bool(relay.get("p2p_enabled", False)),
             )
+            relay_profile, relay_adjustment = _relay_profile_with_load_feedback(
+                relay_profile,
+                runtime_view=runtime_view,
+            )
+            load_adjustments.append(relay_adjustment)
             unavailable_reason = _relay_unavailable_reason(
                 session=session,
                 quota=relay_quotas.get(relay_device),
@@ -309,14 +318,21 @@ class DaemonScheduler:
             )
         if direction == "d2h" and direct_d2h <= 0.0:
             direct_d2h = direct_h2d
+        direct_h2d, direct_d2h, direct_adjustment = _direct_bandwidth_with_load_feedback(
+            direct_h2d,
+            direct_d2h,
+            runtime_view=runtime_view,
+        )
 
         selected_relays = tuple(available_relays)
         if not selected_relays and defer_relay_admission:
             selected_relays = tuple(deferred_relay_profiles)
+        load_adjustments.insert(0, direct_adjustment)
         relay_policy = _RelayPolicy(
             available_relays=tuple(relay.relay_device for relay in available_relays),
             deferred_relays=tuple(deferred_relays),
             filtered_relays=tuple(filtered_relays),
+            load_adjustments=tuple(load_adjustments),
             defer_relay_admission=bool(defer_relay_admission),
         )
         return (
@@ -643,6 +659,83 @@ def _relay_unavailable_reason(
     if int(relay_device) in runtime_view.busy_relays:
         return "relay has active path"
     return None
+
+
+def _direct_bandwidth_with_load_feedback(
+    direct_h2d: float,
+    direct_d2h: float,
+    *,
+    runtime_view: RuntimeLoadView,
+) -> tuple[float, float, dict[str, object]]:
+    h2d_pressure = runtime_view.direct_pressure("h2d")
+    d2h_pressure = runtime_view.direct_pressure("d2h")
+    adjusted_h2d = _bandwidth_after_pressure(direct_h2d, h2d_pressure)
+    adjusted_d2h = _bandwidth_after_pressure(direct_d2h, d2h_pressure)
+    return (
+        adjusted_h2d,
+        adjusted_d2h,
+        {
+            "kind": "direct",
+            "relay_device": None,
+            "original_h2d_bw_gbps": float(direct_h2d),
+            "adjusted_h2d_bw_gbps": adjusted_h2d,
+            "original_d2h_bw_gbps": float(direct_d2h),
+            "adjusted_d2h_bw_gbps": adjusted_d2h,
+            "h2d_pressure": h2d_pressure,
+            "d2h_pressure": d2h_pressure,
+            "source": "runtime_load_feedback",
+        },
+    )
+
+
+def _relay_profile_with_load_feedback(
+    relay_profile: _RelayProfile,
+    *,
+    runtime_view: RuntimeLoadView,
+) -> tuple[_RelayProfile, dict[str, object]]:
+    pressure = runtime_view.relay_pressure(relay_profile.relay_device)
+    adjusted = _RelayProfile(
+        relay_device=relay_profile.relay_device,
+        target_device=relay_profile.target_device,
+        h2d_bw_gbps=relay_profile.h2d_bw_gbps,
+        d2h_bw_gbps=relay_profile.d2h_bw_gbps,
+        p2p_bw_gbps=relay_profile.p2p_bw_gbps,
+        effective_bw_gbps=_bandwidth_after_pressure(
+            relay_profile.effective_bw_gbps,
+            pressure,
+        ),
+        effective_d2h_bw_gbps=_bandwidth_after_pressure(
+            relay_profile.effective_d2h_bw_gbps,
+            pressure,
+        ),
+        p2p_enabled=relay_profile.p2p_enabled,
+    )
+    relay = int(relay_profile.relay_device)
+    return (
+        adjusted,
+        {
+            "kind": "relay",
+            "relay_device": relay,
+            "original_effective_bw_gbps": float(relay_profile.effective_bw_gbps),
+            "adjusted_effective_bw_gbps": float(adjusted.effective_bw_gbps),
+            "original_effective_d2h_bw_gbps": float(
+                relay_profile.effective_d2h_bw_gbps
+            ),
+            "adjusted_effective_d2h_bw_gbps": float(
+                adjusted.effective_d2h_bw_gbps
+            ),
+            "pressure": pressure,
+            "relay_load": dict(runtime_view.relay_load.get(relay, {})),
+            "source": "runtime_load_feedback",
+        },
+    )
+
+
+def _bandwidth_after_pressure(bandwidth: float, pressure: float) -> float:
+    normalized_bandwidth = max(0.0, float(bandwidth))
+    if normalized_bandwidth <= 0.0:
+        return 0.0
+    return normalized_bandwidth / (1.0 + min(max(0.0, float(pressure)), 4.0))
 
 
 def _parse_transfer_mode(mode: TransferMode | str) -> TransferMode:

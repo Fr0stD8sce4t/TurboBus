@@ -7,9 +7,9 @@ completed state instead of appending history.
 
 Real H2D / D2H execution path closure before experiments.
 
-Current code target: scheduler load feedback and cross-job isolation for
-daemon-issued H2D / D2H execution. Mixed direct-plus-relay completion evidence,
-buffer lifecycle evidence, and production worker startup evidence are now
+Current code target: framework adapter closure through `TurboBusRuntimeSession`.
+Mixed direct-plus-relay completion evidence, buffer lifecycle evidence,
+production worker startup evidence, and scheduler load feedback are now
 preserved through backend/worker completion, daemon receipts, runtime feedback,
 and runtime-session cleanup.
 
@@ -19,8 +19,9 @@ and runtime-session cleanup.
   ownership scoped to the session, job, and transfer.
 - Receipt metadata and runtime feedback preserve buffer open, close, cleanup,
   and release evidence from real worker/backend completion or explicit failure.
-- Scheduler decisions consume live queued/running/active transfer state,
-  relay lease state, staging usage, completion sources, and job weights.
+- Offload, inference, model-loading, training, and vLLM adapters submit H2D/D2H
+  `TransferIntent` through `TurboBusRuntimeSession` and consume
+  `TransferReceipt`.
 - Offload, inference, model-loading, training, and vLLM adapters remain on
   `TurboBusRuntimeSession` and do not receive direct/relay/pool/target/relay
   policy controls.
@@ -32,19 +33,18 @@ and runtime-session cleanup.
 Focus on the production transfer boundary:
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler/`
-- `turbobus/scheduler/load_feedback.py`
-- `turbobus/daemon/leases.py`
 - `turbobus/intent_executor.py`
 - `turbobus/runtime_session.py`
+- `turbobus/adapters/`
+- `turbobus/offload/`
 
-The main implementation gap is now scheduler load accounting: daemon planning
-should use real queued/running/active transfer state, relay leases, staging
-usage, completion source history, and job weights when choosing direct, relay,
-and mixed pooled paths.
+The main implementation gap is now adapter closure: framework-facing code
+should register real buffers through `TurboBusRuntimeSession`, submit only
+transfer intent, and consume receipts without seeing route, relay, target, or
+pool controls.
 
 ## Next Entry
 
-Start at scheduler load feedback and relay isolation state in the daemon. Do
-not add server-validation commands, benchmark adapters, or application-side
-route controls.
+Start at offload and vLLM adapter paths that still bypass or wrap around
+`TurboBusRuntimeSession`. Do not add server-validation commands, benchmark
+adapters, or application-side route controls.

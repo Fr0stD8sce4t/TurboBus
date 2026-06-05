@@ -29,6 +29,8 @@ class RuntimeLoadView:
     running_transfer_count: int
     queued_transfer_count: int
     delayed_transfer_count: int
+    relay_load: dict[int, dict[str, object]]
+    completion_source_pressure: dict[str, float]
 
     def policy_metadata(self) -> dict[str, object]:
         runtime_state = dict(self.runtime_state)
@@ -74,6 +76,11 @@ class RuntimeLoadView:
                     runtime_state.get("terminal_completion_source_counts", {}) or {}
                 ).items()
             },
+            "completion_source_pressure": dict(self.completion_source_pressure),
+            "relay_load": {
+                int(relay): dict(record)
+                for relay, record in sorted(self.relay_load.items())
+            },
             "active_bytes_by_direction": dict(
                 runtime_state.get("active_bytes_by_direction", {}) or {}
             ),
@@ -82,6 +89,30 @@ class RuntimeLoadView:
             ),
             "active_resource_usage": active_resource_usage,
         }
+
+    def relay_pressure(self, relay_device: int) -> float:
+        record = self.relay_load.get(int(relay_device), {})
+        pressure = float(record.get("pressure", 0.0) or 0.0)
+        pressure += self.completion_source_pressure.get("worker", 0.0) * 0.10
+        pressure += min(self.queued_transfer_count, 8) * 0.015
+        pressure += min(self.delayed_transfer_count, 8) * 0.025
+        return max(0.0, pressure)
+
+    def direct_pressure(self, direction: str) -> float:
+        runtime_state = dict(self.runtime_state)
+        active_resource_usage = runtime_state.get("active_resource_usage", {})
+        direction_usage = {}
+        if isinstance(active_resource_usage, Mapping):
+            direction_usage = active_resource_usage.get(str(direction).lower(), {})
+        active_bytes = 0
+        if isinstance(direction_usage, Mapping):
+            active_bytes = int(direction_usage.get("bytes_remaining", 0) or 0)
+        pressure = self.completion_source_pressure.get("backend", 0.0) * 0.08
+        pressure += min(self.running_transfer_count, 8) * 0.02
+        pressure += min(self.queued_transfer_count, 8) * 0.01
+        if self.total_active_bytes > 0:
+            pressure += min(active_bytes / max(self.total_active_bytes, 1), 1.0) * 0.12
+        return max(0.0, pressure)
 
 
 def runtime_state_metadata(
@@ -105,6 +136,7 @@ def runtime_state_metadata(
             "active_bytes_by_direction": {},
             "queued_bytes_by_direction": {},
             "active_resource_usage": {},
+            "relay_load": {},
         }
     summary = runtime_state.get("summary", {})
     if not isinstance(summary, Mapping):
@@ -145,6 +177,7 @@ def runtime_state_metadata(
             summary.get("queued_bytes_by_direction", {}) or {}
         ),
         "active_resource_usage": dict(summary.get("active_resource_usage", {}) or {}),
+        "relay_load": relay_load_from_runtime_state(runtime_state),
     }
 
 
@@ -178,6 +211,10 @@ def runtime_view(
         if isinstance(jobs, Mapping):
             job_runtime_state = jobs
     busy_relays = busy_relays_from_runtime_state(runtime_state)
+    relay_load = relay_load_from_runtime_state(runtime_state)
+    completion_source_pressure = completion_source_pressure_from_runtime_state(
+        runtime_state_snapshot
+    )
 
     total_weight = 0.0
     total_active_bytes = 0
@@ -254,6 +291,8 @@ def runtime_view(
         running_transfer_count=running_transfer_count,
         queued_transfer_count=queued_transfer_count,
         delayed_transfer_count=delayed_transfer_count,
+        relay_load=relay_load,
+        completion_source_pressure=completion_source_pressure,
     )
 
 
@@ -309,6 +348,114 @@ def busy_relays_from_runtime_state(
     return busy
 
 
+def relay_load_from_runtime_state(
+    runtime_state: Mapping[str, object] | None,
+) -> dict[int, dict[str, object]]:
+    if not isinstance(runtime_state, Mapping):
+        return {}
+    records: dict[int, dict[str, object]] = {}
+    for record in _runtime_records(runtime_state.get("active_paths", ())):
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("kind", "")).lower() != "relay":
+            continue
+        relay = record.get("relay_device")
+        if relay is None:
+            continue
+        bucket = _relay_load_bucket(records, int(relay))
+        bucket["active_path_count"] = int(bucket["active_path_count"]) + 1
+        bucket["active_chunk_count"] = int(bucket["active_chunk_count"]) + int(
+            record.get("chunk_count", 0) or 0
+        )
+        bucket["active_bytes"] = int(bucket["active_bytes"]) + int(
+            record.get("bytes_total", 0) or 0
+        )
+        transfer_id = record.get("transfer_id")
+        if transfer_id is not None:
+            bucket["transfer_ids"].add(str(transfer_id))
+    for key, count_name in (
+        ("active_reservations", "active_reservation_count"),
+        ("active_leases", "active_lease_count"),
+        ("relay_staging", "staging_record_count"),
+    ):
+        for record in _runtime_records(runtime_state.get(key, ())):
+            if not isinstance(record, Mapping):
+                continue
+            relay = record.get("relay_gpu")
+            if relay is None:
+                continue
+            bucket = _relay_load_bucket(records, int(relay))
+            bucket[count_name] = int(bucket[count_name]) + 1
+            transfer_id = record.get("transfer_id")
+            if transfer_id is not None:
+                bucket["transfer_ids"].add(str(transfer_id))
+            job_id = record.get("job_id")
+            if job_id is not None:
+                bucket["job_ids"].add(str(job_id))
+    normalized: dict[int, dict[str, object]] = {}
+    for relay, record in records.items():
+        active_path_count = int(record["active_path_count"])
+        active_chunk_count = int(record["active_chunk_count"])
+        active_reservation_count = int(record["active_reservation_count"])
+        active_lease_count = int(record["active_lease_count"])
+        staging_record_count = int(record["staging_record_count"])
+        pressure = 0.0
+        pressure += min(active_path_count, 8) * 0.20
+        pressure += min(active_chunk_count, 32) * 0.015
+        pressure += min(active_reservation_count, 8) * 0.06
+        pressure += min(active_lease_count, 8) * 0.05
+        pressure += min(staging_record_count, 8) * 0.08
+        normalized[int(relay)] = {
+            "relay_gpu": int(relay),
+            "active_path_count": active_path_count,
+            "active_chunk_count": active_chunk_count,
+            "active_bytes": int(record["active_bytes"]),
+            "active_reservation_count": active_reservation_count,
+            "active_lease_count": active_lease_count,
+            "staging_record_count": staging_record_count,
+            "transfer_ids": tuple(sorted(record["transfer_ids"])),
+            "job_ids": tuple(sorted(record["job_ids"])),
+            "pressure": pressure,
+        }
+    return normalized
+
+
+def completion_source_pressure_from_runtime_state(
+    runtime_state: Mapping[str, object] | None,
+) -> dict[str, float]:
+    if not isinstance(runtime_state, Mapping):
+        return {"worker": 0.0, "backend": 0.0}
+    source_counts = runtime_state.get("completion_source_counts", {})
+    if not isinstance(source_counts, Mapping):
+        source_counts = {}
+    worker_count = int(source_counts.get("worker", 0) or 0)
+    backend_count = int(source_counts.get("backend", 0) or 0)
+    total = max(1, worker_count + backend_count)
+    return {
+        "worker": min(worker_count / total, 1.0),
+        "backend": min(backend_count / total, 1.0),
+    }
+
+
+def _relay_load_bucket(
+    records: dict[int, dict[str, object]],
+    relay: int,
+) -> dict[str, object]:
+    return records.setdefault(
+        int(relay),
+        {
+            "active_path_count": 0,
+            "active_chunk_count": 0,
+            "active_bytes": 0,
+            "active_reservation_count": 0,
+            "active_lease_count": 0,
+            "staging_record_count": 0,
+            "transfer_ids": set(),
+            "job_ids": set(),
+        },
+    )
+
+
 def _runtime_records(value: object) -> TypingIterable[object]:
     if isinstance(value, list | tuple):
         return value
@@ -318,7 +465,9 @@ def _runtime_records(value: object) -> TypingIterable[object]:
 __all__ = [
     "RuntimeLoadView",
     "busy_relays_from_runtime_state",
+    "completion_source_pressure_from_runtime_state",
     "fairness_fallback_for_plan",
+    "relay_load_from_runtime_state",
     "runtime_state_metadata",
     "runtime_view",
     "workload_charge_multiplier",

@@ -41,7 +41,10 @@ from ..scheduler import (
     SchedulingDecision,
     scheduling_decision_leases,
 )
-from ..scheduler.load_feedback import busy_relays_from_runtime_state
+from ..scheduler.load_feedback import (
+    busy_relays_from_runtime_state,
+    relay_load_from_runtime_state,
+)
 
 
 _TERMINAL_TRANSFER_STATES = {
@@ -2752,18 +2755,14 @@ class TurboBusDaemon:
                 "active_lease_count": len(active_leases),
             },
         }
-        busy_relays = tuple(
-            sorted(
-                busy_relays_from_runtime_state(
-                    {
-                        "active_paths": path_records,
-                        "active_reservations": active_reservations,
-                        "active_leases": active_leases,
-                        "relay_staging": staging_records,
-                    }
-                )
-            )
-        )
+        relay_runtime_state = {
+            "active_paths": path_records,
+            "active_reservations": active_reservations,
+            "active_leases": active_leases,
+            "relay_staging": staging_records,
+        }
+        busy_relays = tuple(sorted(busy_relays_from_runtime_state(relay_runtime_state)))
+        relay_load = relay_load_from_runtime_state(relay_runtime_state)
         return {
             "version": self._runtime_state_version,
             "captured_at": captured_at,
@@ -2800,6 +2799,7 @@ class TurboBusDaemon:
                 "relay_path_count": relay_path_summary["path_count"],
                 "relay_path_bytes_total": relay_path_summary["bytes_total"],
                 "busy_relays": busy_relays,
+                "relay_load": relay_load,
                 "completion_source_counts": completion_source_counts,
                 "terminal_completion_source_counts": terminal_completion_source_counts,
                 "terminal_execution_evidence": terminal_execution_evidence,
@@ -4908,6 +4908,7 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "relay_path_count": relay_path_summary["path_count"],
             "relay_path_bytes_total": relay_path_summary["bytes_total"],
             "busy_relays": tuple(sorted(busy_relays_from_runtime_state(runtime_state))),
+            "relay_load": relay_load_from_runtime_state(runtime_state),
             "queued_bytes_by_direction": queued_by_direction,
             "active_bytes_by_direction": active_by_direction,
             "active_paths": path_summary,

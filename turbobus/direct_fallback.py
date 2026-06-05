@@ -287,6 +287,20 @@ def _run_direct_plan(
     )
     host_buffer.register_for_cuda(backend)
     host_ptr = host_buffer.address
+    resource_evidence = _direct_resource_evidence(
+        direction=direction,
+        source=source,
+        target=target,
+        host_ptr=host_ptr,
+        host_bytes=host_buffer.size_bytes,
+        device_ptr=int(device_ptr),
+        device_bytes=int(device_bytes),
+        target_device=int(target_device),
+        ticket=ticket,
+    )
+    bytes_completed: int | None = None
+    completion_evidence: dict[str, object] | None = None
+    unregister_evidence: dict[str, object] | None = None
     try:
         if direction == "h2d":
             handle = backend.fetch_plan_to_gpu(
@@ -312,33 +326,33 @@ def _run_direct_plan(
             stats,
             plan_payload=plan_payload,
         )
-        return (
-            bytes_completed,
-            _direct_plan_completion_evidence(
-                backend=backend,
-                target_device=int(target_device),
-                direction=direction,
-                host_ptr=host_ptr,
-                host_bytes=host_buffer.size_bytes,
-                device_ptr=int(device_ptr),
-                device_bytes=int(device_bytes),
-                ranges=_plan_transfer_ranges(plan_payload),
-                expected_bytes=int(plan_payload["total_bytes"]),
-                resource_evidence=_direct_resource_evidence(
-                    direction=direction,
-                    source=source,
-                    target=target,
-                    host_ptr=host_ptr,
-                    host_bytes=host_buffer.size_bytes,
-                    device_ptr=int(device_ptr),
-                    device_bytes=int(device_bytes),
-                    target_device=int(target_device),
-                    ticket=ticket,
-                ),
-            ),
+        completion_evidence = _direct_plan_completion_evidence(
+            backend=backend,
+            target_device=int(target_device),
+            direction=direction,
+            host_ptr=host_ptr,
+            host_bytes=host_buffer.size_bytes,
+            device_ptr=int(device_ptr),
+            device_bytes=int(device_bytes),
+            ranges=_plan_transfer_ranges(plan_payload),
+            expected_bytes=int(plan_payload["total_bytes"]),
+            resource_evidence=resource_evidence,
         )
     finally:
-        host_buffer.unregister_from_cuda()
+        unregister_evidence = _direct_cuda_unregister_evidence(
+            host_buffer,
+            host_ptr=host_ptr,
+            host_bytes=host_buffer.size_bytes,
+        )
+    if bytes_completed is None or completion_evidence is None:
+        raise RuntimeError("direct backend did not produce completion evidence")
+    completion_resource_evidence = dict(
+        completion_evidence.get("resource_evidence") or {}
+    )
+    if unregister_evidence is not None:
+        completion_resource_evidence.update(unregister_evidence)
+    completion_evidence["resource_evidence"] = completion_resource_evidence
+    return bytes_completed, completion_evidence
 
 
 def _direct_ticket_from_planned_payload(
@@ -523,9 +537,34 @@ def _direct_resource_evidence(
             "device_bytes": int(device_bytes),
             "device_index": int(target_device),
             "cuda_host_registered": True,
+            "cuda_host_unregistered": False,
         }
     )
     return _resource_evidence_with_ticket_binding(evidence, ticket=ticket)
+
+
+def _direct_cuda_unregister_evidence(
+    host_buffer: SharedPinnedCpuBuffer,
+    *,
+    host_ptr: int,
+    host_bytes: int,
+) -> dict[str, object]:
+    evidence = {
+        "host_ptr": int(host_ptr),
+        "host_bytes": int(host_bytes),
+        "cuda_host_registered": True,
+        "cuda_host_unregistered": False,
+        "cpu_buffer_closed": host_buffer.closed,
+    }
+    try:
+        host_buffer.unregister_from_cuda()
+    except Exception as exc:
+        evidence["cuda_host_unregister_error"] = str(exc) or exc.__class__.__name__
+        raise
+    evidence["cuda_host_unregistered"] = True
+    evidence["cpu_cuda_registered"] = host_buffer.cuda_registered
+    evidence["cpu_buffer_closed_after_unregister"] = host_buffer.closed
+    return evidence
 
 
 def _direct_endpoint_resource_evidence(

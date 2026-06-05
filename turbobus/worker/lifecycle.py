@@ -815,13 +815,29 @@ class WorkerTransferClient:
             )
         if self._resource_binder is None:
             return self._executor.execute(worker_request, staging_slot)
-        with self._resource_binder.bind(worker_request) as resources:
-            return execute_worker_transfer(
-                self._executor,
+        resources = None
+        result: WorkerTransferResult | None = None
+        execution_error: Exception | None = None
+        with self._resource_binder.bind(worker_request) as bound_resources:
+            resources = bound_resources
+            try:
+                result = execute_worker_transfer(
+                    self._executor,
+                    worker_request,
+                    staging_slot,
+                    resources,
+                )
+            except Exception as exc:
+                execution_error = exc
+        if result is None:
+            if execution_error is None:
+                raise RuntimeError("worker execution did not produce a result")
+            result = failed_worker_result_from_exception(
                 worker_request,
                 staging_slot,
-                resources,
+                execution_error,
             )
+        return _worker_result_with_resource_close_evidence(result, resources)
 
 
 class WorkerTransferService:
@@ -987,6 +1003,34 @@ def _worker_result_with_ticket_binding(
         for key in ("ticket_id", "transfer_id", "plan_generation"):
             if key in metadata:
                 completion_evidence.setdefault(key, metadata[key])
+        metadata["completion_evidence"] = completion_evidence
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
+    )
+
+
+def _worker_result_with_resource_close_evidence(
+    result: WorkerTransferResult,
+    resources: WorkerDataPlaneResources | None,
+) -> WorkerTransferResult:
+    if resources is None:
+        return result
+    metadata = dict(result.metadata)
+    resource_evidence = dict(metadata.get("resource_evidence") or {})
+    resource_evidence["close_evidence"] = resources.close_evidence()
+    metadata["resource_evidence"] = resource_evidence
+    evidence = metadata.get("completion_evidence")
+    if isinstance(evidence, Mapping):
+        completion_evidence = dict(evidence)
+        completion_resource_evidence = dict(
+            completion_evidence.get("resource_evidence") or {}
+        )
+        completion_resource_evidence["close_evidence"] = resources.close_evidence()
+        completion_evidence["resource_evidence"] = completion_resource_evidence
         metadata["completion_evidence"] = completion_evidence
     return WorkerTransferResult(
         transfer_id=result.transfer_id,

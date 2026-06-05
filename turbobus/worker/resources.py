@@ -31,6 +31,12 @@ class WorkerDataPlaneResources:
         repr=False,
         compare=False,
     )
+    _close_evidence: dict[str, object] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def host_ptr(self) -> int:
@@ -86,6 +92,11 @@ class WorkerDataPlaneResources:
                 self.close_device_ipc_handle()
             finally:
                 object.__setattr__(self, "_closed", True)
+                object.__setattr__(
+                    self,
+                    "_close_evidence",
+                    self.close_evidence(),
+                )
 
     def close_device_ipc_handle(self) -> None:
         if self._device_ipc_closed:
@@ -135,6 +146,40 @@ class WorkerDataPlaneResources:
             "cuda_host_registered": self.cuda_host_registered,
             "device_ipc_closed": self._device_ipc_closed,
             "closed": self.closed,
+        }
+
+    def close_evidence(self) -> dict[str, object]:
+        if self._close_evidence is not None:
+            return dict(self._close_evidence)
+        cpu_handle = (
+            self.request.src_handle
+            if self.request.direction == "h2d"
+            else self.request.dst_handle
+        )
+        device_handle = (
+            self.request.dst_handle
+            if self.request.direction == "h2d"
+            else self.request.src_handle
+        )
+        return {
+            "transfer_id": self.request.transfer_id,
+            "lease_id": self.request.lease_id,
+            "ticket_id": self.ticket_id,
+            "plan_generation": self.plan_generation,
+            "session_id": self.request.session_id,
+            "job_id": self.request.job_id,
+            "direction": self.request.direction,
+            "cpu_buffer_id": cpu_handle.buffer_id,
+            "cpu_handle_type": cpu_handle.handle_type,
+            "cpu_buffer_role": self.cpu_buffer_role,
+            "cpu_buffer_closed": self.cpu_buffer.closed,
+            "cpu_cuda_registered": self.cpu_buffer.cuda_registered,
+            "device_buffer_id": device_handle.buffer_id,
+            "device_handle_type": device_handle.handle_type,
+            "device_index": self.device_index,
+            "device_buffer_role": self.device_buffer_role,
+            "device_ipc_closed": self._device_ipc_closed,
+            "resources_closed": self.closed,
         }
 
     def _require_open(self) -> None:

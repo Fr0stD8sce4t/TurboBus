@@ -452,18 +452,37 @@ class TurboBusRuntimeSession:
                 payload={"closed": False, "already_closed": True},
             )
         if self._session_id is None:
-            self._release_owned_cpu_buffers()
+            release_evidence = self._release_owned_cpu_buffers(
+                reason="runtime_session_close_without_daemon_session"
+            )
             clear_runtime_session_state(self)
             self._closed = True
-            return DaemonResponse(ok=True, payload={"closed": False})
+            return DaemonResponse(
+                ok=True,
+                payload={
+                    "closed": False,
+                    "owned_cpu_buffer_release": release_evidence,
+                },
+            )
         cleanup_errors: list[dict[str, object]] = []
+        cleanup_evidence: list[dict[str, object]] = []
+        release_evidence: list[dict[str, object]] = []
         for buffer_id in tuple(self._registered_buffer_ids):
             try:
-                self.cleanup_buffer(
+                cleanup_response = self.cleanup_buffer(
                     buffer_id,
                     reason="runtime_session_close",
                     force=True,
                 )
+                cleanup_record: dict[str, object] = {
+                    "buffer_id": buffer_id,
+                    "ok": bool(cleanup_response.ok),
+                }
+                if cleanup_response.error:
+                    cleanup_record["error"] = cleanup_response.error
+                if isinstance(cleanup_response.payload, Mapping):
+                    cleanup_record["payload"] = dict(cleanup_response.payload)
+                cleanup_evidence.append(cleanup_record)
             except Exception as exc:
                 cleanup_errors.append(
                     {
@@ -476,19 +495,27 @@ class TurboBusRuntimeSession:
         except Exception as exc:
             response = DaemonResponse(ok=False, error=str(exc))
         finally:
-            self._release_owned_cpu_buffers()
+            release_evidence = self._release_owned_cpu_buffers(
+                reason="runtime_session_close"
+            )
             clear_runtime_session_state(self)
             self._closed = True
+        payload = {}
+        if isinstance(response.payload, Mapping):
+            payload.update(dict(response.payload))
+        if cleanup_evidence:
+            payload["buffer_cleanup_evidence"] = cleanup_evidence
+        if release_evidence:
+            payload["owned_cpu_buffer_release"] = release_evidence
         if cleanup_errors:
-            payload = {}
-            if isinstance(response.payload, Mapping):
-                payload.update(dict(response.payload))
             payload["buffer_cleanup_errors"] = cleanup_errors
             return DaemonResponse(
                 ok=response.ok,
                 error=response.error,
                 payload=payload,
             )
+        if payload != response.payload:
+            return DaemonResponse(ok=response.ok, error=response.error, payload=payload)
         return response
 
     def __enter__(self) -> "TurboBusRuntimeSession":
@@ -916,6 +943,7 @@ class TurboBusRuntimeSession:
         response = DaemonResponse(ok=True, payload={"cleanup_skipped": True})
         cleanup_error: Exception | None = None
         release_error: Exception | None = None
+        release_evidence: dict[str, object] | None = None
         if normalized_id in self._registered_buffer_ids:
             try:
                 response = self._execution_daemon_client().cleanup(
@@ -933,10 +961,15 @@ class TurboBusRuntimeSession:
         if normalized_id in self._owned_cpu_buffer_ids:
             self._owned_cpu_buffer_ids.discard(normalized_id)
             if isinstance(buffer, SharedPinnedCpuBuffer):
-                try:
-                    buffer.release()
-                except Exception as exc:
-                    release_error = exc
+                release_evidence = self._release_owned_cpu_buffer(
+                    normalized_id,
+                    buffer,
+                    reason=reason,
+                )
+                if not bool(release_evidence.get("ok", False)):
+                    release_error = RuntimeError(
+                        str(release_evidence.get("error") or "local buffer release failed")
+                    )
         if cleanup_error is not None:
             if release_error is not None:
                 raise RuntimeError(
@@ -945,7 +978,10 @@ class TurboBusRuntimeSession:
             raise cleanup_error
         if release_error is not None:
             raise release_error
-        return response
+        payload = dict(response.payload) if isinstance(response.payload, Mapping) else {}
+        if release_evidence is not None:
+            payload["owned_cpu_buffer_release"] = release_evidence
+        return DaemonResponse(ok=response.ok, error=response.error, payload=payload)
 
     def _rollback_adapter_transfer_context_buffer(
         self,
@@ -972,14 +1008,56 @@ class TurboBusRuntimeSession:
         if normalized_id in self._owned_cpu_buffer_ids:
             self._owned_cpu_buffer_ids.discard(normalized_id)
             if isinstance(buffer, SharedPinnedCpuBuffer):
-                buffer.release()
+                self._release_owned_cpu_buffer(
+                    normalized_id,
+                    buffer,
+                    reason="runtime_adapter_context_creation_failed",
+                )
 
-    def _release_owned_cpu_buffers(self) -> None:
+    def _release_owned_cpu_buffers(self, *, reason: str) -> list[dict[str, object]]:
+        evidence: list[dict[str, object]] = []
         for buffer_id in tuple(self._owned_cpu_buffer_ids):
             buffer = self._buffers.get(buffer_id)
             self._owned_cpu_buffer_ids.discard(buffer_id)
             if isinstance(buffer, SharedPinnedCpuBuffer):
-                buffer.release()
+                evidence.append(
+                    self._release_owned_cpu_buffer(
+                        buffer_id,
+                        buffer,
+                        reason=reason,
+                    )
+                )
+        return evidence
+
+    def _release_owned_cpu_buffer(
+        self,
+        buffer_id: str,
+        buffer: SharedPinnedCpuBuffer,
+        *,
+        reason: str,
+    ) -> dict[str, object]:
+        evidence = {
+            "buffer_id": str(buffer_id),
+            "job_id": buffer.job_id,
+            "reason": str(reason),
+            "runtime_owned": True,
+            "owner": bool(buffer.owner),
+            "shared_memory_name": buffer.shared_memory_name,
+            "closed_before_release": buffer.closed,
+            "unlinked_before_release": bool(getattr(buffer, "_unlinked", False)),
+            "ok": False,
+        }
+        try:
+            buffer.release()
+        except Exception as exc:
+            evidence["error"] = str(exc) or exc.__class__.__name__
+            evidence["closed_after_release"] = buffer.closed
+            evidence["unlinked_after_release"] = bool(getattr(buffer, "_unlinked", False))
+            return evidence
+        evidence["ok"] = True
+        evidence["closed_after_release"] = buffer.closed
+        evidence["unlinked_after_release"] = bool(getattr(buffer, "_unlinked", False))
+        return evidence
 
     def _runtime_daemon_client(self):
         self._require_open()

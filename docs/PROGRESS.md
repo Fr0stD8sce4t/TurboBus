@@ -25,6 +25,12 @@ receipt metadata and runtime feedback summaries. Runtime feedback records
 terminal executed direct/relay bytes from completion evidence rather than
 static plan output.
 
+Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence now reaches the
+same completion path. Worker resource close state is merged into worker
+completion evidence, direct backend completion records CUDA host unregister
+state, and `TurboBusRuntimeSession` keeps session-owned CPU buffer cleanup and
+release evidence on explicit cleanup and session close.
+
 Server validation, benchmark work, paper validation, experiments, and new test
 code remain deferred until the full system implementation pass is complete.
 
@@ -44,6 +50,9 @@ code remain deferred until the full system implementation pass is complete.
 - Daemon completion evidence now preserves mixed direct and relay child
   completion records, exposes direct/relay evidence on receipts, and summarizes
   terminal executed direct/relay bytes in runtime feedback.
+- Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence now records
+  worker close state, direct backend CUDA host unregister state, and
+  runtime-owned CPU buffer release results during cleanup and session close.
 - Worker CUDA execution scopes relay work to authorized relay assignments, while
   direct backend execution scopes native plans to direct assignments from the
   same daemon-issued ticket.
@@ -65,6 +74,10 @@ code remain deferred until the full system implementation pass is complete.
   turbobus/worker/endpoint.py` passed.
 - `python -m py_compile turbobus/daemon/server.py
   turbobus/daemon/receipts.py` passed.
+- `python -m py_compile turbobus/worker/resources.py
+  turbobus/worker/lifecycle.py turbobus/direct_fallback.py
+  turbobus/runtime_session.py turbobus/daemon/server.py
+  turbobus/daemon/receipts.py` passed.
 - `git diff --check` passed for the current code and documentation update,
   with CRLF normalization warnings on edited files.
 - Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
@@ -80,7 +93,8 @@ code remain deferred until the full system implementation pass is complete.
   server-side observation path has not been server-verified in this session.
 - Profile bootstrap still depends on CUDA/backend behavior and daemon profile
   RPCs that have not been server-verified in this session.
-- Shared pinned CPU and CUDA IPC GPU buffer lifecycle behavior still needs
+- Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence is now wired
+  through code paths, but real CUDA IPC/shared-memory behavior still needs
   end-to-end confirmation after the system path is complete.
 - The worker intent executor remains dependent on the worker client and runtime
   buffer map being live inside the session.
@@ -97,5 +111,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Close shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence through
-worker/backend completion, daemon receipts, and runtime-session cleanup.
+Close the production daemon and worker startup path so socket workers start
+from daemon-owned topology discovery and execute only daemon-issued tickets.

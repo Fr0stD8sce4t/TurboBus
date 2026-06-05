@@ -4211,7 +4211,10 @@ class TurboBusDaemon:
             now=now,
         )
 
-    def describe(self) -> DaemonResponse:
+    def describe(
+        self,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
         with self._lock:
             now = time.time()
             self._reap_stale_sessions_locked(now)
@@ -4270,6 +4273,9 @@ class TurboBusDaemon:
                         key: dict(value) for key, value in self._profile_cache.items()
                     },
                     "require_authenticated_peers": self._require_authenticated_peers,
+                    "requester_peer_identity": (
+                        None if peer_identity is None else asdict(peer_identity)
+                    ),
                 },
             )
 

@@ -31,6 +31,11 @@ completion evidence, direct backend completion records CUDA host unregister
 state, and `TurboBusRuntimeSession` keeps session-owned CPU buffer cleanup and
 release evidence on explicit cleanup and session close.
 
+Production worker socket startup now performs a daemon handshake before
+serving requests: it fetches daemon-owned topology inventory and daemon
+identity state, rejects synthetic production topology, and attaches worker
+startup evidence to worker completion or explicit failure metadata.
+
 Server validation, benchmark work, paper validation, experiments, and new test
 code remain deferred until the full system implementation pass is complete.
 
@@ -53,6 +58,10 @@ code remain deferred until the full system implementation pass is complete.
 - Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence now records
   worker close state, direct backend CUDA host unregister state, and
   runtime-owned CPU buffer release results during cleanup and session close.
+- Worker socket process startup now binds to daemon-owned topology inventory,
+  rejects synthetic topology sources, records daemon-observed peer identity
+  where available, and carries that startup evidence into worker result and
+  daemon completion evidence.
 - Worker CUDA execution scopes relay work to authorized relay assignments, while
   direct backend execution scopes native plans to direct assignments from the
   same daemon-issued ticket.
@@ -78,6 +87,11 @@ code remain deferred until the full system implementation pass is complete.
   turbobus/worker/lifecycle.py turbobus/direct_fallback.py
   turbobus/runtime_session.py turbobus/daemon/server.py
   turbobus/daemon/receipts.py` passed.
+- `python -m py_compile turbobus/daemon/dispatch.py
+  turbobus/daemon/server.py turbobus/daemon/client.py
+  turbobus/worker/__init__.py turbobus/worker/process.py
+  turbobus/worker/lifecycle.py turbobus/worker/endpoint.py
+  turbobus/worker/socket_client.py turbobus/intent_executor.py` passed.
 - `git diff --check` passed for the current code and documentation update,
   with CRLF normalization warnings on edited files.
 - Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
@@ -85,8 +99,9 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Remaining Risk
 
-- The production worker socket deferred-terminal path still needs full
-  end-to-end CUDA/server confirmation after the system path is complete.
+- The production worker socket startup and deferred-terminal paths now carry
+  daemon topology and completion evidence through code paths, but still need
+  full end-to-end CUDA/server confirmation after the system path is complete.
 - Mixed pooled completion still needs full end-to-end CUDA/server confirmation
   after the system path is complete.
 - Runtime feedback now includes terminal executed path evidence, but its
@@ -111,5 +126,6 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Close the production daemon and worker startup path so socket workers start
-from daemon-owned topology discovery and execute only daemon-issued tickets.
+Close scheduler load feedback and relay isolation so daemon planning consumes
+real queued/running/active transfer state, relay leases, staging usage,
+completion source history, and job weights.

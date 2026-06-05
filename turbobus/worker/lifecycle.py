@@ -128,6 +128,7 @@ def _status_evidence_for_result(
                 "transfer_id",
                 "plan_generation",
                 "resource_evidence",
+                "worker_startup",
             )
             if key in metadata
         }
@@ -160,6 +161,7 @@ def _status_evidence_for_result(
         "dst_buffer_id",
         "staging_slot_id",
         "resource_evidence",
+        "worker_startup",
         "ticket_id",
         "transfer_id",
         "plan_generation",
@@ -451,6 +453,7 @@ class WorkerTransferClient:
         cleanup_coordinator: _WorkerTransferCleanupCoordinator | None = None,
         staging_pool: WorkerStagingPool | None = None,
         resource_binder: WorkerDataPlaneResourceBinder | None = None,
+        worker_startup_evidence: Mapping[str, object] | None = None,
     ) -> None:
         if executor is None:
             executor = default_worker_executor()
@@ -466,6 +469,11 @@ class WorkerTransferClient:
         )
         self._staging_pool = staging_pool or WorkerStagingPool()
         self._resource_binder = resource_binder
+        self._worker_startup_evidence = (
+            None
+            if worker_startup_evidence is None
+            else dict(worker_startup_evidence)
+        )
 
     def _authorize(
         self,
@@ -814,7 +822,10 @@ class WorkerTransferClient:
                 now=time.time(),
             )
         if self._resource_binder is None:
-            return self._executor.execute(worker_request, staging_slot)
+            return _worker_result_with_startup_evidence(
+                self._executor.execute(worker_request, staging_slot),
+                self._worker_startup_evidence,
+            )
         resources = None
         result: WorkerTransferResult | None = None
         execution_error: Exception | None = None
@@ -837,7 +848,11 @@ class WorkerTransferClient:
                 staging_slot,
                 execution_error,
             )
-        return _worker_result_with_resource_close_evidence(result, resources)
+        result = _worker_result_with_resource_close_evidence(result, resources)
+        return _worker_result_with_startup_evidence(
+            result,
+            self._worker_startup_evidence,
+        )
 
 
 class WorkerTransferService:
@@ -1031,6 +1046,29 @@ def _worker_result_with_resource_close_evidence(
         )
         completion_resource_evidence["close_evidence"] = resources.close_evidence()
         completion_evidence["resource_evidence"] = completion_resource_evidence
+        metadata["completion_evidence"] = completion_evidence
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
+    )
+
+
+def _worker_result_with_startup_evidence(
+    result: WorkerTransferResult,
+    worker_startup_evidence: Mapping[str, object] | None,
+) -> WorkerTransferResult:
+    if worker_startup_evidence is None:
+        return result
+    startup = dict(worker_startup_evidence)
+    metadata = dict(result.metadata)
+    metadata["worker_startup"] = startup
+    evidence = metadata.get("completion_evidence")
+    if isinstance(evidence, Mapping):
+        completion_evidence = dict(evidence)
+        completion_evidence["worker_startup"] = startup
         metadata["completion_evidence"] = completion_evidence
     return WorkerTransferResult(
         transfer_id=result.transfer_id,

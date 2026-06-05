@@ -152,7 +152,7 @@ def handle_request(
         except Exception as exc:
             return DaemonResponse(ok=False, error=str(exc))
     if request.request_type == RequestType.PROFILE:
-        return daemon.describe()
+        return daemon.describe(peer_identity=request.peer_identity)
     return DaemonResponse(ok=False, error=f"unsupported request: {request.request_type}")
 
 

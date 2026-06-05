@@ -7,10 +7,11 @@ completed state instead of appending history.
 
 Real H2D / D2H execution path closure before experiments.
 
-Current code target: production daemon and worker startup for daemon-issued
-H2D / D2H execution. Mixed direct-plus-relay completion evidence and buffer
-lifecycle evidence are now preserved through backend/worker completion,
-daemon receipts, runtime feedback, and runtime-session cleanup.
+Current code target: scheduler load feedback and cross-job isolation for
+daemon-issued H2D / D2H execution. Mixed direct-plus-relay completion evidence,
+buffer lifecycle evidence, and production worker startup evidence are now
+preserved through backend/worker completion, daemon receipts, runtime feedback,
+and runtime-session cleanup.
 
 ## Exit Criteria
 
@@ -18,9 +19,8 @@ daemon receipts, runtime feedback, and runtime-session cleanup.
   ownership scoped to the session, job, and transfer.
 - Receipt metadata and runtime feedback preserve buffer open, close, cleanup,
   and release evidence from real worker/backend completion or explicit failure.
-- Production daemon and worker socket startup use daemon-owned topology and
-  ticketed execution paths, without synthetic production topology or
-  application-side relay ownership.
+- Scheduler decisions consume live queued/running/active transfer state,
+  relay lease state, staging usage, completion sources, and job weights.
 - Offload, inference, model-loading, training, and vLLM adapters remain on
   `TurboBusRuntimeSession` and do not receive direct/relay/pool/target/relay
   policy controls.
@@ -31,24 +31,20 @@ daemon receipts, runtime feedback, and runtime-session cleanup.
 
 Focus on the production transfer boundary:
 
-- `turbobus/intent_executor.py`
-- `turbobus/direct_fallback.py`
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/receipts.py`
+- `turbobus/scheduler/`
+- `turbobus/scheduler/load_feedback.py`
+- `turbobus/daemon/leases.py`
+- `turbobus/intent_executor.py`
 - `turbobus/runtime_session.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/resources.py`
-- `turbobus/worker/endpoint.py`
-- `turbobus/worker/socket_client.py`
-- `turbobus/topology/discovery.py`
 
-The main implementation gap is now production startup: daemon and worker socket
-processes should start from daemon-owned topology discovery, reject synthetic
-production topology, bind worker identity where available, and execute only
-daemon-issued tickets.
+The main implementation gap is now scheduler load accounting: daemon planning
+should use real queued/running/active transfer state, relay leases, staging
+usage, completion source history, and job weights when choosing direct, relay,
+and mixed pooled paths.
 
 ## Next Entry
 
-Start at the daemon/worker production startup path and keep it tied to
-`TurboBusRuntimeSession` execution. Do not add server-validation commands,
-benchmark adapters, or application-side route controls.
+Start at scheduler load feedback and relay isolation state in the daemon. Do
+not add server-validation commands, benchmark adapters, or application-side
+route controls.

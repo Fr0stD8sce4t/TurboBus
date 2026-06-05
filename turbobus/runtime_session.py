@@ -915,6 +915,7 @@ class TurboBusRuntimeSession:
         buffer = self._buffers.get(normalized_id)
         response = DaemonResponse(ok=True, payload={"cleanup_skipped": True})
         cleanup_error: Exception | None = None
+        release_error: Exception | None = None
         if normalized_id in self._registered_buffer_ids:
             try:
                 response = self._execution_daemon_client().cleanup(
@@ -934,10 +935,16 @@ class TurboBusRuntimeSession:
             if isinstance(buffer, SharedPinnedCpuBuffer):
                 try:
                     buffer.release()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    release_error = exc
         if cleanup_error is not None:
+            if release_error is not None:
+                raise RuntimeError(
+                    f"{cleanup_error}; local buffer release failed: {release_error}"
+                ) from cleanup_error
             raise cleanup_error
+        if release_error is not None:
+            raise release_error
         return response
 
     def _rollback_adapter_transfer_context_buffer(

@@ -5,6 +5,10 @@
 Measure whether the daemon-managed relay system improves real LLM workloads
 without breaking isolation or fallback behavior.
 
+Benchmarks are not part of the current system-implementation entry point. Use
+this document after daemon-issued H2D / D2H direct, relay, and mixed pooled
+execution is complete.
+
 ## Required Scenarios
 
 - direct only;
@@ -18,7 +22,7 @@ without breaking isolation or fallback behavior.
 - model loading;
 - training offload;
 - CUDA backend;
-- ROCm backend when available.
+- ROCm backend only after the CUDA reproduction path is complete.
 
 ## Required Metrics
 
@@ -45,9 +49,9 @@ backends and workloads.
 Preferred fields:
 
 - scenario;
-- mode;
-- target GPU;
-- relay GPUs;
+- daemon-resolved mode;
+- daemon-resolved target GPU;
+- daemon-resolved relay GPUs;
 - bytes;
 - chunks;
 - latency;
@@ -62,4 +66,7 @@ Preferred fields:
 - Keep microbenchmarks small and focused on transfer behavior.
 - Use workload benchmarks for product decisions.
 - Do not let benchmark scripts become the system design.
-- Reuse the same public client API that future framework adapters will use.
+- Reuse `TurboBusRuntimeSession` and the same public intent/receipt path that
+  framework adapters use.
+- Do not expose benchmark CLI controls for direct, relay, pool, target GPU, or
+  relay GPU policy.

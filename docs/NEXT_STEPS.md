@@ -1,55 +1,56 @@
 # TurboBus Next Steps
 
-This is the only active forward plan. Keep it short and replace completed
-state instead of appending history.
+This is the only active per-round forward plan. Keep it short and replace
+completed state instead of appending history.
 
 ## Current Main Target
 
-System implementation before experiments.
+Real H2D / D2H execution path closure before experiments.
 
-Current code target: real H2D / D2H execution path closure. Offload and vLLM
-adapter submission should go through `TurboBusRuntimeSession.fetch_h2d()`,
-`offload_d2h()`, and the session-owned vLLM factory so the public runtime
-session API owns the transfer path.
+Current code target: daemon-issued mixed pooled transfer execution. A single
+`TransferIntent` whose scheduler decision contains direct and relay
+assignments must execute all assigned chunks, report worker/backend evidence,
+clean up daemon and worker state, and return one valid `TransferReceipt`.
 
 ## Exit Criteria
 
-- Ownership and cleanup paths retire runtime state only for the owning job,
-  session, or buffer.
-- Scheduler feedback continues to consume live runtime state rather than
-  static plan output.
-- Offload adapter submissions use the public runtime session H2D / D2H methods
-  with preserved intent identity and adapter metadata.
-- Adapter transfer context and offload / inference / vLLM adapter creation are
-  owned solely by `TurboBusRuntimeSession`.
-- The offload, inference, training, and vLLM adapter wrappers no longer expose
-  their own `from_runtime_session()` constructors; session-owned factories are
-  the only construction path.
-- Session open now triggers daemon profile bootstrap and `put_profile` before
-  the first transfer path is used.
-- Session close now cleans daemon-registered buffers before closing the
-  session, so buffer ownership retires through the runtime session API.
-- The runtime session now exposes a worker intent executor factory for the
-  daemon-issued transfer path.
-- The CUDA worker executor now binds its own data-plane resources in the
-  default execution path instead of failing immediately.
-- Adapter transfer context creation now rolls back newly registered buffers if
-  session bootstrap or context construction fails.
+- `WorkerIntentTransferExecutor` executes daemon-planned direct-only,
+  relay-only, and mixed pooled plans without choosing physical routes.
+- Direct assignments in a pooled plan are executed by backend exact-plan code
+  under the daemon-issued ticket, not by application-side path choice.
+- Relay assignments in the same pooled plan are executed through worker
+  authorization, worker CUDA execution, status reporting, and cleanup.
+- Daemon terminal status and receipt metadata include real completion or
+  explicit failure evidence for every planned byte.
+- Runtime feedback observes queued/running/active direct and relay paths from
+  daemon state, not static plan output alone.
+- Buffer registration and cleanup keep shared pinned CPU and CUDA IPC GPU
+  ownership scoped to the session, job, and transfer.
+- Offload, inference, model-loading, training, and vLLM adapters remain on
+  `TurboBusRuntimeSession` and do not receive direct/relay/pool/target/relay
+  policy controls.
 - No test, experiment, benchmark, paper-validation, or server-validation code
   is added during this system implementation pass.
 
 ## Current Code Work
 
-`turbobus/runtime_session.py` and `turbobus/daemon/server.py` should keep the
-public runtime session path and daemon feedback path aligned so `fetch_h2d()` /
-`offload_d2h()` stay on the session-owned API, terminal worker/backend
-evidence updates advance the daemon runtime-state version that scheduler
-feedback reads, `TurboBusRuntimeSession.close()` retires local buffer and
-session ownership even when daemon close returns an error, and runtime-owned
-CPU buffer registration failures and buffer cleanup failures release their
-shared memory backing.
+Focus on the production transfer boundary:
+
+- `turbobus/intent_executor.py`
+- `turbobus/direct_fallback.py`
+- `turbobus/daemon/server.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/worker/cuda_executor.py`
+- `turbobus/runtime_session.py`
+- `cpp/src/executor_cuda.cu`
+
+The main implementation gap is that direct-only and relay-worker execution
+exist as separate paths, while mixed pooled direct-plus-relay execution still
+needs one daemon-issued transfer lifecycle and one receipt.
 
 ## Next Entry
 
-After this target is complete, continue with one concrete implementation
-boundary: real H2D / D2H execution path closure.
+Start at `WorkerIntentTransferExecutor.execute_transfer_intent()`: keep daemon
+plans authoritative, split execution by daemon assignment type, execute direct
+and relay chunks for the same transfer, and report combined completion or
+explicit failure back to the daemon.

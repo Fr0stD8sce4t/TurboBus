@@ -1,124 +1,24 @@
-# Phase 6 Workload Boundary Inventory
+# Archived Phase 6 Workload Boundary Inventory
 
-Phase 6 extends the daemon-first workload path from vLLM KV cache movement to
-model weight loading and training or optimizer state offload.
+This file is retained only as historical context. It is not an active plan and
+must not be used to drive current implementation.
 
-## Scope
+The old Phase 6 inventory described a local daemon-first workload boundary and
+paper-validation shape. That phase language is now retired because the system
+path still needs code closure before benchmark, paper-validation, server
+validation, or experiment work should drive implementation.
 
-This inventory covers the current model-loading and training-offload code
-paths that participate in Phase 6:
+Current implementation guidance lives in:
 
-- `benchmarks/model_loading.py`
-- `benchmarks/training_offload.py`
-- `benchmarks/paper_validation.py`
-- `benchmarks/daemon_support.py`
-- `turbobus/adapters/model_loading.py`
-- `turbobus/adapters/training_offload.py`
-- `turbobus/offload_store.py`
-- scheduler workload-kind handling in `turbobus/scheduler/daemon.py`
-- related e2e and unit tests under `test/python/`
+- `AGENTS.md`
+- `docs/TURBOBUS_ROADMAP.md`
+- `docs/NEXT_STEPS.md`
+- `docs/PROGRESS.md`
 
-## Current Daemon-First Boundaries
+The current system target is real daemon-issued H2D / D2H execution, including
+mixed pooled direct-plus-relay plans, worker/backend completion evidence,
+cleanup, runtime feedback, and `TransferReceipt` generation.
 
-Model weight loading:
-
-- `benchmarks/model_loading.py` submits `TransferIntent` through
-  `TurboBusClient`.
-- The workload kind is `model_weights`.
-- The transfer direction is H2D.
-- Registered buffers are named by `source_buffer_id` and
-  `destination_buffer_id`.
-- Physical path selection is not exposed in the CLI, intent metadata, or
-  policy hints.
-- Output records receipt id, decision id, topology snapshot id, ticket id,
-  bytes, direct/relay path split, fallback reason, and timing.
-
-Training and optimizer state offload:
-
-- `benchmarks/training_offload.py` submits paired `TransferIntent` objects
-  through `TurboBusClient`.
-- The workload kind is either `training_state` or `optimizer_state`.
-- Prefetch uses H2D from CPU buffer to GPU buffer.
-- Offload uses D2H from GPU buffer to CPU buffer.
-- Physical path selection is not exposed in the CLI, intent metadata, or
-  policy hints.
-- Output records prefetch and offload receipt ids, decision ids, topology
-  snapshot ids, ticket ids, bytes, direct/relay path split, fallback reason,
-  timing, and compute-delay timing.
-
-Shared adapter path:
-
-- `ModelWeightLoader` and `TrainingOffloadManager` both use
-  `AdapterTransferContext` and `OffloadStore`.
-- `OffloadStore` constructs `TransferIntent` from block ranges and registered
-  CPU/GPU buffer ids.
-- `AdapterTransferContext` rejects physical path hints such as mode, path,
-  relay GPU, and target GPU.
-- Adapters consume `TransferReceipt` through `ReceiptTransferHandle`.
-
-Scheduler policy input:
-
-- `TransferIntent.workload_kind` reaches scheduler runtime metadata.
-- The scheduler distinguishes `kv_cache`, `model_weights`, `training_state`,
-  and `optimizer_state`.
-- Training and optimizer state carry a higher fairness charge multiplier than
-  generic/model-weight transfers.
-
-## Completed In Cut 1
-
-- Confirmed model-loading and training-offload benchmarks already submit
-  daemon-first `TransferIntent` objects through the public client API.
-- Confirmed adapters use `TransferIntent` and `TransferReceipt` through
-  shared `OffloadStore` instead of choosing direct, relay, or pooled paths.
-- Confirmed tests reject old benchmark CLI options such as target GPU, relay
-  GPU, and mode.
-- Added explicit `workload_kind=model_weights` to model-loading benchmark
-  config output.
-- Made paper validation surface model-loading and training-offload
-  job/session/buffer identity and workload kind in unified `paper_metric`
-  lines.
-- Made paper validation reject missing Phase 6 workload identity or workload
-  kind fields for model-loading and training-offload.
-
-## Completed In Cut 2
-
-- Added `optimizer-offload` as a first-class paper-validation workload that
-  invokes `benchmarks/training_offload.py` through the public client API with
-  fixed `workload_kind=optimizer_state`.
-- Fixed `training-offload` paper validation to represent
-  `workload_kind=training_state` instead of letting optimizer state appear as a
-  training-offload alias.
-- Added distinct intent prefixes and output files for training-state and
-  optimizer-state validation runs.
-- Added focused scheduler coverage showing `model_weights`, `training_state`,
-  and `optimizer_state` reach policy metadata and request charge accounting.
-- Added benchmark and paper-validation tests showing optimizer-state intent,
-  config, metrics, and summary output are preserved without target GPU, relay
-  GPU, mode, or pool controls.
-
-## Completed In Cut 3
-
-- Added the shared `phase6_unified_v1` paper-validation report schema across
-  vLLM KV, model loading, training-state offload, and optimizer-state offload.
-- Required every workload metric to include receipt ids, decision ids,
-  topology snapshot ids, ticket ids, bytes, completion status, timing, path
-  split, fallback reason, workload kind, job/session identity, and registered
-  buffer identity.
-- Added receipt-id summaries to model-loading and training-offload benchmark
-  JSON outputs so paper validation can compare all workloads through public
-  benchmark evidence.
-- Made paper validation reject missing unified report fields, incomplete byte
-  completion, or invalid correctness status.
-- Kept paper validation as a consumer of public benchmark outputs, not a core
-  scheduling API.
-
-## Phase 6 Completion
-
-Phase 6 is complete in the local daemon-first code and non-GPU validation
-path. Model loading, training-state offload, optimizer-state offload, and vLLM
-KV now share the same public API evidence shape.
-
-The remaining CUDA-server work belongs to Phase 7 paper evaluation and
-hardening. It should exercise the unified report schema on real multi-GPU
-servers with a running TurboBus daemon, but it must not add application-side
-direct, relay, pooled, target GPU, or relay GPU controls.
+Workload adapters remain important, but they should be advanced only through
+the unified `TurboBusRuntimeSession` API after the transfer path itself is
+complete enough for real buffers and receipts.

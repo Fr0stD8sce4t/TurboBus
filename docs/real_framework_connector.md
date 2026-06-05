@@ -6,10 +6,14 @@ the native transfer engine.
 ## Connector Rules
 
 - Keep request, token, and policy logic above the backend layer.
-- Translate framework lifecycle events into TurboBus transfer requests.
+- Translate framework lifecycle events into runtime-session buffer
+  registration, `TransferIntent` submission, and `TransferReceipt`
+  consumption.
 - Report bytes, chunks, timing, and fallback reasons back to the framework or
   benchmark layer.
 - Avoid hard-wiring framework scheduler behavior into the executor.
+- Do not expose daemon route, relay, target, lease, or ticket policy to
+  framework code.
 
 ## Shared Connector Shape
 
@@ -20,7 +24,7 @@ Each connector should be able to:
 - wait for completion;
 - query transfer stats;
 - handle cleanup when a request finishes or is canceled;
-- work with daemon-issued relay leases when relay paths are needed.
+- consume receipts through `TurboBusRuntimeSession`.
 
 ## First Targets
 

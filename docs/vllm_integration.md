@@ -15,7 +15,8 @@ lifecycle, with daemon-approved relay use when needed.
 - save prefixes into pinned CPU backing;
 - restore prefixes into newly allocated KV cache blocks;
 - report stats, timing, and fallback reason;
-- respect daemon relay leases and isolation policy.
+- respect daemon isolation policy without choosing route, target, relay, or
+  pool policy in vLLM code.
 
 ## Connector Responsibilities
 
@@ -25,6 +26,7 @@ lifecycle, with daemon-approved relay use when needed.
 - manage CPU backing allocation or reuse;
 - emit save and restore events;
 - clean up saved prefixes when a request or session ends.
+- submit data movement only through `TurboBusRuntimeSession`.
 
 ## Integration Points
 
@@ -54,12 +56,12 @@ The vLLM adapter should represent:
 - do not embed daemon policy in framework code;
 - do not assume the client owns relay GPUs directly;
 - do not make connector events the source of global transfer policy.
+- do not expose direct, relay, pool, target GPU, or relay GPU controls.
 
-## Testing Target
+## Future Validation Target
 
-The vLLM integration should be testable with:
+After the system transfer path is complete, the vLLM integration should be
+validated with:
 
-- fake scheduler outputs;
-- fake KV cache objects;
 - unit tests for block-id extraction and prefix mapping;
 - a small real-framework smoke path when the server environment is ready.

@@ -7,16 +7,13 @@ completed state instead of appending history.
 
 Real H2D / D2H execution path closure before experiments.
 
-Current code target: production worker/socket closure for daemon-issued mixed
-pooled transfer execution. The in-process runtime path now splits direct and
-relay assignments from one daemon plan, executes direct chunks through backend
-exact-plan code, executes relay chunks through worker authorization and cleanup,
-and reports one merged daemon completion.
+Current code target: daemon receipt and runtime feedback closure for
+daemon-issued mixed pooled transfer execution. The in-process runtime path and
+production worker socket path now both let relay workers return completion and
+cleanup evidence without independently completing the whole mixed transfer.
 
 ## Exit Criteria
 
-- Worker socket execution can use the same deferred-terminal mixed pooled path
-  as the in-process `WorkerTransferClient`.
 - Daemon terminal status and receipt metadata include merged real completion
   or explicit failure evidence for every planned byte.
 - Runtime feedback observes queued/running/active direct and relay paths from
@@ -36,20 +33,17 @@ Focus on the production transfer boundary:
 - `turbobus/intent_executor.py`
 - `turbobus/direct_fallback.py`
 - `turbobus/daemon/server.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/cuda_executor.py`
+- `turbobus/daemon/receipts.py`
 - `turbobus/runtime_session.py`
-- `cpp/src/executor_cuda.cu`
+- `turbobus/intent_execution_support.py`
 
-The main implementation gap is now the production worker socket boundary:
-socket worker requests still need a deferred-terminal mode so relay workers can
-return relay completion and cleanup evidence without independently completing
-the whole transfer before `WorkerIntentTransferExecutor` merges direct and relay
-evidence.
+The main implementation gap is now terminal evidence preservation: daemon
+completion, receipts, and runtime feedback should keep direct and relay child
+completion evidence for mixed pooled execution instead of flattening it to a
+single worker/backend source.
 
 ## Next Entry
 
-Start at the worker socket request/envelope path and carry the existing
-deferred-terminal mixed pooled mode through `WorkerServiceSocketClient`,
-`WorkerServiceEndpoint`, and `WorkerTransferService` without adding
-application-side route controls.
+Start at daemon terminal completion normalization and receipt metadata. Preserve
+the worker socket deferred-terminal path, and do not add server-validation
+commands or application-side route controls.

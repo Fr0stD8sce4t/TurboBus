@@ -170,10 +170,6 @@ def submit_worker_execution(
             lifecycle=lifecycle,
             completion=completion,
         )
-    if not report_terminal_status:
-        raise TypeError(
-            "worker_client must support deferred terminal status for mixed pooled transfers"
-        )
     envelope_submitter = getattr(worker_client, "submit_envelope", None)
     if callable(envelope_submitter):
         completion = envelope_submitter(
@@ -191,13 +187,14 @@ def submit_worker_execution(
                     "relay_gpu": request.relay_gpu,
                 },
                 cleanup_target_kind="reservation",
+                report_terminal_status=bool(report_terminal_status),
             )
         )
         require_worker_completion_matches_request(
             completion,
             request,
             expected_bytes=expected_bytes,
-            expect_terminal_status=True,
+            expect_terminal_status=bool(report_terminal_status),
         )
         return WorkerExecutionResult(
             final_state=completion.final_state,

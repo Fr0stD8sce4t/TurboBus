@@ -836,6 +836,7 @@ class WorkerTransferService:
         self,
         request: WorkerTransferAuthorizationRequest,
         cleanup_target_kind: str = "reservation",
+        report_terminal_status: bool = True,
     ) -> WorkerTransferLifecycleRecord:
         if not isinstance(request, WorkerTransferAuthorizationRequest):
             raise TypeError("request must be a WorkerTransferAuthorizationRequest")
@@ -844,6 +845,7 @@ class WorkerTransferService:
         return self.transfer_client.submit_report_cleanup_lifecycle(
             request,
             cleanup_target_kind=cleanup_target_kind,
+            report_terminal_status=bool(report_terminal_status),
         )
 
     def parse_authorization_request(
@@ -865,11 +867,15 @@ class WorkerTransferService:
                     cleanup_target_kind=str(
                         envelope.get("cleanup_target_kind", "reservation")
                     ),
+                    report_terminal_status=bool(
+                        envelope.get("report_terminal_status", True)
+                    ),
                 )
             )
             lifecycle = self.handle_lifecycle(
                 self.parse_authorization_request(request_envelope.payload),
                 cleanup_target_kind=request_envelope.cleanup_target_kind,
+                report_terminal_status=request_envelope.report_terminal_status,
             )
             return WorkerServiceResponseEnvelope.from_lifecycle(lifecycle)
         except (KeyError, TypeError, ValueError) as exc:

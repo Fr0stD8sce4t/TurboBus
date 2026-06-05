@@ -14,6 +14,12 @@ split by assignment type, direct chunks execute through backend exact-plan code,
 relay chunks execute through worker authorization and cleanup, and
 `WorkerIntentTransferExecutor` reports one merged daemon completion.
 
+The production worker socket path now carries the same deferred-terminal mode:
+socket request envelopes preserve whether the worker should report terminal
+daemon status, and `WorkerTransferService` passes that choice into the worker
+lifecycle so mixed pooled relay completion can be returned for executor-side
+merge.
+
 Server validation, benchmark work, paper validation, experiments, and new test
 code remain deferred until the full system implementation pass is complete.
 
@@ -27,6 +33,9 @@ code remain deferred until the full system implementation pass is complete.
   in the in-process worker-client path by combining direct backend completion
   evidence with deferred-terminal relay worker completion evidence before the
   daemon receives one terminal complete update.
+- Worker socket request envelopes now preserve `report_terminal_status`, and
+  socket worker clients can participate in mixed pooled direct-plus-relay
+  execution without independently completing the whole transfer.
 - Worker CUDA execution scopes relay work to authorized relay assignments, while
   direct backend execution scopes native plans to direct assignments from the
   same daemon-issued ticket.
@@ -42,10 +51,10 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Validation
 
-- `python -m py_compile turbobus/intent_executor.py
-  turbobus/intent_execution_support.py turbobus/direct_fallback.py
-  turbobus/worker/lifecycle.py turbobus/worker/cuda_executor.py
-  turbobus/daemon/server.py turbobus/daemon/receipts.py` passed.
+- `python -m py_compile turbobus/intent_execution_support.py
+  turbobus/worker/models.py turbobus/worker/codec.py
+  turbobus/worker/lifecycle.py turbobus/worker/socket_client.py
+  turbobus/worker/endpoint.py` passed.
 - `git diff --check` passed for the current code and documentation update,
   with CRLF normalization warnings on edited files.
 - Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
@@ -53,9 +62,8 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Remaining Risk
 
-- The production worker socket request/envelope path still needs the
-  deferred-terminal mixed pooled mode that the in-process worker client now
-  supports.
+- The production worker socket deferred-terminal path still needs full
+  end-to-end CUDA/server confirmation after the system path is complete.
 - Mixed pooled completion still needs full end-to-end CUDA/server confirmation
   after the system path is complete.
 - Runtime-state feedback still depends on server-side observation paths that
@@ -79,5 +87,5 @@ code remain deferred until the full system implementation pass is complete.
 
 ## Next Main Target
 
-Carry deferred-terminal mixed pooled execution through the production worker
-socket path without adding application-side route controls.
+Preserve mixed direct-plus-relay completion evidence in daemon receipts and
+runtime feedback without adding application-side route controls.

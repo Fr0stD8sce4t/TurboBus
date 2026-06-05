@@ -29,6 +29,7 @@ def decode_worker_request_envelope(
         return WorkerServiceRequestEnvelope(
             payload=_required_mapping(payload, "payload"),
             cleanup_target_kind=str(payload.get("cleanup_target_kind", "reservation")),
+            report_terminal_status=bool(payload.get("report_terminal_status", True)),
         )
     except (TypeError, ValueError) as exc:
         raise WorkerMessageCodecError(str(exc)) from exc

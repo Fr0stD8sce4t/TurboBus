@@ -552,6 +552,7 @@ class WorkerDataPlaneCompletionEnvelope:
 class WorkerServiceRequestEnvelope:
     payload: Mapping[str, object]
     cleanup_target_kind: str = "reservation"
+    report_terminal_status: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.payload, Mapping):
@@ -561,11 +562,17 @@ class WorkerServiceRequestEnvelope:
             raise ValueError("cleanup_target_kind must be reservation")
         object.__setattr__(self, "payload", dict(self.payload))
         object.__setattr__(self, "cleanup_target_kind", cleanup_target_kind)
+        object.__setattr__(
+            self,
+            "report_terminal_status",
+            bool(self.report_terminal_status),
+        )
 
     def as_dict(self) -> dict[str, object]:
         return {
             "payload": dict(self.payload),
             "cleanup_target_kind": self.cleanup_target_kind,
+            "report_terminal_status": self.report_terminal_status,
         }
 
 

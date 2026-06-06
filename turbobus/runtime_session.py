@@ -235,6 +235,7 @@ class TurboBusRuntimeSession:
             response = self._runtime_daemon_client().register_session(
                 int(self._target_gpu),
                 int(self.max_inflight_chunks),
+                worker_relay_capable=self.worker_client is not None,
             )
             require_ok(response, "daemon session registration failed")
             session_payload = response.payload["session"]

@@ -1349,6 +1349,7 @@ class Session:
     target_gpu: int
     relay_gpus: list[int]
     max_inflight_chunks: int
+    worker_relay_capable: bool = False
     active_chunks: int = 0
     active: bool = True
     created_at: float = 0.0

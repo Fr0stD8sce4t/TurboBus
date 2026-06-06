@@ -62,6 +62,7 @@ def handle_request(
         return daemon.register_session(
             target_gpu=int(payload["target_gpu"]),
             max_inflight_chunks=int(payload.get("max_inflight_chunks", 8)),
+            worker_relay_capable=bool(payload.get("worker_relay_capable", False)),
             peer_identity=request.peer_identity,
             connection_scoped=bool(payload.get("connection_scoped", False)),
             connection_id=connection_id,

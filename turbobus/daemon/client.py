@@ -75,10 +75,12 @@ class TurboBusDaemonRuntimeClient(_DaemonSocketClientBase):
         target_gpu: int,
         max_inflight_chunks: int = 8,
         connection_scoped: bool = False,
+        worker_relay_capable: bool = False,
     ) -> DaemonResponse:
         payload = {
             "target_gpu": int(target_gpu),
             "max_inflight_chunks": int(max_inflight_chunks),
+            "worker_relay_capable": bool(worker_relay_capable),
         }
         if connection_scoped:
             payload["connection_scoped"] = True

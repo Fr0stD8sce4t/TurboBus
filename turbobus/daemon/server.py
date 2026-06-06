@@ -203,6 +203,7 @@ class TurboBusDaemon:
         self,
         target_gpu: int,
         max_inflight_chunks: int = 8,
+        worker_relay_capable: bool = False,
         peer_identity: PeerIdentity | None = None,
         connection_scoped: bool = False,
         connection_id: str | None = None,
@@ -219,14 +220,15 @@ class TurboBusDaemon:
                 relays = self._relays_for_new_session_locked(target)
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
-            busy = [
-                gpu for gpu in relays if not self._relay_quotas[gpu].can_attach()
-            ]
-            if busy:
-                return DaemonResponse(
-                    ok=False,
-                    error=f"relay GPUs are unavailable: {busy}",
-                )
+            if bool(worker_relay_capable):
+                busy = [
+                    gpu for gpu in relays if not self._relay_quotas[gpu].can_attach()
+                ]
+                if busy:
+                    return DaemonResponse(
+                        ok=False,
+                        error=f"relay GPUs are unavailable: {busy}",
+                    )
 
             session_id = str(uuid.uuid4())
             session = Session(
@@ -234,6 +236,7 @@ class TurboBusDaemon:
                 target_gpu=target,
                 relay_gpus=relays,
                 max_inflight_chunks=max_inflight,
+                worker_relay_capable=bool(worker_relay_capable),
                 created_at=now,
                 last_seen=now,
             )
@@ -244,8 +247,9 @@ class TurboBusDaemon:
                 self._connection_scoped_sessions.add(session_id)
                 if connection_id is not None:
                     self._connection_scoped_session_connections[session_id] = str(connection_id)
-            for gpu in relays:
-                self._relay_quotas[gpu].sessions.add(session_id)
+            if bool(worker_relay_capable):
+                for gpu in relays:
+                    self._relay_quotas[gpu].sessions.add(session_id)
             payload = {"session": asdict(session)}
             if peer_identity is not None:
                 payload["peer_identity"] = asdict(peer_identity)
@@ -1996,6 +2000,7 @@ class TurboBusDaemon:
                 target_gpu=session.target_gpu,
                 relay_gpus=list(planning_relays),
                 max_inflight_chunks=session.max_inflight_chunks,
+                worker_relay_capable=session.worker_relay_capable,
                 active_chunks=session.active_chunks,
                 active=session.active,
                 created_at=session.created_at,
@@ -4330,6 +4335,30 @@ class TurboBusDaemon:
         session: Session,
         inventory=None,
     ) -> dict[str, object]:
+        if not bool(session.worker_relay_capable):
+            requested_relays = tuple(int(gpu) for gpu in session.relay_gpus)
+            inventory_record = (
+                None
+                if inventory is None
+                else {
+                    "topology_snapshot_id": inventory.topology_snapshot_id(),
+                    "topology_version": inventory.version,
+                    "inventory_source": inventory.source,
+                    "inventory_discovered_at": inventory.discovered_at,
+                }
+            )
+            return {
+                "requested_relays": requested_relays,
+                "eligible_relays": [],
+                "filtered_relays": [
+                    {
+                        "relay_gpu": int(relay_gpu),
+                        "reason": "session is not worker relay capable",
+                    }
+                    for relay_gpu in requested_relays
+                ],
+                **({} if inventory_record is None else inventory_record),
+            }
         return self._relay_eligibility_for_target_locked(
             target_gpu=session.target_gpu,
             requested_relays=session.relay_gpus,

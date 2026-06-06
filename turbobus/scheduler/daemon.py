@@ -131,6 +131,7 @@ class DaemonScheduler:
         if (
             fallback_reason is None
             and planning_mode is not TransferMode.DIRECT
+            and session.worker_relay_capable
             and session.relay_gpus
             and not profile.relays
         ):
@@ -234,6 +235,32 @@ class DaemonScheduler:
                 _direct_fallback_profile(session.target_gpu),
                 "daemon profile miss",
                 empty_policy,
+            )
+        if not bool(session.worker_relay_capable):
+            return (
+                _Profile(
+                    target_device=int(payload.get("target_device", session.target_gpu)),
+                    direct_h2d_bw_gbps=float(payload.get("direct_h2d_bw_gbps", 0.0) or 0.0),
+                    direct_d2h_bw_gbps=float(
+                        payload.get("direct_d2h_bw_gbps", payload.get("direct_h2d_bw_gbps", 0.0))
+                        or 0.0
+                    ),
+                    relays=(),
+                ),
+                "session is not worker relay capable",
+                _RelayPolicy(
+                    available_relays=(),
+                    deferred_relays=(),
+                    filtered_relays=tuple(
+                        {
+                            "relay_device": int(gpu),
+                            "reason": "session is not worker relay capable",
+                        }
+                        for gpu in session.relay_gpus
+                    ),
+                    load_adjustments=(),
+                    defer_relay_admission=bool(defer_relay_admission),
+                ),
             )
 
         available_relays = []

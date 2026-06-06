@@ -175,49 +175,65 @@ class WorkerIntentTransferExecutor:
                 ),
             )
         except WorkerCompletionEnvelopeError:
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_completion_invalid",
                 strict=False,
             )
-            _mark_mixed_transfer_failed(
+            _mark_transfer_failed(
                 daemon_client,
                 payload,
                 error="mixed pooled worker completion invalid",
                 completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
             raise
         except Exception as exc:
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_execution_exception",
                 strict=False,
             )
-            _mark_mixed_transfer_failed(
+            _mark_transfer_failed(
                 daemon_client,
                 payload,
                 error=str(exc) or exc.__class__.__name__,
                 completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
             raise
         if worker_execution.final_state == "authorization_failed":
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_authorization_failed",
                 strict=False,
             )
+            _mark_transfer_failed(
+                daemon_client,
+                payload,
+                error=worker_execution.error or "worker authorization failed",
+                completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
+            )
             raise RuntimeError(
                 worker_execution.error or "worker authorization failed"
             )
         if worker_execution.final_state == "parse_failed":
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_parse_failed",
                 strict=False,
+            )
+            _mark_transfer_failed(
+                daemon_client,
+                payload,
+                error=worker_execution.error or "worker transfer parse failed",
+                completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
             raise RuntimeError(
                 worker_execution.error or "worker transfer parse failed"
@@ -232,11 +248,18 @@ class WorkerIntentTransferExecutor:
                 )
             ):
                 return wait_for_intent_receipt(daemon_client, intent.intent_id)
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_cleanup_failed",
                 strict=False,
+            )
+            _mark_transfer_failed(
+                daemon_client,
+                payload,
+                error=worker_execution.error or "worker cleanup failed",
+                completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
             raise RuntimeError(
                 worker_execution.error or "worker cleanup failed"
@@ -244,11 +267,19 @@ class WorkerIntentTransferExecutor:
         if worker_execution.final_state in {"failed", "status_failed"}:
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
         if worker_execution.final_state != "complete":
-            cleanup_planned_relay_leases(
+            cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
                 reason="worker_completion_not_complete",
                 strict=False,
+            )
+            _mark_transfer_failed(
+                daemon_client,
+                payload,
+                error=worker_execution.error
+                or "worker-managed intent transfer did not complete",
+                completion_evidence=direct_completion_evidence,
+                cleanup_evidence=cleanup_evidence,
             )
             raise RuntimeError(
                 worker_execution.error or "worker-managed intent transfer did not complete"
@@ -495,25 +526,37 @@ def _merge_mixed_completion_evidence(
     return evidence
 
 
-def _mark_mixed_transfer_failed(
+def _mark_transfer_failed(
     daemon_client,
     payload: Mapping[str, object],
     *,
     error: str,
     completion_evidence: Mapping[str, object] | None,
+    cleanup_evidence: Iterable[Mapping[str, object]] | None = None,
 ) -> None:
-    if not isinstance(completion_evidence, Mapping):
-        return
     transfer_id = payload.get("transfer_id")
     if transfer_id is None:
         return
+    failure_evidence: dict[str, object] | None = None
+    if isinstance(completion_evidence, Mapping):
+        failure_evidence = dict(completion_evidence)
+    if cleanup_evidence is not None:
+        if failure_evidence is None:
+            failure_evidence = {}
+        failure_evidence["planned_relay_cleanup"] = [
+            dict(record) for record in cleanup_evidence
+        ]
     daemon_client.transfer_status(
         str(transfer_id),
         state="failed",
-        bytes_completed=int(completion_evidence.get("direct_bytes", 0) or 0),
+        bytes_completed=(
+            0
+            if not isinstance(completion_evidence, Mapping)
+            else int(completion_evidence.get("direct_bytes", 0) or 0)
+        ),
         error=error,
-        completion_source="backend",
-        completion_evidence=completion_evidence,
+        completion_source="backend" if failure_evidence is not None else None,
+        completion_evidence=failure_evidence,
     )
 
 
@@ -526,7 +569,7 @@ def _fail_transfer_without_worker_client(
     direct_completion_evidence: Mapping[str, object] | None,
     direct_bytes_completed: int,
 ) -> TransferReceipt:
-    cleanup_planned_relay_leases(
+    cleanup_evidence = cleanup_planned_relay_leases(
         daemon_client,
         lease_tokens,
         reason="worker_client_unavailable",
@@ -546,9 +589,20 @@ def _fail_transfer_without_worker_client(
             "backend" if isinstance(direct_completion_evidence, Mapping) else None
         ),
         completion_evidence=(
-            dict(direct_completion_evidence)
-            if isinstance(direct_completion_evidence, Mapping)
-            else None
+            (
+                {
+                    **dict(direct_completion_evidence),
+                    "planned_relay_cleanup": [
+                        dict(record) for record in cleanup_evidence
+                    ],
+                }
+                if isinstance(direct_completion_evidence, Mapping)
+                else {
+                    "planned_relay_cleanup": [
+                        dict(record) for record in cleanup_evidence
+                    ]
+                }
+            )
         ),
     )
     return wait_for_intent_receipt(daemon_client, intent.intent_id)

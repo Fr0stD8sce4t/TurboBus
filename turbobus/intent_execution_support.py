@@ -76,18 +76,31 @@ def cleanup_planned_relay_lease(
     *,
     reason: str = "unsupported_worker_plan",
     strict: bool = True,
-) -> None:
+) -> dict[str, object]:
     cleanup = getattr(daemon_client, "cleanup", None)
+    record = {
+        "lease_id": str(lease_token["lease_id"]),
+        "relay_gpu": int(lease_token["relay_gpu"]),
+        "reason": str(reason),
+        "cleanup_attempted": callable(cleanup),
+    }
     if not callable(cleanup):
-        return
+        record["cleanup_skipped"] = True
+        return record
     response = cleanup(
         target_kind="reservation",
         target_id=str(lease_token["lease_id"]),
         reason=reason,
         force=True,
     )
+    record["cleanup_response"] = {
+        "ok": bool(response.ok),
+        "error": response.error,
+        "payload": dict(response.payload) if isinstance(response.payload, Mapping) else {},
+    }
     if strict:
         require_ok(response, "daemon reservation cleanup failed")
+    return record
 
 
 def cleanup_planned_relay_leases(
@@ -96,14 +109,18 @@ def cleanup_planned_relay_leases(
     *,
     reason: str = "unsupported_worker_plan",
     strict: bool = True,
-) -> None:
+) -> tuple[dict[str, object], ...]:
+    records: list[dict[str, object]] = []
     for lease_token in lease_tokens:
-        cleanup_planned_relay_lease(
-            daemon_client,
-            lease_token,
-            reason=reason,
-            strict=strict,
+        records.append(
+            cleanup_planned_relay_lease(
+                daemon_client,
+                lease_token,
+                reason=reason,
+                strict=strict,
+            )
         )
+    return tuple(records)
 
 
 def require_daemon_transfer_complete(

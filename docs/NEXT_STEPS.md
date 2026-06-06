@@ -5,28 +5,28 @@ appending history.
 
 ## Current Main Target
 
-Close one full adapter expansion path for the next workload family on the same
-`TurboBusRuntimeSession` production path.
+Close one full server/runtime production-startup hardening path on the single
+`TurboBusRuntimeSession` production entry.
 
 ## Exit Criteria
 
-- Another production-facing workload family closes on top of the same
-  runtime-session-owned submit/receipt path, not just the offload-style path
-  already in place.
-- Adapter expansion continues to use `TurboBusRuntimeSession` for real buffer
-  registration, `TransferIntent` submission, and `TransferReceipt`
-  consumption without route choice leakage.
-- Expansion stays on the production path and does not depend on benchmark-only
-  or synthetic control paths.
+- Production startup converges on `TurboBusRuntimeSession` for daemon socket
+  client, worker client, and runtime-owned bootstrap instead of scattered
+  production-looking entry points.
+- The runtime path opens the production control plane with the identities,
+  sockets, and startup state needed for real intent submission and ticketed
+  execution.
+- Startup hardening does not reintroduce old runtime/planner compatibility
+  APIs, manual relay control, or synthetic production fallbacks.
 
 ## Current Code Work
 
 - `turbobus/runtime_session.py`
-- `turbobus/adapters/vllm_integration.py`
-- `turbobus/adapters/vllm.py`
-- `turbobus/adapters/vllm_kv_connector.py`
-- `turbobus/adapters/training_offload.py`
-- `turbobus/adapters/model_loading.py`
+- `turbobus/daemon/server.py`
+- `turbobus/daemon/dispatch.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/native_runtime.py`
+- `turbobus/profiling/bootstrap.py`
 
 Round rules:
 
@@ -42,17 +42,17 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py` and the next adapter workload family in
-`adapters/vllm_integration.py`, `adapters/vllm.py`,
-`adapters/vllm_kv_connector.py`, `adapters/training_offload.py`, and
-`adapters/model_loading.py`.
+Start at `runtime_session.py`, then follow the production startup path through
+`daemon/server.py`, `daemon/dispatch.py`, `worker/lifecycle.py`,
+`native_runtime.py`, and `profiling/bootstrap.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full server-backed validation closure after the system body is complete.
-- one full server/runtime production-startup hardening closure if adapters no
-  longer block the main system path.
+- one full scheduler/load-accounting closure driven by real
+  queued/running/active transfer state.
+- one full adapter expansion closure for another workload family only if the
+  startup path no longer blocks the main system body.
 
 Plan-file rule:
 

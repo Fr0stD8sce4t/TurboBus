@@ -153,6 +153,12 @@ class VllmKVSlotAdapter:
     def save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
         return self._transfer_prefix(refs, "save")
 
+    def submit_restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+        return self._submit_prefix_transfer(refs, "restore")
+
+    def submit_save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+        return self._submit_prefix_transfer(refs, "save")
+
     def transfer_stats(self, refs: Iterable[VllmKVBlockRef]) -> TransferStats:
         names_by_group = self._register_and_group(refs)
         total = TransferStats()
@@ -161,19 +167,37 @@ class VllmKVSlotAdapter:
         return total
 
     def _transfer_prefix(self, refs: Iterable[VllmKVBlockRef], operation: str) -> list:
+        handles = self._submit_prefix_transfer(refs, operation)
+        self._wait_handles(handles)
+        return handles
+
+    def _submit_prefix_transfer(
+        self,
+        refs: Iterable[VllmKVBlockRef],
+        operation: str,
+    ) -> list:
         refs = list(refs)
         names_by_group = self._register_and_group(refs)
         handles = []
-        submitted = []
         submit_method = "submit_restore_prefix" if operation == "restore" else "submit_save_prefix"
         for group_id, names in names_by_group.items():
             submit = getattr(self.adapters[group_id], submit_method)
             names, group_handles = submit(names)
-            submitted.append((group_id, names))
             handles.extend(group_handles)
-        for group_id, names in submitted:
-            self.adapters[group_id].wait_prefix(names)
         return handles
+
+    @staticmethod
+    def _wait_handles(handles: Iterable[object]) -> None:
+        seen = set()
+        for handle in handles:
+            handle_id = id(handle)
+            if handle_id in seen:
+                continue
+            seen.add(handle_id)
+            waiter = getattr(handle, "wait", None)
+            if not callable(waiter):
+                raise TypeError("vLLM TurboBus prefix handle must expose wait()")
+            waiter()
 
     @staticmethod
     def _sum_transfer_stats(total: TransferStats, stats: TransferStats) -> TransferStats:

@@ -7,30 +7,29 @@
 - `TurboBusRuntimeSession` remains the intended single production entry.
 - Managed daemon/worker startup and buffer lifetime closure are in place
   enough to support the remaining production-path closures.
-- One production-facing adapter family on top of `OffloadStore` now uses
-  `TurboBusRuntimeSession` as a real submit-then-wait owner instead of hiding a
-  synchronous fetch/evict shortcut behind adapter submit APIs.
+- A second production-facing workload family now uses explicit
+  runtime-session-owned submit, wait, and receipt consumption on the vLLM KV
+  path instead of hiding terminal behavior behind synchronous adapter calls.
 
 ## Remaining Risk
 
-- The next adapter workload family still needs to close on the same
-  runtime-session-owned submit/receipt path, especially the more vLLM-shaped
-  integration surface.
-- Some framework-facing entry points may still carry older assumptions about
-  when submit APIs are terminal versus when receipt consumption is deferred.
+- Production startup is still split across runtime, daemon, worker, and native
+  bootstrap boundaries that need one hardened owning path.
+- Some production-looking startup surfaces may still expose duplicate or
+  weaker entry behavior outside `TurboBusRuntimeSession`.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full adapter expansion closure for the next workload family on the
-same `TurboBusRuntimeSession` production path. After that, choose
-exactly one of these per round:
+Finish one full server/runtime production-startup hardening closure on the
+single `TurboBusRuntimeSession` production entry. After that, choose exactly
+one of these per round:
 
-- one complete server-backed validation closure after the system body is
-  complete.
-- one complete server/runtime production-startup hardening closure if adapters
-  no longer block the main system path.
+- one complete scheduler/load-accounting closure driven by live transfer
+  state.
+- one complete adapter expansion closure for another workload family only if
+  startup no longer blocks the main system path.
 
 Progress-file rule:
 

@@ -684,7 +684,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         )
         prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
         transfer_start = time.perf_counter()
-        handles = adapter.restore_prefix(refs)
+        handles = adapter.submit_restore_prefix(refs)
+        _wait_transfer_handles(handles)
         transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
         total_ms = (time.perf_counter() - total_start) * 1000.0
         stats = _adapter_transfer_stats(adapter, refs, handles).as_dict()
@@ -802,7 +803,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         refs = [replace(ref, group_id=layer_index) for ref in refs]
         context.refs_ms += (time.perf_counter() - refs_start) * 1000.0
         transfer_start = time.perf_counter()
-        handles = adapter.save_prefix(refs)
+        handles = adapter.submit_save_prefix(refs)
+        _wait_transfer_handles(handles)
         transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
         stats = _adapter_transfer_stats(adapter, refs, handles)
         receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
@@ -1075,6 +1077,21 @@ def _adapter_transfer_stats(adapter, refs, handles) -> TransferStats:
         direct_chunks=int(getattr(stats, "direct_chunks", 0) or 0),
         relay_chunks=int(getattr(stats, "relay_chunks", 0) or 0),
     )
+
+
+def _wait_transfer_handles(handles) -> list[object]:
+    resolved = list(handles)
+    seen = set()
+    for handle in resolved:
+        handle_id = id(handle)
+        if handle_id in seen:
+            continue
+        seen.add(handle_id)
+        waiter = getattr(handle, "wait", None)
+        if not callable(waiter):
+            raise TypeError("vLLM TurboBus transfer handle must expose wait()")
+        waiter()
+    return resolved
 
 
 def _receipt_trace_from_handles(

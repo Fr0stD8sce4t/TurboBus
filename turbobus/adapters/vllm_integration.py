@@ -244,14 +244,40 @@ class VllmTurboBusIntegration:
         )
 
     def restore_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
+        return self._run_submitted_handles(
+            self.submit_restore_request_prefix(
+                request_id,
+                cpu_slot_start=cpu_slot_start,
+            )
+        )
+
+    def submit_restore_request_prefix(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
         adapter = self.require_adapter()
-        return adapter.restore_prefix(
+        return adapter.submit_restore_prefix(
             self.make_refs_for_request(request_id, cpu_slot_start=cpu_slot_start)
         )
 
     def save_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
+        return self._run_submitted_handles(
+            self.submit_save_request_prefix(
+                request_id,
+                cpu_slot_start=cpu_slot_start,
+            )
+        )
+
+    def submit_save_request_prefix(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
         adapter = self.require_adapter()
-        return adapter.save_prefix(
+        return adapter.submit_save_prefix(
             self.make_refs_for_request(request_id, cpu_slot_start=cpu_slot_start)
         )
 
@@ -276,6 +302,21 @@ class VllmTurboBusIntegration:
         return self.state.adapter
 
     _require_adapter = require_adapter
+
+    @staticmethod
+    def _run_submitted_handles(handles: Iterable[object]) -> list:
+        resolved = list(handles)
+        seen = set()
+        for handle in resolved:
+            handle_id = id(handle)
+            if handle_id in seen:
+                continue
+            seen.add(handle_id)
+            waiter = getattr(handle, "wait", None)
+            if not callable(waiter):
+                raise TypeError("vLLM TurboBus submitted handle must expose wait()")
+            waiter()
+        return resolved
 
 
 def extract_vllm_block_ids(blocks) -> tuple[tuple[int, ...], ...]:

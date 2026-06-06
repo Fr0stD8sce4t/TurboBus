@@ -105,31 +105,31 @@ class InferenceKVSlotAdapter(OffloadStore):
     def save_prefix(self, names: Iterable[str]) -> list:
         return self._run_prefix_transfer(names, self.submit_save_prefix)
 
+    def submit_restore_batch(self, names: Iterable[str]) -> OffloadBatch:
+        names = list(names)
+        return self.submit_prefetch_many(names)
+
     def submit_restore_prefix(self, names: Iterable[str]) -> tuple[list[str], list]:
         names = list(names)
-        return names, self.prefetch_many(names)
+        batch = self.submit_restore_batch(names)
+        return names, list(batch.handles)
 
     def restore_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
-        return OffloadBatch(
-            "restore",
-            tuple(names),
-            tuple(self.prefetch_many(names)),
-            self,
-        )
+        return self.submit_restore_batch(names)
+
+    def submit_save_batch(self, names: Iterable[str]) -> OffloadBatch:
+        names = list(names)
+        return self.submit_evict_many(names)
 
     def submit_save_prefix(self, names: Iterable[str]) -> tuple[list[str], list]:
         names = list(names)
-        return names, self.evict_many(names)
+        batch = self.submit_save_batch(names)
+        return names, list(batch.handles)
 
     def save_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
-        return OffloadBatch(
-            "save",
-            tuple(names),
-            tuple(self.evict_many(names)),
-            self,
-        )
+        return self.submit_save_batch(names)
 
     def wait_prefix(self, names: Iterable[str]) -> None:
         self.wait_many(names)

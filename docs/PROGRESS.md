@@ -2,38 +2,30 @@
 
 ## Current State
 
-- Main target remains the core system body, not adapters, benchmarks, or paper
-  work.
-- Per-round progress counts only when one full production capability closes.
-- The production entry is centered on `TurboBusRuntimeSession`.
-- Managed runtime-session-owned daemon and worker socket startup is already the
-  base path for the next closures.
-- Buffer registration -> execution -> cleanup -> final `TransferReceipt`
-  lifetime evidence is now bound through the daemon receipt path, including
-  runtime buffer registration snapshots plus worker/direct resource evidence.
-- Direct, relay, and mixed terminal receipts now expose a more uniform
-  daemon-owned completion contract view instead of leaving failure/cleanup
-  evidence split across per-mode shapes.
-- Direct-only and relay-only failure paths now also carry stronger mode-level
-  execution contract fields into the final daemon receipt path.
+- The project is still in system-body implementation, not adapters,
+  benchmarks, or paper work.
+- `TurboBusRuntimeSession` remains the intended single production entry.
+- Managed daemon/worker startup and buffer lifetime closure are in place
+  enough to support the remaining execution-path closures.
+- The next required system closure is a relay-only path that ends in one
+  daemon-owned receipt contract.
 
 ## Remaining Risk
 
-- Daemon execution still spans several modules and needs a cleaner owned path.
-- Relay-only execution still needs one clearer end-to-end closure expressed as
-  a single mode-owned path rather than only as part of the shared contract.
-- Scheduler/runtime load feedback still needs to consume more of the real
-  queued/running/active transfer state as one owned path.
+- Relay-only execution still relies on a less explicit terminal path than mixed
+  execution.
+- Daemon execution ownership still spans several modules and needs one cleaner
+  mode-owned closure at a time.
+- Scheduler/runtime load feedback still remains a later core-system closure.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
-  do not block current system implementation.
+  do not block current implementation rounds.
 
 ## Next Main Target
 
-Keep finishing the system body in larger closures. Prefer exactly one of these
-per round:
+Finish relay-only execution as one full daemon-owned closure. After that,
+choose exactly one of these per round:
 
-- one complete execution-mode closure;
-- one complete runtime-session-owned startup/execution/cleanup closure.
+- one complete runtime-session-owned startup/execution/cleanup closure;
 - one complete scheduler/runtime load-feedback closure.
 
 Progress-file rule:

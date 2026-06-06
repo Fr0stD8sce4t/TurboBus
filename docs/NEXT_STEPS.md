@@ -5,48 +5,46 @@ appending history.
 
 ## Current Main Target
 
-Finish the core system body before adapter migration, benchmarks, or paper
-evaluation.
-
-- `TurboBusRuntimeSession` is the only production entry.
-- One `TransferIntent` maps to one daemon-owned lifecycle.
-- Direct, relay, and mixed execution stay daemon-issued outcomes.
-- Execution, receipt, and cleanup stay one contract.
+Close one full relay-only execution path as a daemon-owned production closure.
 
 ## Exit Criteria
 
-- Runtime session owns startup, registration, intent submission, and receipt use.
-- Daemon lifecycle stays explicit from admission to cleanup.
-- Direct, relay, and mixed plans share one completion contract.
-- Shared pinned CPU and CUDA IPC GPU buffers stay inside daemon-issued lifetime.
+- One relay-only `TransferIntent` runs through daemon scheduling, worker
+  execution, cleanup, and final `TransferReceipt`.
+- Relay-only success and failure both report daemon-owned terminal evidence.
+- Relay-only completion uses the same receipt contract shape as direct and
+  mixed execution.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
-- `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
 - `turbobus/worker/lifecycle.py`
+- `turbobus/daemon/server.py`
 - `turbobus/daemon/receipts.py`
+- `turbobus/runtime_session.py`
 
-Current gap:
+Round rules:
 
-- land one full system capability per round, not local bug-style fixes;
-- keep daemon scheduling as the only plan authority;
-- finish the remaining execution closures on top of the managed runtime-session
-  daemon/worker socket path;
-- keep pushing the remaining system closures on top of the now tighter
-  daemon-owned completion contract.
+- Start each round with `git status`, then read `AGENTS.md`,
+  `docs/TURBOBUS_ROADMAP.md`, `docs/NEXT_STEPS.md`, and `docs/PROGRESS.md`.
+- Choose the single round target from this file first and `docs/PROGRESS.md`
+  second.
+- Finish one full system closure per round, not local bug-style fixes.
+- State assumptions when they matter, prefer the simplest correct change, and
+  keep edits surgical to the active target.
+- Update this file and `docs/PROGRESS.md` after each completed closure.
+- Keep only active and next work here. Do not append completed history.
 
 ## Next Entry
 
-Start at `TurboBusRuntimeSession`, `daemon/server.py`, `intent_executor.py`,
-and `worker/lifecycle.py`.
+Start at `intent_executor.py`, `worker/lifecycle.py`, `daemon/server.py`, and
+`daemon/receipts.py`.
 
-Next round should finish exactly one of these:
+After the current target closes, the next round should finish exactly one of
+these:
 
-- one full runtime-session-owned execution and cleanup closure.
+- one full runtime-session-owned execution and cleanup closure;
 - one full scheduler/runtime load-feedback closure.
-- one full relay-only execution closure.
 
 Plan-file rule:
 

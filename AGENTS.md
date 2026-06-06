@@ -19,21 +19,25 @@ The old phase-by-phase plan has been retired. Do not restart from Phase 0,
 Phase 6, or Phase 7 documents. Historical phase inventories are not current
 plans and must not drive implementation.
 
-Current system priority: close the daemon-issued H2D / D2H execution path,
-including mixed pooled direct-plus-relay plans, so one `TransferIntent` can
-produce a daemon `SchedulingDecision`, daemon-issued `ExecutionTicket`,
-worker/backend execution, terminal status, cleanup, and a real
-`TransferReceipt`.
+Current system priority: finish the system body before benchmark or paper
+evaluation work. The main implementation order is:
+
+1. make `TurboBusRuntimeSession` the single production authority;
+2. close the daemon-issued H2D / D2H execution lifecycle end to end;
+3. harden the native direct, relay, and mixed pooled data path;
+4. refine scheduler and topology-driven sharing policy;
+5. only then return to adapters, validation, benchmarks, and paper evidence.
 
 Every code change should move the project closer to:
 
+- one clear production path centered on `TurboBusRuntimeSession`;
 - real daemon-issued H2D and D2H execution;
 - direct, relay, and mixed pooled worker/backend data movement;
 - receipts created from worker/backend completion or explicit failure;
 - runtime load feedback into scheduling;
 - cross-job isolation during shared relay use;
-- vLLM, model-loading, and offload workloads using real registered buffers
-  through `TurboBusRuntimeSession`.
+- framework adapters using real registered buffers through
+  `TurboBusRuntimeSession` only after the core transfer path is stable.
 
 ## System Contract
 
@@ -108,8 +112,9 @@ adapters, tests, and experiments:
 
 Tests may construct invalid variants of these objects only when the purpose is
 to validate rejection behavior. During the current system implementation pass,
-do not add new tests unless the active plan explicitly moves into the test and
-validation stage.
+do not let tests, benchmark migration, or paper-validation tooling drive the
+order of implementation unless the active plan explicitly moves into that
+stage.
 
 ## Anti-Drift Rules
 

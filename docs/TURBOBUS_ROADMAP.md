@@ -26,17 +26,17 @@ The code must prove:
    worker clients, profile bootstrap, session/job registration, buffer
    registration, adapter construction, and receipt consumption.
 
-2. Daemon-issued H2D / D2H execution
+2. Daemon-issued H2D / D2H execution lifecycle
 
    A `TransferIntent` must produce a daemon `SchedulingDecision`, a bound
    `ExecutionTicket`, worker/backend execution, status updates, cleanup, and a
    `TransferReceipt` from real completion or explicit failure.
 
-3. Mixed pooled path closure
+3. Native direct, relay, and mixed pooled data path closure
 
-   Pooled plans must execute both direct chunks and relay chunks for the same
-   transfer. Receipt evidence must merge direct backend completion and relay
-   worker completion instead of dropping either side of the plan.
+   Direct-only, relay-only, and mixed pooled plans must execute as exact
+   daemon-issued plans. Native runtime, backend conversion, worker execution,
+   and receipt evidence must agree on the same chunk-level contract.
 
 4. Buffer lifetime closure
 
@@ -51,25 +51,38 @@ The code must prove:
    available, and execute ticketed transfers without application-side relay
    ownership.
 
-6. Runtime load feedback and isolation
+6. Scheduler and runtime load feedback
 
    Scheduler decisions must consume live queued/running/active transfer state,
    relay leases, staging usage, completion sources, and job weights so
    cross-job sharing is observable and isolated.
 
-7. Framework adapter closure
+7. Cross-job isolation and ownership hardening
+
+   Job, session, buffer, lease, and cleanup ownership must stay bound to
+   authenticated peers or explicit daemon-owned identities so shared relay use
+   does not weaken isolation.
+
+8. Framework adapter closure
 
    Offload, inference, model-loading, training, and vLLM adapters must register
    real buffers through `TurboBusRuntimeSession`, submit H2D/D2H transfer
    intent, and consume `TransferReceipt` without seeing route, relay, or target
    policy.
 
-8. Validation and evaluation
+9. Validation and evaluation
 
    After the system path is complete, add or repair tests, benchmarks, paper
    validation, server validation, and paper experiments around real executed
    evidence. Do not use JSON artifacts, synthetic topology, fake receipts, or
    dry-run wrappers as reproduction proof.
+
+## Current Priority Interpretation
+
+Treat items 1 through 7 as system implementation work. Treat items 8 and 9 as
+follow-on work. If a change mainly improves benchmark usability, paper
+reporting, or comparison output but does not close a system contract above, it
+is out of order for the current pass.
 
 ## Deferred Direction
 

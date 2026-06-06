@@ -8,21 +8,17 @@ appending history.
 Finish the core system body before adapter migration, benchmarks, or paper
 evaluation.
 
-- `TurboBusRuntimeSession` is the only production system entry;
-- one `TransferIntent` maps to one daemon-owned scheduling lifecycle;
-- direct, relay, and mixed pooled execution stay daemon-issued outcomes;
-- execution, terminal receipt, and cleanup stay one contract.
+- `TurboBusRuntimeSession` is the only production entry.
+- One `TransferIntent` maps to one daemon-owned lifecycle.
+- Direct, relay, and mixed execution stay daemon-issued outcomes.
+- Execution, receipt, and cleanup stay one contract.
 
 ## Exit Criteria
 
-- Runtime session owns startup, registration, intent submission, execution, and
-  receipt consumption.
-- Daemon transfer lifecycle stays explicit from admission through ticket,
-  execution status, terminal receipt, and cleanup.
-- Direct-only, relay-only, and mixed plans share one completion-evidence
-  contract.
-- Shared pinned CPU and CUDA IPC GPU buffer lifetime stays inside the
-  daemon-issued session/job lifecycle.
+- Runtime session owns startup, registration, intent submission, and receipt use.
+- Daemon lifecycle stays explicit from admission to cleanup.
+- Direct, relay, and mixed plans share one completion contract.
+- Shared pinned CPU and CUDA IPC GPU buffers stay inside daemon-issued lifetime.
 
 ## Current Code Work
 
@@ -33,18 +29,26 @@ evaluation.
 
 Current gap:
 
-- system work must land as full capability closure, not isolated bug-style
-  fixes;
+- land one full system capability per round, not local bug-style fixes;
 - keep daemon scheduling as the only plan authority;
-- build the remaining execution closures on top of the runtime-session-owned
-  managed daemon/worker socket lifecycle;
-- keep direct, relay, and mixed execution bound to one terminal
-  receipt/cleanup path all the way through buffer lifetime closure.
+- finish the remaining execution closures on top of the managed runtime-session
+  daemon/worker socket path;
+- bind direct, relay, and mixed execution to one receipt/cleanup path through
+  buffer lifetime closure.
 
 ## Next Entry
 
 Start at `TurboBusRuntimeSession`, `daemon/server.py`, `intent_executor.py`,
-and `worker/lifecycle.py`. The runtime-session-to-daemon/worker startup path is
-now a managed production lifecycle; mixed pooled receipt evidence now carries
-worker cleanup/staging lifecycle evidence. Push the next round into one full
-relay-only or buffer-lifecycle closure rather than another local hardening step.
+and `worker/lifecycle.py`.
+
+Next round should finish exactly one of these:
+
+- one full relay-only execution closure;
+- one full shared pinned CPU plus CUDA IPC buffer lifetime closure;
+- one full runtime-session-owned execution and cleanup closure.
+
+Plan-file rule:
+
+- after each real system sub-goal, rewrite this file to the new current target;
+- keep only the active target, active code entry, and next closure candidates;
+- do not append completed work history here.

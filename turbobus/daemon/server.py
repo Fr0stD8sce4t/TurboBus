@@ -1053,6 +1053,27 @@ class TurboBusDaemon:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
             existing_transfer_id = self._intent_transfers.get(intent.intent_id)
+            if existing_transfer_id is None:
+                archived_transfer_id = self._archived_intent_transfers.get(intent.intent_id)
+                if archived_transfer_id is not None:
+                    try:
+                        receipt = self._receipt_for_intent_locked(intent.intent_id)
+                    except ValueError as exc:
+                        return DaemonResponse(ok=False, error=str(exc))
+                    archived = self._transfer_receipt_archive.get(
+                        str(archived_transfer_id),
+                        {},
+                    )
+                    archived_intent = archived.get("intent")
+                    if isinstance(archived_intent, TransferIntent) and archived_intent != intent:
+                        return DaemonResponse(
+                            ok=False,
+                            error="intent_id already belongs to a different transfer intent",
+                        )
+                    return DaemonResponse(
+                        ok=True,
+                        payload={"receipt": asdict(receipt)},
+                    )
             if existing_transfer_id is not None:
                 existing = self._transfer_intents.get(intent.intent_id)
                 if existing != intent:

@@ -4754,20 +4754,39 @@ class TurboBusDaemon:
     def _normalize_relays(relay_gpus: Iterable[int]) -> list[int]:
         return sorted({int(gpu) for gpu in relay_gpus})
 
-    def serve_forever(self, socket_path: str) -> None:
+    def serve_forever(
+        self,
+        socket_path: str,
+        *,
+        stop_event: threading.Event | None = None,
+        max_requests: int | None = None,
+    ) -> None:
         peer_auth.validate_unix_socket_support(
             require_authenticated_peers=self._require_authenticated_peers
         )
+        if max_requests is not None:
+            max_requests = int(max_requests)
+            if max_requests <= 0:
+                raise ValueError("max_requests must be positive")
         unlink_stale_socket(socket_path)
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(socket_path)
         secure_unix_socket(socket_path)
         server.listen()
+        server.settimeout(0.1)
 
         try:
+            request_count = 0
             while True:
-                conn, _ = server.accept()
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if max_requests is not None and request_count >= max_requests:
+                    break
+                try:
+                    conn, _ = server.accept()
+                except socket.timeout:
+                    continue
                 with conn:
                     peer_identity = peer_auth.peer_identity_from_socket(conn)
                     connection_id = str(uuid.uuid4())
@@ -4790,6 +4809,7 @@ class TurboBusDaemon:
                                 conn.sendall(
                                     (json.dumps(asdict(response)) + "\n").encode("utf-8")
                                 )
+                                request_count += 1
                     finally:
                         with self._lock:
                             self._cleanup_connection_scoped_sessions_locked(

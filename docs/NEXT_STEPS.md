@@ -29,19 +29,23 @@ evaluation.
 - `turbobus/runtime_session.py`
 - `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
-- `turbobus/api.py`
+- `turbobus/worker/process.py`
 
 Current gap:
 
-- remove remaining duplicate production-looking entry paths;
+- system work must land as full capability closure, not isolated bug-style
+  fixes;
 - keep daemon scheduling as the only plan authority;
+- build the remaining execution closures on top of the runtime-session-owned
+  managed daemon/worker socket lifecycle;
 - keep direct, relay, and mixed execution bound to one terminal
   receipt/cleanup path.
 
 ## Next Entry
 
-Start at `TurboBusRuntimeSession`, `api.py`, `daemon/server.py`, and
-`intent_executor.py`. Prefer changes that further collapse production entry
-ownership and daemon-issued execution lifecycle ownership. Prefer closing any
-remaining non-terminal or plan-payload return paths before touching deferred
-benchmark/example/adapter surfaces.
+Start at `TurboBusRuntimeSession`, `daemon/server.py`, `intent_executor.py`,
+and `worker/process.py`. The runtime-session-to-daemon/worker startup path is
+now a managed production lifecycle; use that owned entrypoint to push the next
+round into one full direct-only, relay-only, mixed-pooled, or buffer-lifecycle
+closure. Do not treat one-off wait semantics, helper moves, field edits, or
+single bug-style fixes as sufficient round outcomes.

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import socket
+import threading
+import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -17,6 +20,7 @@ from .daemon.client import (
     TurboBusDaemonProfileClient,
     TurboBusDaemonRuntimeClient,
 )
+from .daemon.startup import DaemonStartupConfig, create_production_daemon
 from .intent_executor import WorkerIntentTransferExecutor
 from .intent_execution_support import require_ok
 from .ranges import TransferRange, range_as_dict
@@ -41,6 +45,7 @@ from .schema import (
     TransferReceipt,
     WorkloadKind,
 )
+from .worker.process import run_worker_service_process
 from .worker.socket_client import WorkerServiceSocketClient
 
 
@@ -85,6 +90,36 @@ class TurboBusRuntimeSession:
         repr=False,
     )
     _transfer_executor: WorkerIntentTransferExecutor | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_daemon_stop_event: threading.Event | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_daemon_thread: threading.Thread | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_worker_stop_event: threading.Event | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_worker_thread: threading.Thread | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_daemon_socket_path: str | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _owned_worker_socket_path: str | None = field(
         default=None,
         init=False,
         repr=False,
@@ -201,6 +236,81 @@ class TurboBusRuntimeSession:
             backend=backend,
             runtime_options=options,
         )
+
+    @classmethod
+    def open_managed_production_socket(
+        cls,
+        *,
+        job_id: str,
+        daemon_socket_path: str,
+        worker_socket_path: str,
+        daemon_startup_config: DaemonStartupConfig | None = None,
+        user_id: str | None = None,
+        max_inflight_chunks: int = 8,
+        backend=default_cuda_backend,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> "TurboBusRuntimeSession":
+        options = runtime_options or RuntimeOptions()
+        daemon_path = str(daemon_socket_path)
+        worker_path = str(worker_socket_path)
+        if not daemon_path.strip():
+            raise ValueError("daemon_socket_path must be non-empty")
+        if not worker_path.strip():
+            raise ValueError("worker_socket_path must be non-empty")
+        daemon = create_production_daemon(
+            daemon_startup_config or DaemonStartupConfig()
+        )
+        daemon_stop_event = threading.Event()
+        daemon_thread = threading.Thread(
+            target=daemon.serve_forever,
+            kwargs={
+                "socket_path": daemon_path,
+                "stop_event": daemon_stop_event,
+            },
+            name="turbobus-daemon-service",
+            daemon=True,
+        )
+        daemon_thread.start()
+        worker_stop_event = threading.Event()
+        worker_thread = threading.Thread(
+            target=run_worker_service_process,
+            args=(daemon_path, worker_path),
+            kwargs={
+                "stop_event": worker_stop_event,
+                "backend": backend,
+                "runtime_options": options,
+            },
+            name="turbobus-worker-service",
+            daemon=True,
+        )
+        worker_thread.start()
+        try:
+            _wait_for_managed_services_ready(
+                daemon_socket_path=daemon_path,
+                worker_socket_path=worker_path,
+            )
+            session = cls.open_socket(
+                daemon_socket_path=daemon_path,
+                worker_socket_path=worker_path,
+                job_id=job_id,
+                user_id=user_id,
+                max_inflight_chunks=max_inflight_chunks,
+                backend=backend,
+                runtime_options=options,
+            )
+        except Exception:
+            worker_stop_event.set()
+            daemon_stop_event.set()
+            worker_thread.join(timeout=1.0)
+            daemon_thread.join(timeout=1.0)
+            raise
+        session._owned_daemon_stop_event = daemon_stop_event
+        session._owned_daemon_thread = daemon_thread
+        session._owned_worker_stop_event = worker_stop_event
+        session._owned_worker_thread = worker_thread
+        session._owned_daemon_socket_path = daemon_path
+        session._owned_worker_socket_path = worker_path
+        return session
 
     @property
     def session_id(self) -> str:
@@ -430,6 +540,7 @@ class TurboBusRuntimeSession:
             release_evidence = self._release_owned_cpu_buffers(
                 reason="runtime_session_close_without_daemon_session"
             )
+            managed_service_evidence = self._stop_owned_services()
             clear_runtime_session_state(self)
             self._closed = True
             return DaemonResponse(
@@ -437,6 +548,7 @@ class TurboBusRuntimeSession:
                 payload={
                     "closed": False,
                     "owned_cpu_buffer_release": release_evidence,
+                    "managed_service_shutdown": managed_service_evidence,
                 },
             )
         cleanup_errors: list[dict[str, object]] = []
@@ -473,6 +585,7 @@ class TurboBusRuntimeSession:
             release_evidence = self._release_owned_cpu_buffers(
                 reason="runtime_session_close"
             )
+            managed_service_evidence = self._stop_owned_services()
             clear_runtime_session_state(self)
             self._closed = True
         payload = {}
@@ -482,6 +595,8 @@ class TurboBusRuntimeSession:
             payload["buffer_cleanup_evidence"] = cleanup_evidence
         if release_evidence:
             payload["owned_cpu_buffer_release"] = release_evidence
+        if managed_service_evidence:
+            payload["managed_service_shutdown"] = managed_service_evidence
         if cleanup_errors:
             payload["buffer_cleanup_errors"] = cleanup_errors
             return DaemonResponse(
@@ -1124,6 +1239,42 @@ class TurboBusRuntimeSession:
         if self._closed:
             raise RuntimeError("TurboBus runtime session is closed")
 
+    def _stop_owned_services(self) -> list[dict[str, object]]:
+        evidence: list[dict[str, object]] = []
+        worker_stop_event = self._owned_worker_stop_event
+        daemon_stop_event = self._owned_daemon_stop_event
+        worker_thread = self._owned_worker_thread
+        daemon_thread = self._owned_daemon_thread
+        if worker_stop_event is not None:
+            worker_stop_event.set()
+        if daemon_stop_event is not None:
+            daemon_stop_event.set()
+        if worker_thread is not None:
+            worker_thread.join(timeout=1.0)
+            evidence.append(
+                {
+                    "service": "worker",
+                    "socket_path": self._owned_worker_socket_path,
+                    "alive_after_join": worker_thread.is_alive(),
+                }
+            )
+        if daemon_thread is not None:
+            daemon_thread.join(timeout=1.0)
+            evidence.append(
+                {
+                    "service": "daemon",
+                    "socket_path": self._owned_daemon_socket_path,
+                    "alive_after_join": daemon_thread.is_alive(),
+                }
+            )
+        self._owned_worker_stop_event = None
+        self._owned_worker_thread = None
+        self._owned_daemon_stop_event = None
+        self._owned_daemon_thread = None
+        self._owned_daemon_socket_path = None
+        self._owned_worker_socket_path = None
+        return evidence
+
     def _validate_intent_uses_runtime_buffers(self, intent: TransferIntent) -> None:
         source = self._buffers[intent.source_buffer_id]
         target = self._buffers[intent.destination_buffer_id]
@@ -1158,6 +1309,51 @@ def _transfer_receipt_from_payload(payload: Mapping[str, object]) -> TransferRec
     if unknown:
         raise ValueError("daemon receipt contains unknown fields: " + ", ".join(unknown))
     return TransferReceipt(**dict(payload))
+
+
+def _wait_for_managed_services_ready(
+    *,
+    daemon_socket_path: str,
+    worker_socket_path: str,
+    timeout_seconds: float = 5.0,
+    poll_interval_seconds: float = 0.05,
+) -> None:
+    deadline = time.time() + max(0.1, float(timeout_seconds))
+    daemon_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            daemon_ready = TurboBusDaemonProfileClient(str(daemon_socket_path))
+            require_ok(daemon_ready.discover_relays(), "daemon startup probe failed")
+            daemon_error = None
+            break
+        except Exception as exc:
+            daemon_error = exc
+            time.sleep(max(0.001, float(poll_interval_seconds)))
+    if daemon_error is not None:
+        raise RuntimeError(
+            f"managed daemon socket did not become ready: {daemon_error}"
+        ) from daemon_error
+    worker_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            _probe_worker_socket_ready(str(worker_socket_path))
+            worker_error = None
+            break
+        except Exception as exc:
+            worker_error = exc
+            time.sleep(max(0.001, float(poll_interval_seconds)))
+    if worker_error is not None:
+        raise RuntimeError(
+            f"managed worker socket did not become ready: {worker_error}"
+        ) from worker_error
+
+
+def _probe_worker_socket_ready(socket_path: str) -> None:
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.connect(str(socket_path))
+    finally:
+        client.close()
 
 
 __all__ = ["TurboBusRuntimeSession"]

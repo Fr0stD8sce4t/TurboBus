@@ -9,6 +9,7 @@ from ..planner_types import PlannerLease, PlannerStats, PlannerTransferPlan
 from .load_feedback import (
     RuntimeLoadView,
     fairness_fallback_for_plan,
+    relay_admission_blocked_reason,
     runtime_state_metadata,
     runtime_view,
 )
@@ -683,8 +684,12 @@ def _relay_unavailable_reason(
         return "session chunk quota is unavailable"
     if quota.active_chunks >= quota.max_inflight_chunks:
         return "relay chunk quota is unavailable"
-    if int(relay_device) in runtime_view.busy_relays:
-        return "relay has active path"
+    runtime_blocked = relay_admission_blocked_reason(
+        runtime_view,
+        int(relay_device),
+    )
+    if runtime_blocked is not None:
+        return runtime_blocked
     return None
 
 

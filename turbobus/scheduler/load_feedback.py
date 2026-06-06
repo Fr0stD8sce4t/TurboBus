@@ -324,6 +324,36 @@ def fairness_fallback_for_plan(
     return "weighted fairness limit prefers direct fallback"
 
 
+def relay_admission_blocked_reason(
+    runtime_view: RuntimeLoadView,
+    relay_device: int,
+) -> str | None:
+    relay = int(relay_device)
+    if relay in runtime_view.busy_relays:
+        return "relay has active path"
+    record = runtime_view.relay_load.get(relay, {})
+    pressure = runtime_view.relay_pressure(relay)
+    active_path_count = int(record.get("active_path_count", 0) or 0)
+    active_chunk_count = int(record.get("active_chunk_count", 0) or 0)
+    active_reservation_count = int(record.get("active_reservation_count", 0) or 0)
+    active_lease_count = int(record.get("active_lease_count", 0) or 0)
+    if active_path_count > 0 and pressure >= 0.30:
+        return "relay runtime load still has active path pressure"
+    if pressure >= 0.95:
+        return "relay runtime load is saturated"
+    if runtime_view.delayed_transfer_count > 0 and pressure >= 0.65:
+        return "relay runtime load is delayed by queued backlog"
+    if (
+        runtime_view.running_transfer_count >= 3
+        and (active_chunk_count > 0 or active_lease_count > 0)
+        and pressure >= 0.50
+    ):
+        return "relay runtime load is delayed by active worker pressure"
+    if active_reservation_count >= 2 and pressure >= 0.45:
+        return "relay runtime load is delayed by reservation pressure"
+    return None
+
+
 def busy_relays_from_runtime_state(
     runtime_state: Mapping[str, object] | None,
 ) -> set[int]:
@@ -428,12 +458,19 @@ def completion_source_pressure_from_runtime_state(
     source_counts = runtime_state.get("completion_source_counts", {})
     if not isinstance(source_counts, Mapping):
         source_counts = {}
+    terminal_source_counts = runtime_state.get("terminal_completion_source_counts", {})
+    if not isinstance(terminal_source_counts, Mapping):
+        terminal_source_counts = {}
     worker_count = int(source_counts.get("worker", 0) or 0)
     backend_count = int(source_counts.get("backend", 0) or 0)
-    total = max(1, worker_count + backend_count)
+    worker_recent = int(terminal_source_counts.get("worker", 0) or 0)
+    backend_recent = int(terminal_source_counts.get("backend", 0) or 0)
+    weighted_worker = worker_count + min(worker_recent, 8) * 0.5
+    weighted_backend = backend_count + min(backend_recent, 8) * 0.5
+    total = max(1.0, weighted_worker + weighted_backend)
     return {
-        "worker": min(worker_count / total, 1.0),
-        "backend": min(backend_count / total, 1.0),
+        "worker": min(weighted_worker / total, 1.0),
+        "backend": min(weighted_backend / total, 1.0),
     }
 
 
@@ -467,6 +504,7 @@ __all__ = [
     "busy_relays_from_runtime_state",
     "completion_source_pressure_from_runtime_state",
     "fairness_fallback_for_plan",
+    "relay_admission_blocked_reason",
     "relay_load_from_runtime_state",
     "runtime_state_metadata",
     "runtime_view",

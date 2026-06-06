@@ -5,23 +5,24 @@ appending history.
 
 ## Current Main Target
 
-Close one full scheduler/load-accounting path driven by real
-queued/running/active transfer state.
+Close one full cross-job isolation and ownership hardening path on shared
+relay use.
 
 ## Exit Criteria
 
-- Scheduler decisions consume real queued, running, active, and recent terminal
-  transfer state instead of stale or partial bookkeeping.
-- Runtime feedback from daemon-issued execution affects relay load, busy relay
-  view, and admission/scheduling behavior on the same production path.
-- The closure stays inside daemon/runtime scheduling ownership and does not
-  shift route choice or load policy into adapters, benchmarks, or examples.
+- Job, session, buffer, lease, and cleanup ownership stay bound to the correct
+  peer or daemon-owned identity during shared relay use.
+- Shared relay execution and cleanup cannot drift into cross-job leakage when
+  delayed admission, promotion, or terminal cleanup happen out of order.
+- The closure stays on daemon/runtime/worker ownership boundaries and does not
+  push isolation policy into adapters, benchmarks, or examples.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler/`
-- `turbobus/scheduler/load_feedback.py`
+- `turbobus/daemon/peer_auth.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/worker/validation.py`
 - `turbobus/schema.py`
 - `turbobus/runtime/daemon_view.py`
 
@@ -39,17 +40,17 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, then follow the live runtime-state and scheduling
-path through `scheduler/`, `scheduler/load_feedback.py`, `schema.py`, and
-`runtime/daemon_view.py`.
+Start at `daemon/server.py`, then follow ownership and cleanup flow through
+`daemon/peer_auth.py`, `worker/lifecycle.py`, `worker/validation.py`,
+`schema.py`, and `runtime/daemon_view.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full cross-job isolation and ownership hardening closure on shared relay
-  use.
 - one full adapter expansion closure for another workload family only if the
-  scheduler/runtime path no longer blocks the main system body.
+  ownership path no longer blocks the main system body.
+- one full native direct/relay/mixed data-path hardening closure only if
+  ownership no longer blocks the main system body.
 
 Plan-file rule:
 

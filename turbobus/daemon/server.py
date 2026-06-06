@@ -43,7 +43,9 @@ from ..scheduler import (
 )
 from ..scheduler.load_feedback import (
     busy_relays_from_runtime_state,
+    relay_admission_blocked_reason,
     relay_load_from_runtime_state,
+    runtime_view,
 )
 
 
@@ -2181,8 +2183,13 @@ class TurboBusDaemon:
         total_chunks = sum(lease.chunk_limit for lease in leases)
         if session.active_chunks + total_chunks > session.max_inflight_chunks:
             return "session relay admission is delayed by chunk quota"
-        busy_relays = busy_relays_from_runtime_state(
-            self._runtime_resource_state_locked(now=float(now))
+        runtime_state = self._runtime_resource_state_locked(now=float(now))
+        load_view = runtime_view(
+            runtime_state=runtime_state,
+            job_id=None,
+            total_bytes=sum(int(lease.bytes_limit) for lease in leases),
+            workload_kind="generic",
+            priority=0,
         )
         for lease in leases:
             if lease.relay_device not in session.relay_gpus:
@@ -2192,8 +2199,12 @@ class TurboBusDaemon:
                 return "relay admission is delayed by missing relay quota"
             if not quota.can_reserve(lease.chunk_limit):
                 return "relay admission is delayed by relay chunk quota"
-            if int(lease.relay_device) in busy_relays:
-                return "relay admission is delayed by active relay path"
+            runtime_blocked = relay_admission_blocked_reason(
+                load_view,
+                int(lease.relay_device),
+            )
+            if runtime_blocked is not None:
+                return f"relay admission is delayed by {runtime_blocked}"
         return None
 
     def _plan_expires_at_for_decision(
@@ -5209,12 +5220,14 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     if not isinstance(summary, Mapping):
         return
     summary_copy = dict(summary)
+    transfers = runtime_state.get("transfers", ())
+    recent_terminal_transfers = runtime_state.get("recent_terminal_transfers", ())
     path_summary: dict[str, dict[str, int]] = {}
     relay_path_summary = {"path_count": 0, "chunk_count": 0, "bytes_total": 0}
     completion_source_counts: dict[str, int] = {}
     terminal_completion_source_counts: dict[str, int] = {}
     terminal_execution_evidence = _terminal_execution_evidence_from_records(
-        runtime_state.get("transfers", ())
+        (*_runtime_mapping_records(transfers), *_runtime_mapping_records(recent_terminal_transfers))
     )
     active_by_direction = _transfer_bytes_by_direction(
         runtime_state.get("active_transfers", ()),
@@ -5239,7 +5252,10 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             relay_path_summary["path_count"] += 1
             relay_path_summary["chunk_count"] += int(record.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(record.get("bytes_total", 0) or 0)
-    for record in _runtime_mapping_records(runtime_state.get("transfers", ())):
+    for record in (
+        *_runtime_mapping_records(transfers),
+        *_runtime_mapping_records(recent_terminal_transfers),
+    ):
         completion_source = str(record.get("completion_source", "")).lower()
         if not completion_source:
             continue

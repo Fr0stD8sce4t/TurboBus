@@ -1052,7 +1052,10 @@ class TurboBusDaemon:
         except (TypeError, ValueError) as exc:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
-            terminal_receipt = self._terminal_receipt_response_for_intent_locked(intent)
+            terminal_receipt = self._terminal_receipt_response_for_intent_locked(
+                intent,
+                peer_identity=peer_identity,
+            )
             if terminal_receipt is not None:
                 return terminal_receipt
             existing_transfer_id = self._intent_transfers.get(intent.intent_id)
@@ -1136,6 +1139,8 @@ class TurboBusDaemon:
     def _terminal_receipt_response_for_intent_locked(
         self,
         intent: TransferIntent,
+        *,
+        peer_identity: PeerIdentity | None,
     ) -> DaemonResponse | None:
         normalized_intent_id = str(intent.intent_id)
         transfer_id = self._intent_transfers.get(normalized_intent_id)
@@ -1157,6 +1162,14 @@ class TurboBusDaemon:
             status = archived["status"]
         if status is None or status.state not in _TERMINAL_TRANSFER_STATES:
             return None
+        try:
+            self._validate_peer_owns_receipt_transfer_locked(
+                transfer_id=transfer_id,
+                job_id=intent.job_id,
+                peer_identity=peer_identity,
+            )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
         try:
             receipt = self._receipt_for_intent_locked(normalized_intent_id)
         except ValueError as exc:

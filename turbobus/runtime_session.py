@@ -89,6 +89,16 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _submitted_intent_buffers: dict[str, tuple[str, str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _active_intent_ids: set[str] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
     _transfer_executor: WorkerIntentTransferExecutor | None = field(
         default=None,
         init=False,
@@ -511,14 +521,23 @@ class TurboBusRuntimeSession:
             response,
             expected_intent_id=normalized_intent_id,
         )
+        buffer_ids = self._submitted_intent_buffers.get(normalized_intent_id)
         validate_runtime_receipt(
             receipt,
             intent_id=normalized_intent_id,
             job_id=self.job_id,
             session_id=self.session_id,
-            source_buffer_id=None,
-            destination_buffer_id=None,
+            source_buffer_id=(
+                None if buffer_ids is None else buffer_ids[0]
+            ),
+            destination_buffer_id=(
+                None if buffer_ids is None else buffer_ids[1]
+            ),
         )
+        terminal_states = {"complete", "failed", "canceled"}
+        state_text = str(getattr(receipt.state, "value", receipt.state)).lower()
+        if state_text in terminal_states:
+            self._active_intent_ids.discard(normalized_intent_id)
         return receipt
 
     def bootstrap_profile(self, *, force: bool = False):
@@ -553,6 +572,7 @@ class TurboBusRuntimeSession:
                     "managed_service_shutdown": managed_service_evidence,
                 },
             )
+        intent_wait_evidence = self._close_active_intent_receipts()
         cleanup_errors: list[dict[str, object]] = []
         cleanup_evidence: list[dict[str, object]] = []
         release_evidence: list[dict[str, object]] = []
@@ -593,6 +613,8 @@ class TurboBusRuntimeSession:
         payload = {}
         if isinstance(response.payload, Mapping):
             payload.update(dict(response.payload))
+        if intent_wait_evidence:
+            payload["active_intent_receipts"] = intent_wait_evidence
         if cleanup_evidence:
             payload["buffer_cleanup_evidence"] = cleanup_evidence
         if release_evidence:
@@ -936,17 +958,13 @@ class TurboBusRuntimeSession:
 
     def _submit_runtime_intent(self, intent: TransferIntent) -> TransferReceipt:
         self._prepare_runtime_intent(intent)
-        receipt = self._execute_intent_through_daemon(intent)
-        validate_runtime_receipt(
-            receipt,
-            intent_id=intent.intent_id,
-            job_id=self.job_id,
-            session_id=self.session_id,
-            source_buffer_id=intent.source_buffer_id,
-            destination_buffer_id=intent.destination_buffer_id,
-        )
-        self._submitted_intent_ids.add(intent.intent_id)
-        return receipt
+        self._record_submitted_intent(intent)
+        try:
+            self._execute_intent_through_daemon(intent)
+            return self.wait_transfer_receipt(intent.intent_id)
+        except Exception:
+            self._active_intent_ids.discard(intent.intent_id)
+            raise
 
     def _prepare_runtime_intent(self, intent: TransferIntent) -> None:
         self._require_open()
@@ -1287,6 +1305,38 @@ class TurboBusRuntimeSession:
             source=source,
             target=target,
         )
+
+    def _record_submitted_intent(self, intent: TransferIntent) -> None:
+        normalized_intent_id = str(intent.intent_id)
+        self._submitted_intent_ids.add(normalized_intent_id)
+        self._submitted_intent_buffers[normalized_intent_id] = (
+            str(intent.source_buffer_id),
+            str(intent.destination_buffer_id),
+        )
+        self._active_intent_ids.add(normalized_intent_id)
+
+    def _close_active_intent_receipts(self) -> list[dict[str, object]]:
+        evidence: list[dict[str, object]] = []
+        for intent_id in tuple(self._active_intent_ids):
+            try:
+                receipt = self.wait_transfer_receipt(intent_id, timeout_seconds=0.0)
+                evidence.append(
+                    {
+                        "intent_id": str(intent_id),
+                        "ok": True,
+                        "state": str(getattr(receipt.state, "value", receipt.state)),
+                        "bytes_completed": int(receipt.bytes_completed),
+                    }
+                )
+            except Exception as exc:
+                evidence.append(
+                    {
+                        "intent_id": str(intent_id),
+                        "ok": False,
+                        "error": str(exc) or exc.__class__.__name__,
+                    }
+                )
+        return evidence
 
 
 def _receipt_from_daemon_response(

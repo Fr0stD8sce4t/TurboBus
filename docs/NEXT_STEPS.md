@@ -5,25 +5,23 @@ appending history.
 
 ## Current Main Target
 
-Close one full runtime-session-owned execution and cleanup path as the single
-production entry.
+Close one full scheduler/runtime load-feedback path on top of the now tighter
+runtime-session-owned production entry.
 
 ## Exit Criteria
 
-- One `TurboBusRuntimeSession` path owns startup, intent submission, execution
-  wait, cleanup handoff, and final `TransferReceipt` use.
-- Runtime session stays the only production-facing path for daemon-issued
-  transfer execution.
-- Runtime-session-owned execution does not leave production-looking duplicate
-  paths outside the session boundary.
+- Scheduler decisions consume more real queued/running/active transfer state.
+- Relay load, active execution, and completion ownership feed back into daemon
+  scheduling state through one clearer path.
+- Load accounting does not depend on benchmark-only or synthetic control paths.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
 - `turbobus/daemon/server.py`
+- `turbobus/runtime_session.py`
 - `turbobus/intent_executor.py`
-- `turbobus/worker/lifecycle.py`
 - `turbobus/daemon/receipts.py`
+- `turbobus/daemon/dispatch.py`
 
 Round rules:
 
@@ -39,14 +37,14 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py`, `daemon/server.py`, `intent_executor.py`, and
-`worker/lifecycle.py`.
+Start at `daemon/server.py`, `runtime_session.py`, `intent_executor.py`, and
+`daemon/receipts.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full scheduler/runtime load-feedback closure.
 - one full cross-job isolation and ownership closure.
+- one full framework adapter closure after the core system path is stable.
 
 Plan-file rule:
 

@@ -53,6 +53,12 @@ def clear_runtime_session_state(session) -> None:
     session._registered_buffer_fingerprints.clear()
     session._owned_cpu_buffer_ids.clear()
     session._submitted_intent_ids.clear()
+    submitted_intent_buffers = getattr(session, "_submitted_intent_buffers", None)
+    if submitted_intent_buffers is not None:
+        submitted_intent_buffers.clear()
+    active_intent_ids = getattr(session, "_active_intent_ids", None)
+    if active_intent_ids is not None:
+        active_intent_ids.clear()
 
 
 __all__ = [

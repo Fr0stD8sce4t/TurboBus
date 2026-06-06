@@ -25,7 +25,6 @@ from .intent_execution_support import (
     require_ok,
     require_worker_plan_matches_leases,
     submit_worker_execution,
-    wait_for_intent_receipt,
 )
 from .worker.models import (
     WorkerDataPlaneCompletionEnvelope,
@@ -98,7 +97,7 @@ class WorkerIntentTransferExecutor:
                 target=target,
                 result_factory=WorkerIntentTransferResult,
             )
-            return wait_for_intent_receipt(daemon_client, intent.intent_id)
+            return _receipt_from_status_query(daemon_client, intent.intent_id)
         direct_plan_bytes = _plan_assignment_bytes(payload, "direct")
         relay_plan_bytes = _plan_assignment_bytes(payload, "relay")
         direct_completion_evidence: Mapping[str, object] | None = None
@@ -130,15 +129,16 @@ class WorkerIntentTransferExecutor:
             require_ok(running, "daemon mixed-pooled direct progress update failed")
         lease_tokens = _payload_lease_tokens(payload)
         if not lease_tokens:
-            return _fail_transfer_without_relay_leases(
+            _fail_transfer_without_relay_leases(
                 daemon_client=daemon_client,
                 intent=intent,
                 payload=payload,
                 direct_completion_evidence=direct_completion_evidence,
                 direct_bytes_completed=int(direct_plan_bytes),
             )
+            return _receipt_from_status_query(daemon_client, intent.intent_id)
         if self.worker_client is None:
-            return _fail_transfer_without_worker_client(
+            _fail_transfer_without_worker_client(
                 daemon_client=daemon_client,
                 intent=intent,
                 payload=payload,
@@ -146,6 +146,7 @@ class WorkerIntentTransferExecutor:
                 direct_completion_evidence=direct_completion_evidence,
                 direct_bytes_completed=int(direct_plan_bytes),
             )
+            return _receipt_from_status_query(daemon_client, intent.intent_id)
         _validate_intent_lease_tokens(daemon_client, intent, lease_tokens)
         primary_lease_token = lease_tokens[0]
         try:
@@ -247,7 +248,7 @@ class WorkerIntentTransferExecutor:
                     or completion.daemon_status_update is not None
                 )
             ):
-                return wait_for_intent_receipt(daemon_client, intent.intent_id)
+                return _receipt_from_status_query(daemon_client, intent.intent_id)
             cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
                 lease_tokens,
@@ -274,7 +275,7 @@ class WorkerIntentTransferExecutor:
                     direct_completion_evidence=direct_completion_evidence,
                     direct_bytes_completed=int(direct_plan_bytes),
                 )
-            return wait_for_intent_receipt(daemon_client, intent.intent_id)
+            return _receipt_from_status_query(daemon_client, intent.intent_id)
         if worker_execution.final_state != "complete":
             cleanup_evidence = cleanup_planned_relay_leases(
                 daemon_client,
@@ -322,7 +323,7 @@ class WorkerIntentTransferExecutor:
                 ),
             )
             require_ok(completion, "daemon mixed-pooled completion update failed")
-        return wait_for_intent_receipt(daemon_client, intent.intent_id)
+        return _receipt_from_status_query(daemon_client, intent.intent_id)
 
 
 def _intent_buffers(
@@ -757,7 +758,7 @@ def _fail_transfer_without_worker_client(
     lease_tokens: Iterable[Mapping[str, object]],
     direct_completion_evidence: Mapping[str, object] | None,
     direct_bytes_completed: int,
-) -> TransferReceipt:
+) -> None:
     cleanup_evidence = cleanup_planned_relay_leases(
         daemon_client,
         lease_tokens,
@@ -794,7 +795,6 @@ def _fail_transfer_without_worker_client(
             )
         ),
     )
-    return wait_for_intent_receipt(daemon_client, intent.intent_id)
 
 
 def _fail_transfer_without_relay_leases(
@@ -804,7 +804,7 @@ def _fail_transfer_without_relay_leases(
     payload: Mapping[str, object],
     direct_completion_evidence: Mapping[str, object] | None,
     direct_bytes_completed: int,
-) -> TransferReceipt:
+) -> None:
     failure_message = (
         "daemon-issued mixed or relay execution requires relay lease tokens; "
         "daemon planned a non-direct transfer without worker relay leases"
@@ -823,7 +823,22 @@ def _fail_transfer_without_relay_leases(
             else dict(direct_completion_evidence)
         ),
     )
-    return wait_for_intent_receipt(daemon_client, intent.intent_id)
+
+
+def _receipt_from_status_query(
+    daemon_client,
+    intent_id: str,
+) -> TransferReceipt:
+    waiter = getattr(daemon_client, "wait_transfer_receipt", None)
+    if not callable(waiter):
+        raise TypeError("daemon client must support wait_transfer_receipt")
+    response = waiter(str(intent_id), timeout_seconds=0.0)
+    require_ok(response, "daemon receipt wait failed")
+    payload = response.payload if isinstance(response.payload, Mapping) else {}
+    receipt_payload = payload.get("receipt")
+    if not isinstance(receipt_payload, Mapping):
+        raise ValueError("daemon response missing receipt")
+    return TransferReceipt(**dict(receipt_payload))
 
 
 __all__ = ["WorkerIntentTransferExecutor"]

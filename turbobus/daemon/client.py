@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 from dataclasses import asdict
 
 from ..schema import (
@@ -156,6 +157,51 @@ class TurboBusDaemonRuntimeClient(_DaemonSocketClientBase):
                 request_type=RequestType.REGISTER_BUFFER,
                 payload=payload,
             )
+        )
+
+
+class TurboBusPersistentDaemonRuntimeClient(TurboBusDaemonRuntimeClient):
+    persistent_connection = True
+
+    def __init__(self, socket_path: str) -> None:
+        super().__init__(socket_path)
+        self._lock = threading.Lock()
+        self._client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._client.connect(self.socket_path)
+        self._recv_buffer = b""
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._client.close()
+            self._recv_buffer = b""
+
+    def send(self, request: DaemonRequest) -> DaemonResponse:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("persistent daemon runtime client is closed")
+            self._client.sendall((json.dumps(asdict(request)) + "\n").encode("utf-8"))
+            while b"\n" not in self._recv_buffer:
+                chunk = self._client.recv(65536)
+                if not chunk:
+                    self._closed = True
+                    raise RuntimeError(
+                        "persistent daemon runtime connection closed before response"
+                    )
+                self._recv_buffer += chunk
+            line, _, self._recv_buffer = self._recv_buffer.partition(b"\n")
+        response_data = json.loads(line.decode("utf-8"))
+        return DaemonResponse(
+            ok=bool(response_data["ok"]),
+            payload=response_data.get("payload", {}),
+            error=response_data.get("error"),
         )
 
 

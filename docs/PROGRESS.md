@@ -5,31 +5,31 @@
 - The project is still in system-body implementation, not adapters,
   benchmarks, or paper work.
 - `TurboBusRuntimeSession` remains the intended single production entry.
-- Managed daemon/worker startup and buffer lifetime closure are in place
-  enough to support the remaining production-path closures.
+- Managed daemon/worker startup and buffer lifetime closure are in place, and
+  the runtime production socket path now owns a persistent control connection
+  plus connection-scoped daemon session cleanup.
 - A second production-facing workload family now uses explicit
   runtime-session-owned submit, wait, and receipt consumption on the vLLM KV
   path instead of hiding terminal behavior behind synchronous adapter calls.
 
 ## Remaining Risk
 
-- Production startup is still split across runtime, daemon, worker, and native
-  bootstrap boundaries that need one hardened owning path.
-- Some production-looking startup surfaces may still expose duplicate or
-  weaker entry behavior outside `TurboBusRuntimeSession`.
+- Scheduler/load-accounting still needs one full closure driven by real queued,
+  running, active, and recent terminal transfer state.
+- Cross-job relay sharing still depends on later ownership and isolation
+  hardening after scheduler/runtime feedback is fully closed.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full server/runtime production-startup hardening closure on the
-single `TurboBusRuntimeSession` production entry. After that, choose exactly
-one of these per round:
+Finish one full scheduler/load-accounting closure driven by live transfer
+state. After that, choose exactly one of these per round:
 
-- one complete scheduler/load-accounting closure driven by live transfer
-  state.
+- one complete cross-job isolation and ownership hardening closure on shared
+  relay use.
 - one complete adapter expansion closure for another workload family only if
-  startup no longer blocks the main system path.
+  scheduler/runtime load feedback no longer blocks the main system path.
 
 Progress-file rule:
 

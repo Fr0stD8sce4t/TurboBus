@@ -4454,9 +4454,22 @@ class TurboBusDaemon:
         reason: str = "socket_disconnect",
     ) -> dict[str, int]:
         removed = _empty_removed_summary()
+        cleaned_by_connection: set[str] = set()
+        if connection_id is not None:
+            normalized_connection_id = str(connection_id)
+            for session_id in sorted(tuple(self._connection_scoped_sessions)):
+                session_connection_id = self._connection_scoped_session_connections.get(
+                    session_id
+                )
+                if session_connection_id != normalized_connection_id:
+                    continue
+                self._close_session_locked(session_id, reason=reason, removed=removed)
+                cleaned_by_connection.add(session_id)
         if peer_identity is None:
             return removed
         for session_id in sorted(tuple(self._connection_scoped_sessions)):
+            if session_id in cleaned_by_connection:
+                continue
             if connection_id is not None:
                 session_connection_id = self._connection_scoped_session_connections.get(
                     session_id

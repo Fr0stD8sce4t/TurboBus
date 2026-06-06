@@ -5,28 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close one full server/runtime production-startup hardening path on the single
-`TurboBusRuntimeSession` production entry.
+Close one full scheduler/load-accounting path driven by real
+queued/running/active transfer state.
 
 ## Exit Criteria
 
-- Production startup converges on `TurboBusRuntimeSession` for daemon socket
-  client, worker client, and runtime-owned bootstrap instead of scattered
-  production-looking entry points.
-- The runtime path opens the production control plane with the identities,
-  sockets, and startup state needed for real intent submission and ticketed
-  execution.
-- Startup hardening does not reintroduce old runtime/planner compatibility
-  APIs, manual relay control, or synthetic production fallbacks.
+- Scheduler decisions consume real queued, running, active, and recent terminal
+  transfer state instead of stale or partial bookkeeping.
+- Runtime feedback from daemon-issued execution affects relay load, busy relay
+  view, and admission/scheduling behavior on the same production path.
+- The closure stays inside daemon/runtime scheduling ownership and does not
+  shift route choice or load policy into adapters, benchmarks, or examples.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/dispatch.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/native_runtime.py`
-- `turbobus/profiling/bootstrap.py`
+- `turbobus/scheduler/`
+- `turbobus/scheduler/load_feedback.py`
+- `turbobus/schema.py`
+- `turbobus/runtime/daemon_view.py`
 
 Round rules:
 
@@ -42,17 +39,17 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py`, then follow the production startup path through
-`daemon/server.py`, `daemon/dispatch.py`, `worker/lifecycle.py`,
-`native_runtime.py`, and `profiling/bootstrap.py`.
+Start at `daemon/server.py`, then follow the live runtime-state and scheduling
+path through `scheduler/`, `scheduler/load_feedback.py`, `schema.py`, and
+`runtime/daemon_view.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full scheduler/load-accounting closure driven by real
-  queued/running/active transfer state.
+- one full cross-job isolation and ownership hardening closure on shared relay
+  use.
 - one full adapter expansion closure for another workload family only if the
-  startup path no longer blocks the main system body.
+  scheduler/runtime path no longer blocks the main system body.
 
 Plan-file rule:
 

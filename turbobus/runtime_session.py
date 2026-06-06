@@ -17,6 +17,7 @@ from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .daemon.client import (
     TurboBusDaemonClient,
     TurboBusDaemonExecutionClient,
+    TurboBusPersistentDaemonRuntimeClient,
     TurboBusDaemonProfileClient,
     TurboBusDaemonRuntimeClient,
 )
@@ -134,6 +135,11 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _runtime_control_connection_owned: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+    )
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -186,6 +192,7 @@ class TurboBusRuntimeSession:
         max_inflight_chunks: int = 8,
         backend=default_cuda_backend,
         runtime_options: RuntimeOptions | None = None,
+        persistent_runtime_control: bool = False,
     ) -> "TurboBusRuntimeSession":
         if not str(daemon_socket_path).strip():
             raise ValueError("daemon_socket_path must be non-empty")
@@ -195,11 +202,16 @@ class TurboBusRuntimeSession:
                 raise ValueError("worker_socket_path must be non-empty")
             worker_client = WorkerServiceSocketClient(str(worker_socket_path))
         daemon_client = TurboBusDaemonClient(str(daemon_socket_path))
+        runtime_client_factory = (
+            TurboBusPersistentDaemonRuntimeClient
+            if persistent_runtime_control
+            else TurboBusDaemonRuntimeClient
+        )
         return cls.open(
             daemon_client,
             job_id=job_id,
             user_id=user_id,
-            runtime_daemon_client=TurboBusDaemonRuntimeClient(str(daemon_socket_path)),
+            runtime_daemon_client=runtime_client_factory(str(daemon_socket_path)),
             execution_daemon_client=TurboBusDaemonExecutionClient(
                 str(daemon_socket_path)
             ),
@@ -237,7 +249,7 @@ class TurboBusRuntimeSession:
             raise ValueError("daemon_socket_path must be non-empty")
         if resolved_worker_socket is None or not str(resolved_worker_socket).strip():
             raise ValueError("worker_socket_path must be non-empty")
-        return cls.open_socket(
+        session = cls.open_socket(
             daemon_socket_path=str(resolved_daemon_socket),
             worker_socket_path=str(resolved_worker_socket),
             job_id=job_id,
@@ -245,7 +257,10 @@ class TurboBusRuntimeSession:
             max_inflight_chunks=max_inflight_chunks,
             backend=backend,
             runtime_options=options,
+            persistent_runtime_control=True,
         )
+        session._runtime_control_connection_owned = True
+        return session
 
     @classmethod
     def open_managed_production_socket(
@@ -307,6 +322,7 @@ class TurboBusRuntimeSession:
                 max_inflight_chunks=max_inflight_chunks,
                 backend=backend,
                 runtime_options=options,
+                persistent_runtime_control=True,
             )
         except Exception:
             worker_stop_event.set()
@@ -320,6 +336,7 @@ class TurboBusRuntimeSession:
         session._owned_worker_thread = worker_thread
         session._owned_daemon_socket_path = daemon_path
         session._owned_worker_socket_path = worker_path
+        session._runtime_control_connection_owned = True
         return session
 
     @property
@@ -355,6 +372,7 @@ class TurboBusRuntimeSession:
             response = self._runtime_daemon_client().register_session(
                 int(self._target_gpu),
                 int(self.max_inflight_chunks),
+                connection_scoped=bool(self._runtime_control_connection_owned),
                 worker_relay_capable=self.worker_client is not None,
             )
             require_ok(response, "daemon session registration failed")
@@ -571,16 +589,20 @@ class TurboBusRuntimeSession:
             release_evidence = self._release_owned_cpu_buffers(
                 reason="runtime_session_close_without_daemon_session"
             )
+            runtime_control_evidence = self._close_runtime_control_connection()
             managed_service_evidence = self._stop_owned_services()
             clear_runtime_session_state(self)
             self._closed = True
+            payload = {
+                "closed": False,
+                "owned_cpu_buffer_release": release_evidence,
+                "managed_service_shutdown": managed_service_evidence,
+            }
+            if runtime_control_evidence is not None:
+                payload["runtime_control_shutdown"] = runtime_control_evidence
             return DaemonResponse(
                 ok=True,
-                payload={
-                    "closed": False,
-                    "owned_cpu_buffer_release": release_evidence,
-                    "managed_service_shutdown": managed_service_evidence,
-                },
+                payload=payload,
             )
         intent_wait_evidence = self._close_active_intent_receipts()
         cleanup_errors: list[dict[str, object]] = []
@@ -617,6 +639,7 @@ class TurboBusRuntimeSession:
             release_evidence = self._release_owned_cpu_buffers(
                 reason="runtime_session_close"
             )
+            runtime_control_evidence = self._close_runtime_control_connection()
             managed_service_evidence = self._stop_owned_services()
             clear_runtime_session_state(self)
             self._closed = True
@@ -629,6 +652,8 @@ class TurboBusRuntimeSession:
             payload["buffer_cleanup_evidence"] = cleanup_evidence
         if release_evidence:
             payload["owned_cpu_buffer_release"] = release_evidence
+        if runtime_control_evidence is not None:
+            payload["runtime_control_shutdown"] = runtime_control_evidence
         if managed_service_evidence:
             payload["managed_service_shutdown"] = managed_service_evidence
         if cleanup_errors:
@@ -1316,6 +1341,33 @@ class TurboBusRuntimeSession:
         self._owned_daemon_thread = None
         self._owned_daemon_socket_path = None
         self._owned_worker_socket_path = None
+        return evidence
+
+    def _close_runtime_control_connection(self) -> dict[str, object] | None:
+        if not bool(self._runtime_control_connection_owned):
+            return None
+        client = self.runtime_daemon_client
+        close = getattr(client, "close", None)
+        closed_before = bool(getattr(client, "closed", False))
+        evidence = {
+            "owned": True,
+            "client_type": (
+                None if client is None else client.__class__.__name__
+            ),
+            "closed_before_shutdown": closed_before,
+            "ok": False,
+        }
+        try:
+            if callable(close):
+                close()
+        except Exception as exc:
+            evidence["error"] = str(exc) or exc.__class__.__name__
+            evidence["closed_after_shutdown"] = bool(getattr(client, "closed", False))
+            self._runtime_control_connection_owned = False
+            return evidence
+        evidence["ok"] = True
+        evidence["closed_after_shutdown"] = bool(getattr(client, "closed", False))
+        self._runtime_control_connection_owned = False
         return evidence
 
     def _validate_intent_uses_runtime_buffers(self, intent: TransferIntent) -> None:

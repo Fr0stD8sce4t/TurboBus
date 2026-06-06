@@ -5,23 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close one full scheduler/runtime load-feedback path on top of the now tighter
-runtime-session-owned production entry.
+Close one full cross-job isolation and ownership path for shared daemon-issued
+transfer execution.
 
 ## Exit Criteria
 
-- Scheduler decisions consume more real queued/running/active transfer state.
-- Relay load, active execution, and completion ownership feed back into daemon
-  scheduling state through one clearer path.
-- Load accounting does not depend on benchmark-only or synthetic control paths.
+- Shared relay use stays bound to the correct job, session, buffer, and peer
+  ownership through submit, execute, cleanup, and receipt.
+- Daemon and worker cleanup paths stop one job from consuming or retiring
+  another job's transfer state.
+- Isolation closure lives on the production path and does not depend on
+  benchmark-only or synthetic control paths.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/runtime_session.py`
-- `turbobus/intent_executor.py`
-- `turbobus/daemon/receipts.py`
 - `turbobus/daemon/dispatch.py`
+- `turbobus/runtime_session.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/worker/validation.py`
 
 Round rules:
 
@@ -37,14 +39,15 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, `runtime_session.py`, `intent_executor.py`, and
-`daemon/receipts.py`.
+Start at `daemon/server.py`, `daemon/dispatch.py`, `runtime_session.py`, and
+the worker ownership checks in `worker/lifecycle.py` and
+`worker/validation.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full cross-job isolation and ownership closure.
 - one full framework adapter closure after the core system path is stable.
+- one full server-backed validation closure after the system body is complete.
 
 Plan-file rule:
 

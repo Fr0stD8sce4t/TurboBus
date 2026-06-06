@@ -111,6 +111,9 @@ class TurboBusDaemon:
         self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
         self._transfer_buffer_snapshots: dict[str, dict[str, dict[str, object]]] = {}
         self._transfer_peer_identities: dict[str, PeerIdentity] = {}
+        self._recent_terminal_feedback_records: dict[str, dict[str, object]] = {}
+        self._recent_terminal_feedback_order: list[str] = []
+        self._recent_terminal_feedback_capacity = 64
         self._transfer_receipt_archive: dict[str, dict[str, object]] = {}
         self._archived_intent_transfers: dict[str, str] = {}
         self._retired_cleanup_targets: dict[tuple[str, str], dict[str, object]] = {}
@@ -940,6 +943,8 @@ class TurboBusDaemon:
                     )
                 )
             self._refresh_transfer_queue_record_locked(updated.transfer_id)
+            if updated.state in _TERMINAL_TRANSFER_STATES:
+                self._record_terminal_runtime_feedback_locked(updated.transfer_id)
             removed = _empty_removed_summary()
             promoted = ()
             if updated.state is TransferStatusState.COMPLETE:
@@ -1039,6 +1044,7 @@ class TurboBusDaemon:
         )
         self._archive_transfer_receipt_state_locked(status.transfer_id)
         self._refresh_transfer_queue_record_locked(status.transfer_id)
+        self._record_terminal_runtime_feedback_locked(status.transfer_id)
         return DaemonResponse(ok=True)
 
     def submit_transfer_intent(
@@ -2835,6 +2841,15 @@ class TurboBusDaemon:
             for transfer_id in self._transfer_queue
             if transfer_id in self._transfer_queue_records
         ]
+        live_transfer_ids = {str(record["transfer_id"]) for record in transfer_records}
+        recent_terminal_feedback = [
+            dict(record)
+            for transfer_id, record in sorted(
+                self._recent_terminal_feedback_records.items(),
+                key=lambda item: float(item[1].get("recorded_at", 0.0) or 0.0),
+            )
+            if transfer_id not in live_transfer_ids
+        ]
         delayed_transfers = [
             dict(record)
             for record in transfer_records
@@ -2899,7 +2914,7 @@ class TurboBusDaemon:
         completion_source_counts: dict[str, int] = {}
         terminal_completion_source_counts: dict[str, int] = {}
         terminal_execution_evidence = _terminal_execution_evidence_from_records(
-            transfer_records
+            (*transfer_records, *recent_terminal_feedback)
         )
         for key, value in path_summary.items():
             if not key.endswith(":relay"):
@@ -2907,7 +2922,7 @@ class TurboBusDaemon:
             relay_path_summary["path_count"] += int(value.get("path_count", 0) or 0)
             relay_path_summary["chunk_count"] += int(value.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(value.get("bytes_total", 0) or 0)
-        for record in transfer_records:
+        for record in (*transfer_records, *recent_terminal_feedback):
             completion_source = str(record.get("completion_source", "")).lower()
             if not completion_source:
                 continue
@@ -2949,6 +2964,7 @@ class TurboBusDaemon:
             "delayed_transfers": delayed_transfers,
             "running_transfers": running_transfers,
             "active_transfers": active_transfers,
+            "recent_terminal_transfers": recent_terminal_feedback,
             "active_paths": path_records,
             "active_resource_usage": active_resource_usage,
             "job_runtime_state": job_runtime_state,
@@ -2960,9 +2976,10 @@ class TurboBusDaemon:
                 "delayed_transfer_count": len(delayed_transfers),
                 "running_transfer_count": len(running_transfers),
                 "active_transfer_count": len(active_transfers),
+                "recent_terminal_transfer_count": len(recent_terminal_feedback),
                 "terminal_transfer_count": sum(
                     1
-                    for record in transfer_records
+                    for record in (*transfer_records, *recent_terminal_feedback)
                     if str(record.get("state"))
                     in {
                         TransferStatusState.COMPLETE.value,
@@ -3996,6 +4013,7 @@ class TurboBusDaemon:
         if final_state is not TransferStatusState.COMPLETE:
             self._drop_execution_ticket_for_transfer_locked(transfer_id)
         self._refresh_transfer_queue_record_locked(transfer_id)
+        self._record_terminal_runtime_feedback_locked(transfer_id)
 
     def _mark_transfer_terminal_locked(
         self,
@@ -4031,6 +4049,7 @@ class TurboBusDaemon:
         if final_state is not TransferStatusState.COMPLETE:
             self._drop_execution_ticket_for_transfer_locked(terminal.transfer_id)
         self._refresh_transfer_queue_record_locked(terminal.transfer_id)
+        self._record_terminal_runtime_feedback_locked(terminal.transfer_id)
         return terminal
 
     def _drop_execution_ticket_for_transfer_locked(self, transfer_id: str) -> bool:
@@ -4081,6 +4100,7 @@ class TurboBusDaemon:
     ) -> None:
         normalized = str(transfer_id)
         self._archive_transfer_receipt_state_locked(normalized)
+        self._record_terminal_runtime_feedback_locked(normalized)
         removed = False
         removed = self._drop_execution_ticket_for_transfer_locked(normalized) or removed
         removed = self._pop_transfer_runtime_maps_locked(normalized) or removed
@@ -4159,6 +4179,55 @@ class TurboBusDaemon:
             self._runtime_state_version += 1
         self._transfer_receipt_archive[normalized] = updated
 
+    def _record_terminal_runtime_feedback_locked(self, transfer_id: str) -> None:
+        normalized = str(transfer_id)
+        record = self._transfer_queue_records.get(normalized)
+        if not isinstance(record, Mapping):
+            archived = self._transfer_receipt_archive.get(normalized, {})
+            status = archived.get("status")
+            if status is None:
+                return
+            completion_evidence = dict(archived.get("completion_evidence", {}) or {})
+            record = {
+                "transfer_id": normalized,
+                "job_id": getattr(status, "job_id", None),
+                "session_id": getattr(status, "session_id", None),
+                "state": getattr(getattr(status, "state", None), "value", getattr(status, "state", None)),
+                "direction": str(
+                    getattr(archived.get("intent"), "direction", "unknown")
+                ).lower(),
+                "bytes_total": int(getattr(status, "bytes_total", 0) or 0),
+                "bytes_completed": int(getattr(status, "bytes_completed", 0) or 0),
+                "completion_source": archived.get("completion_source"),
+                "completion_evidence": completion_evidence,
+                "workload_kind": getattr(
+                    getattr(archived.get("intent"), "workload_kind", None),
+                    "value",
+                    None,
+                ),
+                "priority": int(getattr(archived.get("intent"), "priority", 0) or 0),
+            }
+        feedback = _terminal_feedback_record_from_record(
+            record,
+            recorded_at=time.time(),
+        )
+        if feedback is None:
+            return
+        self._recent_terminal_feedback_records[normalized] = feedback
+        self._recent_terminal_feedback_order = [
+            transfer_id
+            for transfer_id in self._recent_terminal_feedback_order
+            if transfer_id != normalized
+        ]
+        self._recent_terminal_feedback_order.append(normalized)
+        while (
+            len(self._recent_terminal_feedback_order)
+            > int(self._recent_terminal_feedback_capacity)
+        ):
+            stale_transfer_id = self._recent_terminal_feedback_order.pop(0)
+            self._recent_terminal_feedback_records.pop(stale_transfer_id, None)
+        self._runtime_state_version += 1
+
     def _retire_completed_transfer_lease_state_locked(
         self,
         transfer_id: str,
@@ -4166,6 +4235,8 @@ class TurboBusDaemon:
         reason: str | None = None,
     ) -> None:
         normalized = str(transfer_id)
+        self._archive_transfer_receipt_state_locked(normalized)
+        self._record_terminal_runtime_feedback_locked(normalized)
         removed = self._drop_execution_ticket_for_transfer_locked(normalized)
         admission = self._transfer_admissions.get(normalized)
         if admission is not None:
@@ -5045,6 +5116,7 @@ def _runtime_state_without_transfer(
         "delayed_transfers",
         "running_transfers",
         "active_transfers",
+        "recent_terminal_transfers",
         "active_paths",
         "active_reservations",
         "active_leases",
@@ -5152,6 +5224,9 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "delayed_transfer_count": len(runtime_state.get("delayed_transfers", ()) or ()),
             "running_transfer_count": len(runtime_state.get("running_transfers", ()) or ()),
             "active_transfer_count": len(runtime_state.get("active_transfers", ()) or ()),
+            "recent_terminal_transfer_count": len(
+                runtime_state.get("recent_terminal_transfers", ()) or ()
+            ),
             "active_reservation_count": len(runtime_state.get("active_reservations", ()) or ()),
             "active_lease_count": len(runtime_state.get("active_leases", ()) or ()),
             "relay_staging_count": len(runtime_state.get("relay_staging", ()) or ()),
@@ -5199,6 +5274,23 @@ def _terminal_execution_evidence_from_records(
         result["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
         result["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
     return result
+
+
+def _terminal_feedback_record_from_record(
+    record: Mapping[str, object],
+    *,
+    recorded_at: float,
+) -> dict[str, object] | None:
+    state = str(record.get("state", ""))
+    if state not in {
+        TransferStatusState.COMPLETE.value,
+        TransferStatusState.FAILED.value,
+        TransferStatusState.CANCELED.value,
+    }:
+        return None
+    feedback = dict(record)
+    feedback["recorded_at"] = float(recorded_at)
+    return feedback
 
 
 def _transfer_bytes_by_direction(

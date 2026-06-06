@@ -1052,28 +1052,10 @@ class TurboBusDaemon:
         except (TypeError, ValueError) as exc:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
+            terminal_receipt = self._terminal_receipt_response_for_intent_locked(intent)
+            if terminal_receipt is not None:
+                return terminal_receipt
             existing_transfer_id = self._intent_transfers.get(intent.intent_id)
-            if existing_transfer_id is None:
-                archived_transfer_id = self._archived_intent_transfers.get(intent.intent_id)
-                if archived_transfer_id is not None:
-                    try:
-                        receipt = self._receipt_for_intent_locked(intent.intent_id)
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
-                    archived = self._transfer_receipt_archive.get(
-                        str(archived_transfer_id),
-                        {},
-                    )
-                    archived_intent = archived.get("intent")
-                    if isinstance(archived_intent, TransferIntent) and archived_intent != intent:
-                        return DaemonResponse(
-                            ok=False,
-                            error="intent_id already belongs to a different transfer intent",
-                        )
-                    return DaemonResponse(
-                        ok=True,
-                        payload={"receipt": asdict(receipt)},
-                    )
             if existing_transfer_id is not None:
                 existing = self._transfer_intents.get(intent.intent_id)
                 if existing != intent:
@@ -1150,6 +1132,36 @@ class TurboBusDaemon:
                     "planning": planned.payload.get("planning", {}),
                 },
             )
+
+    def _terminal_receipt_response_for_intent_locked(
+        self,
+        intent: TransferIntent,
+    ) -> DaemonResponse | None:
+        normalized_intent_id = str(intent.intent_id)
+        transfer_id = self._intent_transfers.get(normalized_intent_id)
+        if transfer_id is None:
+            transfer_id = self._archived_intent_transfers.get(normalized_intent_id)
+        if transfer_id is None:
+            return None
+        archived = self._transfer_receipt_archive.get(str(transfer_id), {})
+        existing_intent = self._transfer_intents.get(normalized_intent_id)
+        if existing_intent is None and isinstance(archived.get("intent"), TransferIntent):
+            existing_intent = archived["intent"]
+        if existing_intent != intent:
+            return DaemonResponse(
+                ok=False,
+                error="intent_id already belongs to a different transfer intent",
+            )
+        status = self._transfer_statuses.get(str(transfer_id))
+        if status is None and isinstance(archived.get("status"), TransferStatus):
+            status = archived["status"]
+        if status is None or status.state not in _TERMINAL_TRANSFER_STATES:
+            return None
+        try:
+            receipt = self._receipt_for_intent_locked(normalized_intent_id)
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        return DaemonResponse(ok=True, payload={"receipt": asdict(receipt)})
 
     def _intent_execution_payload_response_locked(
         self,

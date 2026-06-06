@@ -44,9 +44,9 @@ and `worker/lifecycle.py`.
 
 Next round should finish exactly one of these:
 
-- one full relay-only execution closure;
 - one full runtime-session-owned execution and cleanup closure.
 - one full scheduler/runtime load-feedback closure.
+- one full relay-only execution closure.
 
 Plan-file rule:
 

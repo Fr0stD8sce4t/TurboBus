@@ -386,12 +386,12 @@ def _completion_contract_view(
         "direct": (
             dict(direct_completion_evidence)
             if isinstance(direct_completion_evidence, Mapping)
-            else None
+            else _single_mode_completion_view(evidence, expected_mode="direct")
         ),
         "relay": (
             dict(relay_completion_evidence)
             if isinstance(relay_completion_evidence, Mapping)
-            else None
+            else _single_mode_completion_view(evidence, expected_mode="relay")
         ),
     }
     return contract
@@ -432,6 +432,60 @@ def _cleanup_view_from_nested_completion(
         if isinstance(cleanup, Mapping):
             return dict(cleanup)
     return None
+
+
+def _single_mode_completion_view(
+    evidence: Mapping[str, object],
+    *,
+    expected_mode: str,
+) -> dict[str, object] | None:
+    path = str(evidence.get("path", "")).lower()
+    if expected_mode == "direct":
+        if "direct" not in path:
+            return None
+    elif expected_mode == "relay":
+        if "relay" not in path and "pool" not in path:
+            return None
+        if int(evidence.get("direct_bytes", 0) or 0) > 0:
+            return None
+    else:
+        return None
+    view: dict[str, object] = {}
+    for field_name in (
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
+        "executor",
+        "path",
+        "plan_source",
+        "target_device",
+        "verified_bytes",
+        "expected_bytes",
+        "content_match",
+        "verification_source",
+        "verification_method",
+        "source_digest",
+        "destination_digest",
+        "src_buffer_id",
+        "dst_buffer_id",
+        "staging_slot_id",
+        "failure_source",
+        "relay_gpu",
+        "relay_gpus",
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+    ):
+        if field_name in evidence and evidence[field_name] is not None:
+            view[field_name] = evidence[field_name]
+    cleanup = evidence.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        view["cleanup"] = dict(cleanup)
+    resource_evidence = evidence.get("resource_evidence")
+    if isinstance(resource_evidence, Mapping):
+        view["resource_evidence"] = dict(resource_evidence)
+    return view or None
 
 
 def _buffer_lifetime_record(

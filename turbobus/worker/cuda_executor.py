@@ -377,6 +377,8 @@ def _failed_result(
     *,
     resources: WorkerDataPlaneResources | None = None,
 ) -> WorkerTransferResult:
+    relay_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
+    target_device = _target_device_for_request(request)
     return WorkerTransferResult(
         transfer_id=request.transfer_id,
         state=WorkerTransferState.FAILED,
@@ -384,10 +386,19 @@ def _failed_result(
         bytes_completed=0,
         metadata={
             "executor": "cuda_worker",
+            "path": _metadata_path(direction=request.data_plane.direction, direct_chunks=0),
+            "plan_source": "daemon",
             "relay_gpu": request.authorization.relay_gpu,
+            "relay_gpus": _relay_gpus_for_request(request),
+            "target_device": target_device,
             "src_buffer_id": request.authorization.src_buffer.buffer_id,
             "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
             "staging_slot_id": staging_slot.slot_id,
+            "direct_bytes": 0,
+            "direct_chunks": 0,
+            "relay_bytes": relay_bytes,
+            "relay_chunks": len(request.data_plane.ranges),
+            "failure_source": "cuda_worker",
             **_resource_evidence_metadata(resources, request),
             **_ticket_binding_metadata(request),
         },

@@ -14,6 +14,8 @@
 - Direct, relay, and mixed terminal receipts now expose a more uniform
   daemon-owned completion contract view instead of leaving failure/cleanup
   evidence split across per-mode shapes.
+- Direct-only and relay-only failure paths now also carry stronger mode-level
+  execution contract fields into the final daemon receipt path.
 
 ## Remaining Risk
 

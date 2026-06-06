@@ -29,7 +29,7 @@ evaluation.
 - `turbobus/runtime_session.py`
 - `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
-- `turbobus/worker/process.py`
+- `turbobus/worker/lifecycle.py`
 
 Current gap:
 
@@ -39,13 +39,12 @@ Current gap:
 - build the remaining execution closures on top of the runtime-session-owned
   managed daemon/worker socket lifecycle;
 - keep direct, relay, and mixed execution bound to one terminal
-  receipt/cleanup path.
+  receipt/cleanup path all the way through buffer lifetime closure.
 
 ## Next Entry
 
 Start at `TurboBusRuntimeSession`, `daemon/server.py`, `intent_executor.py`,
-and `worker/process.py`. The runtime-session-to-daemon/worker startup path is
-now a managed production lifecycle; use that owned entrypoint to push the next
-round into one full direct-only, relay-only, mixed-pooled, or buffer-lifecycle
-closure. Do not treat one-off wait semantics, helper moves, field edits, or
-single bug-style fixes as sufficient round outcomes.
+and `worker/lifecycle.py`. The runtime-session-to-daemon/worker startup path is
+now a managed production lifecycle; mixed pooled receipt evidence now carries
+worker cleanup/staging lifecycle evidence. Push the next round into one full
+relay-only or buffer-lifecycle closure rather than another local hardening step.

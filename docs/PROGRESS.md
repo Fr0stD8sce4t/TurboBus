@@ -38,6 +38,12 @@ tokens no longer return submit-stage payload receipts; they are turned into
 explicit daemon failure and then consumed through the same terminal receipt
 path.
 
+Mixed pooled receipt evidence now preserves more of the worker-side lifecycle.
+Deferred worker completion is no longer reduced to verification bytes alone:
+the merged mixed receipt path now also carries worker cleanup evidence,
+staging-slot evidence, staging release evidence, and daemon running-update
+context into the final relay-side completion evidence.
+
 ## Remaining Risk
 
 - The daemon execution lifecycle still spans several modules, and admission,
@@ -49,6 +55,9 @@ path.
 - Runtime session, daemon, and executor still duplicate some receipt parsing,
   exact-plan assumptions, and execution-path decisions, which leaves room for
   boundary drift even though the major production entry split has been reduced.
+- Shared pinned CPU buffers and CUDA IPC GPU buffers still need a fuller
+  end-to-end lifetime closure from registration/open through execution and
+  release evidence in final receipts.
 - Native CUDA execution, worker socket execution, shared pinned CPU buffers,
   and CUDA IPC buffer lifetime are wired into the code path but remain pending
   later end-to-end server/CUDA validation after the system path is complete.

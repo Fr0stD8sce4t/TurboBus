@@ -465,9 +465,70 @@ def _worker_completion_evidence(
             merged = dict(nested)
             for key, value in metadata.items():
                 merged.setdefault(str(key), value)
-            return merged
-        return dict(metadata)
+            evidence = merged
+        else:
+            evidence = dict(metadata)
+        return _worker_envelope_evidence(evidence, completion)
     raise RuntimeError("mixed-pooled worker completion missing evidence")
+
+
+def _worker_envelope_evidence(
+    evidence: Mapping[str, object],
+    completion: WorkerDataPlaneCompletionEnvelope,
+) -> dict[str, object]:
+    merged = dict(evidence)
+    resource_evidence = dict(merged.get("resource_evidence") or {})
+    staging_slot = (
+        dict(completion.staging_slot)
+        if isinstance(completion.staging_slot, Mapping)
+        else None
+    )
+    staging_release = (
+        dict(completion.staging_release)
+        if isinstance(completion.staging_release, Mapping)
+        else None
+    )
+    cleanup_evidence = _worker_cleanup_evidence_from_completion(completion)
+    running_update = (
+        dict(completion.daemon_running_update)
+        if isinstance(completion.daemon_running_update, Mapping)
+        else None
+    )
+    if staging_slot is not None:
+        merged.setdefault("staging_slot_id", str(staging_slot.get("slot_id")))
+        resource_evidence["staging_slot"] = staging_slot
+    if staging_release is not None:
+        resource_evidence["staging_release"] = staging_release
+    if cleanup_evidence is not None:
+        merged["cleanup"] = cleanup_evidence
+        resource_evidence["cleanup"] = dict(cleanup_evidence)
+    if running_update is not None:
+        merged["daemon_running_update"] = running_update
+    if resource_evidence:
+        merged["resource_evidence"] = resource_evidence
+    return merged
+
+
+def _worker_cleanup_evidence_from_completion(
+    completion: WorkerDataPlaneCompletionEnvelope,
+) -> dict[str, object] | None:
+    response = completion.daemon_cleanup_response
+    if not isinstance(response, Mapping):
+        return None
+    payload = response.get("payload")
+    if not isinstance(payload, Mapping):
+        payload = {}
+    return {
+        "ok": bool(response.get("ok", False)),
+        "target_kind": payload.get("cleanup_kind"),
+        "target_id": payload.get("reservation_id"),
+        "mode": payload.get("cleanup_mode"),
+        "reason": payload.get("reason"),
+        "lease_ids": tuple(str(item) for item in payload.get("lease_ids", ()) or ()),
+        "cleaned_reservation_ids": tuple(
+            str(item) for item in payload.get("cleaned_reservation_ids", ()) or ()
+        ),
+    }
 
 
 def _merge_mixed_completion_evidence(

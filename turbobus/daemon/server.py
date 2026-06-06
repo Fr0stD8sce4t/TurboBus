@@ -2168,8 +2168,11 @@ class TurboBusDaemon:
                 self._profile_key(session.target_gpu, session.relay_gpus)
             )
         admission = dict(self._transfer_admissions.get(str(transfer_id), {}))
-        ticket_id = self._transfer_tickets.get(str(transfer_id))
-        ticket = None if ticket_id is None else self._execution_tickets[ticket_id]
+        ticket = self._active_execution_ticket_for_transfer_locked(
+            transfer_id=str(transfer_id),
+            decision=decision,
+            now=time.time(),
+        )
         return daemon_receipts.planned_transfer_payload(
             transfer_id=transfer_id,
             decision=decision,
@@ -2185,6 +2188,103 @@ class TurboBusDaemon:
             lease_tokens=self._lease_tokens,
             ticket=ticket,
         )
+
+    def _active_execution_ticket_for_transfer_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+        now: float,
+    ) -> ExecutionTicket | None:
+        normalized_transfer_id = str(transfer_id)
+        admission = self._transfer_admissions.get(normalized_transfer_id, {})
+        if admission.get("state") != _ADMISSION_ADMITTED:
+            return None
+        ticket_id = self._transfer_tickets.get(normalized_transfer_id)
+        ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
+        expected_generation = int(
+            self._transfer_plan_generations.get(normalized_transfer_id, 0)
+        )
+        if ticket is not None:
+            ticket_generation = int(ticket.metadata.get("plan_generation", 0) or 0)
+            if ticket_generation == expected_generation and float(ticket.expires_at) > float(now):
+                return ticket
+        intent_id = None
+        request = self._transfer_plan_requests.get(normalized_transfer_id)
+        if isinstance(request, Mapping):
+            intent_id = request.get("intent_id")
+        intent = (
+            None
+            if intent_id is None
+            else self._transfer_intents.get(str(intent_id))
+        )
+        if intent is not None:
+            ticket = self._execution_ticket_for_intent_locked(
+                intent=intent,
+                transfer_id=normalized_transfer_id,
+                decision=decision,
+                now=now,
+            )
+        else:
+            buffer_ids = self._buffer_ids_for_transfer_locked(
+                normalized_transfer_id,
+            )
+            if len(buffer_ids) < 2:
+                return ticket
+            ticket = self._execution_ticket_for_plan_locked(
+                transfer_id=normalized_transfer_id,
+                decision=decision,
+                source_buffer_id=buffer_ids[0],
+                destination_buffer_id=buffer_ids[1],
+                now=now,
+                lease_ids=self._lease_ids_for_transfer_locked(normalized_transfer_id),
+            )
+        self._execution_tickets[ticket.ticket_id] = ticket
+        self._transfer_tickets[normalized_transfer_id] = ticket.ticket_id
+        return ticket
+
+    def _lease_ids_for_transfer_locked(self, transfer_id: str) -> tuple[str, ...]:
+        normalized_transfer_id = str(transfer_id)
+        return tuple(
+            reservation_id
+            for reservation_id, mapped_transfer_id in sorted(
+                self._reservation_transfers.items()
+            )
+            if mapped_transfer_id == normalized_transfer_id
+        )
+
+    def _buffer_ids_for_transfer_locked(
+        self,
+        transfer_id: str,
+    ) -> tuple[str, ...]:
+        normalized_transfer_id = str(transfer_id)
+        request = self._transfer_plan_requests.get(normalized_transfer_id, {})
+        request_buffer_ids = request.get("buffer_ids")
+        if isinstance(request_buffer_ids, tuple):
+            return tuple(str(item) for item in request_buffer_ids)
+        if isinstance(request_buffer_ids, list):
+            return tuple(str(item) for item in request_buffer_ids)
+        transfer_record = self._transfer_queue_records.get(normalized_transfer_id, {})
+        source_buffer_id = transfer_record.get("source_buffer_id")
+        destination_buffer_id = transfer_record.get("destination_buffer_id")
+        if source_buffer_id is not None and destination_buffer_id is not None:
+            return (str(source_buffer_id), str(destination_buffer_id))
+        archived = self._transfer_receipt_archive.get(normalized_transfer_id, {})
+        archived_ticket = archived.get("ticket")
+        if isinstance(archived_ticket, ExecutionTicket):
+            return (
+                str(archived_ticket.source_buffer_id),
+                str(archived_ticket.destination_buffer_id),
+            )
+        decision = self._scheduling_decisions.get(normalized_transfer_id)
+        if decision is not None:
+            ticket = self._receipt_execution_ticket_for_transfer_locked(normalized_transfer_id)
+            if ticket is not None:
+                return (
+                    str(ticket.source_buffer_id),
+                    str(ticket.destination_buffer_id),
+                )
+        return ()
 
     def _validate_transfer_admission_locked(
         self,

@@ -121,17 +121,7 @@ def _status_evidence_for_result(
 ) -> dict[str, object] | None:
     metadata = dict(result.metadata)
     if result.state is not WorkerTransferState.COMPLETE:
-        evidence = {
-            key: metadata[key]
-            for key in (
-                "ticket_id",
-                "transfer_id",
-                "plan_generation",
-                "resource_evidence",
-                "worker_startup",
-            )
-            if key in metadata
-        }
+        evidence = _execution_contract_evidence_from_metadata(metadata)
         return evidence or None
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
@@ -1085,21 +1075,7 @@ def _cleanup_completion_evidence(
     cleanup_response: DaemonResponse,
 ) -> dict[str, object]:
     metadata = dict(result.metadata)
-    evidence = dict(metadata.get("completion_evidence") or {})
-    for key in (
-        "verified_bytes",
-        "content_match",
-        "verification_source",
-        "verification_method",
-        "source_digest",
-        "destination_digest",
-        "resource_evidence",
-        "ticket_id",
-        "transfer_id",
-        "plan_generation",
-    ):
-        if key in metadata:
-            evidence.setdefault(key, metadata[key])
+    evidence = _execution_contract_evidence_from_metadata(metadata)
     evidence.setdefault("ticket_id", request.ticket.ticket_id)
     transfer_id = request.ticket.metadata.get("transfer_id")
     if transfer_id is not None:
@@ -1121,6 +1097,49 @@ def _cleanup_completion_evidence(
             for item in cleanup_payload.get("cleaned_reservation_ids", ()) or ()
         ),
     }
+    return evidence
+
+
+def _execution_contract_evidence_from_metadata(
+    metadata: Mapping[str, object],
+) -> dict[str, object]:
+    evidence = (
+        dict(metadata.get("completion_evidence"))
+        if isinstance(metadata.get("completion_evidence"), Mapping)
+        else {}
+    )
+    for key in (
+        "executor",
+        "path",
+        "plan_source",
+        "target_device",
+        "verified_bytes",
+        "content_match",
+        "verification_source",
+        "verification_method",
+        "source_digest",
+        "destination_digest",
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+        "relay_gpu",
+        "relay_gpus",
+        "src_buffer_id",
+        "dst_buffer_id",
+        "staging_slot_id",
+        "resource_evidence",
+        "worker_startup",
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
+        "failure_source",
+    ):
+        if key in metadata:
+            evidence.setdefault(key, metadata[key])
+    cleanup = metadata.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        evidence.setdefault("cleanup", dict(cleanup))
     return evidence
 
 

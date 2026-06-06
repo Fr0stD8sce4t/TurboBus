@@ -192,6 +192,13 @@ def receipt_for_transfer(
         relay_completion_evidence=relay_completion_evidence,
         cleanup_evidence=cleanup_evidence,
     )
+    completion_contract = _completion_contract_view(
+        evidence=evidence,
+        execution_path_evidence=execution_path_evidence,
+        cleanup_evidence=cleanup_evidence,
+        direct_completion_evidence=direct_completion_evidence,
+        relay_completion_evidence=relay_completion_evidence,
+    )
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -265,6 +272,7 @@ def receipt_for_transfer(
                 if isinstance(cleanup_evidence, Mapping)
                 else None
             ),
+            "completion_contract": completion_contract,
             "buffer_lifetime_evidence": buffer_lifetime_evidence,
         },
     )
@@ -342,6 +350,88 @@ def _buffer_lifetime_evidence(
         ),
         "cleanup": cleanup_mapping or None,
     }
+
+
+def _completion_contract_view(
+    *,
+    evidence: Mapping[str, object],
+    execution_path_evidence: object,
+    cleanup_evidence: object,
+    direct_completion_evidence: object,
+    relay_completion_evidence: object,
+) -> dict[str, object]:
+    contract = {
+        "ticket_id": evidence.get("ticket_id"),
+        "transfer_id": evidence.get("transfer_id"),
+        "plan_generation": evidence.get("plan_generation"),
+        "verification_source": evidence.get("verification_source"),
+        "verification_method": evidence.get("verification_method"),
+        "verified_bytes": evidence.get("verified_bytes"),
+        "expected_bytes": evidence.get("expected_bytes"),
+        "content_match": evidence.get("content_match"),
+        "failure_source": evidence.get("failure_source"),
+        "execution_path": (
+            dict(execution_path_evidence)
+            if isinstance(execution_path_evidence, Mapping)
+            else _execution_path_view_from_evidence(evidence)
+        ),
+        "cleanup": (
+            dict(cleanup_evidence)
+            if isinstance(cleanup_evidence, Mapping)
+            else _cleanup_view_from_nested_completion(
+                direct_completion_evidence,
+                relay_completion_evidence,
+            )
+        ),
+        "direct": (
+            dict(direct_completion_evidence)
+            if isinstance(direct_completion_evidence, Mapping)
+            else None
+        ),
+        "relay": (
+            dict(relay_completion_evidence)
+            if isinstance(relay_completion_evidence, Mapping)
+            else None
+        ),
+    }
+    return contract
+
+
+def _execution_path_view_from_evidence(
+    evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    view: dict[str, object] = {}
+    for field_name in (
+        "executor",
+        "path",
+        "plan_source",
+        "target_device",
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+        "relay_gpu",
+        "relay_gpus",
+        "src_buffer_id",
+        "dst_buffer_id",
+        "staging_slot_id",
+    ):
+        if field_name in evidence and evidence[field_name] is not None:
+            view[field_name] = evidence[field_name]
+    return view or None
+
+
+def _cleanup_view_from_nested_completion(
+    direct_completion_evidence: object,
+    relay_completion_evidence: object,
+) -> dict[str, object] | None:
+    for candidate in (relay_completion_evidence, direct_completion_evidence):
+        if not isinstance(candidate, Mapping):
+            continue
+        cleanup = candidate.get("cleanup")
+        if isinstance(cleanup, Mapping):
+            return dict(cleanup)
+    return None
 
 
 def _buffer_lifetime_record(

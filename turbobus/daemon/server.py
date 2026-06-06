@@ -5536,6 +5536,34 @@ def _normalize_status_ticket_evidence(
     )
     if path_evidence:
         ticket_binding["execution_path_evidence"] = path_evidence
+    cleanup = evidence.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        ticket_binding["cleanup"] = dict(cleanup)
+    direct_completion_evidence = evidence.get("direct_completion_evidence")
+    if isinstance(direct_completion_evidence, Mapping):
+        ticket_binding["direct_completion_evidence"] = dict(direct_completion_evidence)
+    relay_completion_evidence = evidence.get("relay_completion_evidence")
+    if isinstance(relay_completion_evidence, Mapping):
+        ticket_binding["relay_completion_evidence"] = dict(relay_completion_evidence)
+    for field_name in (
+        "executor",
+        "path",
+        "plan_source",
+        "verification_source",
+        "verification_method",
+        "source_digest",
+        "destination_digest",
+        "failure_source",
+    ):
+        value = evidence.get(field_name)
+        if value is not None:
+            ticket_binding[field_name] = str(value)
+    for field_name in ("verified_bytes", "expected_bytes"):
+        value = evidence.get(field_name)
+        if value is not None:
+            ticket_binding[field_name] = int(value)
+    if "content_match" in evidence:
+        ticket_binding["content_match"] = bool(evidence.get("content_match", False))
     return ticket_binding
 
 

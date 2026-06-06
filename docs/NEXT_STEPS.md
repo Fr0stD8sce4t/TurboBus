@@ -34,8 +34,8 @@ Current gap:
 - keep daemon scheduling as the only plan authority;
 - finish the remaining execution closures on top of the managed runtime-session
   daemon/worker socket path;
-- keep direct, relay, and mixed execution bound to one receipt/cleanup path
-  after the buffer lifetime closure now reaches final receipts.
+- keep pushing the remaining system closures on top of the now tighter
+  daemon-owned completion contract.
 
 ## Next Entry
 
@@ -46,7 +46,7 @@ Next round should finish exactly one of these:
 
 - one full relay-only execution closure;
 - one full runtime-session-owned execution and cleanup closure.
-- one full daemon-owned direct / relay / mixed completion contract closure.
+- one full scheduler/runtime load-feedback closure.
 
 Plan-file rule:
 

@@ -316,25 +316,9 @@ class OffloadStore:
             policy_hints=self.transfer_context.policy_hints,
             metadata=metadata,
         )
-        transfer_method = (
-            self.client.fetch_h2d if direction == "h2d" else self.client.offload_d2h
-        )
-        receipt = transfer_method(
-            source_buffer,
-            destination_buffer,
-            ranges=ranges_tuple,
-            chunk_bytes=int(self.transfer_context.policy_hints.get(
-                "chunk_bytes",
-                getattr(self.client.runtime_options, "chunk_bytes", 16 * 1024 * 1024),
-            )),
-            workload_kind=self.transfer_context.workload_kind,
-            priority=self.transfer_context.priority,
-            metadata=metadata,
-            policy_hints=self.transfer_context.policy_hints,
-            intent_id=intent_id,
-        )
+        receipt = self.client.submit_transfer_intent(intent, wait=False)
         if not isinstance(receipt, TransferReceipt):
-            raise TypeError("fetch_h2d/offload_d2h must return a TransferReceipt")
+            raise TypeError("submit_transfer_intent must return a TransferReceipt")
         validate_adapter_receipt(
             receipt,
             intent,

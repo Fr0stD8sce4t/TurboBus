@@ -7,30 +7,30 @@
 - `TurboBusRuntimeSession` remains the intended single production entry.
 - Managed daemon/worker startup and buffer lifetime closure are in place
   enough to support the remaining production-path closures.
-- Shared relay execution now keeps daemon-issued ownership scope through worker
-  authorization, cleanup, and terminal receipt evidence instead of letting the
-  worker infer cleanup scope on its own.
+- One production-facing adapter family on top of `OffloadStore` now uses
+  `TurboBusRuntimeSession` as a real submit-then-wait owner instead of hiding a
+  synchronous fetch/evict shortcut behind adapter submit APIs.
 
 ## Remaining Risk
 
-- Production adapters still need one full path that uses
-  `TurboBusRuntimeSession` for real buffer registration, intent submission, and
-  receipt consumption.
-- Some framework-facing entry points may still carry older execution ownership
-  assumptions until they are migrated onto the runtime-session production path.
+- The next adapter workload family still needs to close on the same
+  runtime-session-owned submit/receipt path, especially the more vLLM-shaped
+  integration surface.
+- Some framework-facing entry points may still carry older assumptions about
+  when submit APIs are terminal versus when receipt consumption is deferred.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full framework adapter closure through `TurboBusRuntimeSession`.
-After that, choose
+Finish one full adapter expansion closure for the next workload family on the
+same `TurboBusRuntimeSession` production path. After that, choose
 exactly one of these per round:
 
 - one complete server-backed validation closure after the system body is
   complete.
-- one complete adapter expansion closure for the next workload family on the
-  same runtime-session production path.
+- one complete server/runtime production-startup hardening closure if adapters
+  no longer block the main system path.
 
 Progress-file rule:
 

@@ -5,26 +5,28 @@ appending history.
 
 ## Current Main Target
 
-Close one full framework adapter path through `TurboBusRuntimeSession` on top of
-the now tighter daemon-owned execution and ownership contracts.
+Close one full adapter expansion path for the next workload family on the same
+`TurboBusRuntimeSession` production path.
 
 ## Exit Criteria
 
-- At least one production-facing adapter path registers real buffers through
-  `TurboBusRuntimeSession`, submits `TransferIntent`, and consumes
-  `TransferReceipt`.
-- Adapter code stops bypassing runtime-session-owned submit/receipt flow or
-  reintroducing route choice outside the daemon.
-- Adapter closure lives on the production path and does not depend on
-  benchmark-only or synthetic control paths.
+- Another production-facing workload family closes on top of the same
+  runtime-session-owned submit/receipt path, not just the offload-style path
+  already in place.
+- Adapter expansion continues to use `TurboBusRuntimeSession` for real buffer
+  registration, `TransferIntent` submission, and `TransferReceipt`
+  consumption without route choice leakage.
+- Expansion stays on the production path and does not depend on benchmark-only
+  or synthetic control paths.
 
 ## Current Code Work
 
 - `turbobus/runtime_session.py`
-- `turbobus/adapters/vllm.py`
 - `turbobus/adapters/vllm_integration.py`
+- `turbobus/adapters/vllm.py`
+- `turbobus/adapters/vllm_kv_connector.py`
+- `turbobus/adapters/training_offload.py`
 - `turbobus/adapters/model_loading.py`
-- `turbobus/offload/context.py`
 
 Round rules:
 
@@ -40,16 +42,17 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py` and the production-facing adapter entry points in
-`adapters/vllm.py`, `adapters/vllm_integration.py`,
-`adapters/model_loading.py`, and `offload/context.py`.
+Start at `runtime_session.py` and the next adapter workload family in
+`adapters/vllm_integration.py`, `adapters/vllm.py`,
+`adapters/vllm_kv_connector.py`, `adapters/training_offload.py`, and
+`adapters/model_loading.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
 - one full server-backed validation closure after the system body is complete.
-- one full adapter expansion closure for the next workload family on the same
-  runtime-session production path.
+- one full server/runtime production-startup hardening closure if adapters no
+  longer block the main system path.
 
 Plan-file rule:
 

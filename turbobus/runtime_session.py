@@ -496,8 +496,18 @@ class TurboBusRuntimeSession:
             intent_id=intent_id,
         )
 
-    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
-        return self._submit_runtime_intent(intent)
+    def submit_transfer_intent(
+        self,
+        intent: TransferIntent,
+        *,
+        wait: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        return self._submit_runtime_intent(
+            intent,
+            wait=wait,
+            timeout_seconds=timeout_seconds,
+        )
 
     def wait_transfer_receipt(
         self,
@@ -956,12 +966,23 @@ class TurboBusRuntimeSession:
         self.open_session()
         self._register_pending_buffers()
 
-    def _submit_runtime_intent(self, intent: TransferIntent) -> TransferReceipt:
+    def _submit_runtime_intent(
+        self,
+        intent: TransferIntent,
+        *,
+        wait: bool = True,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
         self._prepare_runtime_intent(intent)
         self._record_submitted_intent(intent)
         try:
-            self._execute_intent_through_daemon(intent)
-            return self.wait_transfer_receipt(intent.intent_id)
+            receipt = self._execute_intent_through_daemon(intent)
+            if wait:
+                return self.wait_transfer_receipt(
+                    intent.intent_id,
+                    timeout_seconds=timeout_seconds,
+                )
+            return receipt
         except Exception:
             self._active_intent_ids.discard(intent.intent_id)
             raise

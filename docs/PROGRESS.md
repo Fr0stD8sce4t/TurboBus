@@ -2,146 +2,38 @@
 
 ## Current State
 
-Current main target: real H2D / D2H execution path closure.
+Current main target is still to finish the core system body before adapter,
+benchmark, or paper-validation work.
 
-The codebase has a daemon-first control-plane shape: `TransferIntent`
-submission, daemon scheduling, daemon-issued `ExecutionTicket`, worker/backend
-completion reporting, and `TransferReceipt` consumption through
-`TurboBusRuntimeSession`.
+The production path now centers more clearly on `TurboBusRuntimeSession`.
+Runtime session owns session/job/buffer registration, daemon profile bootstrap,
+`TransferIntent` submission, daemon-issued execution, and `TransferReceipt`
+consumption. Mixed pooled execution is already present in code: direct chunks
+run through backend exact-plan execution, relay chunks run through worker
+authorization/execution, and terminal daemon completion merges both evidence
+paths into one receipt contract.
 
-The in-process runtime path now has mixed pooled execution: one daemon plan is
-split by assignment type, direct chunks execute through backend exact-plan code,
-relay chunks execute through worker authorization and cleanup, and
-`WorkerIntentTransferExecutor` reports one merged daemon completion.
-
-The production worker socket path now carries the same deferred-terminal mode:
-socket request envelopes preserve whether the worker should report terminal
-daemon status, and `WorkerTransferService` passes that choice into the worker
-lifecycle so mixed pooled relay completion can be returned for executor-side
-merge.
-
-Daemon terminal completion now keeps executed direct plus relay evidence in
-receipt metadata and runtime feedback summaries. Runtime feedback records
-terminal executed direct/relay bytes from completion evidence rather than
-static plan output.
-
-Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence now reaches the
-same completion path. Worker resource close state is merged into worker
-completion evidence, direct backend completion records CUDA host unregister
-state, and `TurboBusRuntimeSession` keeps session-owned CPU buffer cleanup and
-release evidence on explicit cleanup and session close.
-
-Production worker socket startup now performs a daemon handshake before
-serving requests: it fetches daemon-owned topology inventory and daemon
-identity state, rejects synthetic production topology, and attaches worker
-startup evidence to worker completion or explicit failure metadata.
-
-Scheduler planning now consumes live runtime load, not only static profiles:
-daemon runtime feedback exposes per-relay load, and `DaemonScheduler` adjusts
-direct and relay effective bandwidth from queued/running/active transfers,
-relay leases, staging records, completion source pressure, and job-weighted
-fairness state before choosing direct, relay, or mixed pooled paths.
-
-Server validation, benchmark work, paper validation, experiments, and new test
-code remain deferred until the full system implementation pass is complete.
-
-## Completed Recently
-
-- Worker and direct-backend completion evidence now carries executed path split
-  metadata (`direct_bytes`, `relay_bytes`, direct/relay chunk counts, executor,
-  path, target, relay, and buffer identity) into daemon-normalized completion
-  evidence and `TransferReceipt.metadata`.
-- `WorkerIntentTransferExecutor` now executes daemon-issued mixed pooled plans
-  in the in-process worker-client path by combining direct backend completion
-  evidence with deferred-terminal relay worker completion evidence before the
-  daemon receives one terminal complete update.
-- Worker socket request envelopes now preserve `report_terminal_status`, and
-  socket worker clients can participate in mixed pooled direct-plus-relay
-  execution without independently completing the whole transfer.
-- Daemon completion evidence now preserves mixed direct and relay child
-  completion records, exposes direct/relay evidence on receipts, and summarizes
-  terminal executed direct/relay bytes in runtime feedback.
-- Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence now records
-  worker close state, direct backend CUDA host unregister state, and
-  runtime-owned CPU buffer release results during cleanup and session close.
-- Worker socket process startup now binds to daemon-owned topology inventory,
-  rejects synthetic topology sources, records daemon-observed peer identity
-  where available, and carries that startup evidence into worker result and
-  daemon completion evidence.
-- Scheduler load accounting now turns daemon runtime state into direct and
-  per-relay pressure, applies those pressures to planning bandwidths, and
-  records the load adjustments in scheduling decision metadata.
-- Worker CUDA execution scopes relay work to authorized relay assignments, while
-  direct backend execution scopes native plans to direct assignments from the
-  same daemon-issued ticket.
-- `TurboBusRuntimeSession` owns session/job/buffer registration, profile
-  bootstrap, worker intent executor construction, H2D/D2H submission helpers,
-  adapter factory construction, and owned CPU buffer cleanup.
-- Daemon runtime feedback records terminal worker/backend evidence and exposes
-  live queued/running/active transfer state to scheduler metadata.
-- CUDA backend and worker executor execute exact daemon plans rather than
-  choosing direct, relay, or pool routes locally.
-- Offload, inference, training, model-loading, and vLLM adapter construction
-  has moved toward `TurboBusRuntimeSession` factories and receipt consumption.
-
-## Validation
-
-- `python -m py_compile turbobus/intent_execution_support.py
-  turbobus/worker/models.py turbobus/worker/codec.py
-  turbobus/worker/lifecycle.py turbobus/worker/socket_client.py
-  turbobus/worker/endpoint.py` passed.
-- `python -m py_compile turbobus/daemon/server.py
-  turbobus/daemon/receipts.py` passed.
-- `python -m py_compile turbobus/worker/resources.py
-  turbobus/worker/lifecycle.py turbobus/direct_fallback.py
-  turbobus/runtime_session.py turbobus/daemon/server.py
-  turbobus/daemon/receipts.py` passed.
-- `python -m py_compile turbobus/daemon/dispatch.py
-  turbobus/daemon/server.py turbobus/daemon/client.py
-  turbobus/worker/__init__.py turbobus/worker/process.py
-  turbobus/worker/lifecycle.py turbobus/worker/endpoint.py
-  turbobus/worker/socket_client.py turbobus/intent_executor.py` passed.
-- `python -m py_compile turbobus/scheduler/load_feedback.py
-  turbobus/scheduler/daemon.py turbobus/daemon/server.py
-  turbobus/daemon/leases.py turbobus/intent_executor.py
-  turbobus/runtime_session.py` passed.
-- `git diff --check` passed for the current code and documentation update,
-  with CRLF normalization warnings on edited files.
-- Existing CUDA/native execution, vLLM runtime behavior, relay/pooled
-  execution, and server-only behavior remain unverified in this session.
+`TurboBusClient` is no longer a production transfer submission path. It remains
+only as a terminal-receipt compatibility boundary, which removes one remaining
+public path that could make benchmark-style code look like a valid production
+entry.
 
 ## Remaining Risk
 
-- The production worker socket startup and deferred-terminal paths now carry
-  daemon topology and completion evidence through code paths, but still need
-  full end-to-end CUDA/server confirmation after the system path is complete.
-- Mixed pooled completion still needs full end-to-end CUDA/server confirmation
-  after the system path is complete.
-- Runtime feedback now includes terminal executed path evidence, but its
-  server-side observation path has not been server-verified in this session.
-- Scheduler load feedback now consumes daemon runtime state in code, but its
-  effect on real multi-job CUDA/server scheduling still needs confirmation
-  after the system path is complete.
-- Profile bootstrap still depends on CUDA/backend behavior and daemon profile
-  RPCs that have not been server-verified in this session.
-- Shared pinned CPU and CUDA IPC GPU buffer lifecycle evidence is now wired
-  through code paths, but real CUDA IPC/shared-memory behavior still needs
-  end-to-end confirmation after the system path is complete.
-- The worker intent executor remains dependent on the worker client and runtime
-  buffer map being live inside the session.
-- Worker execution still depends on CUDA backend/device handle support in the
-  active runtime environment.
-- Adapter context creation still depends on callers providing valid CPU and GPU
-  buffers that can be registered against the active daemon session.
-- vLLM adapter setup still depends on real vLLM tensors and buffer backings in
-  the active runtime environment.
-- Older benchmark and example surfaces still use `TurboBusClient` and have not
-  been migrated to the runtime-session-first API.
-- Existing tests, examples, and benchmarks still contain old production-path
-  assumptions; migration is deferred until system implementation is complete.
+- The daemon execution lifecycle still spans several modules, and admission,
+  ticket reissue, worker authorization, terminal completion, and cleanup can
+  still be made more explicit as one owned path.
+- Mixed pooled execution exists in code, but the system still needs a cleaner
+  single contract across Python plan handling, backend direct execution, worker
+  relay execution, and merged receipt evidence.
+- Native CUDA execution, worker socket execution, shared pinned CPU buffers,
+  and CUDA IPC buffer lifetime are wired into the code path but remain pending
+  later end-to-end server/CUDA validation after the system path is complete.
+- Benchmarks, examples, adapters, and older tests still reflect pre-runtime-
+  session assumptions and remain intentionally deferred.
 
 ## Next Main Target
 
-Close framework adapter paths so offload, inference, model-loading, training,
-and vLLM code submit intent and consume receipts through
-`TurboBusRuntimeSession` without physical route controls.
+Continue tightening the runtime-session-first production path, then narrow the
+daemon-to-worker lifecycle so direct, relay, and mixed pooled execution behave
+as one explicit daemon-owned contract.

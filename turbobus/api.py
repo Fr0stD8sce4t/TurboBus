@@ -5,11 +5,18 @@ from typing import Mapping
 
 from .daemon.client import TurboBusDaemonClient
 from .intent_execution_support import require_ok
-from .runtime.validation import validate_runtime_receipt
 from .schema import DaemonResponse, TransferIntent, TransferReceipt, TransferStatusState
 
 
 class TurboBusClient:
+    """Compatibility receipt client.
+
+    Production `TransferIntent` execution must go through
+    `TurboBusRuntimeSession`, which owns daemon-issued execution and receipt
+    validation. This client remains only as a terminal-receipt consumption
+    boundary for older non-production-facing surfaces.
+    """
+
     def __init__(
         self,
         daemon: object | None = None,
@@ -34,22 +41,10 @@ class TurboBusClient:
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")
-        submitter = getattr(self.daemon, "submit_transfer_intent", None)
-        if not callable(submitter):
-            raise TypeError("daemon must support submit_transfer_intent")
-        response = submitter(intent)
-        receipt = _receipt_from_daemon_response(response, expected_intent_id=intent.intent_id)
-        _require_terminal_receipt(
-            receipt,
-            operation="submit_transfer_intent",
+        raise RuntimeError(
+            "TurboBusClient is not a production transfer submission API; use "
+            "TurboBusRuntimeSession to submit daemon-issued TransferIntent execution"
         )
-        validate_runtime_receipt(
-            receipt,
-            intent_id=intent.intent_id,
-            job_id=intent.job_id,
-            session_id=intent.session_id,
-        )
-        return receipt
 
     def wait_transfer_receipt(
         self,

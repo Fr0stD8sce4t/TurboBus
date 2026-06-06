@@ -1,50 +1,45 @@
 # TurboBus Next Steps
 
-This is the only active per-round forward plan. Keep it short and replace
-completed state instead of appending history.
+This is the only active per-round implementation plan. Replace state instead of
+appending history.
 
 ## Current Main Target
 
-Real H2D / D2H execution path closure before experiments.
+Finish the core system body before adapter migration, benchmarks, or paper
+evaluation.
 
-Current code target: framework adapter closure through `TurboBusRuntimeSession`.
-Mixed direct-plus-relay completion evidence, buffer lifecycle evidence,
-production worker startup evidence, and scheduler load feedback are now
-preserved through backend/worker completion, daemon receipts, runtime feedback,
-and runtime-session cleanup.
+- `TurboBusRuntimeSession` is the only production system entry;
+- one `TransferIntent` maps to one daemon-owned scheduling lifecycle;
+- direct, relay, and mixed pooled execution stay daemon-issued outcomes;
+- execution, terminal receipt, and cleanup stay one contract.
 
 ## Exit Criteria
 
-- Buffer registration and cleanup keep shared pinned CPU and CUDA IPC GPU
-  ownership scoped to the session, job, and transfer.
-- Receipt metadata and runtime feedback preserve buffer open, close, cleanup,
-  and release evidence from real worker/backend completion or explicit failure.
-- Offload, inference, model-loading, training, and vLLM adapters submit H2D/D2H
-  `TransferIntent` through `TurboBusRuntimeSession` and consume
-  `TransferReceipt`.
-- Offload, inference, model-loading, training, and vLLM adapters remain on
-  `TurboBusRuntimeSession` and do not receive direct/relay/pool/target/relay
-  policy controls.
-- No test, experiment, benchmark, paper-validation, or server-validation code
-  is added during this system implementation pass.
+- Runtime session owns startup, registration, intent submission, execution, and
+  receipt consumption.
+- Daemon transfer lifecycle stays explicit from admission through ticket,
+  execution status, terminal receipt, and cleanup.
+- Direct-only, relay-only, and mixed plans share one completion-evidence
+  contract.
+- Shared pinned CPU and CUDA IPC GPU buffer lifetime stays inside the
+  daemon-issued session/job lifecycle.
 
 ## Current Code Work
 
-Focus on the production transfer boundary:
-
+- `turbobus/runtime_session.py`
+- `turbobus/api.py`
 - `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
-- `turbobus/runtime_session.py`
-- `turbobus/adapters/`
-- `turbobus/offload/`
 
-The main implementation gap is now adapter closure: framework-facing code
-should register real buffers through `TurboBusRuntimeSession`, submit only
-transfer intent, and consume receipts without seeing route, relay, target, or
-pool controls.
+Current gap:
+
+- remove remaining duplicate production-looking entry paths;
+- keep daemon scheduling as the only plan authority;
+- keep direct, relay, and mixed execution bound to one receipt/cleanup path.
 
 ## Next Entry
 
-Start at offload and vLLM adapter paths that still bypass or wrap around
-`TurboBusRuntimeSession`. Do not add server-validation commands, benchmark
-adapters, or application-side route controls.
+Start at `TurboBusRuntimeSession`, `api.py`, `daemon/server.py`, and
+`intent_executor.py`. Prefer changes that further collapse production entry
+ownership and execution lifecycle ownership. Do not spend this pass on
+benchmarks, examples, adapters, or validation tooling.

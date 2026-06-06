@@ -76,6 +76,7 @@ def execution_ticket_for_plan(
     default_expires_at: float,
     expires_at: float | None = None,
     lease_ids: tuple[str, ...] = (),
+    metadata: Mapping[str, object] | None = None,
 ) -> ExecutionTicket:
     direction = decision_direction(decision)
     ticket_ranges = ticket_ranges_for_plan(decision.plan, direction=direction)
@@ -104,6 +105,11 @@ def execution_ticket_for_plan(
             "issuer": "turbobus-daemon",
             "transfer_id": transfer_id,
             "plan_generation": int(plan_generation),
+            **(
+                dict(metadata)
+                if isinstance(metadata, Mapping)
+                else {}
+            ),
         },
     )
 

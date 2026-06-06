@@ -3293,7 +3293,47 @@ class TurboBusDaemon:
             ),
             expires_at=expires_at,
             lease_ids=lease_ids,
+            metadata=self._execution_ticket_owner_metadata_locked(
+                transfer_id=str(transfer_id),
+                decision=decision,
+                lease_ids=lease_ids,
+            ),
         )
+
+    def _execution_ticket_owner_metadata_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+        lease_ids: tuple[str, ...],
+    ) -> dict[str, object]:
+        normalized_transfer_id = str(transfer_id)
+        normalized_lease_ids = tuple(str(item) for item in lease_ids)
+        relay_gpus: list[int] = []
+        for lease_id in normalized_lease_ids:
+            lease = self._lease_tokens.get(lease_id)
+            if lease is None:
+                continue
+            relay_gpus.append(int(lease.relay_gpu))
+        owner_peer = self._transfer_peer_identities.get(normalized_transfer_id)
+        if owner_peer is None and decision.job_id in self._job_peer_identities:
+            owner_peer = self._job_peer_identities.get(decision.job_id)
+        if owner_peer is None:
+            owner_peer = self._session_peer_identities.get(decision.session_id)
+        owner_binding = {
+            "job_id": str(decision.job_id),
+            "session_id": str(decision.session_id),
+            "transfer_id": normalized_transfer_id,
+            "lease_ids": normalized_lease_ids,
+            "relay_gpus": tuple(sorted(set(relay_gpus))),
+            "cleanup_scope": {
+                "target_kind": "reservation",
+                "target_ids": normalized_lease_ids,
+            },
+        }
+        if owner_peer is not None and owner_peer.authenticated:
+            owner_binding["peer_identity"] = asdict(owner_peer)
+        return {"owner_binding": owner_binding}
 
     def _receipt_for_intent_locked(self, intent_id: str) -> TransferReceipt:
         normalized_intent_id = str(intent_id)

@@ -7,26 +7,30 @@
 - `TurboBusRuntimeSession` remains the intended single production entry.
 - Managed daemon/worker startup and buffer lifetime closure are in place
   enough to support the remaining production-path closures.
-- Scheduler/runtime load feedback now stays on the daemon-owned production path
-  longer, including recent terminal completion ownership after transfers retire.
+- Shared relay execution now keeps daemon-issued ownership scope through worker
+  authorization, cleanup, and terminal receipt evidence instead of letting the
+  worker infer cleanup scope on its own.
 
 ## Remaining Risk
 
-- Cross-job isolation and ownership still need one tighter production closure
-  across shared relay execution, cleanup, and receipt retirement.
-- Worker and daemon ownership checks still need to prove that one job cannot
-  consume or retire another job's transfer state through shared resources.
+- Production adapters still need one full path that uses
+  `TurboBusRuntimeSession` for real buffer registration, intent submission, and
+  receipt consumption.
+- Some framework-facing entry points may still carry older execution ownership
+  assumptions until they are migrated onto the runtime-session production path.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full cross-job isolation and ownership closure. After that, choose
+Finish one full framework adapter closure through `TurboBusRuntimeSession`.
+After that, choose
 exactly one of these per round:
 
-- one complete framework adapter closure after the core system path is stable.
 - one complete server-backed validation closure after the system body is
   complete.
+- one complete adapter expansion closure for the next workload family on the
+  same runtime-session production path.
 
 Progress-file rule:
 

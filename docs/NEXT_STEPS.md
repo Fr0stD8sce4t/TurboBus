@@ -5,25 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close one full cross-job isolation and ownership path for shared daemon-issued
-transfer execution.
+Close one full framework adapter path through `TurboBusRuntimeSession` on top of
+the now tighter daemon-owned execution and ownership contracts.
 
 ## Exit Criteria
 
-- Shared relay use stays bound to the correct job, session, buffer, and peer
-  ownership through submit, execute, cleanup, and receipt.
-- Daemon and worker cleanup paths stop one job from consuming or retiring
-  another job's transfer state.
-- Isolation closure lives on the production path and does not depend on
+- At least one production-facing adapter path registers real buffers through
+  `TurboBusRuntimeSession`, submits `TransferIntent`, and consumes
+  `TransferReceipt`.
+- Adapter code stops bypassing runtime-session-owned submit/receipt flow or
+  reintroducing route choice outside the daemon.
+- Adapter closure lives on the production path and does not depend on
   benchmark-only or synthetic control paths.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`
-- `turbobus/daemon/dispatch.py`
 - `turbobus/runtime_session.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/validation.py`
+- `turbobus/adapters/vllm.py`
+- `turbobus/adapters/vllm_integration.py`
+- `turbobus/adapters/model_loading.py`
+- `turbobus/offload/context.py`
 
 Round rules:
 
@@ -39,15 +40,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, `daemon/dispatch.py`, `runtime_session.py`, and
-the worker ownership checks in `worker/lifecycle.py` and
-`worker/validation.py`.
+Start at `runtime_session.py` and the production-facing adapter entry points in
+`adapters/vllm.py`, `adapters/vllm_integration.py`,
+`adapters/model_loading.py`, and `offload/context.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full framework adapter closure after the core system path is stable.
 - one full server-backed validation closure after the system body is complete.
+- one full adapter expansion closure for the next workload family on the same
+  runtime-session production path.
 
 Plan-file rule:
 

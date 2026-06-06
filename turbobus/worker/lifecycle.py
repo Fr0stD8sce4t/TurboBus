@@ -246,7 +246,7 @@ class _WorkerTransferCleanupCoordinator:
                 raise ValueError("ticket job does not match authorization request")
             if ticket.session_id != request.session_id:
                 raise ValueError("ticket session does not match authorization request")
-            lease_ids = worker_validation.lease_ids_for_ticket(
+            lease_ids = worker_validation.cleanup_scope_lease_ids_for_ticket(
                 ticket,
                 lease_id=authorization_payload.get("lease_id"),
                 lease_ids=authorization_payload.get("lease_ids"),
@@ -1051,6 +1051,9 @@ def _cleanup_completion_evidence(
             for item in cleanup_payload.get("cleaned_reservation_ids", ()) or ()
         ),
     }
+    owner_binding = request.ticket.metadata.get("owner_binding")
+    if isinstance(owner_binding, Mapping):
+        evidence["cleanup"]["owner_binding"] = dict(owner_binding)
     return evidence
 
 

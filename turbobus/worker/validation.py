@@ -175,6 +175,33 @@ def lease_ids_for_ticket(
     return requested_ids
 
 
+def cleanup_scope_lease_ids_for_ticket(
+    ticket: ExecutionTicket,
+    lease_id: str | None = None,
+    lease_ids: Iterable[str] | None = None,
+) -> tuple[str, ...]:
+    ticket_lease_ids = lease_ids_for_ticket(ticket, lease_id=lease_id, lease_ids=lease_ids)
+    metadata = dict(ticket.metadata)
+    owner_binding = metadata.get("owner_binding")
+    if not isinstance(owner_binding, Mapping):
+        return ticket_lease_ids
+    cleanup_scope = owner_binding.get("cleanup_scope")
+    if not isinstance(cleanup_scope, Mapping):
+        return ticket_lease_ids
+    if str(cleanup_scope.get("target_kind", "")).lower() != "reservation":
+        return ticket_lease_ids
+    target_ids = cleanup_scope.get("target_ids")
+    if not isinstance(target_ids, Iterable) or isinstance(target_ids, (str, bytes)):
+        return ticket_lease_ids
+    scoped_ids = tuple(str(item) for item in target_ids)
+    if not scoped_ids or any(not item.strip() for item in scoped_ids):
+        raise ValueError("worker cleanup scope has invalid lease ids")
+    unknown_ids = sorted(set(scoped_ids) - set(ticket_lease_ids))
+    if unknown_ids:
+        raise ValueError("worker cleanup scope does not match ticket")
+    return scoped_ids
+
+
 def transfer_id_for_ticket(ticket: ExecutionTicket, transfer_id: str | None) -> str:
     ticket_transfer_id = ticket.metadata.get("transfer_id")
     if ticket_transfer_id is None:
@@ -249,6 +276,7 @@ def authorized_relay_gpus_for_request(request) -> tuple[int, ...]:
 
 __all__ = [
     "authorized_relay_gpus_for_request",
+    "cleanup_scope_lease_ids_for_ticket",
     "lease_ids_for_ticket",
     "relay_gpus_for_ticket",
     "relay_ranges_by_gpu_for_ticket",

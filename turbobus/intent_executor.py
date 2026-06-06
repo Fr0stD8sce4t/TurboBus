@@ -64,7 +64,7 @@ class WorkerIntentTransferExecutor:
     """Execute daemon-submitted TransferIntent payloads without choosing routes."""
 
     buffers: Mapping[str, ExecutableBuffer]
-    worker_client: object
+    worker_client: object | None
     backend: object = default_cuda_backend
     runtime_options: RuntimeOptions = field(default_factory=RuntimeOptions)
 
@@ -132,6 +132,15 @@ class WorkerIntentTransferExecutor:
             return receipt_from_daemon_payload(
                 payload,
                 expected_intent_id=intent.intent_id,
+            )
+        if self.worker_client is None:
+            return _fail_transfer_without_worker_client(
+                daemon_client=daemon_client,
+                intent=intent,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                direct_completion_evidence=direct_completion_evidence,
+                direct_bytes_completed=int(direct_plan_bytes),
             )
         _validate_intent_lease_tokens(daemon_client, intent, lease_tokens)
         primary_lease_token = lease_tokens[0]
@@ -506,6 +515,43 @@ def _mark_mixed_transfer_failed(
         completion_source="backend",
         completion_evidence=completion_evidence,
     )
+
+
+def _fail_transfer_without_worker_client(
+    *,
+    daemon_client,
+    intent: TransferIntent,
+    payload: Mapping[str, object],
+    lease_tokens: Iterable[Mapping[str, object]],
+    direct_completion_evidence: Mapping[str, object] | None,
+    direct_bytes_completed: int,
+) -> TransferReceipt:
+    cleanup_planned_relay_leases(
+        daemon_client,
+        lease_tokens,
+        reason="worker_client_unavailable",
+        strict=False,
+    )
+    failure_message = (
+        "daemon-issued relay execution requires a worker client; "
+        "use TurboBusRuntimeSession.open_production_socket or provide "
+        "an explicit worker client"
+    )
+    daemon_client.transfer_status(
+        str(payload["transfer_id"]),
+        state="failed",
+        bytes_completed=max(0, int(direct_bytes_completed)),
+        error=failure_message,
+        completion_source=(
+            "backend" if isinstance(direct_completion_evidence, Mapping) else None
+        ),
+        completion_evidence=(
+            dict(direct_completion_evidence)
+            if isinstance(direct_completion_evidence, Mapping)
+            else None
+        ),
+    )
+    return wait_for_intent_receipt(daemon_client, intent.intent_id)
 
 
 __all__ = ["WorkerIntentTransferExecutor"]

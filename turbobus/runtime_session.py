@@ -41,9 +41,6 @@ from .schema import (
     TransferReceipt,
     WorkloadKind,
 )
-from .worker.cuda_executor import CudaWorkerExecutor
-from .worker.lifecycle import WorkerTransferClient
-from .worker.resources import WorkerDataPlaneResourceBinder
 from .worker.socket_client import WorkerServiceSocketClient
 
 
@@ -866,19 +863,9 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._transfer_executor is not None:
             return self._transfer_executor
-        execution_daemon_client = self._execution_daemon_client()
-        worker_client = self.worker_client or WorkerTransferClient(
-            execution_daemon_client,
-            executor=CudaWorkerExecutor(
-                backend=self.backend,
-                options=self.runtime_options,
-            ),
-            resource_binder=WorkerDataPlaneResourceBinder(backend=self.backend),
-        )
-        self.worker_client = worker_client
         self._transfer_executor = WorkerIntentTransferExecutor(
             buffers=self._buffers,
-            worker_client=worker_client,
+            worker_client=self.worker_client,
             backend=self.backend,
             runtime_options=self.runtime_options,
         )

@@ -6,27 +6,28 @@
   benchmarks, or paper work.
 - `TurboBusRuntimeSession` remains the intended single production entry.
 - Managed daemon/worker startup and buffer lifetime closure are in place
-  enough to support the remaining execution-path closures.
-- The next required system closure is a relay-only path that ends in one
-  daemon-owned receipt contract.
+  enough to support the remaining production-path closures.
+- Direct-only, relay-only, and mixed execution now share a daemon-owned
+  terminal receipt contract closely enough to move the next round back to
+  runtime-session ownership.
 
 ## Remaining Risk
 
-- Relay-only execution still relies on a less explicit terminal path than mixed
-  execution.
-- Daemon execution ownership still spans several modules and needs one cleaner
-  mode-owned closure at a time.
+- Runtime-session-owned execution and cleanup still spans several modules and
+  needs one clearer single-entry closure.
+- Daemon execution ownership still needs more of the production path to be
+  pulled behind `TurboBusRuntimeSession`.
 - Scheduler/runtime load feedback still remains a later core-system closure.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish relay-only execution as one full daemon-owned closure. After that,
-choose exactly one of these per round:
+Finish one full runtime-session-owned execution and cleanup closure. After
+that, choose exactly one of these per round:
 
-- one complete runtime-session-owned startup/execution/cleanup closure;
 - one complete scheduler/runtime load-feedback closure.
+- one complete cross-job isolation and ownership closure.
 
 Progress-file rule:
 

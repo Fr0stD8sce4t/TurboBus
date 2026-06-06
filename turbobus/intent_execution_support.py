@@ -358,7 +358,11 @@ def require_worker_completion_matches_request(
             request,
         )
     elif final_state in {"failed", "status_failed"}:
-        require_failed_worker_completion_matches_request(completion, request)
+        require_failed_worker_completion_matches_request(
+            completion,
+            request,
+            expect_terminal_status=expect_terminal_status,
+        )
 
 
 def require_parse_failed_worker_completion_matches_request(
@@ -547,6 +551,8 @@ def require_cleanup_failed_worker_completion_matches_request(
 def require_failed_worker_completion_matches_request(
     completion: WorkerDataPlaneCompletionEnvelope,
     request: WorkerTransferAuthorizationRequest,
+    *,
+    expect_terminal_status: bool = True,
 ) -> None:
     if completion.ok:
         raise WorkerCompletionEnvelopeError("failed worker completion was marked ok")
@@ -560,27 +566,37 @@ def require_failed_worker_completion_matches_request(
         raise WorkerCompletionEnvelopeError("worker failure result did not fail")
     if not str(completion.worker_result.get("error") or "").strip():
         raise WorkerCompletionEnvelopeError("worker failure result missing error")
-    if completion.daemon_status_update is None:
-        raise WorkerCompletionEnvelopeError(
-            "worker failure missing daemon status update"
+    if expect_terminal_status:
+        if completion.daemon_status_update is None:
+            raise WorkerCompletionEnvelopeError(
+                "worker failure missing daemon status update"
+            )
+        if state_text(completion.daemon_status_update.get("state", "")) != "failed":
+            raise WorkerCompletionEnvelopeError(
+                "worker failure daemon status update did not fail"
+            )
+        if completion.daemon_status_response is None:
+            raise WorkerCompletionEnvelopeError(
+                "worker failure missing daemon status response"
+            )
+        require_worker_daemon_response_matches_request(
+            completion.daemon_status_response,
+            request,
+            expected_state="failed",
         )
-    if state_text(completion.daemon_status_update.get("state", "")) != "failed":
-        raise WorkerCompletionEnvelopeError(
-            "worker failure daemon status update did not fail"
-        )
-    if completion.daemon_status_response is None:
-        raise WorkerCompletionEnvelopeError(
-            "worker failure missing daemon status response"
-        )
-    require_worker_daemon_response_matches_request(
-        completion.daemon_status_response,
-        request,
-        expected_state="failed",
-    )
-    if not bool(completion.daemon_status_response.get("ok", False)):
-        raise WorkerCompletionEnvelopeError(
-            "worker failure daemon status response was not ok"
-        )
+        if not bool(completion.daemon_status_response.get("ok", False)):
+            raise WorkerCompletionEnvelopeError(
+                "worker failure daemon status response was not ok"
+            )
+    else:
+        if completion.daemon_status_update is not None:
+            raise WorkerCompletionEnvelopeError(
+                "deferred worker failure should not include terminal status update"
+            )
+        if completion.daemon_status_response is not None:
+            raise WorkerCompletionEnvelopeError(
+                "deferred worker failure should not include terminal status response"
+            )
     if completion.daemon_cleanup_response is None:
         raise WorkerCompletionEnvelopeError(
             "worker failure missing daemon cleanup response"

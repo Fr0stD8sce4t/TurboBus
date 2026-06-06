@@ -5,23 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close one full relay-only execution path as a daemon-owned production closure.
+Close one full runtime-session-owned execution and cleanup path as the single
+production entry.
 
 ## Exit Criteria
 
-- One relay-only `TransferIntent` runs through daemon scheduling, worker
-  execution, cleanup, and final `TransferReceipt`.
-- Relay-only success and failure both report daemon-owned terminal evidence.
-- Relay-only completion uses the same receipt contract shape as direct and
-  mixed execution.
+- One `TurboBusRuntimeSession` path owns startup, intent submission, execution
+  wait, cleanup handoff, and final `TransferReceipt` use.
+- Runtime session stays the only production-facing path for daemon-issued
+  transfer execution.
+- Runtime-session-owned execution does not leave production-looking duplicate
+  paths outside the session boundary.
 
 ## Current Code Work
 
+- `turbobus/runtime_session.py`
+- `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
 - `turbobus/worker/lifecycle.py`
-- `turbobus/daemon/server.py`
 - `turbobus/daemon/receipts.py`
-- `turbobus/runtime_session.py`
 
 Round rules:
 
@@ -37,14 +39,14 @@ Round rules:
 
 ## Next Entry
 
-Start at `intent_executor.py`, `worker/lifecycle.py`, `daemon/server.py`, and
-`daemon/receipts.py`.
+Start at `runtime_session.py`, `daemon/server.py`, `intent_executor.py`, and
+`worker/lifecycle.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full runtime-session-owned execution and cleanup closure;
 - one full scheduler/runtime load-feedback closure.
+- one full cross-job isolation and ownership closure.
 
 Plan-file rule:
 

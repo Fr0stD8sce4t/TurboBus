@@ -102,7 +102,9 @@ class WorkerIntentTransferExecutor:
         direct_plan_bytes = _plan_assignment_bytes(payload, "direct")
         relay_plan_bytes = _plan_assignment_bytes(payload, "relay")
         direct_completion_evidence: Mapping[str, object] | None = None
-        if direct_plan_bytes and relay_plan_bytes:
+        mixed_mode = int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
+        relay_only_mode = int(direct_plan_bytes) == 0 and int(relay_plan_bytes) > 0
+        if mixed_mode:
             direct_bytes_completed, direct_completion_evidence = (
                 execute_direct_ticket_plan(
                     backend=self.backend,
@@ -168,13 +170,9 @@ class WorkerIntentTransferExecutor:
                 self.worker_client,
                 authorization_request,
                 expected_bytes=(
-                    int(relay_plan_bytes)
-                    if int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
-                    else int(intent.total_bytes)
+                    int(relay_plan_bytes) if mixed_mode else int(intent.total_bytes)
                 ),
-                report_terminal_status=not (
-                    int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
-                ),
+                report_terminal_status=not (mixed_mode or relay_only_mode),
             )
         except WorkerCompletionEnvelopeError:
             cleanup_evidence = cleanup_planned_relay_leases(
@@ -267,6 +265,15 @@ class WorkerIntentTransferExecutor:
                 worker_execution.error or "worker cleanup failed"
             )
         if worker_execution.final_state in {"failed", "status_failed"}:
+            if relay_only_mode or mixed_mode:
+                _report_deferred_worker_failure(
+                    daemon_client=daemon_client,
+                    payload=payload,
+                    intent=intent,
+                    worker_execution=worker_execution,
+                    direct_completion_evidence=direct_completion_evidence,
+                    direct_bytes_completed=int(direct_plan_bytes),
+                )
             return wait_for_intent_receipt(daemon_client, intent.intent_id)
         if worker_execution.final_state != "complete":
             cleanup_evidence = cleanup_planned_relay_leases(
@@ -286,7 +293,20 @@ class WorkerIntentTransferExecutor:
             raise RuntimeError(
                 worker_execution.error or "worker-managed intent transfer did not complete"
             )
-        if int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0:
+        if relay_only_mode:
+            worker_evidence = _worker_completion_evidence(worker_execution.completion)
+            completion = daemon_client.transfer_status(
+                str(payload["transfer_id"]),
+                state="complete",
+                bytes_completed=int(intent.total_bytes),
+                completion_source="worker",
+                completion_evidence=_relay_only_completion_evidence(
+                    worker_evidence,
+                    expected_bytes=int(intent.total_bytes),
+                ),
+            )
+            require_ok(completion, "daemon relay-only completion update failed")
+        elif mixed_mode:
             worker_evidence = _worker_completion_evidence(worker_execution.completion)
             completion = daemon_client.transfer_status(
                 str(payload["transfer_id"]),
@@ -531,6 +551,32 @@ def _worker_cleanup_evidence_from_completion(
     }
 
 
+def _relay_only_completion_evidence(
+    worker_evidence: Mapping[str, object],
+    *,
+    expected_bytes: int,
+) -> dict[str, object]:
+    verified_bytes = int(worker_evidence.get("verified_bytes", expected_bytes) or 0)
+    if verified_bytes != int(expected_bytes):
+        raise RuntimeError(
+            "relay-only worker completion verified "
+            f"{verified_bytes} of {expected_bytes} daemon-planned bytes"
+        )
+    evidence = dict(worker_evidence)
+    evidence["verified_bytes"] = int(expected_bytes)
+    evidence["expected_bytes"] = int(expected_bytes)
+    evidence.setdefault("content_match", True)
+    evidence.setdefault("verification_source", "relay_worker")
+    evidence.setdefault("verification_method", "worker_completion")
+    evidence.setdefault("executor", "relay_worker")
+    evidence.setdefault("plan_source", "daemon")
+    evidence.setdefault("path", "relay_only")
+    evidence.setdefault("relay_bytes", int(expected_bytes))
+    evidence.setdefault("direct_bytes", 0)
+    evidence.setdefault("direct_chunks", 0)
+    return evidence
+
+
 def _merge_mixed_completion_evidence(
     direct_evidence: Mapping[str, object] | None,
     worker_evidence: Mapping[str, object],
@@ -586,6 +632,86 @@ def _merge_mixed_completion_evidence(
             evidence[key] = worker_evidence[key]
         elif key in direct_evidence:
             evidence[key] = direct_evidence[key]
+    return evidence
+
+
+def _report_deferred_worker_failure(
+    *,
+    daemon_client,
+    payload: Mapping[str, object],
+    intent: TransferIntent,
+    worker_execution,
+    direct_completion_evidence: Mapping[str, object] | None,
+    direct_bytes_completed: int,
+) -> None:
+    completion = worker_execution.completion
+    if completion is None:
+        raise RuntimeError("deferred worker failure missing completion envelope")
+    worker_evidence = _worker_completion_evidence(completion)
+    error = worker_execution.error or "worker-managed intent transfer failed"
+    transfer_id = str(payload["transfer_id"])
+    if isinstance(direct_completion_evidence, Mapping):
+        failure_evidence = _merge_mixed_worker_failure_evidence(
+            direct_evidence=direct_completion_evidence,
+            worker_evidence=worker_evidence,
+            expected_bytes=int(intent.total_bytes),
+            direct_bytes=int(direct_bytes_completed),
+            relay_bytes=max(0, int(intent.total_bytes) - int(direct_bytes_completed)),
+        )
+        completion_source = "worker"
+        bytes_completed = int(direct_bytes_completed)
+    else:
+        failure_evidence = _relay_only_failure_evidence(
+            worker_evidence,
+            expected_bytes=int(intent.total_bytes),
+        )
+        completion_source = "worker"
+        bytes_completed = int(completion.worker_result.get("bytes_completed", 0) or 0)
+    response = daemon_client.transfer_status(
+        transfer_id,
+        state="failed",
+        bytes_completed=max(0, bytes_completed),
+        error=error,
+        completion_source=completion_source,
+        completion_evidence=failure_evidence,
+    )
+    require_ok(response, "daemon deferred worker failure update failed")
+
+
+def _relay_only_failure_evidence(
+    worker_evidence: Mapping[str, object],
+    *,
+    expected_bytes: int,
+) -> dict[str, object]:
+    evidence = dict(worker_evidence)
+    evidence.setdefault("expected_bytes", int(expected_bytes))
+    evidence.setdefault("verified_bytes", int(worker_evidence.get("verified_bytes", 0) or 0))
+    evidence.setdefault("executor", "relay_worker")
+    evidence.setdefault("plan_source", "daemon")
+    evidence.setdefault("path", "relay_only")
+    evidence.setdefault("relay_bytes", int(expected_bytes))
+    evidence.setdefault("direct_bytes", 0)
+    evidence.setdefault("direct_chunks", 0)
+    evidence.setdefault("failure_source", "relay_worker")
+    return evidence
+
+
+def _merge_mixed_worker_failure_evidence(
+    *,
+    direct_evidence: Mapping[str, object],
+    worker_evidence: Mapping[str, object],
+    expected_bytes: int,
+    direct_bytes: int,
+    relay_bytes: int,
+) -> dict[str, object]:
+    evidence = _merge_mixed_completion_evidence(
+        direct_evidence,
+        worker_evidence,
+        expected_bytes=expected_bytes,
+        direct_bytes=direct_bytes,
+        relay_bytes=relay_bytes,
+    )
+    evidence["failure_source"] = "relay_worker"
     return evidence
 
 

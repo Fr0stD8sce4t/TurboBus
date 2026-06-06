@@ -642,55 +642,6 @@ class WorkerTransferClient:
                     final_state=result.state.value,
                     error=str(exc),
                 )
-        elif result.state is WorkerTransferState.FAILED:
-            try:
-                status_response = self._status_reporter.report(result)
-            except WorkerStatusReportError as exc:
-                staging_release = self._staging_pool.release(
-                    staging_slot.slot_id,
-                    worker_request.data_plane,
-                )
-                cleanup_target_id = cleanup_target_id_for_worker_request(
-                    cleanup_target_kind,
-                    worker_request,
-                )
-                try:
-                    cleanup_response = (
-                        self._cleanup_coordinator.cleanup_status_report_failure(
-                            worker_request,
-                            target_kind=cleanup_target_kind,
-                        )
-                    )
-                except WorkerCleanupError as cleanup_exc:
-                    return WorkerTransferLifecycleRecord(
-                        authorization_request=request,
-                        worker_request=worker_request,
-                        staging_slot=staging_slot,
-                        running_update=running_update,
-                        running_response=running_response,
-                        staging_release=staging_release,
-                        result=result,
-                        status_update=status_update,
-                        cleanup_target_kind=cleanup_target_kind,
-                        cleanup_target_id=cleanup_target_id,
-                        final_state="cleanup_failed",
-                        error=str(cleanup_exc),
-                    )
-                return WorkerTransferLifecycleRecord(
-                    authorization_request=request,
-                    worker_request=worker_request,
-                    staging_slot=staging_slot,
-                    running_update=running_update,
-                    running_response=running_response,
-                    staging_release=staging_release,
-                    result=result,
-                    status_update=status_update,
-                    cleanup_target_kind=cleanup_target_kind,
-                    cleanup_target_id=cleanup_target_id,
-                    cleanup_response=cleanup_response,
-                    final_state="status_failed",
-                    error=str(exc),
-                )
         cleanup_target_id = (
             worker_request.authorization.lease_id
             if result.state == WorkerTransferState.COMPLETE
@@ -725,7 +676,10 @@ class WorkerTransferClient:
                 final_state="cleanup_failed",
                 error=str(exc),
             )
-        if not report_terminal_status and result.state is WorkerTransferState.COMPLETE:
+        if not report_terminal_status and result.state in {
+            WorkerTransferState.COMPLETE,
+            WorkerTransferState.FAILED,
+        }:
             staging_release = self._staging_pool.release(
                 staging_slot.slot_id,
                 worker_request.data_plane,

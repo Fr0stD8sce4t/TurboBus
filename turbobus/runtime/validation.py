@@ -40,6 +40,8 @@ def validate_runtime_receipt(
     intent_id: str,
     job_id: str,
     session_id: str,
+    source_buffer_id: str | None = None,
+    destination_buffer_id: str | None = None,
 ) -> None:
     if not isinstance(receipt, TransferReceipt):
         raise TypeError("runtime transfer must return a TransferReceipt")
@@ -53,6 +55,12 @@ def validate_runtime_receipt(
     require_receipt_ticket_binding(receipt, metadata)
     require_complete_receipt_evidence(receipt)
     require_failed_receipt_evidence(receipt)
+    require_runtime_buffer_lifetime_evidence(
+        metadata,
+        session_id=session_id,
+        source_buffer_id=source_buffer_id,
+        destination_buffer_id=destination_buffer_id,
+    )
 
 
 def require_receipt_ticket_binding(
@@ -112,10 +120,59 @@ def require_failed_receipt_evidence(receipt: TransferReceipt) -> None:
         raise ValueError("failed or canceled receipt missing plan generation evidence")
 
 
+def require_runtime_buffer_lifetime_evidence(
+    metadata: Mapping[str, object],
+    *,
+    session_id: str,
+    source_buffer_id: str | None,
+    destination_buffer_id: str | None,
+) -> None:
+    lifetime = metadata.get("buffer_lifetime_evidence")
+    if not isinstance(lifetime, Mapping):
+        raise ValueError("runtime receipt missing buffer_lifetime_evidence")
+    _require_runtime_buffer_record(
+        lifetime.get("source_buffer"),
+        expected_session_id=session_id,
+        expected_buffer_id=source_buffer_id,
+        label="source",
+    )
+    _require_runtime_buffer_record(
+        lifetime.get("destination_buffer"),
+        expected_session_id=session_id,
+        expected_buffer_id=destination_buffer_id,
+        label="destination",
+    )
+
+
+def _require_runtime_buffer_record(
+    record: object,
+    *,
+    expected_session_id: str,
+    expected_buffer_id: str | None,
+    label: str,
+) -> None:
+    if not isinstance(record, Mapping):
+        raise ValueError(f"runtime receipt missing {label} buffer lifetime evidence")
+    if expected_buffer_id is not None and str(record.get("buffer_id")) != str(expected_buffer_id):
+        raise ValueError(f"runtime receipt {label} buffer_id does not match submitted intent")
+    registration = record.get("registration")
+    if not isinstance(registration, Mapping):
+        raise ValueError(f"runtime receipt missing {label} buffer registration evidence")
+    metadata = registration.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError(f"runtime receipt missing {label} buffer registration metadata")
+    runtime_session_id = metadata.get("runtime_session_id")
+    if runtime_session_id is None or str(runtime_session_id) != str(expected_session_id):
+        raise ValueError(
+            f"runtime receipt {label} buffer runtime_session_id does not match session"
+        )
+
+
 __all__ = [
     "require_complete_receipt_evidence",
     "require_failed_receipt_evidence",
     "require_receipt_ticket_binding",
+    "require_runtime_buffer_lifetime_evidence",
     "validate_intent_ranges_fit_buffers",
     "validate_runtime_receipt",
 ]

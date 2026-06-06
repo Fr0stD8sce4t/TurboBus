@@ -516,6 +516,8 @@ class TurboBusRuntimeSession:
             intent_id=normalized_intent_id,
             job_id=self.job_id,
             session_id=self.session_id,
+            source_buffer_id=None,
+            destination_buffer_id=None,
         )
         return receipt
 
@@ -940,6 +942,8 @@ class TurboBusRuntimeSession:
             intent_id=intent.intent_id,
             job_id=self.job_id,
             session_id=self.session_id,
+            source_buffer_id=intent.source_buffer_id,
+            destination_buffer_id=intent.destination_buffer_id,
         )
         self._submitted_intent_ids.add(intent.intent_id)
         return receipt

@@ -169,6 +169,7 @@ def receipt_for_transfer(
     admitted_state: str,
     completion_source: str | None = None,
     completion_evidence: dict[str, object] | None = None,
+    buffer_snapshots: Mapping[str, object] | None = None,
 ) -> TransferReceipt:
     error = status.error
     if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
@@ -183,6 +184,14 @@ def receipt_for_transfer(
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
+    buffer_lifetime_evidence = _buffer_lifetime_evidence(
+        intent=intent,
+        buffer_snapshots=buffer_snapshots,
+        resource_evidence=resource_evidence,
+        direct_completion_evidence=direct_completion_evidence,
+        relay_completion_evidence=relay_completion_evidence,
+        cleanup_evidence=cleanup_evidence,
+    )
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -256,6 +265,7 @@ def receipt_for_transfer(
                 if isinstance(cleanup_evidence, Mapping)
                 else None
             ),
+            "buffer_lifetime_evidence": buffer_lifetime_evidence,
         },
     )
 
@@ -267,6 +277,131 @@ def _optional_int(value: object) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _buffer_lifetime_evidence(
+    *,
+    intent: TransferIntent,
+    buffer_snapshots: Mapping[str, object] | None,
+    resource_evidence: object,
+    direct_completion_evidence: object,
+    relay_completion_evidence: object,
+    cleanup_evidence: object,
+) -> dict[str, object]:
+    snapshots = (
+        {
+            str(key): dict(value)
+            for key, value in buffer_snapshots.items()
+            if isinstance(value, Mapping)
+        }
+        if isinstance(buffer_snapshots, Mapping)
+        else {}
+    )
+    resource_mapping = (
+        dict(resource_evidence) if isinstance(resource_evidence, Mapping) else {}
+    )
+    direct_mapping = (
+        dict(direct_completion_evidence)
+        if isinstance(direct_completion_evidence, Mapping)
+        else {}
+    )
+    relay_mapping = (
+        dict(relay_completion_evidence)
+        if isinstance(relay_completion_evidence, Mapping)
+        else {}
+    )
+    cleanup_mapping = dict(cleanup_evidence) if isinstance(cleanup_evidence, Mapping) else {}
+    if not cleanup_mapping:
+        nested_cleanup = relay_mapping.get("cleanup")
+        if isinstance(nested_cleanup, Mapping):
+            cleanup_mapping = dict(nested_cleanup)
+    if not cleanup_mapping:
+        nested_cleanup = direct_mapping.get("cleanup")
+        if isinstance(nested_cleanup, Mapping):
+            cleanup_mapping = dict(nested_cleanup)
+    return {
+        "source_buffer": _buffer_lifetime_record(
+            expected_buffer_id=intent.source_buffer_id,
+            snapshot=snapshots.get("source"),
+            resource_evidence=_buffer_resource_evidence_for_buffer(
+                buffer_id=intent.source_buffer_id,
+                resource_evidence=resource_mapping,
+                direct_completion_evidence=direct_mapping,
+                relay_completion_evidence=relay_mapping,
+            ),
+        ),
+        "destination_buffer": _buffer_lifetime_record(
+            expected_buffer_id=intent.destination_buffer_id,
+            snapshot=snapshots.get("destination"),
+            resource_evidence=_buffer_resource_evidence_for_buffer(
+                buffer_id=intent.destination_buffer_id,
+                resource_evidence=resource_mapping,
+                direct_completion_evidence=direct_mapping,
+                relay_completion_evidence=relay_mapping,
+            ),
+        ),
+        "cleanup": cleanup_mapping or None,
+    }
+
+
+def _buffer_lifetime_record(
+    *,
+    expected_buffer_id: str,
+    snapshot: object,
+    resource_evidence: Mapping[str, object] | None,
+) -> dict[str, object]:
+    record = {
+        "buffer_id": str(expected_buffer_id),
+        "registration": dict(snapshot) if isinstance(snapshot, Mapping) else None,
+        "resource_evidence": (
+            dict(resource_evidence) if isinstance(resource_evidence, Mapping) else None
+        ),
+    }
+    if isinstance(snapshot, Mapping):
+        metadata = snapshot.get("metadata")
+        if isinstance(metadata, Mapping):
+            record["runtime_session_id"] = metadata.get("runtime_session_id")
+            record["runtime_owned"] = bool(metadata.get("runtime_owned", False))
+            record["runtime_buffer_kind"] = metadata.get("runtime_buffer_kind")
+    return record
+
+
+def _buffer_resource_evidence_for_buffer(
+    *,
+    buffer_id: str,
+    resource_evidence: Mapping[str, object],
+    direct_completion_evidence: Mapping[str, object],
+    relay_completion_evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    candidates: list[Mapping[str, object]] = []
+    if resource_evidence:
+        candidates.append(resource_evidence)
+    for nested_key in ("resource_evidence",):
+        nested = direct_completion_evidence.get(nested_key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+        nested = relay_completion_evidence.get(nested_key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    nested_resource_roots = resource_evidence.get("direct"), resource_evidence.get("relay")
+    for nested in nested_resource_roots:
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    merged: dict[str, object] = {}
+    for candidate in candidates:
+        if str(candidate.get("src_buffer_id", "")) == str(buffer_id):
+            merged["role"] = "source"
+            merged.update(dict(candidate))
+        if str(candidate.get("dst_buffer_id", "")) == str(buffer_id):
+            merged["role"] = "destination"
+            merged.update(dict(candidate))
+        if str(candidate.get("cpu_buffer_id", "")) == str(buffer_id):
+            merged["handle_role"] = candidate.get("cpu_buffer_role")
+            merged.update(dict(candidate))
+        if str(candidate.get("device_buffer_id", "")) == str(buffer_id):
+            merged["handle_role"] = candidate.get("device_buffer_role")
+            merged.update(dict(candidate))
+    return merged or None
 
 
 __all__ = [

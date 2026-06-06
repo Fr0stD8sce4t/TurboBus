@@ -109,6 +109,7 @@ class TurboBusDaemon:
         self._transfer_statuses: dict[str, TransferStatus] = {}
         self._transfer_completion_sources: dict[str, str] = {}
         self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
+        self._transfer_buffer_snapshots: dict[str, dict[str, dict[str, object]]] = {}
         self._transfer_peer_identities: dict[str, PeerIdentity] = {}
         self._transfer_receipt_archive: dict[str, dict[str, object]] = {}
         self._archived_intent_transfers: dict[str, str] = {}
@@ -1699,6 +1700,9 @@ class TurboBusDaemon:
                 decision=decision,
                 now=now,
             )
+            self._transfer_buffer_snapshots[transfer_id] = self._buffer_snapshots_for_ids_locked(
+                buffer_ids_tuple
+            )
             self._touch_session_locked(session.session_id, now)
             if (
                 not reservations
@@ -2337,6 +2341,22 @@ class TurboBusDaemon:
                     str(ticket.destination_buffer_id),
                 )
         return ()
+
+    def _buffer_snapshots_for_ids_locked(
+        self,
+        buffer_ids: Iterable[str],
+    ) -> dict[str, dict[str, object]]:
+        snapshots: dict[str, dict[str, object]] = {}
+        normalized = tuple(str(buffer_id) for buffer_id in buffer_ids)
+        if len(normalized) >= 1:
+            source = self._buffers.get(normalized[0])
+            if isinstance(source, BufferRegistration):
+                snapshots["source"] = _buffer_snapshot_record(source)
+        if len(normalized) >= 2:
+            destination = self._buffers.get(normalized[1])
+            if isinstance(destination, BufferRegistration):
+                snapshots["destination"] = _buffer_snapshot_record(destination)
+        return snapshots
 
     def _validate_transfer_admission_locked(
         self,
@@ -3294,6 +3314,16 @@ class TurboBusDaemon:
             and isinstance(archived.get("completion_evidence"), Mapping)
         ):
             completion_evidence = dict(archived["completion_evidence"])
+        buffer_snapshots = self._transfer_buffer_snapshots.get(transfer_id)
+        if (
+            buffer_snapshots is None
+            and isinstance(archived.get("buffer_snapshots"), Mapping)
+        ):
+            buffer_snapshots = {
+                str(key): dict(value)
+                for key, value in archived["buffer_snapshots"].items()
+                if isinstance(value, Mapping)
+            }
         return daemon_receipts.receipt_for_transfer(
             transfer_id=transfer_id,
             intent=intent,
@@ -3306,6 +3336,7 @@ class TurboBusDaemon:
             admitted_state=_ADMISSION_ADMITTED,
             completion_source=completion_source,
             completion_evidence=completion_evidence,
+            buffer_snapshots=buffer_snapshots,
         )
 
     def _intent_requires_execution_evidence_locked(self, transfer_id: str) -> bool:
@@ -4115,6 +4146,9 @@ class TurboBusDaemon:
             "completion_evidence": dict(
                 self._transfer_completion_evidence.get(normalized, {})
             ),
+            "buffer_snapshots": dict(
+                self._transfer_buffer_snapshots.get(normalized, {})
+            ),
             "peer_identity": self._transfer_peer_identities.get(normalized),
         }
         if archived_record["intent_id"] is not None:
@@ -4163,6 +4197,7 @@ class TurboBusDaemon:
             self._transfer_completion_tickets,
             self._transfer_completion_sources,
             self._transfer_completion_evidence,
+            self._transfer_buffer_snapshots,
             self._transfer_plan_requests,
             self._transfer_plan_generations,
             self._transfer_plan_expirations,
@@ -4842,6 +4877,20 @@ def _topology_unavailable_response() -> DaemonResponse:
         ok=False,
         error=_TOPOLOGY_UNAVAILABLE_ERROR,
     )
+
+
+def _buffer_snapshot_record(buffer: BufferRegistration) -> dict[str, object]:
+    return {
+        "buffer_id": buffer.buffer_id,
+        "job_id": buffer.job_id,
+        "kind": str(buffer.kind),
+        "size_bytes": int(buffer.size_bytes),
+        "device_index": buffer.device_index,
+        "address": buffer.address,
+        "pinned": bool(buffer.pinned),
+        "handle_type": str(buffer.handle_type),
+        "metadata": dict(buffer.metadata),
+    }
 
 
 def _relay_path_capabilities(

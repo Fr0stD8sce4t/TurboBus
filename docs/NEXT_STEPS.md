@@ -26,6 +26,7 @@ evaluation.
 - `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
 - `turbobus/worker/lifecycle.py`
+- `turbobus/daemon/receipts.py`
 
 Current gap:
 
@@ -33,8 +34,8 @@ Current gap:
 - keep daemon scheduling as the only plan authority;
 - finish the remaining execution closures on top of the managed runtime-session
   daemon/worker socket path;
-- bind direct, relay, and mixed execution to one receipt/cleanup path through
-  buffer lifetime closure.
+- keep direct, relay, and mixed execution bound to one receipt/cleanup path
+  after the buffer lifetime closure now reaches final receipts.
 
 ## Next Entry
 
@@ -44,8 +45,8 @@ and `worker/lifecycle.py`.
 Next round should finish exactly one of these:
 
 - one full relay-only execution closure;
-- one full shared pinned CPU plus CUDA IPC buffer lifetime closure;
 - one full runtime-session-owned execution and cleanup closure.
+- one full daemon-owned direct / relay / mixed completion contract closure.
 
 Plan-file rule:
 

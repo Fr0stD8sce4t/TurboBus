@@ -6,7 +6,7 @@ from typing import Mapping
 from .daemon.client import TurboBusDaemonClient
 from .intent_execution_support import require_ok
 from .runtime.validation import validate_runtime_receipt
-from .schema import DaemonResponse, TransferIntent, TransferReceipt
+from .schema import DaemonResponse, TransferIntent, TransferReceipt, TransferStatusState
 
 
 class TurboBusClient:
@@ -39,6 +39,10 @@ class TurboBusClient:
             raise TypeError("daemon must support submit_transfer_intent")
         response = submitter(intent)
         receipt = _receipt_from_daemon_response(response, expected_intent_id=intent.intent_id)
+        _require_terminal_receipt(
+            receipt,
+            operation="submit_transfer_intent",
+        )
         validate_runtime_receipt(
             receipt,
             intent_id=intent.intent_id,
@@ -59,10 +63,15 @@ class TurboBusClient:
             str(intent_id),
             timeout_seconds=timeout_seconds,
         )
-        return _receipt_from_daemon_response(
+        receipt = _receipt_from_daemon_response(
             response,
             expected_intent_id=str(intent_id),
         )
+        _require_terminal_receipt(
+            receipt,
+            operation="wait_transfer_receipt",
+        )
+        return receipt
 
 
 def _receipt_from_daemon_response(
@@ -84,6 +93,25 @@ def _receipt_from_daemon_response(
     if receipt.intent_id != str(expected_intent_id):
         raise ValueError("daemon receipt intent_id does not match request")
     return receipt
+
+
+def _require_terminal_receipt(
+    receipt: TransferReceipt,
+    *,
+    operation: str,
+) -> None:
+    state = TransferStatusState(receipt.state)
+    if state in {
+        TransferStatusState.COMPLETE,
+        TransferStatusState.FAILED,
+        TransferStatusState.CANCELED,
+    }:
+        return
+    raise RuntimeError(
+        "TurboBusClient cannot complete production transfer execution from a "
+        f"non-terminal daemon receipt during {operation}; use "
+        "TurboBusRuntimeSession for daemon-issued execution"
+    )
 
 
 __all__ = ["TurboBusClient"]

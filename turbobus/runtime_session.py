@@ -379,30 +379,7 @@ class TurboBusRuntimeSession:
         )
 
     def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
-        self._require_open()
-        if not isinstance(intent, TransferIntent):
-            raise TypeError("intent must be a TransferIntent")
-        if intent.job_id != self.job_id:
-            raise ValueError("intent job_id must match the runtime session job_id")
-        self.open_session()
-        if intent.session_id != self.session_id:
-            raise ValueError("intent session_id must match the runtime session_id")
-        if intent.source_buffer_id not in self._buffers:
-            raise ValueError("intent source buffer is not registered with the session")
-        if intent.destination_buffer_id not in self._buffers:
-            raise ValueError("intent destination buffer is not registered with the session")
-        self._validate_intent_uses_runtime_buffers(intent)
-        self._register_pending_buffers()
-        self._bootstrap_profile_if_enabled()
-        receipt = self._execute_intent_through_daemon(intent)
-        validate_runtime_receipt(
-            receipt,
-            intent_id=intent.intent_id,
-            job_id=self.job_id,
-            session_id=self.session_id,
-        )
-        self._submitted_intent_ids.add(intent.intent_id)
-        return receipt
+        return self._submit_runtime_intent(intent)
 
     def wait_transfer_receipt(
         self,
@@ -570,7 +547,6 @@ class TurboBusRuntimeSession:
     ) -> TransferReceipt:
         self._require_open()
         self._ensure_transfer_buffers(source, target)
-        self._bootstrap_profile_if_enabled()
         normalized_ranges = tuple(
             range_as_dict(item)
             for item in ranges_or_full_buffer(ranges, source.size_bytes, target.size_bytes)
@@ -601,16 +577,7 @@ class TurboBusRuntimeSession:
             policy_hints=resolved_policy_hints,
             metadata={} if metadata is None else dict(metadata),
         )
-        self._validate_intent_uses_runtime_buffers(intent)
-        receipt = self._execute_intent_through_daemon(intent)
-        validate_runtime_receipt(
-            receipt,
-            intent_id=intent.intent_id,
-            job_id=self.job_id,
-            session_id=self.session_id,
-        )
-        self._submitted_intent_ids.add(intent.intent_id)
-        return receipt
+        return self._submit_runtime_intent(intent)
 
     def make_adapter_transfer_context(
         self,
@@ -851,6 +818,35 @@ class TurboBusRuntimeSession:
             self._register_buffer(target)
         self.open_session()
         self._register_pending_buffers()
+
+    def _submit_runtime_intent(self, intent: TransferIntent) -> TransferReceipt:
+        self._prepare_runtime_intent(intent)
+        receipt = self._execute_intent_through_daemon(intent)
+        validate_runtime_receipt(
+            receipt,
+            intent_id=intent.intent_id,
+            job_id=self.job_id,
+            session_id=self.session_id,
+        )
+        self._submitted_intent_ids.add(intent.intent_id)
+        return receipt
+
+    def _prepare_runtime_intent(self, intent: TransferIntent) -> None:
+        self._require_open()
+        if not isinstance(intent, TransferIntent):
+            raise TypeError("intent must be a TransferIntent")
+        if intent.job_id != self.job_id:
+            raise ValueError("intent job_id must match the runtime session job_id")
+        self.open_session()
+        if intent.session_id != self.session_id:
+            raise ValueError("intent session_id must match the runtime session_id")
+        if intent.source_buffer_id not in self._buffers:
+            raise ValueError("intent source buffer is not registered with the session")
+        if intent.destination_buffer_id not in self._buffers:
+            raise ValueError("intent destination buffer is not registered with the session")
+        self._validate_intent_uses_runtime_buffers(intent)
+        self._register_pending_buffers()
+        self._bootstrap_profile_if_enabled()
 
     def _execute_intent_through_daemon(self, intent: TransferIntent) -> TransferReceipt:
         self._require_open()

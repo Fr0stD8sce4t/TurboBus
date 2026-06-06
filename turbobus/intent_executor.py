@@ -22,7 +22,6 @@ from .schema import (
 from .intent_execution_support import (
     WorkerCompletionEnvelopeError,
     cleanup_planned_relay_leases,
-    receipt_from_daemon_payload,
     require_ok,
     require_worker_plan_matches_leases,
     submit_worker_execution,
@@ -129,9 +128,12 @@ class WorkerIntentTransferExecutor:
             require_ok(running, "daemon mixed-pooled direct progress update failed")
         lease_tokens = _payload_lease_tokens(payload)
         if not lease_tokens:
-            return receipt_from_daemon_payload(
-                payload,
-                expected_intent_id=intent.intent_id,
+            return _fail_transfer_without_relay_leases(
+                daemon_client=daemon_client,
+                intent=intent,
+                payload=payload,
+                direct_completion_evidence=direct_completion_evidence,
+                direct_bytes_completed=int(direct_plan_bytes),
             )
         if self.worker_client is None:
             return _fail_transfer_without_worker_client(
@@ -603,6 +605,35 @@ def _fail_transfer_without_worker_client(
                     ]
                 }
             )
+        ),
+    )
+    return wait_for_intent_receipt(daemon_client, intent.intent_id)
+
+
+def _fail_transfer_without_relay_leases(
+    *,
+    daemon_client,
+    intent: TransferIntent,
+    payload: Mapping[str, object],
+    direct_completion_evidence: Mapping[str, object] | None,
+    direct_bytes_completed: int,
+) -> TransferReceipt:
+    failure_message = (
+        "daemon-issued mixed or relay execution requires relay lease tokens; "
+        "daemon planned a non-direct transfer without worker relay leases"
+    )
+    daemon_client.transfer_status(
+        str(payload["transfer_id"]),
+        state="failed",
+        bytes_completed=max(0, int(direct_bytes_completed)),
+        error=failure_message,
+        completion_source=(
+            "backend" if isinstance(direct_completion_evidence, Mapping) else None
+        ),
+        completion_evidence=(
+            None
+            if not isinstance(direct_completion_evidence, Mapping)
+            else dict(direct_completion_evidence)
         ),
     )
     return wait_for_intent_receipt(daemon_client, intent.intent_id)

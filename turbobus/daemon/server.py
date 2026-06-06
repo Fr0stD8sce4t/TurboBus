@@ -1234,8 +1234,11 @@ class TurboBusDaemon:
         peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         normalized_intent_id = str(intent_id)
-        timeout = 0.0 if timeout_seconds is None else max(0.0, float(timeout_seconds))
-        deadline = time.time() + timeout
+        deadline = (
+            None
+            if timeout_seconds is None
+            else time.time() + max(0.0, float(timeout_seconds))
+        )
         while True:
             with self._lock:
                 try:
@@ -1252,10 +1255,13 @@ class TurboBusDaemon:
                     )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-                if receipt.state in _TERMINAL_TRANSFER_STATES or timeout_seconds is None:
+                if receipt.state in _TERMINAL_TRANSFER_STATES:
                     return DaemonResponse(ok=True, payload={"receipt": asdict(receipt)})
-                if time.time() >= deadline:
+                if deadline is not None and time.time() >= deadline:
                     return DaemonResponse(ok=True, payload={"receipt": asdict(receipt)})
+            if deadline is None:
+                time.sleep(0.01)
+                continue
             time.sleep(min(0.01, max(0.0, deadline - time.time())))
 
     def validate_lease(

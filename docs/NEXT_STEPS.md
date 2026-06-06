@@ -27,19 +27,21 @@ evaluation.
 ## Current Code Work
 
 - `turbobus/runtime_session.py`
-- `turbobus/api.py`
 - `turbobus/daemon/server.py`
 - `turbobus/intent_executor.py`
+- `turbobus/api.py`
 
 Current gap:
 
 - remove remaining duplicate production-looking entry paths;
 - keep daemon scheduling as the only plan authority;
-- keep direct, relay, and mixed execution bound to one receipt/cleanup path.
+- keep direct, relay, and mixed execution bound to one terminal
+  receipt/cleanup path.
 
 ## Next Entry
 
 Start at `TurboBusRuntimeSession`, `api.py`, `daemon/server.py`, and
 `intent_executor.py`. Prefer changes that further collapse production entry
-ownership and execution lifecycle ownership. Do not spend this pass on
-benchmarks, examples, adapters, or validation tooling.
+ownership and daemon-issued execution lifecycle ownership. Prefer closing any
+remaining non-terminal or plan-payload return paths before touching deferred
+benchmark/example/adapter surfaces.

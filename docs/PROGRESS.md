@@ -18,6 +18,13 @@ only as a terminal-receipt compatibility boundary, which removes one remaining
 public path that could make benchmark-style code look like a valid production
 entry.
 
+Daemon receipt waiting is now aligned with that boundary: `wait_transfer_receipt`
+without a timeout blocks until terminal state instead of returning the current
+non-terminal snapshot. Executor-side non-direct plans without relay lease
+tokens no longer return submit-stage payload receipts; they are turned into
+explicit daemon failure and then consumed through the same terminal receipt
+path.
+
 ## Remaining Risk
 
 - The daemon execution lifecycle still spans several modules, and admission,
@@ -26,6 +33,9 @@ entry.
 - Mixed pooled execution exists in code, but the system still needs a cleaner
   single contract across Python plan handling, backend direct execution, worker
   relay execution, and merged receipt evidence.
+- Runtime session, daemon, and executor still duplicate some receipt parsing and
+  exact-plan assumptions, which leaves room for boundary drift even though the
+  major production entry split has been reduced.
 - Native CUDA execution, worker socket execution, shared pinned CPU buffers,
   and CUDA IPC buffer lifetime are wired into the code path but remain pending
   later end-to-end server/CUDA validation after the system path is complete.

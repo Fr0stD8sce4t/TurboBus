@@ -125,6 +125,7 @@ def handle_request(
             reason=str(payload.get("reason", "manual")),
             force=bool(payload.get("force", False)),
             owner_binding=payload.get("owner_binding"),
+            retention_evidence=payload.get("retention_evidence"),
             peer_identity=request.peer_identity,
         )
     if request.request_type == RequestType.INVALIDATE_PROFILE:

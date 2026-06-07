@@ -1331,6 +1331,7 @@ class CleanupRequest:
     reason: str
     force: bool = False
     owner_binding: Mapping[str, Any] | None = None
+    retention_evidence: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not str(self.target_kind).strip():
@@ -1347,6 +1348,12 @@ class CleanupRequest:
                 self,
                 "owner_binding",
                 _copy_mapping(self.owner_binding, "owner_binding"),
+            )
+        if self.retention_evidence is not None:
+            object.__setattr__(
+                self,
+                "retention_evidence",
+                _copy_mapping(self.retention_evidence, "retention_evidence"),
             )
 
 

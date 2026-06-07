@@ -200,6 +200,18 @@ def _require_runtime_buffer_record(
         runtime_buffer_kind=metadata.get("runtime_buffer_kind"),
         label=label,
     )
+    if bool(record.get("runtime_owned", False)) and str(
+        metadata.get("runtime_buffer_kind", "")
+    ).lower() == "shared_pinned_cpu":
+        owned_cpu_buffer_release = record.get("owned_cpu_buffer_release")
+        if not isinstance(owned_cpu_buffer_release, Mapping):
+            raise ValueError(
+                f"runtime receipt missing {label} runtime-owned CPU buffer release evidence"
+            )
+        if not bool(owned_cpu_buffer_release.get("ok", False)):
+            raise ValueError(
+                f"runtime receipt {label} runtime-owned CPU buffer release did not complete"
+            )
 
 
 def _require_runtime_buffer_resource_evidence(

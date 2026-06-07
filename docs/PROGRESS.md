@@ -7,23 +7,25 @@
 - `TurboBusRuntimeSession` stays the intended production entry, and
   daemon-issued execution, receipt formation, cleanup, and runtime feedback
   remain on the real production path.
-- Worker-issued reservation cleanup now carries daemon-issued `owner_binding`
-  back into the daemon cleanup path, so reservation cleanup authorization is
-  checked against daemon-issued owner scope for live, staging, and archived
-  reservation state instead of relying only on the worker socket peer.
+- Registered runtime-owned CPU buffer release evidence now flows back into
+  daemon-retained buffer cleanup state and archived transfer receipt buffer
+  snapshots, so runtime buffer lifetime no longer stops at a local session
+  close return payload.
 
 ## Remaining Risk
 
-- Registered shared pinned CPU buffers and CUDA IPC GPU buffers still need one
-  full lifetime closure across registration, worker binding, cleanup, session
-  close, and receipt-visible retention.
+- `TurboBusRuntimeSession` still needs one full production authority closure
+  across managed daemon/worker startup, runtime-owned clients, session/job
+  registration, buffer registration, intent submission, and receipt
+  consumption.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full registered buffer lifetime lifecycle across runtime session,
-daemon, worker resource binding, execution cleanup, and receipt retention.
+Finish one full `TurboBusRuntimeSession` production startup and execution
+authority path across runtime-managed daemon/worker sockets, session/job
+registration, buffer registration, intent submission, and receipt consumption.
 
 Progress-file rule:
 

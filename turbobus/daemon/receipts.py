@@ -525,6 +525,12 @@ def _buffer_lifetime_record(
             record["runtime_session_id"] = metadata.get("runtime_session_id")
             record["runtime_owned"] = bool(metadata.get("runtime_owned", False))
             record["runtime_buffer_kind"] = metadata.get("runtime_buffer_kind")
+        retention_evidence = snapshot.get("retention_evidence")
+        if isinstance(retention_evidence, Mapping):
+            record["retention_evidence"] = dict(retention_evidence)
+        owned_cpu_buffer_release = snapshot.get("owned_cpu_buffer_release")
+        if isinstance(owned_cpu_buffer_release, Mapping):
+            record["owned_cpu_buffer_release"] = dict(owned_cpu_buffer_release)
     return record
 
 

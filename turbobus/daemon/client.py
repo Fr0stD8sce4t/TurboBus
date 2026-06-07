@@ -300,6 +300,7 @@ class TurboBusDaemonExecutionClient(_DaemonSocketClientBase):
         reason: str = "manual",
         force: bool = False,
         owner_binding: dict[str, object] | None = None,
+        retention_evidence: dict[str, object] | None = None,
     ) -> DaemonResponse:
         payload = {
             "target_kind": str(target_kind),
@@ -309,6 +310,8 @@ class TurboBusDaemonExecutionClient(_DaemonSocketClientBase):
         }
         if owner_binding is not None:
             payload["owner_binding"] = dict(owner_binding)
+        if retention_evidence is not None:
+            payload["retention_evidence"] = dict(retention_evidence)
         return self.send(
             DaemonRequest(
                 request_type=RequestType.CLEANUP,

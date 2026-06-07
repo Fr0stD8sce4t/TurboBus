@@ -1235,6 +1235,8 @@ class TurboBusRuntimeSession:
         cleanup_error: Exception | None = None
         release_error: Exception | None = None
         release_evidence: dict[str, object] | None = None
+        retention_error: Exception | None = None
+        retention_evidence: dict[str, object] | None = None
         if normalized_id in self._registered_buffer_ids:
             try:
                 response = self._execution_daemon_client().cleanup(
@@ -1261,6 +1263,18 @@ class TurboBusRuntimeSession:
                     release_error = RuntimeError(
                         str(release_evidence.get("error") or "local buffer release failed")
                     )
+                else:
+                    retention_evidence = self._record_buffer_release_retention(
+                        normalized_id,
+                        release_evidence,
+                    )
+                    if not bool(retention_evidence.get("ok", False)):
+                        retention_error = RuntimeError(
+                            str(
+                                retention_evidence.get("error")
+                                or "daemon buffer retention update failed"
+                            )
+                        )
         if cleanup_error is not None:
             if release_error is not None:
                 raise RuntimeError(
@@ -1269,10 +1283,43 @@ class TurboBusRuntimeSession:
             raise cleanup_error
         if release_error is not None:
             raise release_error
+        if retention_error is not None:
+            raise retention_error
         payload = dict(response.payload) if isinstance(response.payload, Mapping) else {}
         if release_evidence is not None:
             payload["owned_cpu_buffer_release"] = release_evidence
+        if retention_evidence is not None:
+            payload["owned_cpu_buffer_retention"] = retention_evidence
         return DaemonResponse(ok=response.ok, error=response.error, payload=payload)
+
+    def _record_buffer_release_retention(
+        self,
+        buffer_id: str,
+        release_evidence: Mapping[str, object],
+    ) -> dict[str, object]:
+        retention_record = {
+            "buffer_id": str(buffer_id),
+            "reason": str(release_evidence.get("reason") or "runtime_buffer_released"),
+            "ok": False,
+        }
+        try:
+            response = self._execution_daemon_client().cleanup(
+                target_kind="buffer",
+                target_id=str(buffer_id),
+                reason=retention_record["reason"],
+                force=False,
+                retention_evidence={
+                    "owned_cpu_buffer_release": dict(release_evidence),
+                },
+            )
+            require_ok(response, "daemon buffer retention update failed")
+        except Exception as exc:
+            retention_record["error"] = str(exc) or exc.__class__.__name__
+            return retention_record
+        retention_record["ok"] = True
+        if isinstance(response.payload, Mapping):
+            retention_record["payload"] = dict(response.payload)
+        return retention_record
 
     def _rollback_adapter_transfer_context_buffer(
         self,

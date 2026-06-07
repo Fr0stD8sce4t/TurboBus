@@ -33,6 +33,15 @@ def total_bytes(args) -> int:
     return int(args.bucket_count) * int(args.bucket_bytes)
 
 
+def benchmark_transfer_mode(args) -> str:
+    mode = str(args.mode).lower()
+    if mode in {"direct", "direct-only"}:
+        return "direct"
+    if mode == "pooled":
+        return "pool"
+    return mode
+
+
 def bucket_names(args, *, iteration: int) -> list[str]:
     return [f"bucket-{index}" for index in range(int(args.bucket_count))]
 
@@ -234,8 +243,12 @@ def config_dict(args) -> dict[str, object]:
         "target_gpu": args.target_gpu,
         "bucket_count": int(args.bucket_count),
         "bucket_bytes": int(args.bucket_bytes),
+        "total_bytes": total_bytes(args),
         "storage_layout": args.storage_layout,
         "chunk_bytes": int(args.chunk_bytes),
+        "mode": args.mode,
+        "transfer_mode": benchmark_transfer_mode(args),
+        "verify": bool(args.verify),
         "warmup": int(args.warmup),
         "iterations": int(args.iterations),
         "policy": args.policy,
@@ -293,10 +306,16 @@ def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_f
 def make_loader(args, session, buffers):
     from turbobus.adapters.model_loading import ModelWeightLoader
 
+    policy_hints = {
+        "chunk_bytes": int(args.chunk_bytes),
+        "transfer_mode": benchmark_transfer_mode(args),
+        "skip_verification": not bool(args.verify),
+    }
     loader = ModelWeightLoader(
         session,
         buffers.cpu_buffer,
         buffers.gpu_buffer,
+        policy_hints=policy_hints,
         metadata={
             "benchmark": "model-loading",
             "policy": args.policy,
@@ -304,6 +323,10 @@ def make_loader(args, session, buffers):
             "bucket_count": int(args.bucket_count),
             "bucket_bytes": int(args.bucket_bytes),
             "chunk_bytes": int(args.chunk_bytes),
+            "mode": args.mode,
+            "transfer_mode": policy_hints["transfer_mode"],
+            "verify": bool(args.verify),
+            "skip_verification": not bool(args.verify),
         },
         intent_prefix=f"model-load-{args.run_id}",
         wait_timeout_seconds=args.wait_timeout_seconds,
@@ -620,8 +643,11 @@ def compact_summary(result: dict) -> str:
             f"target_gpu={config['target_gpu']} "
             f"bucket_count={config['bucket_count']} "
             f"bucket_bytes={config['bucket_bytes']} "
+            f"total_bytes={config['total_bytes']} "
             f"storage_layout={config['storage_layout']} "
             f"chunk_bytes={config['chunk_bytes']} "
+            f"mode={config['mode']} transfer_mode={config['transfer_mode']} "
+            f"verify={config['verify']} "
             f"iterations={config['iterations']} policy={config['policy']} "
             f"daemon_socket_path={config['daemon_socket_path']}"
         ),
@@ -694,12 +720,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-relays", type=int, default=1)
     parser.add_argument("--max-sessions-per-relay", type=int, default=1)
     parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)
+    parser.add_argument("--total-mib", type=int)
     parser.add_argument("--bucket-count", type=int, default=8)
     parser.add_argument("--bucket-bytes", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--storage-layout", choices=["packed"], default="packed")
     parser.add_argument("--chunk-bytes", type=int, default=16 * 1024 * 1024)
+    parser.add_argument("--chunk-mib", type=int)
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--iters", type=int, dest="iterations")
+    parser.add_argument(
+        "--mode",
+        choices=["pooled", "direct-only", "direct"],
+        default="pooled",
+    )
+    parser.add_argument("--verify", action="store_true", default=True)
+    parser.add_argument("--no-verify", action="store_false", dest="verify")
     parser.add_argument("--policy", default="runtime-session")
     parser.add_argument("--run-id", default=str(uuid.uuid4()))
     parser.add_argument("--wait-timeout-seconds", type=float)
@@ -716,6 +752,18 @@ def validate_args(args) -> None:
         raise ValueError(
             "without --start-services, --daemon-socket-path and --worker-socket-path are required"
         )
+    if args.chunk_mib is not None:
+        if args.chunk_mib <= 0:
+            raise ValueError("--chunk-mib must be positive")
+        args.chunk_bytes = int(args.chunk_mib) * 1024 * 1024
+    if args.total_mib is not None:
+        if args.total_mib <= 0:
+            raise ValueError("--total-mib must be positive")
+        total = int(args.total_mib) * 1024 * 1024
+        if total % int(args.chunk_bytes) != 0:
+            raise ValueError("--total-mib must be divisible by --chunk-mib/--chunk-bytes")
+        args.bucket_bytes = int(args.chunk_bytes)
+        args.bucket_count = total // int(args.bucket_bytes)
     if args.bucket_count <= 0:
         raise ValueError("--bucket-count must be positive")
     if args.bucket_bytes <= 0:

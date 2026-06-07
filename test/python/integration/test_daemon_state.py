@@ -3710,6 +3710,93 @@ class DaemonStateTest(unittest.TestCase):
         self.assertEqual(repeated_receipt.state, TransferStatusState.COMPLETE)
         self.assertEqual(repeated.payload["ticket"]["ticket_id"], ticket["ticket_id"])
 
+    def test_submit_transfer_intent_honors_direct_only_benchmark_mode(self) -> None:
+        daemon = _daemon(relay_gpus=[1])
+        session_id, intent = _register_intent_job(
+            daemon,
+            job_id="job-1",
+            intent_id="direct-only-benchmark",
+        )
+        self.assertTrue(
+            daemon.put_profile(target_gpu=0, relay_gpus=[1], profile=_relay_profile()).ok
+        )
+        intent = TransferIntent(
+            **{
+                **intent.__dict__,
+                "session_id": session_id,
+                "policy_hints": {
+                    "chunk_bytes": 16,
+                    "transfer_mode": "direct",
+                    "skip_verification": True,
+                },
+            }
+        )
+
+        submitted = daemon.submit_transfer_intent(intent)
+
+        self.assertTrue(submitted.ok, submitted.error)
+        self.assertEqual(
+            submitted.payload["decision"]["metadata"]["stats"]["resolved_mode"],
+            "direct",
+        )
+        self.assertEqual(submitted.payload["lease_tokens"], [])
+        ticket = submitted.payload["ticket"]
+        self.assertEqual(ticket["metadata"]["transfer_mode"], "direct")
+        self.assertTrue(ticket["metadata"]["skip_verification"])
+
+    def test_submit_transfer_intent_propagates_no_verify_to_worker_ticket(self) -> None:
+        daemon = _daemon(
+            relay_gpus=[1],
+            max_sessions_per_relay=1,
+            max_inflight_chunks_per_relay=8,
+        )
+        session_id, intent = _register_intent_job(
+            daemon,
+            job_id="job-1",
+            intent_id="pooled-no-verify-benchmark",
+        )
+        self.assertTrue(
+            daemon.put_profile(target_gpu=0, relay_gpus=[1], profile=_relay_profile()).ok
+        )
+        intent = TransferIntent(
+            **{
+                **intent.__dict__,
+                "session_id": session_id,
+                "policy_hints": {
+                    "chunk_bytes": 16,
+                    "transfer_mode": "pool",
+                    "skip_verification": True,
+                },
+            }
+        )
+
+        submitted = daemon.submit_transfer_intent(intent)
+
+        self.assertTrue(submitted.ok, submitted.error)
+        self.assertEqual(
+            submitted.payload["decision"]["metadata"]["stats"]["resolved_mode"],
+            "pool",
+        )
+        lease = submitted.payload["lease_tokens"][0]
+        authorized = daemon.authorize_worker_transfer(
+            WorkerTransferAuthorizationRequest(
+                transfer_id=submitted.payload["transfer_id"],
+                lease_id=lease["lease_id"],
+                token=lease["token"],
+                session_id=session_id,
+                job_id="job-1",
+                src_buffer_id="job-1-cpu",
+                dst_buffer_id="job-1-gpu",
+                direction="h2d",
+                relay_gpu=1,
+            )
+        )
+
+        self.assertTrue(authorized.ok, authorized.error)
+        ticket = authorized.payload["ticket"]
+        self.assertEqual(ticket["metadata"]["transfer_mode"], "pool")
+        self.assertTrue(ticket["metadata"]["skip_verification"])
+
     def test_submit_transfer_intent_rejects_physical_policy_hints(self) -> None:
         daemon = _daemon(relay_gpus=[1])
 

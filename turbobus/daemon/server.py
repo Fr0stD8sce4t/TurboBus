@@ -1186,6 +1186,7 @@ class TurboBusDaemon:
             return DaemonResponse(ok=False, error="intent must be a TransferIntent")
         try:
             chunk_bytes = _intent_chunk_bytes(intent)
+            transfer_mode = _intent_transfer_mode(intent)
         except (TypeError, ValueError) as exc:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
@@ -1222,7 +1223,7 @@ class TurboBusDaemon:
             session_id=intent.session_id,
             total_bytes=intent.total_bytes,
             chunk_bytes=chunk_bytes,
-            mode="auto",
+            mode=transfer_mode,
             direction=intent.direction,
             job_id=intent.job_id,
             buffer_ids=[intent.source_buffer_id, intent.destination_buffer_id],
@@ -3516,7 +3517,7 @@ class TurboBusDaemon:
         decision: SchedulingDecision,
         lease_ids: tuple[str, ...],
     ) -> dict[str, object]:
-        return {
+        metadata = {
             "owner_binding": self._worker_owner_binding_locked(
                 transfer_id=str(transfer_id),
                 job_id=str(decision.job_id),
@@ -3524,6 +3525,18 @@ class TurboBusDaemon:
                 lease_ids=lease_ids,
             )
         }
+        intent = self._transfer_intents.get(str(decision.intent_id))
+        if intent is not None:
+            policy_hints = (
+                intent.policy_hints
+                if isinstance(intent.policy_hints, Mapping)
+                else {}
+            )
+            if "transfer_mode" in policy_hints:
+                metadata["transfer_mode"] = str(policy_hints["transfer_mode"])
+            if "skip_verification" in policy_hints:
+                metadata["skip_verification"] = bool(policy_hints["skip_verification"])
+        return metadata
 
     def _worker_owner_binding_locked(
         self,
@@ -6335,6 +6348,24 @@ def _intent_chunk_bytes(intent: TransferIntent) -> int:
             raise ValueError("chunk_bytes must be positive")
         return chunk_bytes
     return max(1, int(intent.total_bytes))
+
+
+def _intent_transfer_mode(intent: TransferIntent) -> str:
+    for source in (intent.policy_hints, intent.metadata):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("transfer_mode")
+        if value is None:
+            continue
+        mode = str(value).lower()
+        if mode == "pooled":
+            mode = "pool"
+        if mode == "direct-only":
+            mode = "direct"
+        if mode not in {"auto", "pool", "direct", "relay"}:
+            raise ValueError("transfer_mode must be one of auto, pool, direct, relay")
+        return mode
+    return "auto"
 
 
 def _status_bytes_match(

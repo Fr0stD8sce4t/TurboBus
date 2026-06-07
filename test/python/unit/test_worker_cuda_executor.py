@@ -5,11 +5,11 @@ import unittest
 from turbobus.schema import BufferRegistration, ExecutionTicket, WorkerTransferAuthorization
 from turbobus.worker import (
     CudaWorkerExecutor,
-    WorkerDataPlaneResources,
-    WorkerStagingPool,
     WorkerTransferRequest,
     WorkerTransferState,
 )
+from turbobus.worker.resources import WorkerDataPlaneResources
+from turbobus.worker.staging_pool import WorkerStagingPool
 
 
 class FakeRuntime:
@@ -27,40 +27,40 @@ class FakeStats:
 
 
 class FakePoolStats:
-    bytes = 64
-    verified_bytes = 64
+    bytes = 48
+    verified_bytes = 48
     content_match = True
-    direct_bytes = 16
-    direct_chunks = 1
+    direct_bytes = 0
+    direct_chunks = 0
     relay_bytes = 48
     relay_chunks = 3
 
 
 class FakeMultiRelayPoolStats:
-    bytes = 96
-    verified_bytes = 96
+    bytes = 64
+    verified_bytes = 64
     content_match = True
-    direct_bytes = 32
-    direct_chunks = 2
+    direct_bytes = 0
+    direct_chunks = 0
     relay_bytes = 64
     relay_chunks = 4
 
 
 class FakeD2HMultiRelayPoolStats:
-    bytes = 96
-    verified_bytes = 96
+    bytes = 64
+    verified_bytes = 64
     content_match = True
-    direct_bytes = 32
-    direct_chunks = 2
+    direct_bytes = 0
+    direct_chunks = 0
     relay_bytes = 64
     relay_chunks = 4
 
 
 class FakePoolStatsWithoutPathBytes:
-    bytes = 64
-    verified_bytes = 64
+    bytes = 48
+    verified_bytes = 48
     content_match = True
-    direct_chunks = 1
+    direct_chunks = 0
     relay_chunks = 3
 
 
@@ -85,6 +85,7 @@ class FakeBackend:
         self.offload_calls = []
         self.wait_calls = []
         self.stats_calls = []
+        self.verify_calls = []
 
     def make_transfer_plan(self, plan):
         self.plan_payloads.append(plan)
@@ -143,6 +144,17 @@ class FakeBackend:
         device_bytes,
         ranges,
     ):
+        self.verify_calls.append(
+            {
+                "target_device": target_device,
+                "direction": direction,
+                "host_ptr": host_ptr,
+                "host_bytes": host_bytes,
+                "device_ptr": device_ptr,
+                "device_bytes": device_bytes,
+                "ranges": ranges,
+            }
+        )
         return {
             "verified_bytes": int(getattr(self.stats_result, "verified_bytes", 0)),
             "content_match": bool(getattr(self.stats_result, "content_match", False)),
@@ -237,6 +249,16 @@ def pool_plan() -> dict[str, object]:
     }
 
 
+def pool_relay_scoped_plan() -> dict[str, object]:
+    plan = pool_plan()
+    relay_assignment = dict(plan["assignments"][1])
+    return {
+        "total_bytes": 48,
+        "chunk_bytes": 16,
+        "assignments": [relay_assignment],
+    }
+
+
 def multi_relay_pool_plan(direction: str = "h2d") -> dict[str, object]:
     return {
         "total_bytes": 96,
@@ -291,6 +313,15 @@ def multi_relay_pool_plan(direction: str = "h2d") -> dict[str, object]:
     }
 
 
+def multi_relay_scoped_plan(direction: str = "h2d") -> dict[str, object]:
+    plan = multi_relay_pool_plan(direction=direction)
+    return {
+        "total_bytes": 64,
+        "chunk_bytes": 16,
+        "assignments": [dict(plan["assignments"][1]), dict(plan["assignments"][2])],
+    }
+
+
 def worker_request(
     direction: str = "h2d",
     *,
@@ -298,6 +329,7 @@ def worker_request(
     ranges=({"src_offset": 4, "dst_offset": 8, "bytes": 16},),
     relay_gpus=(1,),
     lease_ids=("lease-1",),
+    ticket_metadata: dict[str, object] | None = None,
 ) -> WorkerTransferRequest:
     if plan is None:
         plan = relay_plan(direction)
@@ -376,6 +408,18 @@ def worker_request(
             "issuer": "turbobus-daemon",
             "transfer_id": "transfer-1",
             "plan_generation": 1,
+            "owner_binding": {
+                "job_id": "job-1",
+                "session_id": "session-1",
+                "transfer_id": "transfer-1",
+                "lease_ids": tuple(lease_ids),
+                "relay_gpus": tuple(relay_gpus),
+                "cleanup_scope": {
+                    "target_kind": "reservation",
+                    "target_ids": tuple(lease_ids),
+                },
+            },
+            **({} if ticket_metadata is None else dict(ticket_metadata)),
         },
     )
     return WorkerTransferRequest.from_execution_ticket(
@@ -390,19 +434,32 @@ def worker_request(
     )
 
 
+def worker_resources(
+    request: WorkerTransferRequest,
+    *,
+    cpu_buffer=None,
+    device_ptr: int = 2000,
+    device_bytes: int = 64,
+    cuda_host_registered: bool = False,
+) -> WorkerDataPlaneResources:
+    return WorkerDataPlaneResources(
+        request=request.data_plane,
+        cpu_buffer=FakeCpuBuffer() if cpu_buffer is None else cpu_buffer,
+        device_ptr=int(device_ptr),
+        device_bytes=int(device_bytes),
+        ticket_id=request.ticket.ticket_id,
+        plan_generation=int(request.ticket.metadata["plan_generation"]),
+        cuda_host_registered=bool(cuda_host_registered),
+    )
+
+
 class CudaWorkerExecutorTest(unittest.TestCase):
     def test_executor_runs_h2d_relay_plan_and_waits(self) -> None:
         request = worker_request()
         slot = WorkerStagingPool(slot_id_factory=lambda: "staging-1").allocate(
             request.data_plane
         )
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=64,
-            cuda_host_registered=True,
-        )
+        resources = worker_resources(request, cuda_host_registered=True)
         backend = FakeBackend()
         executor = CudaWorkerExecutor(backend=backend)
 
@@ -430,11 +487,22 @@ class CudaWorkerExecutorTest(unittest.TestCase):
 
     def test_executor_fails_without_bound_resources(self) -> None:
         request = worker_request()
+        other_request = worker_request(
+            direction="d2h",
+            plan=d2h_relay_plan(),
+            ranges=({"src_offset": 8, "dst_offset": 4, "bytes": 16},),
+        )
         slot = WorkerStagingPool().allocate(request.data_plane)
-        result = CudaWorkerExecutor(backend=FakeBackend()).execute(request, slot)
+        resources = worker_resources(other_request)
+
+        result = CudaWorkerExecutor(backend=FakeBackend()).execute_bound(
+            request,
+            slot,
+            resources,
+        )
 
         self.assertEqual(result.state, WorkerTransferState.FAILED)
-        self.assertIn("bound data-plane resources", result.error)
+        self.assertIn("bound resources", result.error)
 
     def test_worker_request_rejects_non_ticketed_construction(self) -> None:
         authorization = worker_request().authorization
@@ -463,19 +531,14 @@ class CudaWorkerExecutorTest(unittest.TestCase):
                 data_plane=request.data_plane,
             )
 
-    def test_executor_rejects_daemon_plan_total_byte_mismatch_before_backend(
+    def test_executor_derives_relay_scoped_total_from_authorized_chunks(
         self,
     ) -> None:
         bad_plan = relay_plan()
         bad_plan["total_bytes"] = 32
         request = worker_request(plan=bad_plan)
         slot = WorkerStagingPool().allocate(request.data_plane)
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=64,
-        )
+        resources = worker_resources(request)
         backend = FakeBackend()
 
         result = CudaWorkerExecutor(backend=backend).execute_bound(
@@ -484,11 +547,9 @@ class CudaWorkerExecutorTest(unittest.TestCase):
             resources,
         )
 
-        self.assertEqual(result.state, WorkerTransferState.FAILED)
-        self.assertIn("total bytes", result.error)
-        self.assertEqual(backend.plan_payloads, [])
-        self.assertEqual(backend.initialize_calls, [])
-        self.assertEqual(backend.fetch_calls, [])
+        self.assertEqual(result.state, WorkerTransferState.COMPLETE)
+        self.assertEqual(result.bytes_completed, 16)
+        self.assertEqual(backend.plan_payloads, [relay_plan()])
 
     def test_executor_runs_h2d_pool_plan_and_waits(self) -> None:
         request = worker_request(
@@ -502,13 +563,7 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         slot = WorkerStagingPool(slot_id_factory=lambda: "staging-1").allocate(
             request.data_plane
         )
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=64,
-            cuda_host_registered=True,
-        )
+        resources = worker_resources(request, cuda_host_registered=True)
         backend = FakeBackend()
         backend.stats_result = FakePoolStats()
         executor = CudaWorkerExecutor(backend=backend)
@@ -516,14 +571,47 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         result = executor.execute_bound(request, slot, resources)
 
         self.assertEqual(result.state, WorkerTransferState.COMPLETE)
-        self.assertEqual(result.bytes_completed, 64)
-        self.assertEqual(result.metadata["path"], "pool_h2d")
-        self.assertEqual(result.metadata["direct_bytes"], 16)
-        self.assertEqual(result.metadata["direct_chunks"], 1)
+        self.assertEqual(result.bytes_completed, 48)
+        self.assertEqual(result.metadata["path"], "relay_h2d")
+        self.assertEqual(result.metadata["direct_bytes"], 0)
+        self.assertEqual(result.metadata["direct_chunks"], 0)
         self.assertEqual(result.metadata["relay_bytes"], 48)
         self.assertEqual(result.metadata["relay_chunks"], 3)
-        self.assertEqual(backend.plan_payloads, [pool_plan()])
+        self.assertEqual(backend.plan_payloads, [pool_relay_scoped_plan()])
         self.assertEqual(backend.initialize_calls[0][1:], (0, [1]))
+
+    def test_executor_skips_verification_when_ticket_requests_no_verify(self) -> None:
+        request = worker_request(
+            plan=pool_plan(),
+            ranges=(
+                {"src_offset": 16, "dst_offset": 16, "bytes": 16},
+                {"src_offset": 32, "dst_offset": 32, "bytes": 16},
+                {"src_offset": 48, "dst_offset": 48, "bytes": 16},
+            ),
+            ticket_metadata={"skip_verification": True},
+        )
+        slot = WorkerStagingPool(slot_id_factory=lambda: "staging-1").allocate(
+            request.data_plane
+        )
+        resources = worker_resources(request, cuda_host_registered=True)
+        backend = FakeBackend()
+        backend.stats_result = FakePoolStats()
+
+        result = CudaWorkerExecutor(backend=backend).execute_bound(
+            request,
+            slot,
+            resources,
+        )
+
+        self.assertEqual(result.state, WorkerTransferState.COMPLETE)
+        self.assertEqual(backend.verify_calls, [])
+        self.assertTrue(result.metadata["verification_skipped"])
+        self.assertEqual(result.metadata["verification_source"], "benchmark_no_verify")
+        self.assertEqual(result.metadata["verification_method"], "verification_skipped")
+        self.assertEqual(result.metadata["verified_bytes"], 48)
+        self.assertTrue(result.metadata["content_match"])
+        self.assertEqual(result.metadata["direct_bytes"], 0)
+        self.assertEqual(result.metadata["relay_bytes"], 48)
 
     def test_executor_runs_h2d_multi_relay_pool_plan_and_waits(self) -> None:
         request = worker_request(
@@ -540,10 +628,8 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         slot = WorkerStagingPool(slot_id_factory=lambda: "staging-1").allocate(
             request.data_plane
         )
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
+        resources = worker_resources(
+            request,
             device_bytes=128,
             cuda_host_registered=True,
         )
@@ -557,14 +643,14 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         )
 
         self.assertEqual(result.state, WorkerTransferState.COMPLETE)
-        self.assertEqual(result.bytes_completed, 96)
-        self.assertEqual(result.metadata["path"], "pool_h2d")
+        self.assertEqual(result.bytes_completed, 64)
+        self.assertEqual(result.metadata["path"], "relay_h2d")
         self.assertEqual(result.metadata["relay_gpus"], [1, 2])
-        self.assertEqual(result.metadata["direct_bytes"], 32)
-        self.assertEqual(result.metadata["direct_chunks"], 2)
+        self.assertEqual(result.metadata["direct_bytes"], 0)
+        self.assertEqual(result.metadata["direct_chunks"], 0)
         self.assertEqual(result.metadata["relay_bytes"], 64)
         self.assertEqual(result.metadata["relay_chunks"], 4)
-        self.assertEqual(backend.plan_payloads, [multi_relay_pool_plan()])
+        self.assertEqual(backend.plan_payloads, [multi_relay_scoped_plan()])
         self.assertEqual(backend.initialize_calls[0][1:], (0, [1, 2]))
 
     def test_executor_derives_pool_byte_split_from_daemon_plan(self) -> None:
@@ -579,13 +665,7 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         slot = WorkerStagingPool(slot_id_factory=lambda: "staging-1").allocate(
             request.data_plane
         )
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=64,
-            cuda_host_registered=True,
-        )
+        resources = worker_resources(request, cuda_host_registered=True)
         backend = FakeBackend()
         backend.stats_result = FakePoolStatsWithoutPathBytes()
 
@@ -596,11 +676,11 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         )
 
         self.assertEqual(result.state, WorkerTransferState.COMPLETE)
-        self.assertEqual(result.bytes_completed, 64)
-        self.assertEqual(result.metadata["path"], "pool_h2d")
-        self.assertEqual(result.metadata["direct_bytes"], 16)
+        self.assertEqual(result.bytes_completed, 48)
+        self.assertEqual(result.metadata["path"], "relay_h2d")
+        self.assertEqual(result.metadata["direct_bytes"], 0)
         self.assertEqual(result.metadata["relay_bytes"], 48)
-        self.assertEqual(result.metadata["direct_chunks"], 1)
+        self.assertEqual(result.metadata["direct_chunks"], 0)
         self.assertEqual(result.metadata["relay_chunks"], 3)
 
     def test_executor_runs_d2h_relay_plan_and_waits(self) -> None:
@@ -610,12 +690,7 @@ class CudaWorkerExecutorTest(unittest.TestCase):
             ranges=({"src_offset": 8, "dst_offset": 4, "bytes": 16},),
         )
         slot = WorkerStagingPool().allocate(request.data_plane)
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=64,
-        )
+        resources = worker_resources(request)
         backend = FakeBackend()
         backend.stats_result = FakeD2HStats()
 
@@ -649,12 +724,7 @@ class CudaWorkerExecutorTest(unittest.TestCase):
             lease_ids=("lease-1", "lease-2"),
         )
         slot = WorkerStagingPool().allocate(request.data_plane)
-        resources = WorkerDataPlaneResources(
-            request=request.data_plane,
-            cpu_buffer=FakeCpuBuffer(),
-            device_ptr=2000,
-            device_bytes=128,
-        )
+        resources = worker_resources(request, device_bytes=128)
         backend = FakeBackend()
         backend.stats_result = FakeD2HMultiRelayPoolStats()
 
@@ -665,13 +735,13 @@ class CudaWorkerExecutorTest(unittest.TestCase):
         )
 
         self.assertEqual(result.state, WorkerTransferState.COMPLETE)
-        self.assertEqual(result.metadata["path"], "pool_d2h")
+        self.assertEqual(result.metadata["path"], "relay_d2h")
         self.assertEqual(result.metadata["relay_gpus"], [1, 2])
         self.assertEqual(result.metadata["relay_bytes"], 64)
         self.assertEqual(result.metadata["relay_chunks"], 4)
         self.assertEqual(
             backend.plan_payloads,
-            [multi_relay_pool_plan(direction="d2h")],
+            [multi_relay_scoped_plan(direction="d2h")],
         )
         self.assertEqual(backend.initialize_calls[0][1:], (0, [1, 2]))
         self.assertEqual(

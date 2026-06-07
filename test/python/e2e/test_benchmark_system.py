@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from turbobus.schema import TransferReceipt, TransferStatusState
 
@@ -53,6 +54,55 @@ class BenchmarkSystemTest(unittest.TestCase):
         self.assertTrue(runtime.buffers.released)
         self.assertEqual(runtime.session.events[:3], ["register_cuda", "open", "register_cpu"])
         self.assertEqual(runtime.model_loader.loaded, [["bucket-0", "bucket-1"]] * 3)
+
+    def test_model_loading_cli_accepts_total_chunk_mode_and_no_verify(self) -> None:
+        args = parse_model_args(
+            "--total-mib",
+            "1",
+            "--chunk-mib",
+            "1",
+            "--iters",
+            "2",
+            "--mode",
+            "direct-only",
+            "--no-verify",
+        )
+
+        self.assertEqual(args.bucket_count, 1)
+        self.assertEqual(args.bucket_bytes, 1024 * 1024)
+        self.assertEqual(args.chunk_bytes, 1024 * 1024)
+        self.assertEqual(args.iterations, 2)
+        self.assertEqual(model_loading.benchmark_transfer_mode(args), "direct")
+        self.assertFalse(args.verify)
+        self.assertEqual(model_loading.config_dict(args)["mode"], "direct-only")
+        self.assertFalse(model_loading.config_dict(args)["verify"])
+
+    def test_model_loading_passes_mode_and_verification_policy_to_loader(self) -> None:
+        args = parse_model_args(
+            "--bucket-count",
+            "1",
+            "--bucket-bytes",
+            "64",
+            "--chunk-bytes",
+            "16",
+            "--mode",
+            "pooled",
+            "--no-verify",
+        )
+        buffers = FakeBuffers()
+
+        with patch(
+            "turbobus.adapters.model_loading.ModelWeightLoader",
+            CapturingModelWeightLoader,
+        ):
+            loader = model_loading.make_loader(args, object(), buffers)
+
+        self.assertIsNotNone(loader)
+        self.assertEqual(loader.policy_hints["transfer_mode"], "pool")
+        self.assertTrue(loader.policy_hints["skip_verification"])
+        self.assertEqual(loader.metadata["mode"], "pooled")
+        self.assertTrue(loader.metadata["skip_verification"])
+        self.assertEqual(loader.added_buckets[0]["bucket_count"], 1)
 
     def test_training_offload_runtime_path_outputs_prefetch_and_offload_evidence(self) -> None:
         args = parse_training_args(
@@ -194,6 +244,36 @@ class FakeSession:
 
     def close(self) -> None:
         self.events.append("close")
+
+
+class CapturingModelWeightLoader:
+    def __init__(
+        self,
+        session,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        policy_hints=None,
+        metadata=None,
+        **kwargs,
+    ) -> None:
+        self.session = session
+        self.cpu_buffer = cpu_buffer
+        self.gpu_buffer = gpu_buffer
+        self.policy_hints = {} if policy_hints is None else dict(policy_hints)
+        self.metadata = {} if metadata is None else dict(metadata)
+        self.kwargs = kwargs
+        self.added_buckets = []
+
+    def add_packed_buckets(self, prefix: str, *, bucket_bytes: int, bucket_count: int):
+        self.added_buckets.append(
+            {
+                "prefix": prefix,
+                "bucket_bytes": int(bucket_bytes),
+                "bucket_count": int(bucket_count),
+            }
+        )
+        return []
 
 
 class FakeBufferFactory:

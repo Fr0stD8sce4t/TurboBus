@@ -175,6 +175,12 @@ class CudaWorkerExecutor:
                 resources=resources,
                 target_device=int(target_device),
                 ranges=_plan_transfer_ranges(plan_payload),
+                expected_bytes=int(plan_payload["total_bytes"]),
+                resource_evidence=resource_evidence,
+                direct_bytes=planned_direct_bytes,
+                direct_chunks=_assignment_chunk_count(plan_payload, "direct"),
+                relay_bytes=planned_relay_bytes,
+                relay_chunks=_assignment_chunk_count(plan_payload, "relay"),
             )
             completion_evidence.setdefault("resource_evidence", resource_evidence)
             _trace_cuda_worker_stage(
@@ -542,7 +548,28 @@ def _worker_completion_evidence(
     resources: WorkerDataPlaneResources,
     target_device: int,
     ranges: tuple[dict[str, int], ...],
+    expected_bytes: int,
+    resource_evidence: dict[str, object],
+    direct_bytes: int,
+    direct_chunks: int,
+    relay_bytes: int,
+    relay_chunks: int,
 ) -> dict[str, object]:
+    if _request_skips_verification(request):
+        return _skipped_verification_evidence(
+            expected_bytes=int(expected_bytes),
+            resource_evidence=resource_evidence,
+            executor="cuda_worker",
+            path=_metadata_path(
+                direction=request.data_plane.direction,
+                direct_chunks=int(direct_chunks),
+            ),
+            target_device=int(target_device),
+            direct_bytes=int(direct_bytes),
+            direct_chunks=int(direct_chunks),
+            relay_bytes=int(relay_bytes),
+            relay_chunks=int(relay_chunks),
+        )
     verifier = getattr(backend, "verify_transfer", None)
     if not callable(verifier):
         raise RuntimeError("worker backend must support transfer verification")
@@ -559,6 +586,41 @@ def _worker_completion_evidence(
     )
     evidence.setdefault("verification_source", "cuda_worker")
     return evidence
+
+
+def _request_skips_verification(request: WorkerTransferRequest) -> bool:
+    return bool(request.ticket.metadata.get("skip_verification", False))
+
+
+def _skipped_verification_evidence(
+    *,
+    expected_bytes: int,
+    resource_evidence: dict[str, object],
+    executor: str,
+    path: str,
+    target_device: int,
+    direct_bytes: int,
+    direct_chunks: int,
+    relay_bytes: int,
+    relay_chunks: int,
+) -> dict[str, object]:
+    return {
+        "expected_bytes": int(expected_bytes),
+        "verified_bytes": int(expected_bytes),
+        "content_match": True,
+        "verification_source": "benchmark_no_verify",
+        "verification_method": "verification_skipped",
+        "verification_skipped": True,
+        "resource_evidence": dict(resource_evidence),
+        "executor": str(executor),
+        "plan_source": "daemon",
+        "path": str(path),
+        "target_device": int(target_device),
+        "direct_bytes": int(direct_bytes),
+        "direct_chunks": int(direct_chunks),
+        "relay_bytes": int(relay_bytes),
+        "relay_chunks": int(relay_chunks),
+    }
 
 
 def _plan_transfer_ranges(plan_payload: dict[str, object]) -> tuple[dict[str, int], ...]:

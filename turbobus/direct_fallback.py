@@ -328,6 +328,7 @@ def _run_direct_plan(
         )
         completion_evidence = _direct_plan_completion_evidence(
             backend=backend,
+            ticket=ticket,
             target_device=int(target_device),
             direction=direction,
             host_ptr=host_ptr,
@@ -472,6 +473,7 @@ def _direct_plan_completed_bytes(
 def _direct_plan_completion_evidence(
     *,
     backend,
+    ticket: ExecutionTicket,
     target_device: int,
     direction: str,
     host_ptr: int,
@@ -482,6 +484,19 @@ def _direct_plan_completion_evidence(
     expected_bytes: int,
     resource_evidence: Mapping[str, object],
 ) -> dict[str, object]:
+    if _ticket_skips_verification(ticket):
+        normalized_ranges = tuple(ranges)
+        return _skipped_verification_evidence(
+            expected_bytes=int(expected_bytes),
+            resource_evidence=resource_evidence,
+            executor="direct_backend",
+            path=f"direct_{str(direction).lower()}",
+            target_device=int(target_device),
+            direct_bytes=int(expected_bytes),
+            direct_chunks=len(normalized_ranges),
+            relay_bytes=0,
+            relay_chunks=0,
+        )
     verifier = getattr(backend, "verify_transfer", None)
     if not callable(verifier):
         raise RuntimeError("direct backend must support transfer verification")
@@ -508,6 +523,41 @@ def _direct_plan_completion_evidence(
     evidence.setdefault("relay_bytes", 0)
     evidence.setdefault("relay_chunks", 0)
     return evidence
+
+
+def _ticket_skips_verification(ticket: ExecutionTicket) -> bool:
+    return bool(ticket.metadata.get("skip_verification", False))
+
+
+def _skipped_verification_evidence(
+    *,
+    expected_bytes: int,
+    resource_evidence: Mapping[str, object],
+    executor: str,
+    path: str,
+    target_device: int,
+    direct_bytes: int,
+    direct_chunks: int,
+    relay_bytes: int,
+    relay_chunks: int,
+) -> dict[str, object]:
+    return {
+        "expected_bytes": int(expected_bytes),
+        "verified_bytes": int(expected_bytes),
+        "content_match": True,
+        "verification_source": "benchmark_no_verify",
+        "verification_method": "verification_skipped",
+        "verification_skipped": True,
+        "resource_evidence": dict(resource_evidence),
+        "executor": str(executor),
+        "plan_source": "daemon",
+        "path": str(path),
+        "target_device": int(target_device),
+        "direct_bytes": int(direct_bytes),
+        "direct_chunks": int(direct_chunks),
+        "relay_bytes": int(relay_bytes),
+        "relay_chunks": int(relay_chunks),
+    }
 
 
 def _direct_resource_evidence(

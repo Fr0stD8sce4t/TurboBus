@@ -4,9 +4,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import asdict
 from enum import Enum
 import os
-import uuid
 
-from turbobus import TurboBusClient, TransferIntent, TransferReceipt, WorkloadKind
+from turbobus import TransferReceipt
 
 
 def add_daemon_options(parser):
@@ -43,46 +42,6 @@ def collect_daemon_reservation_info(handles: Iterable) -> dict[str, object]:
         if info:
             return dict(info)
     return {}
-
-
-def make_benchmark_transfer_intent(
-    *,
-    workload_kind: WorkloadKind | str,
-    job_id: str,
-    session_id: str,
-    source_buffer_id: str,
-    destination_buffer_id: str,
-    direction: str,
-    total_bytes: int,
-    ranges: Iterable[dict[str, int]],
-    priority: int = 0,
-    policy_hints: dict[str, object] | None = None,
-    metadata: dict[str, object] | None = None,
-    intent_id: str | None = None,
-) -> TransferIntent:
-    return TransferIntent(
-        intent_id=intent_id or f"benchmark-intent-{uuid.uuid4()}",
-        job_id=str(job_id),
-        session_id=str(session_id),
-        source_buffer_id=str(source_buffer_id),
-        destination_buffer_id=str(destination_buffer_id),
-        direction=str(direction),
-        total_bytes=int(total_bytes),
-        ranges=tuple(dict(item) for item in ranges),
-        workload_kind=workload_kind,
-        priority=int(priority),
-        policy_hints={} if policy_hints is None else dict(policy_hints),
-        metadata={} if metadata is None else dict(metadata),
-    )
-
-
-def submit_benchmark_transfer_intent(
-    intent: TransferIntent,
-    *,
-    daemon_socket_path: str,
-) -> TransferReceipt:
-    client = TurboBusClient(socket_path=daemon_socket_path)
-    return client.submit_transfer_intent(intent)
 
 
 def receipt_to_trace(receipt: TransferReceipt) -> dict[str, object]:

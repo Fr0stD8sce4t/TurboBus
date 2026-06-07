@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 from pathlib import Path
+import socket
 import statistics
+import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -12,66 +17,59 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from turbobus import TurboBusClient, WorkloadKind
-from daemon_support import (
-    add_daemon_options,
-    benchmark_job_id,
-    make_benchmark_transfer_intent,
-    receipt_to_trace,
-    receipt_trace_line,
-)
+from daemon_support import benchmark_job_id, receipt_to_trace, receipt_trace_line
+from turbobus.schema import TransferReceipt, WorkloadKind
 
 
-def bucket_ranges(bucket_count: int, bucket_bytes: int) -> tuple[dict[str, int], ...]:
-    ranges = []
-    for index in range(int(bucket_count)):
-        offset = index * int(bucket_bytes)
-        ranges.append(
-            {
-                "src_offset": offset,
-                "dst_offset": offset,
-                "bytes": int(bucket_bytes),
-            }
-        )
-    return tuple(ranges)
+def total_bytes(args) -> int:
+    return int(args.bucket_count) * int(args.bucket_bytes)
 
 
-def build_model_loading_intent(args, *, iteration: int, phase: str):
-    total_bytes = int(args.bucket_count) * int(args.bucket_bytes)
-    return make_benchmark_transfer_intent(
-        intent_id=f"{args.intent_prefix}-{args.run_id}-{phase}-{iteration}",
-        workload_kind=WorkloadKind.MODEL_WEIGHTS,
-        job_id=args.job_id,
-        session_id=args.session_id,
-        source_buffer_id=args.source_buffer_id,
-        destination_buffer_id=args.destination_buffer_id,
-        direction="h2d",
-        total_bytes=total_bytes,
-        ranges=bucket_ranges(args.bucket_count, args.bucket_bytes),
-        policy_hints={},
-        metadata={
-            "benchmark": "model-loading",
-            "phase": phase,
-            "iteration": int(iteration),
-            "policy": args.policy,
-            "storage_layout": args.storage_layout,
-            "bucket_count": int(args.bucket_count),
-            "bucket_bytes": int(args.bucket_bytes),
-            "chunk_bytes": int(args.chunk_bytes),
-        },
-    )
+def bucket_names(args, *, iteration: int) -> list[str]:
+    return [f"bucket-{index}" for index in range(int(args.bucket_count))]
 
 
-def submit_load_intent(client: TurboBusClient, args, *, iteration: int, phase: str) -> dict:
-    intent = build_model_loading_intent(args, iteration=iteration, phase=phase)
+def run_benchmark(
+    args,
+    *,
+    session_factory=None,
+    buffer_factory=None,
+    loader_factory=None,
+) -> dict:
+    with runtime_context(
+        args,
+        session_factory=session_factory,
+        buffer_factory=buffer_factory,
+        loader_factory=loader_factory,
+    ) as runtime:
+        warmup_samples = run_warmup(runtime, args)
+        samples = [
+            run_load_iteration(runtime, args, iteration=iteration, phase="measure")
+            for iteration in range(int(args.iterations))
+        ]
+        return {
+            "config": config_dict(args),
+            "warmup_samples": warmup_samples,
+            "samples": samples,
+            "summary": summarize_load(samples),
+        }
+
+
+def run_warmup(runtime, args) -> list[dict]:
+    return [
+        run_load_iteration(runtime, args, iteration=iteration, phase="warmup")
+        for iteration in range(int(args.warmup))
+    ]
+
+
+def run_load_iteration(runtime, args, *, iteration: int, phase: str) -> dict:
+    loader = runtime.loader
+    names = bucket_names(args, iteration=iteration)
     start = time.perf_counter()
-    receipt = client.submit_transfer_intent(intent)
-    if args.wait_timeout_seconds is not None:
-        receipt = client.wait_transfer_receipt(
-            intent.intent_id,
-            timeout_seconds=args.wait_timeout_seconds,
-        )
+    batch = loader.load_batch(names)
+    batch.wait()
     elapsed_ms = (time.perf_counter() - start) * 1000.0
+    receipt = first_receipt(batch.handles)
     trace = receipt_to_trace(receipt)
     gib_per_second = (
         (int(trace["bytes_total"]) / (1024**3)) / (elapsed_ms / 1000.0)
@@ -81,20 +79,9 @@ def submit_load_intent(client: TurboBusClient, args, *, iteration: int, phase: s
     return {
         "iteration": int(iteration),
         "phase": phase,
+        "bucket_names": names,
         "load_ms": elapsed_ms,
         "load_gib_per_second": gib_per_second,
-        "intent": {
-            "intent_id": intent.intent_id,
-            "job_id": intent.job_id,
-            "session_id": intent.session_id,
-            "source_buffer_id": intent.source_buffer_id,
-            "destination_buffer_id": intent.destination_buffer_id,
-            "workload_kind": intent.workload_kind.value,
-            "total_bytes": intent.total_bytes,
-            "ranges": list(intent.ranges),
-            "policy_hints": dict(intent.policy_hints),
-            "metadata": dict(intent.metadata),
-        },
         "receipt": trace,
         "bytes": int(trace["bytes_total"]),
         "bytes_completed": int(trace["bytes_completed"]),
@@ -109,34 +96,20 @@ def submit_load_intent(client: TurboBusClient, args, *, iteration: int, phase: s
     }
 
 
-def run_warmup(client: TurboBusClient, args) -> list[dict]:
-    samples = []
-    for iteration in range(int(args.warmup)):
-        samples.append(
-            submit_load_intent(
-                client,
-                args,
-                iteration=iteration,
-                phase="warmup",
-            )
-        )
-    return samples
-
-
-def run_benchmark(args, *, client: TurboBusClient | None = None) -> dict:
-    if client is None:
-        client = TurboBusClient(socket_path=args.daemon_socket_path)
-    warmup_samples = run_warmup(client, args)
-    samples = [
-        submit_load_intent(client, args, iteration=iteration, phase="measure")
-        for iteration in range(int(args.iterations))
-    ]
-    return {
-        "config": config_dict(args),
-        "warmup_samples": warmup_samples,
-        "samples": samples,
-        "summary": summarize_load(samples),
-    }
+def first_receipt(handles) -> TransferReceipt:
+    unique = []
+    seen = set()
+    for handle in handles:
+        key = id(handle)
+        if key in seen:
+            continue
+        seen.add(key)
+        receipt = getattr(handle, "receipt", None)
+        if isinstance(receipt, TransferReceipt):
+            unique.append(receipt)
+    if len(unique) != 1:
+        raise RuntimeError(f"expected one receipt for batched load, got {len(unique)}")
+    return unique[0]
 
 
 def summarize_load(samples: list[dict]) -> dict:
@@ -247,6 +220,7 @@ def config_dict(args) -> dict[str, object]:
         "source_buffer_id": args.source_buffer_id,
         "destination_buffer_id": args.destination_buffer_id,
         "workload_kind": WorkloadKind.MODEL_WEIGHTS.value,
+        "target_gpu": args.target_gpu,
         "bucket_count": int(args.bucket_count),
         "bucket_bytes": int(args.bucket_bytes),
         "storage_layout": args.storage_layout,
@@ -256,8 +230,287 @@ def config_dict(args) -> dict[str, object]:
         "policy": args.policy,
         "run_id": args.run_id,
         "daemon_socket_path": args.daemon_socket_path,
-        "wait_timeout_seconds": args.wait_timeout_seconds,
+        "worker_socket_path": args.worker_socket_path,
+        "start_services": bool(args.start_services),
+        "profile_bytes": int(args.profile_bytes),
+        "daemon_max_inflight_chunks": int(args.daemon_max_inflight_chunks),
+        "daemon_profile_max_age_seconds": float(args.daemon_profile_max_age_seconds),
     }
+
+
+@contextlib.contextmanager
+def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_factory=None):
+    if session_factory is None:
+        session_factory = ProductionRuntimeSessionFactory()
+    if buffer_factory is None:
+        buffer_factory = TorchRuntimeBufferFactory()
+    with session_factory.open(args) as session:
+        buffers = buffer_factory.allocate(args)
+        try:
+            session.register_cuda_buffer(buffers.gpu_buffer)
+            args.session_id = session.open_session()
+            session.register_cpu_buffer(buffers.cpu_buffer)
+            args.source_buffer_id = buffers.cpu_buffer.buffer_id
+            args.destination_buffer_id = buffers.gpu_buffer.buffer_id
+            if loader_factory is None:
+                loader = make_loader(args, session, buffers)
+            else:
+                loader = loader_factory(args, session, buffers)
+            yield RuntimeBenchmarkState(
+                session=session,
+                buffers=buffers,
+                loader=loader,
+            )
+        finally:
+            buffers.release()
+
+
+def make_loader(args, session, buffers):
+    from turbobus.adapters.model_loading import ModelWeightLoader
+
+    loader = ModelWeightLoader(
+        session,
+        buffers.cpu_buffer,
+        buffers.gpu_buffer,
+        metadata={
+            "benchmark": "model-loading",
+            "policy": args.policy,
+            "storage_layout": args.storage_layout,
+            "bucket_count": int(args.bucket_count),
+            "bucket_bytes": int(args.bucket_bytes),
+            "chunk_bytes": int(args.chunk_bytes),
+        },
+        intent_prefix=f"model-load-{args.run_id}",
+        wait_timeout_seconds=args.wait_timeout_seconds,
+    )
+    loader.add_packed_buckets(
+        "bucket-",
+        bucket_bytes=int(args.bucket_bytes),
+        bucket_count=int(args.bucket_count),
+    )
+    return loader
+
+
+class RuntimeBenchmarkState:
+    def __init__(self, *, session, buffers, loader) -> None:
+        self.session = session
+        self.buffers = buffers
+        self.loader = loader
+
+
+class RuntimeBuffers:
+    def __init__(self, *, cpu_buffer, gpu_buffer, target_tensor=None) -> None:
+        self.cpu_buffer = cpu_buffer
+        self.gpu_buffer = gpu_buffer
+        self.target_tensor = target_tensor
+
+    def release(self) -> None:
+        releaser = getattr(self.cpu_buffer, "release", None)
+        if callable(releaser):
+            releaser()
+
+
+class TorchRuntimeBufferFactory:
+    def allocate(self, args) -> RuntimeBuffers:
+        torch = require_torch()
+        byte_count = total_bytes(args)
+        run_id = str(args.run_id).replace("/", "-")
+        cpu_buffer_id = args.source_buffer_id or f"model-load-cpu-{run_id}"
+        gpu_buffer_id = args.destination_buffer_id or f"model-load-gpu-{run_id}"
+
+        from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
+
+        cpu_buffer = SharedPinnedCpuBuffer.allocate(
+            buffer_id=cpu_buffer_id,
+            job_id=args.job_id,
+            size_bytes=byte_count,
+            name_prefix="turbobus-model-load",
+        )
+        source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
+        source.random_(0, 256)
+        cpu_buffer.write(source.numpy().tobytes())
+
+        torch.cuda.set_device(int(args.target_gpu))
+        target = torch.empty(
+            byte_count,
+            dtype=torch.uint8,
+            device=f"cuda:{int(args.target_gpu)}",
+        )
+        gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
+            buffer_id=gpu_buffer_id,
+            job_id=args.job_id,
+            device_index=int(args.target_gpu),
+            size_bytes=byte_count,
+            device_ptr=target.data_ptr(),
+        )
+        return RuntimeBuffers(
+            cpu_buffer=cpu_buffer,
+            gpu_buffer=gpu_buffer,
+            target_tensor=target,
+        )
+
+
+class ProductionRuntimeSessionFactory:
+    @contextlib.contextmanager
+    def open(self, args):
+        daemon_process = None
+        worker_process = None
+        tmpdir = None
+        session = None
+        try:
+            tmpdir = tempfile.TemporaryDirectory(prefix="turbobus-model-load-")
+            daemon_socket = args.daemon_socket_path or os.path.join(tmpdir.name, "daemon.sock")
+            worker_socket = args.worker_socket_path or os.path.join(tmpdir.name, "worker.sock")
+            args.daemon_socket_path = daemon_socket
+            args.worker_socket_path = worker_socket
+
+            if args.start_services:
+                daemon_process = start_daemon_process(args, daemon_socket)
+                wait_for_socket(daemon_socket, daemon_process)
+                worker_process = start_worker_process(args, daemon_socket, worker_socket)
+                wait_for_socket(worker_socket, worker_process)
+
+            from turbobus.runtime_options import RuntimeOptions
+            from turbobus.runtime_session import TurboBusRuntimeSession
+
+            session = TurboBusRuntimeSession.open_production_socket(
+                job_id=args.job_id,
+                daemon_socket_path=daemon_socket,
+                worker_socket_path=worker_socket,
+                runtime_options=RuntimeOptions(
+                    chunk_bytes=int(args.chunk_bytes),
+                    profile_bytes=int(args.profile_bytes),
+                    profile_on_first_transfer=True,
+                    daemon_socket_path=daemon_socket,
+                    worker_socket_path=worker_socket,
+                    daemon_max_inflight_chunks=int(args.daemon_max_inflight_chunks),
+                    daemon_profile_max_age_seconds=float(
+                        args.daemon_profile_max_age_seconds
+                    ),
+                ),
+            )
+            yield session
+        finally:
+            if session is not None:
+                session.close()
+            worker_stdout, worker_stderr = stop_service(worker_process)
+            daemon_stdout, daemon_stderr = stop_service(daemon_process)
+            print_service_output("worker", worker_stdout, worker_stderr)
+            print_service_output("daemon", daemon_stdout, daemon_stderr)
+            if tmpdir is not None:
+                tmpdir.cleanup()
+
+
+def require_torch():
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("model loading benchmark requires PyTorch") from exc
+    if not torch.cuda.is_available():
+        raise RuntimeError("model loading benchmark requires CUDA")
+    return torch
+
+
+def start_daemon_process(args, daemon_socket: str) -> subprocess.Popen:
+    return start_service(
+        [
+            sys.executable,
+            "-m",
+            "turbobus.daemon",
+            "--socket-path",
+            daemon_socket,
+            "--target-gpu",
+            str(args.target_gpu),
+            "--min-relays",
+            str(args.min_relays),
+            "--max-sessions-per-relay",
+            str(args.max_sessions_per_relay),
+            "--max-inflight-chunks-per-relay",
+            str(args.daemon_max_inflight_chunks),
+            "--profile-max-age-seconds",
+            str(args.daemon_profile_max_age_seconds),
+        ]
+    )
+
+
+def start_worker_process(args, daemon_socket: str, worker_socket: str) -> subprocess.Popen:
+    return start_service(
+        [
+            sys.executable,
+            "-m",
+            "turbobus.worker",
+            "--daemon-socket-path",
+            daemon_socket,
+            "--socket-path",
+            worker_socket,
+            "--chunk-bytes",
+            str(args.chunk_bytes),
+            "--profile-bytes",
+            str(args.profile_bytes),
+        ]
+    )
+
+
+def start_service(command: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def wait_for_socket(
+    socket_path: str,
+    process: subprocess.Popen,
+    *,
+    timeout_seconds: float = 30.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            stdout, stderr = process.communicate(timeout=1.0)
+            raise RuntimeError(
+                f"service exited before socket became ready: rc={returncode} "
+                f"stdout={stdout!r} stderr={stderr!r}"
+            )
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            client.connect(socket_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05)
+        finally:
+            client.close()
+    raise RuntimeError(
+        f"socket did not become ready: {socket_path}; last_error={last_error}"
+    )
+
+
+def stop_service(process: subprocess.Popen | None) -> tuple[str, str]:
+    if process is None:
+        return "", ""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            return process.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.communicate(timeout=5.0)
+    return process.communicate(timeout=1.0)
+
+
+def print_service_output(service: str, stdout: str, stderr: str) -> None:
+    if stdout.strip() or stderr.strip():
+        print(
+            f"{service}_service_output",
+            f"stdout={stdout.strip()!r}",
+            f"stderr={stderr.strip()!r}",
+            flush=True,
+        )
 
 
 def write_json(path: str, result: dict) -> None:
@@ -282,6 +535,7 @@ def compact_summary(result: dict) -> str:
             f"session_id={config['session_id']} job_id={config['job_id']} "
             f"source_buffer_id={config['source_buffer_id']} "
             f"destination_buffer_id={config['destination_buffer_id']} "
+            f"target_gpu={config['target_gpu']} "
             f"bucket_count={config['bucket_count']} "
             f"bucket_bytes={config['bucket_bytes']} "
             f"storage_layout={config['storage_layout']} "
@@ -298,7 +552,10 @@ def compact_summary(result: dict) -> str:
             f"direct_bytes={summary['direct_bytes']} "
             f"relay_bytes={summary['relay_bytes']} "
             f"direct_chunks={summary['direct_chunks']} "
-            f"relay_chunks={summary['relay_chunks']}"
+            f"relay_chunks={summary['relay_chunks']} "
+            f"executed={summary['executed']} "
+            f"verified={summary['verified']} "
+            f"content_match={summary['content_match']}"
         ),
     ]
     for sample in result["samples"]:
@@ -313,7 +570,7 @@ def compact_summary(result: dict) -> str:
         )
         lines.append(
             receipt_trace_line(
-                _receipt_from_trace(sample["receipt"]),
+                receipt_from_trace(sample["receipt"]),
                 prefix="model_load_receipt",
             )
         )
@@ -321,9 +578,7 @@ def compact_summary(result: dict) -> str:
     return "\n".join(lines)
 
 
-def _receipt_from_trace(trace: dict):
-    from turbobus import TransferReceipt
-
+def receipt_from_trace(trace: dict):
     return TransferReceipt(
         receipt_id=trace["receipt_id"],
         ticket_id=trace["ticket_id"],
@@ -345,32 +600,38 @@ def _receipt_from_trace(trace: dict):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Submit model weight loading intent through the public TurboBus client"
+        description="Load model-weight buckets through TurboBus runtime session"
     )
-    parser.add_argument("--session-id", required=True)
     parser.add_argument("--job-id", default=benchmark_job_id("model-loading"))
-    parser.add_argument("--source-buffer-id", required=True)
-    parser.add_argument("--destination-buffer-id", required=True)
+    parser.add_argument("--target-gpu", type=int, required=True)
+    parser.add_argument("--daemon-socket-path")
+    parser.add_argument("--worker-socket-path")
+    parser.add_argument("--start-services", action="store_true")
+    parser.add_argument("--min-relays", type=int, default=1)
+    parser.add_argument("--max-sessions-per-relay", type=int, default=1)
+    parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--bucket-count", type=int, default=8)
     parser.add_argument("--bucket-bytes", type=int, default=32 * 1024 * 1024)
-    parser.add_argument("--storage-layout", choices=["packed", "separate"], default="packed")
-    parser.add_argument("--chunk-bytes", type=int, default=4 * 1024 * 1024)
+    parser.add_argument("--storage-layout", choices=["packed"], default="packed")
+    parser.add_argument("--chunk-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--warmup", type=int, default=0)
     parser.add_argument("--iterations", type=int, default=5)
-    parser.add_argument("--policy", default="daemon-default")
+    parser.add_argument("--policy", default="runtime-session")
     parser.add_argument("--run-id", default=str(uuid.uuid4()))
-    parser.add_argument("--intent-prefix", default="model-load")
-    parser.add_argument("--wait-timeout-seconds", type=float, default=0.0)
+    parser.add_argument("--wait-timeout-seconds", type=float)
+    parser.add_argument("--daemon-max-inflight-chunks", type=int, default=8)
+    parser.add_argument("--daemon-profile-max-age-seconds", type=float, default=3600.0)
     parser.add_argument("--json-output")
     parser.add_argument("--summary-output")
     parser.add_argument("--no-copy-summary", action="store_true")
-    add_daemon_options(parser)
     return parser
 
 
 def validate_args(args) -> None:
-    if not args.daemon_socket_path:
-        raise ValueError("--daemon-socket-path is required")
+    if not args.start_services and (not args.daemon_socket_path or not args.worker_socket_path):
+        raise ValueError(
+            "without --start-services, --daemon-socket-path and --worker-socket-path are required"
+        )
     if args.bucket_count <= 0:
         raise ValueError("--bucket-count must be positive")
     if args.bucket_bytes <= 0:
@@ -381,6 +642,13 @@ def validate_args(args) -> None:
         raise ValueError("--warmup must be non-negative")
     if args.iterations <= 0:
         raise ValueError("--iterations must be positive")
+    if args.profile_bytes <= 0:
+        raise ValueError("--profile-bytes must be positive")
+    if args.daemon_max_inflight_chunks <= 0:
+        raise ValueError("--daemon-max-inflight-chunks must be positive")
+    args.session_id = None
+    args.source_buffer_id = None
+    args.destination_buffer_id = None
 
 
 def main() -> None:

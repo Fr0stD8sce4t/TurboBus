@@ -95,18 +95,28 @@ def daemon_command_args(args) -> list[str]:
     return command
 
 
+def runtime_service_command_args(args) -> list[str]:
+    command = [
+        "--profile-bytes",
+        str(args.profile_bytes),
+    ]
+    if args.worker_socket_path:
+        command.extend(["--worker-socket-path", args.worker_socket_path])
+    if args.start_services:
+        command.append("--start-services")
+        command.extend(["--min-relays", str(args.min_relays)])
+        command.extend(["--max-sessions-per-relay", str(args.max_sessions_per_relay)])
+    return command
+
+
 def build_model_loading_command(args, paths: dict[str, Path]) -> list[str]:
     command = [
         sys.executable,
         str(BENCHMARKS / "model_loading.py"),
-        "--session-id",
-        args.session_id,
         "--job-id",
         args.job_id,
-        "--source-buffer-id",
-        args.cpu_buffer_id,
-        "--destination-buffer-id",
-        args.gpu_buffer_id,
+        "--target-gpu",
+        str(args.target_gpu),
         "--bucket-count",
         str(args.bucket_count),
         "--bucket-bytes",
@@ -129,6 +139,7 @@ def build_model_loading_command(args, paths: dict[str, Path]) -> list[str]:
         str(paths["summary"]),
         "--no-copy-summary",
     ]
+    command.extend(runtime_service_command_args(args))
     command.extend(daemon_command_args(args))
     return command
 
@@ -150,14 +161,10 @@ def build_training_offload_command(
     command = [
         sys.executable,
         str(BENCHMARKS / "training_offload.py"),
-        "--session-id",
-        args.session_id,
         "--job-id",
         args.job_id,
-        "--cpu-buffer-id",
-        args.cpu_buffer_id,
-        "--gpu-buffer-id",
-        args.gpu_buffer_id,
+        "--target-gpu",
+        str(args.target_gpu),
         "--workload-kind",
         workload_kind,
         "--bucket-count",
@@ -188,6 +195,7 @@ def build_training_offload_command(
     ]
     if args.active_buckets is not None:
         command.extend(["--active-buckets", str(args.active_buckets)])
+    command.extend(runtime_service_command_args(args))
     command.extend(daemon_command_args(args))
     return command
 
@@ -609,9 +617,8 @@ def compact_summary(result: dict) -> str:
         "PAPER_VALIDATION_SUMMARY_BEGIN",
         (
             "paper_validation_config "
-            f"session_id={config['session_id']} job_id={config['job_id']} "
-            f"cpu_buffer_id={config['cpu_buffer_id']} "
-            f"gpu_buffer_id={config['gpu_buffer_id']} "
+            f"job_id={config['job_id']} "
+            f"target_gpu={config['target_gpu']} "
             f"workloads={','.join(config['workloads'])} "
             f"policy={config['policy']} "
             f"output_dir={config['output_dir']}"
@@ -650,15 +657,15 @@ def run_validation(args) -> dict:
     workloads = selected_workloads(args.workloads)
     result = {
         "config": {
-            "session_id": args.session_id,
             "job_id": args.job_id,
-            "cpu_buffer_id": args.cpu_buffer_id,
-            "gpu_buffer_id": args.gpu_buffer_id,
+            "target_gpu": args.target_gpu,
             "workloads": workloads,
             "policy": args.policy,
             "run_id": args.run_id,
             "output_dir": str(output_dir),
             "daemon_socket_path": args.daemon_socket_path,
+            "worker_socket_path": args.worker_socket_path,
+            "start_services": args.start_services,
             "daemon_max_inflight_chunks": args.daemon_max_inflight_chunks,
             "daemon_profile_max_age_seconds": args.daemon_profile_max_age_seconds,
         },
@@ -709,10 +716,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="all",
         help="Comma-separated: all, model-loading, training-offload, optimizer-offload",
     )
-    parser.add_argument("--session-id", required=True)
     parser.add_argument("--job-id", default="paper-validation")
-    parser.add_argument("--cpu-buffer-id", required=True)
-    parser.add_argument("--gpu-buffer-id", required=True)
+    parser.add_argument("--target-gpu", type=int, required=True)
+    parser.add_argument("--worker-socket-path")
+    parser.add_argument("--start-services", action="store_true")
+    parser.add_argument("--min-relays", type=int, default=1)
+    parser.add_argument("--max-sessions-per-relay", type=int, default=1)
+    parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--policy", default="daemon-default")
     parser.add_argument("--run-id", default="paper-validation")
     parser.add_argument("--chunk-bytes", type=int, default=4 * 1024 * 1024)

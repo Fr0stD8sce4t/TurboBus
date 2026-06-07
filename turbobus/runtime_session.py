@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import threading
 import time
@@ -156,6 +157,16 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _managed_service_records: dict[str, dict[str, object]] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _managed_service_lock: threading.Lock | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
     _closed: bool = field(default=False, init=False, repr=False)
 
@@ -265,6 +276,11 @@ class TurboBusRuntimeSession:
             raise ValueError("daemon_socket_path must be non-empty")
         if resolved_worker_socket is None or not str(resolved_worker_socket).strip():
             raise ValueError("worker_socket_path must be non-empty")
+        options = _runtime_options_with_socket_paths(
+            options,
+            daemon_socket_path=str(resolved_daemon_socket),
+            worker_socket_path=str(resolved_worker_socket),
+        )
         session = cls.open_socket(
             daemon_socket_path=str(resolved_daemon_socket),
             worker_socket_path=str(resolved_worker_socket),
@@ -298,6 +314,11 @@ class TurboBusRuntimeSession:
             raise ValueError("daemon_socket_path must be non-empty")
         if not worker_path.strip():
             raise ValueError("worker_socket_path must be non-empty")
+        options = _runtime_options_with_socket_paths(
+            options,
+            daemon_socket_path=daemon_path,
+            worker_socket_path=worker_path,
+        )
         daemon = create_production_daemon(
             daemon_startup_config or DaemonStartupConfig()
         )
@@ -396,6 +417,8 @@ class TurboBusRuntimeSession:
         session._owned_worker_socket_path = worker_path
         session._runtime_control_connection_owned = True
         session._managed_service_startup_evidence = startup_evidence
+        session._managed_service_records = startup_records
+        session._managed_service_lock = startup_lock
         return session
 
     @property
@@ -418,6 +441,7 @@ class TurboBusRuntimeSession:
 
     def open_session(self) -> str:
         self._require_open()
+        self._ensure_managed_services_alive("open_session")
         if self._session_id is not None:
             return self._session_id
         if self._target_gpu is None:
@@ -644,12 +668,14 @@ class TurboBusRuntimeSession:
                 ok=True,
                 payload={"closed": False, "already_closed": True},
             )
+        managed_runtime_before_shutdown = self.managed_service_snapshot()
         if self._session_id is None:
             release_evidence = self._release_owned_cpu_buffers(
                 reason="runtime_session_close_without_daemon_session"
             )
             runtime_control_evidence = self._close_runtime_control_connection()
             managed_service_evidence = self._stop_owned_services()
+            managed_runtime_after_shutdown = self.managed_service_snapshot()
             clear_runtime_session_state(self)
             self._closed = True
             payload = {
@@ -657,6 +683,14 @@ class TurboBusRuntimeSession:
                 "owned_cpu_buffer_release": release_evidence,
                 "managed_service_shutdown": managed_service_evidence,
             }
+            if managed_runtime_before_shutdown is not None:
+                payload["managed_service_runtime_before_shutdown"] = (
+                    managed_runtime_before_shutdown
+                )
+            if managed_runtime_after_shutdown is not None:
+                payload["managed_service_runtime_after_shutdown"] = (
+                    managed_runtime_after_shutdown
+                )
             if self._managed_service_startup_evidence is not None:
                 payload["managed_service_startup"] = dict(
                     self._managed_service_startup_evidence
@@ -704,6 +738,7 @@ class TurboBusRuntimeSession:
             )
             runtime_control_evidence = self._close_runtime_control_connection()
             managed_service_evidence = self._stop_owned_services()
+            managed_runtime_after_shutdown = self.managed_service_snapshot()
             clear_runtime_session_state(self)
             self._closed = True
         payload = {}
@@ -718,6 +753,14 @@ class TurboBusRuntimeSession:
         if self._managed_service_startup_evidence is not None:
             payload["managed_service_startup"] = dict(
                 self._managed_service_startup_evidence
+            )
+        if managed_runtime_before_shutdown is not None:
+            payload["managed_service_runtime_before_shutdown"] = (
+                managed_runtime_before_shutdown
+            )
+        if managed_runtime_after_shutdown is not None:
+            payload["managed_service_runtime_after_shutdown"] = (
+                managed_runtime_after_shutdown
             )
         if runtime_control_evidence is not None:
             payload["runtime_control_shutdown"] = runtime_control_evidence
@@ -740,6 +783,20 @@ class TurboBusRuntimeSession:
 
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
+
+    def managed_service_snapshot(self) -> dict[str, object] | None:
+        return _managed_service_runtime_snapshot(
+            startup_records=self._managed_service_records,
+            startup_lock=self._managed_service_lock,
+            daemon_thread=self._owned_daemon_thread,
+            daemon_stop_event=self._owned_daemon_stop_event,
+            daemon_socket_path=self._owned_daemon_socket_path,
+            worker_thread=self._owned_worker_thread,
+            worker_stop_event=self._owned_worker_stop_event,
+            worker_socket_path=self._owned_worker_socket_path,
+            runtime_control_owned=self._runtime_control_connection_owned,
+            runtime_client=self.runtime_daemon_client,
+        )
 
     def _register_buffer(self, buffer: ExecutableBuffer) -> None:
         self._require_open()
@@ -1295,18 +1352,21 @@ class TurboBusRuntimeSession:
 
     def _runtime_daemon_client(self):
         self._require_open()
+        self._ensure_managed_services_alive("runtime daemon client use")
         if self.runtime_daemon_client is None:
             raise RuntimeError("runtime daemon client is not configured")
         return self.runtime_daemon_client
 
     def _execution_daemon_client(self):
         self._require_open()
+        self._ensure_managed_services_alive("execution daemon client use")
         if self.execution_daemon_client is None:
             raise RuntimeError("execution daemon client is not configured")
         return self.execution_daemon_client
 
     def _profile_daemon_client(self):
         self._require_open()
+        self._ensure_managed_services_alive("profile daemon client use")
         if self.profile_daemon_client is None:
             raise RuntimeError("profile daemon client is not configured")
         return self.profile_daemon_client
@@ -1382,25 +1442,59 @@ class TurboBusRuntimeSession:
         daemon_thread = self._owned_daemon_thread
         if worker_stop_event is not None:
             worker_stop_event.set()
+            self._update_managed_service_record(
+                "worker",
+                state="shutdown_requested",
+                shutdown_requested=True,
+                shutdown_requested_at=time.time(),
+            )
         if daemon_stop_event is not None:
             daemon_stop_event.set()
+            self._update_managed_service_record(
+                "daemon",
+                state="shutdown_requested",
+                shutdown_requested=True,
+                shutdown_requested_at=time.time(),
+            )
         if worker_thread is not None:
             worker_thread.join(timeout=1.0)
-            evidence.append(
-                {
-                    "service": "worker",
-                    "socket_path": self._owned_worker_socket_path,
-                    "alive_after_join": worker_thread.is_alive(),
-                }
+            service_evidence = {
+                "service": "worker",
+                "socket_path": self._owned_worker_socket_path,
+                "alive_after_join": worker_thread.is_alive(),
+            }
+            evidence.append(service_evidence)
+            self._update_managed_service_record(
+                "worker",
+                state=(
+                    "shutdown_timeout"
+                    if worker_thread.is_alive()
+                    else "shutdown_complete"
+                ),
+                shutdown_complete=not worker_thread.is_alive(),
+                shutdown_checked_at=time.time(),
+                socket_path=self._owned_worker_socket_path,
+                alive_after_join=worker_thread.is_alive(),
             )
         if daemon_thread is not None:
             daemon_thread.join(timeout=1.0)
-            evidence.append(
-                {
-                    "service": "daemon",
-                    "socket_path": self._owned_daemon_socket_path,
-                    "alive_after_join": daemon_thread.is_alive(),
-                }
+            service_evidence = {
+                "service": "daemon",
+                "socket_path": self._owned_daemon_socket_path,
+                "alive_after_join": daemon_thread.is_alive(),
+            }
+            evidence.append(service_evidence)
+            self._update_managed_service_record(
+                "daemon",
+                state=(
+                    "shutdown_timeout"
+                    if daemon_thread.is_alive()
+                    else "shutdown_complete"
+                ),
+                shutdown_complete=not daemon_thread.is_alive(),
+                shutdown_checked_at=time.time(),
+                socket_path=self._owned_daemon_socket_path,
+                alive_after_join=daemon_thread.is_alive(),
             )
         self._owned_worker_stop_event = None
         self._owned_worker_thread = None
@@ -1436,6 +1530,56 @@ class TurboBusRuntimeSession:
         evidence["closed_after_shutdown"] = bool(getattr(client, "closed", False))
         self._runtime_control_connection_owned = False
         return evidence
+
+    def _ensure_managed_services_alive(self, phase: str) -> None:
+        snapshot = self.managed_service_snapshot()
+        if snapshot is None:
+            return
+        failures: list[str] = []
+        services = snapshot.get("services")
+        if not isinstance(services, Mapping):
+            services = {}
+        for service, value in services.items():
+            if not isinstance(value, Mapping):
+                continue
+            owned = bool(value.get("owned", False))
+            if not owned:
+                continue
+            stop_requested = bool(value.get("stop_requested", False))
+            state = str(value.get("state", "")).lower()
+            thread_alive = bool(value.get("thread_alive", False))
+            if state in {"failed", "stopped"} and not stop_requested:
+                failures.append(f"{service}:{state}")
+                continue
+            if not thread_alive and not stop_requested:
+                failures.append(f"{service}:thread_dead")
+        runtime_control = snapshot.get("runtime_control")
+        if isinstance(runtime_control, Mapping):
+            if bool(runtime_control.get("owned", False)) and bool(
+                runtime_control.get("closed", False)
+            ):
+                failures.append("runtime_control:closed")
+        if not failures:
+            return
+        raise ManagedProductionStartupError(
+            "managed production services are unavailable during "
+            f"{phase}: {', '.join(failures)}",
+            evidence={"managed_runtime": snapshot},
+        )
+
+    def _update_managed_service_record(
+        self,
+        service: str,
+        **updates,
+    ) -> None:
+        if self._managed_service_records is None or self._managed_service_lock is None:
+            return
+        _update_managed_service_startup_record(
+            self._managed_service_records,
+            self._managed_service_lock,
+            service,
+            **updates,
+        )
 
     def _validate_intent_uses_runtime_buffers(self, intent: TransferIntent) -> None:
         source = self._buffers[intent.source_buffer_id]
@@ -1808,6 +1952,95 @@ def _update_managed_service_startup_record_if_available(
         service,
         **updates,
     )
+
+
+def _managed_service_runtime_snapshot(
+    *,
+    startup_records: dict[str, dict[str, object]] | None,
+    startup_lock: threading.Lock | None,
+    daemon_thread: threading.Thread | None,
+    daemon_stop_event: threading.Event | None,
+    daemon_socket_path: str | None,
+    worker_thread: threading.Thread | None,
+    worker_stop_event: threading.Event | None,
+    worker_socket_path: str | None,
+    runtime_control_owned: bool,
+    runtime_client: object | None,
+) -> dict[str, object] | None:
+    if (
+        startup_records is None
+        and startup_lock is None
+        and daemon_thread is None
+        and daemon_stop_event is None
+        and worker_thread is None
+        and worker_stop_event is None
+        and daemon_socket_path is None
+        and worker_socket_path is None
+        and not runtime_control_owned
+        and runtime_client is None
+    ):
+        return None
+    snapshot = (
+        {"services": {}}
+        if startup_records is None or startup_lock is None
+        else _managed_service_startup_snapshot(startup_records, startup_lock)
+    )
+    services = (
+        dict(snapshot.get("services", {}))
+        if isinstance(snapshot.get("services"), Mapping)
+        else {}
+    )
+    for service_name, thread, stop_event, socket_path in (
+        ("daemon", daemon_thread, daemon_stop_event, daemon_socket_path),
+        ("worker", worker_thread, worker_stop_event, worker_socket_path),
+    ):
+        record = (
+            dict(services.get(service_name, {}))
+            if isinstance(services.get(service_name), Mapping)
+            else {}
+        )
+        owned = (
+            thread is not None
+            or stop_event is not None
+            or socket_path is not None
+            or bool(record)
+        )
+        if not owned:
+            continue
+        record["service"] = str(service_name)
+        record["owned"] = True
+        record["thread_alive"] = bool(thread is not None and thread.is_alive())
+        record["stop_requested"] = bool(stop_event is not None and stop_event.is_set())
+        if socket_path is not None:
+            record["socket_path"] = str(socket_path)
+            record["socket_exists"] = os.path.exists(str(socket_path))
+        elif "socket_path" in record:
+            record["socket_exists"] = os.path.exists(str(record["socket_path"]))
+        services[service_name] = record
+    snapshot["services"] = services
+    snapshot["runtime_control"] = {
+        "owned": bool(runtime_control_owned),
+        "client_type": (
+            None if runtime_client is None else runtime_client.__class__.__name__
+        ),
+        "closed": bool(getattr(runtime_client, "closed", False)),
+    }
+    return snapshot
+
+
+def _runtime_options_with_socket_paths(
+    options: RuntimeOptions,
+    *,
+    daemon_socket_path: str,
+    worker_socket_path: str,
+) -> RuntimeOptions:
+    values = {
+        field.name: getattr(options, field.name)
+        for field in fields(RuntimeOptions)
+    }
+    values["daemon_socket_path"] = str(daemon_socket_path)
+    values["worker_socket_path"] = str(worker_socket_path)
+    return RuntimeOptions(**values)
 
 
 __all__ = ["ManagedProductionStartupError", "TurboBusRuntimeSession"]

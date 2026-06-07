@@ -5,25 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close one full `TurboBusRuntimeSession`-managed production startup and
-shutdown lifecycle through `open_managed_production_socket()`.
+Close one full live scheduler runtime-load-feedback lifecycle in the daemon
+control path.
 
 ## Exit Criteria
 
-- `TurboBusRuntimeSession` becomes the owning production entry for managed
-  daemon and worker startup, readiness, session open, and shutdown evidence.
-- The managed socket path closes one real lifecycle from runtime startup
-  through transfer-capable session use to owned service shutdown and cleanup.
-- The closure stays in production runtime/daemon/worker code and does not add
-  benchmark-owned, example-owned, or dry-run wrapper paths.
+- Scheduler admission and path selection consume live queued, running, and
+  active transfer state from real daemon/runtime records instead of static or
+  stale summaries.
+- Runtime feedback from execution, completion source, and relay use stays on
+  the production daemon path and becomes visible to later scheduling.
+- The closure stays in production daemon/scheduler/runtime code and does not
+  add benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
-- `turbobus/daemon/startup.py`
-- `turbobus/runtime/session_state.py`
-- `turbobus/worker/process.py`
-- `turbobus/worker/socket_client.py`
+- `turbobus/daemon/server.py`
+- `turbobus/scheduler/load_feedback.py`
+- `turbobus/runtime/daemon_view.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/schema.py`
 
 Round rules:
 
@@ -39,16 +40,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py` around `open_managed_production_socket()`, then
-move through `daemon/startup.py`, `runtime/session_state.py`,
-`worker/process.py`, and `worker/socket_client.py` to close one real
-runtime-owned managed startup and shutdown lifecycle.
+Start at `daemon/server.py` around transfer queue/runtime-state updates, then
+move through `scheduler/load_feedback.py`, `runtime/daemon_view.py`,
+`worker/lifecycle.py`, and `schema.py` to close one real live scheduler
+feedback loop.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
 - one full production system-body closure for the next remaining runtime,
-  scheduler, worker, or execution path gap.
+  worker, execution, or ownership-hardening gap.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

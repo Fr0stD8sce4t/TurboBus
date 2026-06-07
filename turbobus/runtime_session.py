@@ -776,7 +776,7 @@ class TurboBusRuntimeSession:
             )
         managed_runtime_before_shutdown = self.managed_service_snapshot()
         if self._session_id is None:
-            release_evidence = self._release_owned_cpu_buffers(
+            local_cpu_cleanup = self._cleanup_local_cpu_buffers(
                 reason="runtime_session_close_without_daemon_session"
             )
             runtime_control_evidence = self._close_runtime_control_connection()
@@ -786,9 +786,13 @@ class TurboBusRuntimeSession:
             self._closed = True
             payload = {
                 "closed": False,
-                "owned_cpu_buffer_release": release_evidence,
                 "managed_service_shutdown": managed_service_evidence,
             }
+            if local_cpu_cleanup:
+                payload["local_cpu_buffer_cleanup"] = local_cpu_cleanup
+                owned_release = _owned_cpu_release_records(local_cpu_cleanup)
+                if owned_release:
+                    payload["owned_cpu_buffer_release"] = owned_release
             if managed_runtime_before_shutdown is not None:
                 payload["managed_service_runtime_before_shutdown"] = (
                     managed_runtime_before_shutdown
@@ -810,7 +814,7 @@ class TurboBusRuntimeSession:
         intent_wait_evidence = self._close_active_intent_receipts()
         cleanup_errors: list[dict[str, object]] = []
         cleanup_evidence: list[dict[str, object]] = []
-        release_evidence: list[dict[str, object]] = []
+        local_cpu_cleanup: list[dict[str, object]] = []
         for buffer_id in tuple(self._registered_buffer_ids):
             try:
                 cleanup_response = self.cleanup_buffer(
@@ -839,7 +843,7 @@ class TurboBusRuntimeSession:
         except Exception as exc:
             response = DaemonResponse(ok=False, error=str(exc))
         finally:
-            release_evidence = self._release_owned_cpu_buffers(
+            local_cpu_cleanup = self._cleanup_local_cpu_buffers(
                 reason="runtime_session_close"
             )
             runtime_control_evidence = self._close_runtime_control_connection()
@@ -854,8 +858,11 @@ class TurboBusRuntimeSession:
             payload["active_intent_receipts"] = intent_wait_evidence
         if cleanup_evidence:
             payload["buffer_cleanup_evidence"] = cleanup_evidence
-        if release_evidence:
-            payload["owned_cpu_buffer_release"] = release_evidence
+        if local_cpu_cleanup:
+            payload["local_cpu_buffer_cleanup"] = local_cpu_cleanup
+            owned_release = _owned_cpu_release_records(local_cpu_cleanup)
+            if owned_release:
+                payload["owned_cpu_buffer_release"] = owned_release
         if self._managed_service_startup_evidence is not None:
             payload["managed_service_startup"] = dict(
                 self._managed_service_startup_evidence
@@ -1339,11 +1346,13 @@ class TurboBusRuntimeSession:
         buffer = self._buffers.get(normalized_id)
         response = DaemonResponse(ok=True, payload={"cleanup_skipped": True})
         cleanup_error: Exception | None = None
-        release_error: Exception | None = None
-        release_evidence: dict[str, object] | None = None
+        local_cleanup_error: Exception | None = None
+        local_cpu_cleanup: dict[str, object] | None = None
         retention_error: Exception | None = None
         retention_evidence: dict[str, object] | None = None
-        if normalized_id in self._registered_buffer_ids:
+        runtime_owned = normalized_id in self._owned_cpu_buffer_ids
+        buffer_was_registered = normalized_id in self._registered_buffer_ids
+        if buffer_was_registered:
             try:
                 response = self._execution_daemon_client().cleanup(
                     target_kind="buffer",
@@ -1359,53 +1368,68 @@ class TurboBusRuntimeSession:
         self._buffers.pop(normalized_id, None)
         if normalized_id in self._owned_cpu_buffer_ids:
             self._owned_cpu_buffer_ids.discard(normalized_id)
-            if isinstance(buffer, SharedPinnedCpuBuffer):
-                release_evidence = self._release_owned_cpu_buffer(
-                    normalized_id,
-                    buffer,
-                    reason=reason,
+        if isinstance(buffer, SharedPinnedCpuBuffer):
+            local_cpu_cleanup = self._cleanup_local_cpu_buffer(
+                normalized_id,
+                buffer,
+                reason=reason,
+                runtime_owned=runtime_owned,
+            )
+            if not bool(local_cpu_cleanup.get("ok", False)):
+                local_cleanup_error = RuntimeError(
+                    str(
+                        local_cpu_cleanup.get("error")
+                        or "local CPU buffer cleanup failed"
+                    )
                 )
-                if not bool(release_evidence.get("ok", False)):
-                    release_error = RuntimeError(
-                        str(release_evidence.get("error") or "local buffer release failed")
+        if cleanup_error is None and buffer_was_registered:
+            retention_payload = _runtime_buffer_retention_evidence(
+                buffer_id=normalized_id,
+                buffer=buffer,
+                reason=reason,
+                runtime_owned=runtime_owned,
+                local_cpu_cleanup=local_cpu_cleanup,
+            )
+            retention_evidence = self._record_buffer_cleanup_retention(
+                normalized_id,
+                retention_payload,
+            )
+            if not bool(retention_evidence.get("ok", False)):
+                retention_error = RuntimeError(
+                    str(
+                        retention_evidence.get("error")
+                        or "daemon buffer retention update failed"
                     )
-                else:
-                    retention_evidence = self._record_buffer_release_retention(
-                        normalized_id,
-                        release_evidence,
-                    )
-                    if not bool(retention_evidence.get("ok", False)):
-                        retention_error = RuntimeError(
-                            str(
-                                retention_evidence.get("error")
-                                or "daemon buffer retention update failed"
-                            )
-                        )
+                )
         if cleanup_error is not None:
-            if release_error is not None:
+            if local_cleanup_error is not None:
                 raise RuntimeError(
-                    f"{cleanup_error}; local buffer release failed: {release_error}"
+                    f"{cleanup_error}; local CPU buffer cleanup failed: {local_cleanup_error}"
                 ) from cleanup_error
             raise cleanup_error
-        if release_error is not None:
-            raise release_error
+        if local_cleanup_error is not None:
+            raise local_cleanup_error
         if retention_error is not None:
             raise retention_error
         payload = dict(response.payload) if isinstance(response.payload, Mapping) else {}
-        if release_evidence is not None:
-            payload["owned_cpu_buffer_release"] = release_evidence
+        if local_cpu_cleanup is not None:
+            payload["local_cpu_buffer_cleanup"] = local_cpu_cleanup
+            if bool(local_cpu_cleanup.get("runtime_owned", False)):
+                payload["owned_cpu_buffer_release"] = local_cpu_cleanup
         if retention_evidence is not None:
-            payload["owned_cpu_buffer_retention"] = retention_evidence
+            payload["runtime_buffer_retention"] = retention_evidence
         return DaemonResponse(ok=response.ok, error=response.error, payload=payload)
 
-    def _record_buffer_release_retention(
+    def _record_buffer_cleanup_retention(
         self,
         buffer_id: str,
-        release_evidence: Mapping[str, object],
+        retention_evidence: Mapping[str, object],
     ) -> dict[str, object]:
         retention_record = {
             "buffer_id": str(buffer_id),
-            "reason": str(release_evidence.get("reason") or "runtime_buffer_released"),
+            "reason": str(
+                retention_evidence.get("reason") or "runtime_buffer_released"
+            ),
             "ok": False,
         }
         try:
@@ -1414,9 +1438,7 @@ class TurboBusRuntimeSession:
                 target_id=str(buffer_id),
                 reason=retention_record["reason"],
                 force=False,
-                retention_evidence={
-                    "owned_cpu_buffer_release": dict(release_evidence),
-                },
+                retention_evidence=dict(retention_evidence),
             )
             require_ok(response, "daemon buffer retention update failed")
         except Exception as exc:
@@ -1449,50 +1471,64 @@ class TurboBusRuntimeSession:
         buffer = self._buffers.pop(normalized_id, None)
         self._registered_buffer_ids.discard(normalized_id)
         self._registered_buffer_fingerprints.pop(normalized_id, None)
+        runtime_owned = normalized_id in self._owned_cpu_buffer_ids
         if normalized_id in self._owned_cpu_buffer_ids:
             self._owned_cpu_buffer_ids.discard(normalized_id)
-            if isinstance(buffer, SharedPinnedCpuBuffer):
-                self._release_owned_cpu_buffer(
-                    normalized_id,
-                    buffer,
-                    reason="runtime_adapter_context_creation_failed",
-                )
+        if isinstance(buffer, SharedPinnedCpuBuffer):
+            self._cleanup_local_cpu_buffer(
+                normalized_id,
+                buffer,
+                reason="runtime_adapter_context_creation_failed",
+                runtime_owned=runtime_owned,
+            )
 
-    def _release_owned_cpu_buffers(self, *, reason: str) -> list[dict[str, object]]:
+    def _cleanup_local_cpu_buffers(self, *, reason: str) -> list[dict[str, object]]:
         evidence: list[dict[str, object]] = []
-        for buffer_id in tuple(self._owned_cpu_buffer_ids):
+        for buffer_id, buffer in tuple(self._buffers.items()):
+            if not isinstance(buffer, SharedPinnedCpuBuffer):
+                continue
+            runtime_owned = buffer_id in self._owned_cpu_buffer_ids
+            if runtime_owned:
+                self._owned_cpu_buffer_ids.discard(buffer_id)
             buffer = self._buffers.get(buffer_id)
-            self._owned_cpu_buffer_ids.discard(buffer_id)
-            if isinstance(buffer, SharedPinnedCpuBuffer):
-                evidence.append(
-                    self._release_owned_cpu_buffer(
-                        buffer_id,
-                        buffer,
-                        reason=reason,
-                    )
+            if not isinstance(buffer, SharedPinnedCpuBuffer):
+                continue
+            evidence.append(
+                self._cleanup_local_cpu_buffer(
+                    buffer_id,
+                    buffer,
+                    reason=reason,
+                    runtime_owned=runtime_owned,
                 )
+            )
         return evidence
 
-    def _release_owned_cpu_buffer(
+    def _cleanup_local_cpu_buffer(
         self,
         buffer_id: str,
         buffer: SharedPinnedCpuBuffer,
         *,
         reason: str,
+        runtime_owned: bool,
     ) -> dict[str, object]:
+        mode = "release" if bool(runtime_owned) else "close"
         evidence = {
             "buffer_id": str(buffer_id),
             "job_id": buffer.job_id,
             "reason": str(reason),
-            "runtime_owned": True,
+            "runtime_owned": bool(runtime_owned),
             "owner": bool(buffer.owner),
+            "mode": mode,
             "shared_memory_name": buffer.shared_memory_name,
             "closed_before_release": buffer.closed,
             "unlinked_before_release": bool(getattr(buffer, "_unlinked", False)),
             "ok": False,
         }
         try:
-            buffer.release()
+            if bool(runtime_owned):
+                buffer.release()
+            else:
+                buffer.close()
         except Exception as exc:
             evidence["error"] = str(exc) or exc.__class__.__name__
             evidence["closed_after_release"] = buffer.closed
@@ -1996,6 +2032,42 @@ def _transfer_receipt_from_payload(payload: Mapping[str, object]) -> TransferRec
     if unknown:
         raise ValueError("daemon receipt contains unknown fields: " + ", ".join(unknown))
     return TransferReceipt(**dict(payload))
+
+
+def _runtime_buffer_retention_evidence(
+    *,
+    buffer_id: str,
+    buffer: ExecutableBuffer | None,
+    reason: str,
+    runtime_owned: bool,
+    local_cpu_cleanup: Mapping[str, object] | None,
+) -> dict[str, object]:
+    retention = {
+        "buffer_id": str(buffer_id),
+        "reason": str(reason),
+        "runtime_owned": bool(runtime_owned),
+    }
+    if isinstance(buffer, SharedPinnedCpuBuffer):
+        retention["runtime_buffer_kind"] = "shared_pinned_cpu"
+        if local_cpu_cleanup is not None:
+            retention["local_cpu_buffer_cleanup"] = dict(local_cpu_cleanup)
+            if bool(local_cpu_cleanup.get("runtime_owned", False)):
+                retention["owned_cpu_buffer_release"] = dict(local_cpu_cleanup)
+    elif isinstance(buffer, CudaIpcDeviceBuffer):
+        retention["runtime_buffer_kind"] = "cuda_ipc_device"
+    else:
+        retention["runtime_buffer_kind"] = "unknown"
+    return retention
+
+
+def _owned_cpu_release_records(
+    cleanup_records: Iterable[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    return [
+        dict(record)
+        for record in cleanup_records
+        if isinstance(record, Mapping) and bool(record.get("runtime_owned", False))
+    ]
 
 
 def _wait_for_managed_services_ready(

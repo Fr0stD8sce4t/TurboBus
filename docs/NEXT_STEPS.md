@@ -5,28 +5,30 @@ appending history.
 
 ## Current Main Target
 
-Close the production buffer-lifetime path for daemon-issued transfers so shared
-pinned CPU buffers and CUDA IPC GPU buffers stay registered, opened, retained,
-cleaned up, and released correctly across success, failure, and session close.
+Close the remaining runtime-session production startup path so
+`TurboBusRuntimeSession` is the single production authority for daemon/worker
+socket startup, session registration, buffer registration, intent submission,
+receipt consumption, and shutdown on the real execution path.
 
 ## Exit Criteria
 
-- Runtime-owned registered CPU/GPU buffers must carry one production lifetime
-  contract from session registration through daemon-issued execution and final
-  cleanup.
-- Buffer retention and release evidence must agree across daemon archive,
-  worker resource cleanup, runtime session shutdown, and final receipt views.
-- The closure stays in daemon/runtime/worker/buffer code and does not add
+- `TurboBusRuntimeSession` must own one end-to-end production startup and
+  shutdown path for daemon socket, worker socket, session/job registration,
+  buffer registration, transfer submission, receipt wait, and service teardown.
+- No production-looking caller should need to preassemble daemon/worker control
+  flow outside `TurboBusRuntimeSession`.
+- The closure stays in runtime/daemon/worker production code and does not add
   benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
 - `turbobus/runtime_session.py`
-- `turbobus/buffer_registration.py`
+- `turbobus/runtime/session_state.py`
+- `turbobus/runtime/daemon_view.py`
 - `turbobus/daemon/server.py`
-- `turbobus/worker/resources.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/daemon/receipts.py`
+- `turbobus/daemon/client.py`
+- `turbobus/worker/process.py`
+- `turbobus/worker/socket_client.py`
 
 Round rules:
 
@@ -42,10 +44,11 @@ Round rules:
 
 ## Next Entry
 
-Start at `worker/resources.py` and `worker/lifecycle.py` around opened CPU/GPU
-resource tracking and failure cleanup, then move through `daemon/server.py`,
-`daemon/receipts.py`, `buffer_registration.py`, and `runtime_session.py` to
-close one real registered-buffer lifetime path.
+Start at `runtime_session.py` around production open/close, attached vs owned
+service paths, and session registration responsibilities, then move through
+`runtime/session_state.py`, `runtime/daemon_view.py`, `daemon/client.py`,
+`worker/process.py`, and `worker/socket_client.py` to close one real runtime
+authority path.
 
 After the current target closes, the next round should finish exactly one of
 these:

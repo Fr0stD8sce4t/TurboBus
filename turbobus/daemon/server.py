@@ -6692,6 +6692,9 @@ def _buffer_snapshot_with_retention_evidence(
     )
     if merged_retention is not None:
         updated["retention_evidence"] = merged_retention
+        local_cleanup = merged_retention.get("local_cpu_buffer_cleanup")
+        if isinstance(local_cleanup, Mapping):
+            updated["local_cpu_buffer_cleanup"] = dict(local_cleanup)
         owned_release = merged_retention.get("owned_cpu_buffer_release")
         if isinstance(owned_release, Mapping):
             updated["owned_cpu_buffer_release"] = dict(owned_release)

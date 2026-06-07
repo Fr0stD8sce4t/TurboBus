@@ -5,34 +5,33 @@ appending history.
 
 ## Current Main Target
 
-G3: close the unified scheduling model so daemon planning, worker
-authorization, runtime execution, and receipt evidence all use the same
-daemon-issued plan contract for direct, relay, and mixed pooled transfers.
+G4: close the dynamic feedback loop so daemon runtime state reflects real
+queued, running, active, completed, failed, and worker/backend execution
+signals before scheduler decisions are made.
 
 ## Exit Criteria
 
-- Scheduler output exposes one canonical plan shape for direct, relay, and
-  mixed pooled decisions, with path summaries and stats derived from the same
-  assignments.
-- Daemon admission, lease metadata, execution tickets, worker authorization,
-  and runtime intent execution consume the canonical plan without creating
-  alternate relay-scoped production plans.
-- Direct-only execution remains a daemon-issued scheduling outcome and does not
-  require fake relay leases or application-selected routes.
-- Mixed pooled execution keeps the G2 exact-plan worker/backend contract and
-  does not reintroduce application-side direct/relay splitting.
-- The closure stays in scheduler/daemon/runtime production code and does not
-  add benchmark-owned, example-owned, test-owned, dry-run, or synthetic
-  evidence paths.
+- Daemon runtime feedback uses live transfer status, worker lifecycle, active
+  staging records, relay leases, completion source, and failure evidence from
+  production state.
+- Scheduler input receives one coherent runtime-state view before planning and
+  no longer depends on stale or admission-only counters when current transfer
+  pressure is available.
+- Runtime feedback distinguishes queued, running, active, completed, failed,
+  direct, relay, and mixed pooled work without benchmark-owned, example-owned,
+  test-owned, dry-run, fake, or synthetic evidence.
+- Worker/backend completion and failure updates change the daemon feedback used
+  by later scheduling decisions.
+- The closure stays in daemon/scheduler/runtime production code and preserves
+  the daemon-issued plan and exact-ticket execution contract.
 
 ## Current Code Work
 
-- `turbobus/scheduler/daemon.py`
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/receipts.py`
+- `turbobus/scheduler/daemon.py`
+- `turbobus/runtime_feedback.py`
 - `turbobus/intent_executor.py`
-- `turbobus/direct_fallback.py`
-- `turbobus/worker/validation.py`
+- `turbobus/worker/lifecycle.py`
 - `turbobus/worker/cuda_executor.py`
 
 Round rules:
@@ -54,15 +53,15 @@ Round rules:
 
 ## Next Entry
 
-Start at `scheduler/daemon.py` and `daemon/server.py` around plan stats,
-admission leases, and ticket construction. Then follow the canonical plan into
-`daemon/receipts.py`, `intent_executor.py`, `direct_fallback.py`, and worker
-validation only as needed to keep every production consumer on one plan
-contract.
+Start at `daemon/server.py` around runtime state snapshot construction,
+transfer status updates, worker lifecycle updates, completion evidence storage,
+and scheduler invocation. Then follow the runtime-state payload into
+`scheduler/daemon.py` and `runtime_feedback.py` only as needed to make the
+feedback consumed by scheduling come from current production state.
 
 After the current target closes in auto-advance mode, the next queued target is:
 
-- G4 dynamic feedback loop.
+- G5 daemon admission loop.
 
 Plan-file rule:
 
@@ -77,10 +76,9 @@ started TurboBus Auto-Advance Mode.
 
 Remaining auto-advance target queue:
 
-1. G3 unified scheduling model.
-2. G4 dynamic feedback loop.
-3. G5 daemon admission loop.
-4. G6 multi-tenant isolation hardening.
+1. G4 dynamic feedback loop.
+2. G5 daemon admission loop.
+3. G6 multi-tenant isolation hardening.
 
 In auto-advance mode:
 

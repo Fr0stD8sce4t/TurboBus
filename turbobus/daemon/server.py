@@ -6455,6 +6455,7 @@ def _normalize_completion_evidence(
         )
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
+    worker_completion_evidence = evidence.get("worker_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
     expected_evidence_bytes = evidence.get("expected_bytes")
@@ -6503,6 +6504,11 @@ def _normalize_completion_evidence(
         ),
         **(
             {}
+            if not isinstance(worker_completion_evidence, Mapping)
+            else {"worker_completion_evidence": dict(worker_completion_evidence)}
+        ),
+        **(
+            {}
             if not isinstance(cleanup_evidence, Mapping)
             else {"cleanup": dict(cleanup_evidence)}
         ),
@@ -6528,6 +6534,7 @@ def _merge_completion_evidence(
         "execution_path_evidence",
         "direct_completion_evidence",
         "relay_completion_evidence",
+        "worker_completion_evidence",
         "cleanup",
     ):
         previous = existing.get(field_name)
@@ -6619,6 +6626,9 @@ def _normalize_status_ticket_evidence(
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     if isinstance(relay_completion_evidence, Mapping):
         ticket_binding["relay_completion_evidence"] = dict(relay_completion_evidence)
+    worker_completion_evidence = evidence.get("worker_completion_evidence")
+    if isinstance(worker_completion_evidence, Mapping):
+        ticket_binding["worker_completion_evidence"] = dict(worker_completion_evidence)
     worker_startup = evidence.get("worker_startup")
     if isinstance(worker_startup, Mapping):
         ticket_binding["worker_startup"] = dict(worker_startup)

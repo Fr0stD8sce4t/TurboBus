@@ -602,6 +602,7 @@ def _relay_only_completion_evidence(
     worker_startup = worker_evidence.get("worker_startup")
     if isinstance(worker_startup, Mapping):
         evidence["worker_startup"] = dict(worker_startup)
+    evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
@@ -760,6 +761,7 @@ def _relay_only_failure_evidence(
     worker_startup = worker_evidence.get("worker_startup")
     if isinstance(worker_startup, Mapping):
         evidence["worker_startup"] = dict(worker_startup)
+    evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,

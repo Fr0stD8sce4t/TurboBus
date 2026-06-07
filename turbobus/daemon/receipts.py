@@ -189,6 +189,7 @@ def receipt_for_transfer(
     execution_path_evidence = evidence.get("execution_path_evidence")
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
+    worker_completion_evidence = evidence.get("worker_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
     planned_relay_cleanup = evidence.get("planned_relay_cleanup")
@@ -198,6 +199,7 @@ def receipt_for_transfer(
         resource_evidence=resource_evidence,
         direct_completion_evidence=direct_completion_evidence,
         relay_completion_evidence=relay_completion_evidence,
+        worker_completion_evidence=worker_completion_evidence,
         cleanup_evidence=cleanup_evidence,
     )
     completion_contract = _completion_contract_view(
@@ -206,6 +208,7 @@ def receipt_for_transfer(
         cleanup_evidence=cleanup_evidence,
         direct_completion_evidence=direct_completion_evidence,
         relay_completion_evidence=relay_completion_evidence,
+        worker_completion_evidence=worker_completion_evidence,
     )
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
@@ -274,6 +277,11 @@ def receipt_for_transfer(
                 if isinstance(relay_completion_evidence, Mapping)
                 else None
             ),
+            "worker_completion_evidence": (
+                dict(worker_completion_evidence)
+                if isinstance(worker_completion_evidence, Mapping)
+                else None
+            ),
             "completion_evidence": dict(evidence),
             "cleanup_evidence": (
                 dict(cleanup_evidence)
@@ -316,6 +324,7 @@ def _buffer_lifetime_evidence(
     resource_evidence: object,
     direct_completion_evidence: object,
     relay_completion_evidence: object,
+    worker_completion_evidence: object,
     cleanup_evidence: object,
 ) -> dict[str, object]:
     snapshots = (
@@ -340,9 +349,18 @@ def _buffer_lifetime_evidence(
         if isinstance(relay_completion_evidence, Mapping)
         else {}
     )
+    worker_mapping = (
+        dict(worker_completion_evidence)
+        if isinstance(worker_completion_evidence, Mapping)
+        else {}
+    )
     cleanup_mapping = dict(cleanup_evidence) if isinstance(cleanup_evidence, Mapping) else {}
     if not cleanup_mapping:
         nested_cleanup = relay_mapping.get("cleanup")
+        if isinstance(nested_cleanup, Mapping):
+            cleanup_mapping = dict(nested_cleanup)
+    if not cleanup_mapping:
+        nested_cleanup = worker_mapping.get("cleanup")
         if isinstance(nested_cleanup, Mapping):
             cleanup_mapping = dict(nested_cleanup)
     if not cleanup_mapping:
@@ -358,6 +376,7 @@ def _buffer_lifetime_evidence(
                 resource_evidence=resource_mapping,
                 direct_completion_evidence=direct_mapping,
                 relay_completion_evidence=relay_mapping,
+                worker_completion_evidence=worker_mapping,
             ),
         ),
         "destination_buffer": _buffer_lifetime_record(
@@ -368,6 +387,7 @@ def _buffer_lifetime_evidence(
                 resource_evidence=resource_mapping,
                 direct_completion_evidence=direct_mapping,
                 relay_completion_evidence=relay_mapping,
+                worker_completion_evidence=worker_mapping,
             ),
         ),
         "cleanup": cleanup_mapping or None,
@@ -381,6 +401,7 @@ def _completion_contract_view(
     cleanup_evidence: object,
     direct_completion_evidence: object,
     relay_completion_evidence: object,
+    worker_completion_evidence: object,
 ) -> dict[str, object]:
     contract = {
         "ticket_id": evidence.get("ticket_id"),
@@ -417,6 +438,7 @@ def _completion_contract_view(
             else _cleanup_view_from_nested_completion(
                 direct_completion_evidence,
                 relay_completion_evidence,
+                worker_completion_evidence,
             )
         ),
         "direct": (
@@ -428,6 +450,11 @@ def _completion_contract_view(
             dict(relay_completion_evidence)
             if isinstance(relay_completion_evidence, Mapping)
             else _single_mode_completion_view(evidence, expected_mode="relay")
+        ),
+        "worker": (
+            dict(worker_completion_evidence)
+            if isinstance(worker_completion_evidence, Mapping)
+            else _worker_completion_view(evidence)
         ),
     }
     return contract
@@ -460,8 +487,13 @@ def _execution_path_view_from_evidence(
 def _cleanup_view_from_nested_completion(
     direct_completion_evidence: object,
     relay_completion_evidence: object,
+    worker_completion_evidence: object,
 ) -> dict[str, object] | None:
-    for candidate in (relay_completion_evidence, direct_completion_evidence):
+    for candidate in (
+        worker_completion_evidence,
+        relay_completion_evidence,
+        direct_completion_evidence,
+    ):
         if not isinstance(candidate, Mapping):
             continue
         cleanup = candidate.get("cleanup")
@@ -525,6 +557,49 @@ def _single_mode_completion_view(
     return view or None
 
 
+def _worker_completion_view(
+    evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    worker_evidence = evidence.get("worker_completion_evidence")
+    if isinstance(worker_evidence, Mapping):
+        return dict(worker_evidence)
+    if str(evidence.get("executor", "")).lower() not in {
+        "cuda_worker",
+        "relay_worker",
+        "mixed_worker_backend",
+    }:
+        return None
+    view: dict[str, object] = {}
+    for field_name in (
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
+        "executor",
+        "path",
+        "plan_source",
+        "target_device",
+        "verified_bytes",
+        "expected_bytes",
+        "content_match",
+        "verification_source",
+        "verification_method",
+        "worker_bytes_completed",
+        "worker_state",
+        "completion_validation",
+        "reported_bytes",
+        "relay_bytes_completed",
+        "direct_bytes",
+        "direct_chunks",
+        "relay_bytes",
+        "relay_chunks",
+        "relay_gpu",
+        "relay_gpus",
+    ):
+        if field_name in evidence and evidence[field_name] is not None:
+            view[field_name] = evidence[field_name]
+    return view or None
+
+
 def _buffer_lifetime_record(
     *,
     expected_buffer_id: str,
@@ -562,6 +637,7 @@ def _buffer_resource_evidence_for_buffer(
     resource_evidence: Mapping[str, object],
     direct_completion_evidence: Mapping[str, object],
     relay_completion_evidence: Mapping[str, object],
+    worker_completion_evidence: Mapping[str, object],
 ) -> dict[str, object] | None:
     candidates: list[Mapping[str, object]] = []
     if resource_evidence:
@@ -573,7 +649,14 @@ def _buffer_resource_evidence_for_buffer(
         nested = relay_completion_evidence.get(nested_key)
         if isinstance(nested, Mapping):
             candidates.append(nested)
-    nested_resource_roots = resource_evidence.get("direct"), resource_evidence.get("relay")
+        nested = worker_completion_evidence.get(nested_key)
+        if isinstance(nested, Mapping):
+            candidates.append(nested)
+    nested_resource_roots = (
+        resource_evidence.get("direct"),
+        resource_evidence.get("relay"),
+        resource_evidence.get("worker"),
+    )
     for nested in nested_resource_roots:
         if isinstance(nested, Mapping):
             candidates.append(nested)

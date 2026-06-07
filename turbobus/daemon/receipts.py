@@ -191,6 +191,7 @@ def receipt_for_transfer(
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
+    planned_relay_cleanup = evidence.get("planned_relay_cleanup")
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
@@ -277,6 +278,15 @@ def receipt_for_transfer(
             "cleanup_evidence": (
                 dict(cleanup_evidence)
                 if isinstance(cleanup_evidence, Mapping)
+                else None
+            ),
+            "planned_relay_cleanup": (
+                [
+                    dict(item)
+                    for item in planned_relay_cleanup
+                    if isinstance(item, Mapping)
+                ]
+                if isinstance(planned_relay_cleanup, list | tuple)
                 else None
             ),
             "worker_startup": (
@@ -382,6 +392,15 @@ def _completion_contract_view(
         "expected_bytes": evidence.get("expected_bytes"),
         "content_match": evidence.get("content_match"),
         "failure_source": evidence.get("failure_source"),
+        "planned_relay_cleanup": (
+            [
+                dict(item)
+                for item in evidence.get("planned_relay_cleanup", ())
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(evidence.get("planned_relay_cleanup"), list | tuple)
+            else None
+        ),
         "worker_startup": (
             dict(evidence.get("worker_startup"))
             if isinstance(evidence.get("worker_startup"), Mapping)

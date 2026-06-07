@@ -5,29 +5,28 @@ appending history.
 
 ## Current Main Target
 
-Close one full daemon-issued `TransferIntent -> SchedulingDecision ->
-ExecutionTicket -> worker/backend execution -> TransferReceipt` lifecycle for
-mixed direct + relay execution, with unified completion, failure, cleanup, and
-runtime feedback evidence.
+Close the production buffer-lifetime path for daemon-issued transfers so shared
+pinned CPU buffers and CUDA IPC GPU buffers stay registered, opened, retained,
+cleaned up, and released correctly across success, failure, and session close.
 
 ## Exit Criteria
 
-- A daemon-issued mixed plan must execute all direct chunks and relay chunks on
-  the real worker/backend path and return one valid `TransferReceipt`.
-- Completion, failure, cleanup, and runtime feedback for mixed execution must
-  agree on one daemon-issued transfer contract instead of splitting between
-  partial paths.
-- The closure stays in system-body daemon/runtime/worker code and does not add
+- Runtime-owned registered CPU/GPU buffers must carry one production lifetime
+  contract from session registration through daemon-issued execution and final
+  cleanup.
+- Buffer retention and release evidence must agree across daemon archive,
+  worker resource cleanup, runtime session shutdown, and final receipt views.
+- The closure stays in daemon/runtime/worker/buffer code and does not add
   benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/intent_executor.py`
-- `turbobus/direct_fallback.py`
-- `turbobus/daemon/server.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/resources.py`
 - `turbobus/runtime_session.py`
+- `turbobus/buffer_registration.py`
+- `turbobus/daemon/server.py`
+- `turbobus/worker/resources.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/daemon/receipts.py`
 
 Round rules:
 
@@ -43,16 +42,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `intent_executor.py` around mixed direct + relay execution and failure
-paths, then move through `direct_fallback.py`, `daemon/server.py`,
-`worker/lifecycle.py`, `worker/resources.py`, and `runtime_session.py` to
-close one real mixed execution lifecycle.
+Start at `worker/resources.py` and `worker/lifecycle.py` around opened CPU/GPU
+resource tracking and failure cleanup, then move through `daemon/server.py`,
+`daemon/receipts.py`, `buffer_registration.py`, and `runtime_session.py` to
+close one real registered-buffer lifetime path.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full production system-body closure for the next remaining runtime
-  authority, scheduler-feedback, or ownership-hardening gap.
+- one full production system-body closure for the next remaining scheduler
+  feedback or ownership-hardening gap.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

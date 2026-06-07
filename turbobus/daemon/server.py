@@ -6526,6 +6526,24 @@ def _normalize_status_ticket_evidence(
             ticket_binding[field_name] = int(value)
     if "content_match" in evidence:
         ticket_binding["content_match"] = bool(evidence.get("content_match", False))
+    planned_relay_cleanup = evidence.get("planned_relay_cleanup")
+    if isinstance(planned_relay_cleanup, Iterable) and not isinstance(
+        planned_relay_cleanup,
+        (str, bytes, Mapping),
+    ):
+        ticket_binding["planned_relay_cleanup"] = [
+            dict(item)
+            for item in planned_relay_cleanup
+            if isinstance(item, Mapping)
+        ]
+    for field_name in ("worker_bytes_completed", "relay_bytes_completed", "reported_bytes"):
+        value = evidence.get(field_name)
+        if value is not None:
+            ticket_binding[field_name] = int(value)
+    for field_name in ("worker_state", "completion_validation"):
+        value = evidence.get(field_name)
+        if value is not None:
+            ticket_binding[field_name] = str(value)
     return ticket_binding
 
 

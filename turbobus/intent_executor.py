@@ -515,6 +515,11 @@ def _worker_envelope_evidence(
         if isinstance(completion.daemon_running_update, Mapping)
         else None
     )
+    worker_result = (
+        completion.worker_result
+        if isinstance(completion.worker_result, Mapping)
+        else None
+    )
     if staging_slot is not None:
         merged.setdefault("staging_slot_id", str(staging_slot.get("slot_id")))
         resource_evidence["staging_slot"] = staging_slot
@@ -525,6 +530,14 @@ def _worker_envelope_evidence(
         resource_evidence["cleanup"] = dict(cleanup_evidence)
     if running_update is not None:
         merged["daemon_running_update"] = running_update
+    if worker_result is not None:
+        merged.setdefault(
+            "worker_bytes_completed",
+            int(worker_result.get("bytes_completed", 0) or 0),
+        )
+        worker_state = worker_result.get("state")
+        if worker_state is not None:
+            merged.setdefault("worker_state", str(worker_state))
     if resource_evidence:
         merged["resource_evidence"] = resource_evidence
     return merged
@@ -677,6 +690,7 @@ def _report_deferred_worker_failure(
     transfer_id = str(payload["transfer_id"])
     if isinstance(direct_completion_evidence, Mapping):
         failure_evidence = _merge_mixed_worker_failure_evidence(
+            payload=payload,
             direct_evidence=direct_completion_evidence,
             worker_evidence=worker_evidence,
             expected_bytes=int(intent.total_bytes),
@@ -684,14 +698,17 @@ def _report_deferred_worker_failure(
             relay_bytes=max(0, int(intent.total_bytes) - int(direct_bytes_completed)),
         )
         completion_source = "worker"
-        bytes_completed = int(direct_bytes_completed)
+        bytes_completed = min(
+            int(intent.total_bytes),
+            int(direct_bytes_completed) + _worker_reported_bytes(worker_evidence),
+        )
     else:
         failure_evidence = _relay_only_failure_evidence(
             worker_evidence,
             expected_bytes=int(intent.total_bytes),
         )
         completion_source = "worker"
-        bytes_completed = int(completion.worker_result.get("bytes_completed", 0) or 0)
+        bytes_completed = _worker_reported_bytes(worker_evidence)
     response = daemon_client.transfer_status(
         transfer_id,
         state="failed",
@@ -710,13 +727,21 @@ def _relay_only_failure_evidence(
 ) -> dict[str, object]:
     evidence = dict(worker_evidence)
     evidence.setdefault("expected_bytes", int(expected_bytes))
-    evidence.setdefault("verified_bytes", int(worker_evidence.get("verified_bytes", 0) or 0))
+    evidence["verified_bytes"] = min(
+        int(expected_bytes),
+        max(0, int(worker_evidence.get("verified_bytes", 0) or 0)),
+    )
+    evidence.setdefault("content_match", False)
     evidence.setdefault("executor", "relay_worker")
     evidence.setdefault("plan_source", "daemon")
     evidence.setdefault("path", "relay_only")
     evidence.setdefault("relay_bytes", int(expected_bytes))
     evidence.setdefault("direct_bytes", 0)
     evidence.setdefault("direct_chunks", 0)
+    evidence["relay_bytes_completed"] = min(
+        int(expected_bytes),
+        _worker_reported_bytes(worker_evidence),
+    )
     evidence.setdefault("failure_source", "relay_worker")
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
@@ -731,20 +756,102 @@ def _relay_only_failure_evidence(
 
 def _merge_mixed_worker_failure_evidence(
     *,
+    payload: Mapping[str, object],
     direct_evidence: Mapping[str, object],
     worker_evidence: Mapping[str, object],
     expected_bytes: int,
     direct_bytes: int,
     relay_bytes: int,
 ) -> dict[str, object]:
-    evidence = _merge_mixed_completion_evidence(
-        direct_evidence,
-        worker_evidence,
-        expected_bytes=expected_bytes,
-        direct_bytes=direct_bytes,
-        relay_bytes=relay_bytes,
+    if not isinstance(direct_evidence, Mapping):
+        raise RuntimeError("mixed-pooled direct completion missing evidence")
+    expected = int(expected_bytes)
+    direct = int(direct_bytes)
+    relay = int(relay_bytes)
+    if direct + relay != expected:
+        raise RuntimeError(
+            f"mixed-pooled byte split mismatch: {direct} + {relay} != {expected}"
+        )
+    direct_resource = direct_evidence.get("resource_evidence")
+    worker_resource = worker_evidence.get("resource_evidence")
+    evidence = {
+        "expected_bytes": expected,
+        "verified_bytes": min(
+            expected,
+            max(0, int(direct_evidence.get("verified_bytes", direct) or direct))
+            + max(0, int(worker_evidence.get("verified_bytes", 0) or 0)),
+        ),
+        "content_match": False,
+        "verification_source": "mixed_pooled_partial_worker_backend",
+        "verification_method": "direct_completed_relay_incomplete",
+        "executor": "mixed_worker_backend",
+        "plan_source": "daemon",
+        "path": "mixed_pooled",
+        "direct_bytes": direct,
+        "direct_chunks": int(
+            direct_evidence.get(
+                "direct_chunks",
+                _plan_assignment_chunks(payload, "direct"),
+            )
+            or 0
+        ),
+        "relay_bytes": relay,
+        "relay_chunks": int(
+            worker_evidence.get(
+                "relay_chunks",
+                _plan_assignment_chunks(payload, "relay"),
+            )
+            or 0
+        ),
+        "relay_bytes_completed": min(relay, _worker_reported_bytes(worker_evidence)),
+        "target_device": int(
+            worker_evidence.get(
+                "target_device",
+                direct_evidence.get("target_device", -1),
+            )
+        ),
+        "resource_evidence": {
+            "direct": (
+                dict(direct_resource)
+                if isinstance(direct_resource, Mapping)
+                else {}
+            ),
+            "relay": (
+                dict(worker_resource)
+                if isinstance(worker_resource, Mapping)
+                else {}
+            ),
+        },
+        "direct_completion_evidence": dict(direct_evidence),
+        "relay_completion_evidence": dict(worker_evidence),
+        "failure_source": "relay_worker",
+    }
+    if worker_evidence.get("relay_gpu") is not None:
+        evidence["relay_gpu"] = int(worker_evidence["relay_gpu"])
+    if worker_evidence.get("relay_gpus") is not None:
+        evidence["relay_gpus"] = tuple(
+            int(item) for item in worker_evidence["relay_gpus"]
+        )
+    for key in (
+        "ticket_id",
+        "transfer_id",
+        "plan_generation",
+        "worker_bytes_completed",
+        "worker_state",
+        "completion_validation",
+        "reported_bytes",
+    ):
+        if key in worker_evidence:
+            evidence[key] = worker_evidence[key]
+        elif key in direct_evidence:
+            evidence[key] = direct_evidence[key]
+    cleanup = _cleanup_evidence_from_mapping(worker_evidence)
+    if cleanup is not None:
+        evidence["cleanup"] = cleanup
+    evidence["execution_path_evidence"] = _execution_path_evidence(
+        evidence,
+        expected_bytes=expected,
     )
-    evidence["failure_source"] = "relay_worker"
     return evidence
 
 
@@ -755,31 +862,207 @@ def _mark_transfer_failed(
     error: str,
     completion_evidence: Mapping[str, object] | None,
     cleanup_evidence: Iterable[Mapping[str, object]] | None = None,
+    failure_source: str | None = None,
 ) -> None:
     transfer_id = payload.get("transfer_id")
     if transfer_id is None:
         return
-    failure_evidence: dict[str, object] | None = None
-    if isinstance(completion_evidence, Mapping):
-        failure_evidence = dict(completion_evidence)
-    if cleanup_evidence is not None:
-        if failure_evidence is None:
-            failure_evidence = {}
-        failure_evidence["planned_relay_cleanup"] = [
-            dict(record) for record in cleanup_evidence
-        ]
-    daemon_client.transfer_status(
+    failure_evidence = _planned_execution_failure_evidence(
+        payload,
+        completion_evidence=completion_evidence,
+        cleanup_evidence=cleanup_evidence,
+        failure_source=failure_source,
+    )
+    response = daemon_client.transfer_status(
         str(transfer_id),
         state="failed",
-        bytes_completed=(
-            0
-            if not isinstance(completion_evidence, Mapping)
-            else int(completion_evidence.get("direct_bytes", 0) or 0)
+        bytes_completed=max(
+            0,
+            int(failure_evidence.get("verified_bytes", 0) or 0),
         ),
         error=error,
-        completion_source="backend" if failure_evidence is not None else None,
+        completion_source=_failure_completion_source(payload, completion_evidence),
         completion_evidence=failure_evidence,
     )
+    require_ok(response, "daemon transfer failure update failed")
+
+
+def _planned_execution_failure_evidence(
+    payload: Mapping[str, object],
+    *,
+    completion_evidence: Mapping[str, object] | None,
+    cleanup_evidence: Iterable[Mapping[str, object]] | None,
+    failure_source: str | None,
+) -> dict[str, object]:
+    direct_bytes = _plan_assignment_bytes(payload, "direct")
+    relay_bytes = _plan_assignment_bytes(payload, "relay")
+    expected_bytes = direct_bytes + relay_bytes
+    planned_cleanup = _planned_relay_cleanup_records(cleanup_evidence)
+    if isinstance(completion_evidence, Mapping):
+        evidence = {
+            "expected_bytes": int(expected_bytes),
+            "verified_bytes": min(
+                int(expected_bytes),
+                max(
+                    0,
+                    int(
+                        completion_evidence.get(
+                            "verified_bytes",
+                            completion_evidence.get("direct_bytes", direct_bytes),
+                        )
+                        or 0
+                    ),
+                ),
+            ),
+            "content_match": False,
+            "verification_source": (
+                "mixed_pooled_partial_backend"
+                if relay_bytes > 0
+                else str(
+                    completion_evidence.get(
+                        "verification_source",
+                        "direct_backend_partial",
+                    )
+                )
+            ),
+            "verification_method": (
+                "direct_completed_relay_not_started"
+                if relay_bytes > 0
+                else str(
+                    completion_evidence.get(
+                        "verification_method",
+                        "direct_completion",
+                    )
+                )
+            ),
+            "executor": (
+                "mixed_worker_backend"
+                if relay_bytes > 0
+                else str(completion_evidence.get("executor", "direct_backend"))
+            ),
+            "plan_source": str(completion_evidence.get("plan_source", "daemon")),
+            "path": (
+                "mixed_pooled"
+                if relay_bytes > 0
+                else str(completion_evidence.get("path", "direct"))
+            ),
+            "direct_bytes": int(direct_bytes),
+            "direct_chunks": int(
+                completion_evidence.get(
+                    "direct_chunks",
+                    _plan_assignment_chunks(payload, "direct"),
+                )
+                or 0
+            ),
+            "relay_bytes": int(relay_bytes),
+            "relay_chunks": int(_plan_assignment_chunks(payload, "relay")),
+            "relay_bytes_completed": 0,
+            "failure_source": str(
+                failure_source
+                or ("relay_worker" if relay_bytes > 0 else "backend")
+            ),
+            "direct_completion_evidence": dict(completion_evidence),
+        }
+        target_device = completion_evidence.get("target_device")
+        if target_device is not None:
+            evidence["target_device"] = int(target_device)
+        resource_evidence = completion_evidence.get("resource_evidence")
+        if relay_bytes > 0:
+            evidence["resource_evidence"] = {
+                "direct": (
+                    dict(resource_evidence)
+                    if isinstance(resource_evidence, Mapping)
+                    else {}
+                ),
+                "relay": {},
+            }
+        elif isinstance(resource_evidence, Mapping):
+            evidence["resource_evidence"] = dict(resource_evidence)
+        cleanup = _cleanup_evidence_from_mapping(completion_evidence)
+        if cleanup is not None:
+            evidence["cleanup"] = cleanup
+    else:
+        evidence = {
+            "expected_bytes": int(expected_bytes),
+            "verified_bytes": 0,
+            "content_match": False,
+            "verification_source": (
+                "relay_worker_not_started"
+                if relay_bytes > 0
+                else "direct_backend_not_started"
+            ),
+            "verification_method": "transfer_not_started",
+            "executor": "relay_worker" if relay_bytes > 0 else "direct_backend",
+            "plan_source": "daemon",
+            "path": "relay_only" if direct_bytes == 0 else "mixed_pooled",
+            "direct_bytes": int(direct_bytes),
+            "direct_chunks": int(_plan_assignment_chunks(payload, "direct")),
+            "relay_bytes": int(relay_bytes),
+            "relay_chunks": int(_plan_assignment_chunks(payload, "relay")),
+            "relay_bytes_completed": 0,
+            "failure_source": str(failure_source or "relay_worker"),
+        }
+    if planned_cleanup:
+        evidence["planned_relay_cleanup"] = planned_cleanup
+    evidence.update(_ticket_binding_from_payload(payload))
+    evidence["execution_path_evidence"] = _execution_path_evidence(
+        evidence,
+        expected_bytes=int(expected_bytes),
+    )
+    return evidence
+
+
+def _failure_completion_source(
+    payload: Mapping[str, object],
+    completion_evidence: Mapping[str, object] | None,
+) -> str:
+    if isinstance(completion_evidence, Mapping):
+        return "backend"
+    if _plan_assignment_bytes(payload, "relay") > 0:
+        return "worker"
+    return "backend"
+
+
+def _planned_relay_cleanup_records(
+    cleanup_evidence: Iterable[Mapping[str, object]] | None,
+) -> list[dict[str, object]]:
+    if cleanup_evidence is None:
+        return []
+    records: list[dict[str, object]] = []
+    for record in cleanup_evidence:
+        if isinstance(record, Mapping):
+            records.append(dict(record))
+    return records
+
+
+def _ticket_binding_from_payload(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    ticket = payload.get("ticket")
+    binding: dict[str, object] = {}
+    if isinstance(ticket, Mapping):
+        ticket_id = ticket.get("ticket_id")
+        if ticket_id is not None:
+            binding["ticket_id"] = str(ticket_id)
+        metadata = ticket.get("metadata")
+        if isinstance(metadata, Mapping):
+            transfer_id = metadata.get("transfer_id")
+            if transfer_id is not None:
+                binding["transfer_id"] = str(transfer_id)
+            plan_generation = metadata.get("plan_generation")
+            if plan_generation is not None:
+                binding["plan_generation"] = int(plan_generation)
+    transfer_id = payload.get("transfer_id")
+    if transfer_id is not None:
+        binding.setdefault("transfer_id", str(transfer_id))
+    plan_generation = payload.get("plan_generation")
+    if plan_generation is not None:
+        binding.setdefault("plan_generation", int(plan_generation))
+    return binding
+
+
+def _worker_reported_bytes(worker_evidence: Mapping[str, object]) -> int:
+    return max(0, int(worker_evidence.get("worker_bytes_completed", 0) or 0))
 
 
 def _cleanup_evidence_from_mapping(
@@ -852,30 +1135,13 @@ def _fail_transfer_without_worker_client(
         "worker service; use TurboBusRuntimeSession.open_production_socket "
         "or open_managed_production_socket"
     )
-    daemon_client.transfer_status(
-        str(payload["transfer_id"]),
-        state="failed",
-        bytes_completed=max(0, int(direct_bytes_completed)),
+    _mark_transfer_failed(
+        daemon_client,
+        payload,
         error=failure_message,
-        completion_source=(
-            "backend" if isinstance(direct_completion_evidence, Mapping) else None
-        ),
-        completion_evidence=(
-            (
-                {
-                    **dict(direct_completion_evidence),
-                    "planned_relay_cleanup": [
-                        dict(record) for record in cleanup_evidence
-                    ],
-                }
-                if isinstance(direct_completion_evidence, Mapping)
-                else {
-                    "planned_relay_cleanup": [
-                        dict(record) for record in cleanup_evidence
-                    ]
-                }
-            )
-        ),
+        completion_evidence=direct_completion_evidence,
+        cleanup_evidence=cleanup_evidence,
+        failure_source="worker_service_unavailable",
     )
 
 
@@ -891,19 +1157,12 @@ def _fail_transfer_without_relay_leases(
         "daemon-issued mixed or relay execution requires relay lease tokens; "
         "daemon planned a non-direct transfer without worker relay leases"
     )
-    daemon_client.transfer_status(
-        str(payload["transfer_id"]),
-        state="failed",
-        bytes_completed=max(0, int(direct_bytes_completed)),
+    _mark_transfer_failed(
+        daemon_client,
+        payload,
         error=failure_message,
-        completion_source=(
-            "backend" if isinstance(direct_completion_evidence, Mapping) else None
-        ),
-        completion_evidence=(
-            None
-            if not isinstance(direct_completion_evidence, Mapping)
-            else dict(direct_completion_evidence)
-        ),
+        completion_evidence=direct_completion_evidence,
+        failure_source="missing_relay_lease",
     )
 
 

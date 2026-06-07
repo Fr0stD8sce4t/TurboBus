@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include <cstdint>
@@ -57,6 +58,19 @@ void CheckCuda(cudaError_t result, const char* message) {
   if (result != cudaSuccess) {
     throw std::runtime_error(std::string(message) + ": " +
                              cudaGetErrorString(result));
+  }
+}
+
+void CheckCu(CUresult result, const char* message) {
+  if (result != CUDA_SUCCESS) {
+    const char* error_name = nullptr;
+    const char* error_string = nullptr;
+    cuGetErrorName(result, &error_name);
+    cuGetErrorString(result, &error_string);
+    throw std::runtime_error(
+        std::string(message) + ": " +
+        (error_name != nullptr ? error_name : "CUDA driver error") + " (" +
+        (error_string != nullptr ? error_string : "unknown") + ")");
   }
 }
 
@@ -178,23 +192,26 @@ PYBIND11_MODULE(_turbobus, m) {
           if (device_ptr == 0) {
             throw std::invalid_argument("device_ptr must not be null");
           }
-          void* allocation_base = nullptr;
+          CUdeviceptr allocation_base = 0;
           std::size_t allocation_bytes = 0;
-          CheckCuda(cudaMemGetAddressRange(&allocation_base, &allocation_bytes,
-                                           reinterpret_cast<void*>(device_ptr)),
-                    "cudaMemGetAddressRange failed");
-          const auto base_ptr =
-              reinterpret_cast<std::uintptr_t>(allocation_base);
+          CheckCu(cuMemGetAddressRange(
+                      &allocation_base,
+                      &allocation_bytes,
+                      static_cast<CUdeviceptr>(device_ptr)),
+                  "cuMemGetAddressRange failed");
+          const auto base_ptr = static_cast<std::uintptr_t>(allocation_base);
           if (base_ptr == 0) {
             throw std::runtime_error(
-                "cudaMemGetAddressRange returned a null allocation base");
+                "cuMemGetAddressRange returned a null allocation base");
           }
           if (base_ptr > device_ptr) {
             throw std::runtime_error(
-                "cudaMemGetAddressRange returned an invalid allocation base");
+                "cuMemGetAddressRange returned an invalid allocation base");
           }
           cudaIpcMemHandle_t handle;
-          CheckCuda(cudaIpcGetMemHandle(&handle, allocation_base),
+          CheckCuda(cudaIpcGetMemHandle(
+                        &handle,
+                        reinterpret_cast<void*>(static_cast<uintptr_t>(allocation_base))),
                     "cudaIpcGetMemHandle failed");
           py::dict result;
           result["cuda_ipc_handle"] =

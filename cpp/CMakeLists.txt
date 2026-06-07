@@ -25,6 +25,7 @@ target_include_directories(turbobus_core
 target_link_libraries(turbobus_core
   PUBLIC
     CUDA::cudart
+    CUDA::cuda_driver
 )
 
 set_target_properties(turbobus_core PROPERTIES

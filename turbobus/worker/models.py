@@ -134,10 +134,7 @@ class WorkerTransferRequest:
         relay = int(relay_gpu) if relay_gpu is not None else resolved_relays[0]
         if relay not in resolved_relays:
             raise ValueError("ticket relay does not match daemon plan")
-        ranges = worker_validation.relay_ranges_from_ticket_plan(
-            ticket,
-            relay_gpus=resolved_relays,
-        )
+        ranges = worker_validation.execution_ranges_from_ticket_plan(ticket)
         resolved_lease_ids = worker_validation.lease_ids_for_ticket(
             ticket,
             lease_id=lease_id,

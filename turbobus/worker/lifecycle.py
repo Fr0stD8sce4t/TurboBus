@@ -1327,7 +1327,7 @@ def require_daemon_worker_plan(request: WorkerTransferRequest) -> None:
     if target_handle.device_index is None:
         raise ValueError("worker target handle requires a CUDA device index")
     target_device = int(target_handle.device_index)
-    relay_ranges: list[dict[str, int]] = []
+    execution_ranges: list[dict[str, int]] = []
     plan_total_bytes = 0
     for assignment in assignments:
         if not isinstance(assignment, Mapping):
@@ -1359,16 +1359,15 @@ def require_daemon_worker_plan(request: WorkerTransferRequest) -> None:
                 "bytes": int(chunk["bytes"]),
             }
             plan_total_bytes += int(chunk_payload["bytes"])
-            if path_kind == "relay":
-                relay_ranges.append(chunk_payload)
+            execution_ranges.append(chunk_payload)
     if plan_total_bytes <= 0:
         raise ValueError("daemon plan has no assigned bytes")
     declared_total_bytes = int(plan.get("total_bytes", -1))
     if declared_total_bytes != plan_total_bytes:
         raise ValueError("daemon plan total bytes do not match assigned chunks")
-    if not relay_ranges:
-        raise ValueError("daemon plan has no authorized relay chunks")
-    if tuple(relay_ranges) != request.data_plane.ranges:
+    if not execution_ranges:
+        raise ValueError("daemon plan has no authorized executable chunks")
+    if tuple(execution_ranges) != request.data_plane.ranges:
         raise ValueError("authorized ranges do not match daemon plan")
 
 

@@ -498,7 +498,7 @@ def _worker_plan_payload(
     if not request.data_plane.plan:
         raise ValueError("CUDA worker executor requires a daemon-issued transfer plan")
     _require_ticket_authorizes_current_worker_plan(request)
-    return _relay_scoped_daemon_plan_payload(request, int(target_device))
+    return _exact_daemon_plan_payload(request, int(target_device))
 
 
 def _install_daemon_profile_if_available(
@@ -534,13 +534,13 @@ def _require_ticket_authorizes_current_worker_plan(
         raise ValueError("execution ticket transfer_id does not match worker request")
 
 
-def _relay_scoped_daemon_plan_payload(
+def _exact_daemon_plan_payload(
     request: WorkerTransferRequest,
     target_device: int,
 ) -> dict[str, object]:
     source_plan = dict(request.data_plane.plan)
     assignments: list[dict[str, object]] = []
-    relay_ranges: list[dict[str, int]] = []
+    execution_ranges: list[dict[str, int]] = []
     total_bytes = 0
     relay_gpus = set(_relay_gpus_for_request(request))
     for assignment in source_plan.get("assignments", ()) or ():
@@ -565,7 +565,7 @@ def _relay_scoped_daemon_plan_payload(
                 raise ValueError("daemon plan relay is not authorized by worker ticket")
             plan_path["relay_device"] = relay_gpu
         else:
-            continue
+            plan_path["relay_device"] = -1
         plan_path["enabled"] = True
         chunks = []
         for chunk in assignment.get("chunks", ()) or ():
@@ -582,8 +582,7 @@ def _relay_scoped_daemon_plan_payload(
             continue
         chunk_bytes = sum(int(chunk["bytes"]) for chunk in chunks)
         total_bytes += chunk_bytes
-        if path_kind == "relay":
-            relay_ranges.extend(chunks)
+        execution_ranges.extend(chunks)
         assignments.append(
             {
                 "path": plan_path,
@@ -593,9 +592,12 @@ def _relay_scoped_daemon_plan_payload(
             }
         )
     if not assignments:
-        raise ValueError("daemon plan has no authorized relay chunks")
-    if tuple(relay_ranges) != request.data_plane.ranges:
+        raise ValueError("daemon plan has no authorized executable chunks")
+    if tuple(execution_ranges) != request.data_plane.ranges:
         raise ValueError("authorized ranges do not match daemon plan")
+    declared_total_bytes = int(source_plan.get("total_bytes", total_bytes))
+    if declared_total_bytes != total_bytes:
+        raise ValueError("daemon plan total bytes do not match assigned chunks")
     return {
         "total_bytes": total_bytes,
         "chunk_bytes": int(
@@ -673,7 +675,9 @@ def _failed_result(
     *,
     resources: WorkerDataPlaneResources | None = None,
 ) -> WorkerTransferResult:
-    relay_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
+    direct_bytes, direct_chunks, relay_bytes, relay_chunks = (
+        _planned_path_split_for_request(request)
+    )
     target_device = _target_device_for_request(request)
     return WorkerTransferResult(
         transfer_id=request.transfer_id,
@@ -690,15 +694,51 @@ def _failed_result(
             "src_buffer_id": request.authorization.src_buffer.buffer_id,
             "dst_buffer_id": request.authorization.dst_buffer.buffer_id,
             "staging_slot_id": staging_slot.slot_id,
-            "direct_bytes": 0,
-            "direct_chunks": 0,
+            "direct_bytes": direct_bytes,
+            "direct_chunks": direct_chunks,
             "relay_bytes": relay_bytes,
-            "relay_chunks": len(request.data_plane.ranges),
+            "relay_chunks": relay_chunks,
             "failure_source": "cuda_worker",
             **_resource_evidence_metadata(resources, request),
             **_ticket_binding_metadata(request),
         },
     )
+
+
+def _planned_path_split_for_request(
+    request: WorkerTransferRequest,
+) -> tuple[int, int, int, int]:
+    direct_bytes = 0
+    direct_chunks = 0
+    relay_bytes = 0
+    relay_chunks = 0
+    try:
+        assignments = request.data_plane.plan.get("assignments", ()) or ()
+    except AttributeError:
+        assignments = ()
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        path = assignment.get("path")
+        if not isinstance(path, dict):
+            continue
+        if str(path.get("direction", "")).lower() != request.data_plane.direction:
+            continue
+        chunk_count = len(assignment.get("chunks", ()) or ())
+        byte_count = 0
+        for chunk in assignment.get("chunks", ()) or ():
+            if isinstance(chunk, dict):
+                byte_count += int(chunk.get("bytes", 0) or 0)
+        if str(path.get("kind", "")).lower() == "direct":
+            direct_bytes += byte_count
+            direct_chunks += chunk_count
+        elif str(path.get("kind", "")).lower() == "relay":
+            relay_bytes += byte_count
+            relay_chunks += chunk_count
+    if direct_bytes == 0 and relay_bytes == 0:
+        relay_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
+        relay_chunks = len(request.data_plane.ranges)
+    return direct_bytes, direct_chunks, relay_bytes, relay_chunks
 
 
 def _ticket_validation_time(request: WorkerTransferRequest) -> float | None:

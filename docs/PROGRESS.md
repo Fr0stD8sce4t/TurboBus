@@ -4,26 +4,33 @@
 
 - The project is still in system-body implementation; benchmarks, paper
   validation, and server validation remain deferred.
-- G1 long-lived asynchronous data-plane closure is now present in worker
-  production code: `CudaWorkerExecutor` separates submit and wait, retains
-  reusable native runtimes, tracks in-flight and terminal transfer handles, and
-  reports async execution evidence through worker completion metadata.
-- `WorkerTransferClient` now prefers the submit/wait worker path while keeping
-  the existing synchronous execution helper as a compatibility wrapper.
+- G1 long-lived asynchronous data-plane closure is present in worker production
+  code: `CudaWorkerExecutor` separates submit and wait, retains reusable native
+  runtimes, tracks in-flight and terminal transfer handles, and reports async
+  execution evidence through worker completion metadata.
+- G2 mixed pooled execution is now present in production code: daemon worker
+  authorization returns exact daemon-issued plan ranges, worker request
+  validation uses the ticket full-plan ranges, CUDA worker execution keeps
+  direct and relay assignments in one native plan, and runtime intent execution
+  no longer pre-executes mixed direct chunks outside the worker/backend path.
 - Auto-advance remains active for this goal run, with exactly one active target
   at a time.
-- The active target is G2 mixed pool unified execution.
+- The active target is G3 unified scheduling model.
 - Current rounds must still deliver complete production system capabilities,
   not benchmark/example/test scaffolding or narrow bug-style edits.
 
 ## Remaining Risk
 
-- G2 still needs one full closure so daemon-issued plans containing both direct
-  and relay assignments execute through one worker/backend path instead of
-  relay-only worker narrowing.
-- Cross-job ownership and retained-state isolation remain queued for G6 so
-  archived receipts, cleanup, and terminal retention stay bound to the same
-  authenticated owner contract during shared relay use.
+- G3 still needs one full closure so scheduler output, daemon admission,
+  worker authorization, execution tickets, runtime execution, and receipt
+  evidence all consume one canonical direct/relay/mixed plan contract.
+- Direct-only worker authorization remains a later daemon admission concern:
+  current production direct-only execution stays a daemon-issued direct
+  fallback outcome rather than a fake relay-worker route.
+- Existing worker CUDA unit fixtures still encode the retired relay-scoped
+  worker-plan expectation for mixed plans; they fail against the new G2
+  production contract and should be repaired only when the active plan moves to
+  validation/test update work.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 - Alternative verification paths, fake receipts, synthetic evidence, and dry-run
@@ -34,9 +41,8 @@
 
 ## Next Main Target
 
-G2: finish one mixed direct+relay pooled execution closure across daemon-issued
-worker plans, native plan conversion, backend execution, and unified completion
-evidence.
+G3: finish one unified scheduling-model closure across scheduler plan output,
+daemon admission, ticket construction, runtime execution, and receipt evidence.
 
 Progress-file rule:
 

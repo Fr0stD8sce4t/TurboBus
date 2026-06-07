@@ -108,7 +108,7 @@ def validate_ticket_matches_worker_request(
     )
     if authorization.relay_gpu not in relay_gpus:
         raise ValueError("ticket relay does not match worker authorization")
-    if relay_ranges_from_ticket_plan(ticket, relay_gpus=relay_gpus) != authorization.ranges:
+    if execution_ranges_from_ticket_plan(ticket) != authorization.ranges:
         raise ValueError("ticket ranges do not match worker authorization")
 
 
@@ -438,6 +438,41 @@ def relay_ranges_from_ticket_plan(
     return tuple(ranges)
 
 
+def execution_ranges_from_ticket_plan(
+    ticket: ExecutionTicket,
+) -> tuple[dict[str, int], ...]:
+    ranges: list[dict[str, int]] = []
+    for assignment in ticket.plan.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            raise ValueError("ticket plan assignment must be an object")
+        path = assignment.get("path")
+        if not isinstance(path, Mapping):
+            raise ValueError("ticket plan assignment path must be an object")
+        if str(path.get("direction", "")).lower() != ticket.direction:
+            raise ValueError("ticket plan direction does not match ticket")
+        path_kind = str(path.get("kind", "")).lower()
+        if path_kind not in {"direct", "relay"}:
+            raise ValueError("ticket plan path must be direct or relay")
+        for chunk in assignment.get("chunks", ()) or ():
+            if not isinstance(chunk, Mapping):
+                raise ValueError("ticket plan chunk must be an object")
+            ranges.append(
+                {
+                    "src_offset": int(chunk["src_offset"]),
+                    "dst_offset": int(chunk["dst_offset"]),
+                    "bytes": int(chunk["bytes"]),
+                }
+            )
+    if not ranges:
+        raise ValueError("ticket plan has no executable chunks")
+    range_bytes = sum(item["bytes"] for item in ranges)
+    if range_bytes != ticket.total_bytes:
+        raise ValueError("ticket plan ranges do not match ticket total bytes")
+    if tuple(ranges) != ticket.ranges:
+        raise ValueError("ticket ranges do not match daemon plan")
+    return tuple(ranges)
+
+
 def relay_ranges_by_gpu_for_ticket(
     ticket: ExecutionTicket,
     *,
@@ -464,6 +499,7 @@ def authorized_relay_gpus_for_request(request) -> tuple[int, ...]:
 __all__ = [
     "authorized_relay_gpus_for_request",
     "cleanup_scope_lease_ids_for_ticket",
+    "execution_ranges_from_ticket_plan",
     "lease_ids_for_ticket",
     "owner_binding_for_payload",
     "owner_binding_for_ticket",

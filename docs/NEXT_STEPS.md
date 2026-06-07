@@ -5,34 +5,35 @@ appending history.
 
 ## Current Main Target
 
-G2: close mixed pooled execution so daemon-issued plans with both direct and
-relay assignments execute through one worker/backend path and produce unified
-completion evidence.
+G3: close the unified scheduling model so daemon planning, worker
+authorization, runtime execution, and receipt evidence all use the same
+daemon-issued plan contract for direct, relay, and mixed pooled transfers.
 
 ## Exit Criteria
 
-- Worker-side plan conversion keeps direct and relay assignments from the same
-  daemon-issued `ExecutionTicket` instead of narrowing worker execution to
-  relay-only chunks.
-- Direct-only, relay-only, and mixed direct+relay plans use the same
-  submit/wait/result path in worker CUDA execution.
-- Completion evidence reports direct bytes/chunks, relay bytes/chunks, and
-  aggregate bytes from the exact daemon-issued plan.
-- Failure paths still produce worker/backend failure receipts and cleanup
-  evidence without fake completion.
-- The closure stays in worker/runtime/backend production code and does not add
-  benchmark-owned, example-owned, test-owned, dry-run, or synthetic evidence
-  paths.
+- Scheduler output exposes one canonical plan shape for direct, relay, and
+  mixed pooled decisions, with path summaries and stats derived from the same
+  assignments.
+- Daemon admission, lease metadata, execution tickets, worker authorization,
+  and runtime intent execution consume the canonical plan without creating
+  alternate relay-scoped production plans.
+- Direct-only execution remains a daemon-issued scheduling outcome and does not
+  require fake relay leases or application-selected routes.
+- Mixed pooled execution keeps the G2 exact-plan worker/backend contract and
+  does not reintroduce application-side direct/relay splitting.
+- The closure stays in scheduler/daemon/runtime production code and does not
+  add benchmark-owned, example-owned, test-owned, dry-run, or synthetic
+  evidence paths.
 
 ## Current Code Work
 
-- `turbobus/worker/cuda_executor.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/models.py`
+- `turbobus/scheduler/daemon.py`
+- `turbobus/daemon/server.py`
+- `turbobus/daemon/receipts.py`
+- `turbobus/intent_executor.py`
+- `turbobus/direct_fallback.py`
 - `turbobus/worker/validation.py`
-- `turbobus/native_plan.py`
-- `turbobus/backends/cuda.py`
-- `cpp/src/executor_cuda.cu`
+- `turbobus/worker/cuda_executor.py`
 
 Round rules:
 
@@ -53,15 +54,15 @@ Round rules:
 
 ## Next Entry
 
-Start at `worker/cuda_executor.py` around daemon plan assignment filtering.
-Remove relay-only narrowing only if the worker ticket and authorization already
-prove the plan is daemon-issued and scoped to the worker. Then follow the exact
-plan into `native_plan.py`, `backends/cuda.py`, and `cpp/src/executor_cuda.cu`
-only as needed to close one mixed direct+relay production execution path.
+Start at `scheduler/daemon.py` and `daemon/server.py` around plan stats,
+admission leases, and ticket construction. Then follow the canonical plan into
+`daemon/receipts.py`, `intent_executor.py`, `direct_fallback.py`, and worker
+validation only as needed to keep every production consumer on one plan
+contract.
 
 After the current target closes in auto-advance mode, the next queued target is:
 
-- G3 unified scheduling model.
+- G4 dynamic feedback loop.
 
 Plan-file rule:
 
@@ -76,11 +77,10 @@ started TurboBus Auto-Advance Mode.
 
 Remaining auto-advance target queue:
 
-1. G2 mixed pool unified execution.
-2. G3 unified scheduling model.
-3. G4 dynamic feedback loop.
-4. G5 daemon admission loop.
-5. G6 multi-tenant isolation hardening.
+1. G3 unified scheduling model.
+2. G4 dynamic feedback loop.
+3. G5 daemon admission loop.
+4. G6 multi-tenant isolation hardening.
 
 In auto-advance mode:
 

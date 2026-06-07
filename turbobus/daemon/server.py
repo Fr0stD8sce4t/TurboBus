@@ -1586,7 +1586,11 @@ class TurboBusDaemon:
             else:
                 related_leases = (lease,)
             try:
-                authorized_ranges = _relay_ranges_from_plan(
+                authorized_ranges = daemon_receipts.ticket_ranges_for_plan(
+                    plan,
+                    direction=request.direction,
+                )
+                authorized_relay_ranges = _relay_ranges_from_plan(
                     plan,
                     relay_gpu=tuple(item.relay_gpu for item in related_leases),
                     direction=request.direction,
@@ -1595,7 +1599,7 @@ class TurboBusDaemon:
                 return authorization_failure(str(exc))
             if request.ranges and request.ranges != authorized_ranges:
                 return authorization_failure("worker ranges do not match daemon plan")
-            requested_bytes = sum(item["bytes"] for item in authorized_ranges)
+            requested_bytes = sum(item["bytes"] for item in authorized_relay_ranges)
             reservation_bytes = sum(
                 int(self._reservations[item.lease_id].bytes)
                 for item in related_leases

@@ -5,32 +5,33 @@ appending history.
 
 ## Current Main Target
 
-G5: close the daemon admission loop so transfer planning, relay admission,
-delayed admission, worker authorization, terminal cleanup, and promoted work
-all share one production admission state machine.
+G6: close multi-tenant isolation hardening so daemon-owned job, session,
+buffer, lease, staging, ticket, cleanup, and receipt ownership remain bound to
+authenticated peers across shared relay execution.
 
 ## Exit Criteria
 
-- Daemon admission decisions are recorded as production state and are refreshed
-  when relay leases, staging records, terminal transfers, or promoted delayed
-  transfers change availability.
-- Delayed transfers are promoted by daemon-owned admission state, not by
-  application, benchmark, example, dry-run, fake, or synthetic paths.
-- Worker authorization consumes the current admission state and exact daemon
-  ticket contract before staging records are registered.
-- Terminal completion, failure, cancellation, lease expiry, and cleanup update
-  admission state and unblock eligible queued work.
-- The closure stays in daemon/scheduler/runtime production code and preserves
-  daemon-issued plans as the only production transfer-plan source.
+- Worker authorization, transfer status updates, cleanup, receipt queries, and
+  retained cleanup targets consistently validate peer ownership against the
+  daemon-owned job/session/buffer/transfer binding.
+- Relay leases and staging records cannot be reused across jobs, sessions,
+  buffers, or transfers even when multiple tenants share the same relay GPU.
+- Terminal cleanup and archived receipt access preserve ownership evidence
+  after live runtime maps are retired.
+- The isolation closure stays in daemon, worker validation, and runtime
+  production code; it does not add benchmark, example, test, dry-run, fake, or
+  synthetic validation paths.
+- The daemon/scheduler remains the only production plan source, and workers
+  still execute only daemon-issued tickets or exact daemon-issued plans.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler/daemon.py`
-- `turbobus/scheduler/load_feedback.py`
-- `turbobus/daemon/receipts.py`
-- `turbobus/worker/lifecycle.py`
 - `turbobus/worker/validation.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/daemon/receipts.py`
+- `turbobus/runtime_session.py`
+- `turbobus/intent_executor.py`
 
 Round rules:
 
@@ -51,15 +52,14 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around `_admission_for_decision_locked`,
-`_validate_transfer_admission_locked`, `_promote_delayed_transfers_locked`,
-worker authorization, terminal cleanup, and lease expiry. Then follow only the
-production admission state into scheduler feedback or worker validation where
-needed.
+Start at `daemon/server.py` around peer identity validation for worker
+authorization, transfer status updates, cleanup target retention, archived
+receipt lookup, staging record validation, and lease ownership. Then follow only
+the production ownership binding into worker validation or runtime receipt
+consumption if needed.
 
-After the current target closes in auto-advance mode, the next queued target is:
-
-- G6 multi-tenant isolation hardening.
+After the current target closes in auto-advance mode, the auto-advance queue is
+complete for G1 through G6.
 
 Plan-file rule:
 
@@ -74,8 +74,7 @@ started TurboBus Auto-Advance Mode.
 
 Remaining auto-advance target queue:
 
-1. G5 daemon admission loop.
-2. G6 multi-tenant isolation hardening.
+1. G6 multi-tenant isolation hardening.
 
 In auto-advance mode:
 

@@ -189,7 +189,7 @@ class TurboBusDaemon:
         target = None if target_gpu is None else int(target_gpu)
         with self._lock:
             self._reap_stale_sessions_locked(now)
-            self._reap_expired_leases_locked(now)
+            self._refresh_admission_state_locked(now=now)
             if self._topology_provider is None:
                 return _topology_unavailable_response()
             inventory = self._topology_provider.snapshot()
@@ -221,7 +221,7 @@ class TurboBusDaemon:
         now = time.time()
         with self._lock:
             self._reap_stale_sessions_locked(now)
-            self._reap_expired_leases_locked(now)
+            self._refresh_admission_state_locked(now=now)
             try:
                 relays = self._relays_for_new_session_locked(target)
             except ValueError as exc:
@@ -357,7 +357,7 @@ class TurboBusDaemon:
         with self._lock:
             now = time.time()
             self._reap_stale_sessions_locked(now)
-            self._reap_expired_leases_locked(now)
+            self._refresh_admission_state_locked(now=now)
             if buffer.job_id not in self._jobs:
                 return DaemonResponse(ok=False, error="unknown job")
             try:
@@ -736,13 +736,14 @@ class TurboBusDaemon:
             else:
                 return DaemonResponse(ok=False, error="unsupported cleanup target")
             self._cleanup_events.append(cleanup)
-            promoted = self._promote_delayed_transfers_locked(now=time.time())
+            admission_refresh = self._refresh_admission_state_locked(now=time.time())
             return DaemonResponse(
                 ok=True,
                 payload={
                     "cleanup": asdict(cleanup),
                     "removed": removed,
-                    "promoted_transfers": promoted,
+                    "promoted_transfers": admission_refresh["promoted_transfers"],
+                    "admission_refresh": admission_refresh,
                     **(
                         {}
                         if validated_owner_binding is None
@@ -921,7 +922,10 @@ class TurboBusDaemon:
                             reason="transfer_status_mismatch",
                         ),
                     )
-                    promoted = self._promote_delayed_transfers_locked(now=time.time())
+                    admission_refresh = self._refresh_admission_state_locked(
+                        now=time.time(),
+                        reap_expired=False,
+                    )
                     self._refresh_transfer_queue_record_locked(status.transfer_id)
                     return DaemonResponse(
                         ok=False,
@@ -929,7 +933,8 @@ class TurboBusDaemon:
                         payload={
                             "status": asdict(failed),
                             "removed": removed,
-                            "promoted_transfers": promoted,
+                            "promoted_transfers": admission_refresh["promoted_transfers"],
+                            "admission_refresh": admission_refresh,
                         },
                     )
                 return DaemonResponse(ok=False, error=str(exc))
@@ -1069,7 +1074,11 @@ class TurboBusDaemon:
                     ),
                 )
                 if int(removed["transfers"]) > 0:
-                    promoted = self._promote_delayed_transfers_locked(now=time.time())
+                    admission_refresh = self._refresh_admission_state_locked(
+                        now=time.time(),
+                        reap_expired=False,
+                    )
+                    promoted = admission_refresh["promoted_transfers"]
             elif updated.state is TransferStatusState.FAILED:
                 self._append_transfer_audit_records_locked(
                     event_type="worker_failure",
@@ -1094,7 +1103,11 @@ class TurboBusDaemon:
                         reason=updated.error or "worker_failed",
                     ),
                 )
-                promoted = self._promote_delayed_transfers_locked(now=time.time())
+                admission_refresh = self._refresh_admission_state_locked(
+                    now=time.time(),
+                    reap_expired=False,
+                )
+                promoted = admission_refresh["promoted_transfers"]
             elif updated.state is TransferStatusState.CANCELED:
                 self._append_transfer_audit_records_locked(
                     event_type="transfer_canceled",
@@ -1119,7 +1132,11 @@ class TurboBusDaemon:
                         reason=updated.error or "transfer_canceled",
                     ),
                 )
-                promoted = self._promote_delayed_transfers_locked(now=time.time())
+                admission_refresh = self._refresh_admission_state_locked(
+                    now=time.time(),
+                    reap_expired=False,
+                )
+                promoted = admission_refresh["promoted_transfers"]
             return DaemonResponse(
                 ok=True,
                 payload={
@@ -1339,7 +1356,7 @@ class TurboBusDaemon:
             self._transfer_admissions.get(str(transfer_id), {}).get("state")
             == _ADMISSION_DELAYED
         ):
-            self._promote_delayed_transfers_locked(now=now)
+            self._refresh_admission_state_locked(now=now)
             receipt = self._receipt_for_intent_locked(intent.intent_id)
             status = self._transfer_statuses.get(str(transfer_id))
             decision = self._scheduling_decisions.get(str(transfer_id))
@@ -1750,8 +1767,8 @@ class TurboBusDaemon:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
             self._reap_stale_sessions_locked(now)
-            self._reap_expired_leases_locked(now)
             self._purge_stale_profiles_locked(now)
+            self._refresh_admission_state_locked(now=now)
             try:
                 (
                     session,
@@ -1935,10 +1952,8 @@ class TurboBusDaemon:
     def reap_expired_leases(self, now: float | None = None) -> list[str]:
         with self._lock:
             checked_at = time.time() if now is None else float(now)
-            expired = self._reap_expired_leases_locked(checked_at)
-            if expired:
-                self._promote_delayed_transfers_locked(now=checked_at)
-            return expired
+            admission_refresh = self._refresh_admission_state_locked(now=checked_at)
+            return [str(item) for item in admission_refresh["expired_leases"]]
 
     def _release_reservation_locked(
         self,
@@ -2608,6 +2623,39 @@ class TurboBusDaemon:
         if ticket_id is None or ticket_id not in self._execution_tickets:
             return "intent transfer status update requires daemon-issued execution ticket"
         return None
+
+    def _refresh_admission_state_locked(
+        self,
+        *,
+        now: float,
+        reap_expired: bool = True,
+    ) -> dict[str, object]:
+        expired_leases = (
+            tuple(self._reap_expired_leases_locked(float(now)))
+            if reap_expired
+            else ()
+        )
+        promoted = self._promote_delayed_transfers_locked(now=float(now))
+        admitted_transfer_ids: list[str] = []
+        delayed_transfer_ids: list[str] = []
+        terminal_transfer_ids: list[str] = []
+        for transfer_id, admission in sorted(self._transfer_admissions.items()):
+            state = str(admission.get("state", ""))
+            if state == _ADMISSION_ADMITTED:
+                admitted_transfer_ids.append(str(transfer_id))
+            elif state == _ADMISSION_DELAYED:
+                delayed_transfer_ids.append(str(transfer_id))
+            elif state in {_ADMISSION_CANCELED, _ADMISSION_FAILED, _ADMISSION_EXPIRED}:
+                terminal_transfer_ids.append(str(transfer_id))
+            self._refresh_transfer_queue_record_locked(str(transfer_id), now=float(now))
+        return {
+            "refreshed_at": float(now),
+            "expired_leases": expired_leases,
+            "promoted_transfers": promoted,
+            "admitted_transfer_ids": tuple(admitted_transfer_ids),
+            "delayed_transfer_ids": tuple(delayed_transfer_ids),
+            "terminal_transfer_ids": tuple(terminal_transfer_ids),
+        }
 
     def _promote_delayed_transfers_locked(
         self,
@@ -5178,7 +5226,7 @@ class TurboBusDaemon:
         with self._lock:
             now = time.time()
             self._reap_stale_sessions_locked(now)
-            self._reap_expired_leases_locked(now)
+            self._refresh_admission_state_locked(now=now)
             self._purge_stale_profiles_locked(now)
             return DaemonResponse(
                 ok=True,

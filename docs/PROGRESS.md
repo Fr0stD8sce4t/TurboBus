@@ -7,23 +7,22 @@
 - `TurboBusRuntimeSession` stays the intended production entry, and
   daemon-issued execution, receipt formation, cleanup, and runtime feedback
   remain on the real production path.
-- Socket-based production runtime startup now assembles daemon/runtime/
-  execution/profile/worker clients inside `TurboBusRuntimeSession`, and both
-  attached and managed production socket paths reuse one runtime-owned client
-  assembly path instead of hand-building per-role clients outside the session.
+- Scheduler-facing runtime feedback now carries execution-path-aware active and
+  terminal direct/relay evidence from real daemon-issued transfer records, so
+  scheduler pressure uses more than shallow queued/running counters.
 
 ## Remaining Risk
 
-- Scheduler/runtime feedback accounting still needs one full closure so daemon
-  queued/running/terminal transfer state drives scheduler-visible load and
-  terminal completion accounting.
+- Cross-job ownership and retained-state isolation still need one full closure
+  so archived receipts, cleanup, and terminal retention stay bound to the same
+  authenticated owner contract during shared relay use.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full scheduler/runtime feedback accounting closure across daemon
-transfer state, runtime feedback, and scheduler-visible load.
+Finish one full cross-job ownership and isolation closure across daemon cleanup,
+archived receipt access, terminal retention, and worker-issued relay cleanup.
 
 Progress-file rule:
 

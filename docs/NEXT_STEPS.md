@@ -5,27 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close the remaining scheduler/runtime feedback production path so scheduler
-load accounting uses real queued/running/active transfer state, terminal
-completion source, and runtime feedback from the daemon-issued execution path.
+Close one cross-job ownership and isolation production path so authenticated
+session/job/buffer ownership survives daemon-issued relay sharing, cleanup,
+receipt retention, and terminal runtime-state retention.
 
 ## Exit Criteria
 
-- Scheduler-facing load and runtime feedback state must come from real
-  daemon-issued queued/running/terminal transfer records, not partial local
-  bookkeeping.
-- Direct-only, relay-only, and mixed execution terminal feedback must feed one
-  scheduler-visible runtime accounting contract.
-- The closure stays in daemon/runtime/scheduler production code and does not
-  add benchmark-owned, example-owned, or dry-run wrapper paths.
+- Cleanup, archived receipt lookup, terminal feedback retention, and ownership
+  validation must agree on the same authenticated owner contract.
+- Shared relay use must not weaken which peer may query, complete, clean up, or
+  retain transfer-owned state after live transfer records retire.
+- The closure stays in daemon/runtime/worker production code and does not add
+  benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler.py`
-- `turbobus/runtime/daemon_view.py`
+- `turbobus/worker/validation.py`
+- `turbobus/worker/lifecycle.py`
 - `turbobus/runtime_session.py`
-- `turbobus/intent_executor.py`
 
 Round rules:
 
@@ -41,16 +39,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around queued/running/terminal transfer records and
-runtime feedback, then move through `scheduler.py`, `runtime/daemon_view.py`,
-`runtime_session.py`, and `intent_executor.py` to close one real scheduler
-accounting path.
+Start at `daemon/server.py` around archived transfer ownership, cleanup scope,
+receipt access, and retained terminal feedback, then move through
+`worker/validation.py`, `worker/lifecycle.py`, and `runtime_session.py` to
+close one real authenticated ownership path.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full production system-body closure for the next remaining scheduler
-  feedback or ownership-hardening gap.
+- one full production system-body closure for the next remaining ownership or
+  runtime-startup gap.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

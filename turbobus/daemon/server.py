@@ -5987,8 +5987,13 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     relay_path_summary = {"path_count": 0, "chunk_count": 0, "bytes_total": 0}
     completion_source_counts: dict[str, int] = {}
     terminal_completion_source_counts: dict[str, int] = {}
+    active_execution_evidence = _empty_execution_path_evidence()
+    active_execution_evidence_by_source: dict[str, dict[str, int]] = {}
     terminal_execution_evidence = _terminal_execution_evidence_from_records(
         (*_runtime_mapping_records(transfers), *_runtime_mapping_records(recent_terminal_transfers))
+    )
+    terminal_execution_evidence_by_source = _terminal_execution_evidence_by_source_from_records(
+        recent_terminal_transfers
     )
     active_by_direction = _transfer_bytes_by_direction(
         runtime_state.get("active_transfers", ()),
@@ -6013,6 +6018,24 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             relay_path_summary["path_count"] += 1
             relay_path_summary["chunk_count"] += int(record.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+        _accumulate_execution_path_evidence(
+            active_execution_evidence,
+            kind=kind,
+            bytes_total=int(record.get("bytes_total", 0) or 0),
+            chunk_count=int(record.get("chunk_count", 0) or 0),
+        )
+        completion_source = str(record.get("completion_source", "")).lower()
+        if completion_source:
+            source_bucket = active_execution_evidence_by_source.setdefault(
+                completion_source,
+                _empty_execution_path_evidence(),
+            )
+            _accumulate_execution_path_evidence(
+                source_bucket,
+                kind=kind,
+                bytes_total=int(record.get("bytes_total", 0) or 0),
+                chunk_count=int(record.get("chunk_count", 0) or 0),
+            )
     for record in (
         *_runtime_mapping_records(transfers),
         *_runtime_mapping_records(recent_terminal_transfers),
@@ -6070,22 +6093,45 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "active_resource_usage": active_resource_usage,
             "completion_source_counts": completion_source_counts,
             "terminal_completion_source_counts": terminal_completion_source_counts,
+            "active_execution_evidence": active_execution_evidence,
+            "active_execution_evidence_by_source": active_execution_evidence_by_source,
             "terminal_execution_evidence": terminal_execution_evidence,
+            "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
         }
     )
     runtime_state["active_resource_usage"] = active_resource_usage
     runtime_state["summary"] = summary_copy
 
 
-def _terminal_execution_evidence_from_records(
-    records: object,
-) -> dict[str, int]:
-    result = {
+def _empty_execution_path_evidence() -> dict[str, int]:
+    return {
         "direct_bytes": 0,
         "direct_chunks": 0,
         "relay_bytes": 0,
         "relay_chunks": 0,
     }
+
+
+def _accumulate_execution_path_evidence(
+    bucket: dict[str, int],
+    *,
+    kind: str,
+    bytes_total: int,
+    chunk_count: int,
+) -> None:
+    normalized_kind = str(kind).lower()
+    if normalized_kind == "direct":
+        bucket["direct_bytes"] = int(bucket.get("direct_bytes", 0)) + max(0, int(bytes_total))
+        bucket["direct_chunks"] = int(bucket.get("direct_chunks", 0)) + max(0, int(chunk_count))
+    elif normalized_kind == "relay":
+        bucket["relay_bytes"] = int(bucket.get("relay_bytes", 0)) + max(0, int(bytes_total))
+        bucket["relay_chunks"] = int(bucket.get("relay_chunks", 0)) + max(0, int(chunk_count))
+
+
+def _terminal_execution_evidence_from_records(
+    records: object,
+) -> dict[str, int]:
+    result = _empty_execution_path_evidence()
     for record in _runtime_mapping_records(records):
         if str(record.get("state")) not in {
             TransferStatusState.COMPLETE.value,
@@ -6103,6 +6149,34 @@ def _terminal_execution_evidence_from_records(
         result["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
         result["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
         result["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
+    return result
+
+
+def _terminal_execution_evidence_by_source_from_records(
+    records: object,
+) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for record in _runtime_mapping_records(records):
+        if str(record.get("state")) not in {
+            TransferStatusState.COMPLETE.value,
+            TransferStatusState.FAILED.value,
+            TransferStatusState.CANCELED.value,
+        }:
+            continue
+        completion_source = str(record.get("completion_source", "")).lower()
+        if not completion_source:
+            continue
+        evidence = record.get("completion_evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        path_evidence = evidence.get("execution_path_evidence")
+        if not isinstance(path_evidence, Mapping):
+            continue
+        bucket = result.setdefault(completion_source, _empty_execution_path_evidence())
+        bucket["direct_bytes"] += int(path_evidence.get("direct_bytes", 0) or 0)
+        bucket["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
+        bucket["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
+        bucket["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
     return result
 
 

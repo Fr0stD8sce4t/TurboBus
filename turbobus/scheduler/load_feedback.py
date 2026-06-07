@@ -31,6 +31,10 @@ class RuntimeLoadView:
     delayed_transfer_count: int
     relay_load: dict[int, dict[str, object]]
     completion_source_pressure: dict[str, float]
+    active_execution_evidence: dict[str, int]
+    active_execution_evidence_by_source: dict[str, dict[str, int]]
+    terminal_execution_evidence: dict[str, int]
+    terminal_execution_evidence_by_source: dict[str, dict[str, int]]
 
     def policy_metadata(self) -> dict[str, object]:
         runtime_state = dict(self.runtime_state)
@@ -77,6 +81,16 @@ class RuntimeLoadView:
                 ).items()
             },
             "completion_source_pressure": dict(self.completion_source_pressure),
+            "active_execution_evidence": dict(self.active_execution_evidence),
+            "active_execution_evidence_by_source": {
+                str(key): dict(value)
+                for key, value in self.active_execution_evidence_by_source.items()
+            },
+            "terminal_execution_evidence": dict(self.terminal_execution_evidence),
+            "terminal_execution_evidence_by_source": {
+                str(key): dict(value)
+                for key, value in self.terminal_execution_evidence_by_source.items()
+            },
             "relay_load": {
                 int(relay): dict(record)
                 for relay, record in sorted(self.relay_load.items())
@@ -94,6 +108,10 @@ class RuntimeLoadView:
         record = self.relay_load.get(int(relay_device), {})
         pressure = float(record.get("pressure", 0.0) or 0.0)
         pressure += self.completion_source_pressure.get("worker", 0.0) * 0.10
+        relay_bytes = int(self.active_execution_evidence.get("relay_bytes", 0) or 0)
+        active_bytes = max(self.total_active_bytes, 1)
+        if relay_bytes > 0:
+            pressure += min(relay_bytes / active_bytes, 1.0) * 0.14
         pressure += min(self.queued_transfer_count, 8) * 0.015
         pressure += min(self.delayed_transfer_count, 8) * 0.025
         return max(0.0, pressure)
@@ -108,10 +126,13 @@ class RuntimeLoadView:
         if isinstance(direction_usage, Mapping):
             active_bytes = int(direction_usage.get("bytes_remaining", 0) or 0)
         pressure = self.completion_source_pressure.get("backend", 0.0) * 0.08
+        direct_bytes = int(self.active_execution_evidence.get("direct_bytes", 0) or 0)
         pressure += min(self.running_transfer_count, 8) * 0.02
         pressure += min(self.queued_transfer_count, 8) * 0.01
         if self.total_active_bytes > 0:
             pressure += min(active_bytes / max(self.total_active_bytes, 1), 1.0) * 0.12
+            if direct_bytes > 0:
+                pressure += min(direct_bytes / max(self.total_active_bytes, 1), 1.0) * 0.10
         return max(0.0, pressure)
 
 
@@ -132,6 +153,10 @@ def runtime_state_metadata(
             "relay_path_bytes_total": 0,
             "completion_source_counts": {},
             "terminal_completion_source_counts": {},
+            "active_execution_evidence": {},
+            "active_execution_evidence_by_source": {},
+            "terminal_execution_evidence": {},
+            "terminal_execution_evidence_by_source": {},
             "busy_relays": (),
             "active_bytes_by_direction": {},
             "queued_bytes_by_direction": {},
@@ -168,6 +193,22 @@ def runtime_state_metadata(
         "terminal_completion_source_counts": {
             str(key): int(value)
             for key, value in terminal_completion_source_counts.items()
+        },
+        "active_execution_evidence": dict(summary.get("active_execution_evidence", {}) or {}),
+        "active_execution_evidence_by_source": {
+            str(key): dict(value)
+            for key, value in dict(
+                summary.get("active_execution_evidence_by_source", {}) or {}
+            ).items()
+        },
+        "terminal_execution_evidence": dict(
+            summary.get("terminal_execution_evidence", {}) or {}
+        ),
+        "terminal_execution_evidence_by_source": {
+            str(key): dict(value)
+            for key, value in dict(
+                summary.get("terminal_execution_evidence_by_source", {}) or {}
+            ).items()
         },
         "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
         "active_bytes_by_direction": dict(
@@ -215,6 +256,24 @@ def runtime_view(
     completion_source_pressure = completion_source_pressure_from_runtime_state(
         runtime_state_snapshot
     )
+    active_execution_evidence = dict(
+        runtime_state_snapshot.get("active_execution_evidence", {}) or {}
+    )
+    active_execution_evidence_by_source = {
+        str(key): dict(value)
+        for key, value in dict(
+            runtime_state_snapshot.get("active_execution_evidence_by_source", {}) or {}
+        ).items()
+    }
+    terminal_execution_evidence = dict(
+        runtime_state_snapshot.get("terminal_execution_evidence", {}) or {}
+    )
+    terminal_execution_evidence_by_source = {
+        str(key): dict(value)
+        for key, value in dict(
+            runtime_state_snapshot.get("terminal_execution_evidence_by_source", {}) or {}
+        ).items()
+    }
 
     total_weight = 0.0
     total_active_bytes = 0
@@ -293,6 +352,10 @@ def runtime_view(
         delayed_transfer_count=delayed_transfer_count,
         relay_load=relay_load,
         completion_source_pressure=completion_source_pressure,
+        active_execution_evidence=active_execution_evidence,
+        active_execution_evidence_by_source=active_execution_evidence_by_source,
+        terminal_execution_evidence=terminal_execution_evidence,
+        terminal_execution_evidence_by_source=terminal_execution_evidence_by_source,
     )
 
 
@@ -465,13 +528,33 @@ def completion_source_pressure_from_runtime_state(
     backend_count = int(source_counts.get("backend", 0) or 0)
     worker_recent = int(terminal_source_counts.get("worker", 0) or 0)
     backend_recent = int(terminal_source_counts.get("backend", 0) or 0)
+    active_by_source = runtime_state.get("active_execution_evidence_by_source", {})
+    if not isinstance(active_by_source, Mapping):
+        active_by_source = {}
+    terminal_by_source = runtime_state.get("terminal_execution_evidence_by_source", {})
+    if not isinstance(terminal_by_source, Mapping):
+        terminal_by_source = {}
+    worker_active_bytes = _execution_evidence_total_bytes(active_by_source.get("worker"))
+    backend_active_bytes = _execution_evidence_total_bytes(active_by_source.get("backend"))
+    worker_recent_bytes = _execution_evidence_total_bytes(terminal_by_source.get("worker"))
+    backend_recent_bytes = _execution_evidence_total_bytes(terminal_by_source.get("backend"))
     weighted_worker = worker_count + min(worker_recent, 8) * 0.5
     weighted_backend = backend_count + min(backend_recent, 8) * 0.5
+    weighted_worker += min(worker_active_bytes / (64.0 * 1024 * 1024), 8.0) * 0.20
+    weighted_backend += min(backend_active_bytes / (64.0 * 1024 * 1024), 8.0) * 0.20
+    weighted_worker += min(worker_recent_bytes / (128.0 * 1024 * 1024), 8.0) * 0.10
+    weighted_backend += min(backend_recent_bytes / (128.0 * 1024 * 1024), 8.0) * 0.10
     total = max(1.0, weighted_worker + weighted_backend)
     return {
         "worker": min(weighted_worker / total, 1.0),
         "backend": min(weighted_backend / total, 1.0),
     }
+
+
+def _execution_evidence_total_bytes(value: object) -> int:
+    if not isinstance(value, Mapping):
+        return 0
+    return int(value.get("direct_bytes", 0) or 0) + int(value.get("relay_bytes", 0) or 0)
 
 
 def _relay_load_bucket(

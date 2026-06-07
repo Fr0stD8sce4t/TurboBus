@@ -81,6 +81,9 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
                     env={
                         **os.environ,
                         "TURBOBUS_BENCHMARK_TRACE": "1",
+                        "TURBOBUS_DAEMON_SOCKET_TIMEOUT_SECONDS": str(
+                            max(10, timeout_seconds - 20)
+                        ),
                         "TURBOBUS_WORKER_SOCKET_TIMEOUT_SECONDS": str(
                             max(10, timeout_seconds - 20)
                         ),

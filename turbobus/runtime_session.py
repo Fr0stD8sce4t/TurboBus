@@ -365,7 +365,7 @@ class TurboBusRuntimeSession:
                 max_inflight_chunks=max_inflight_chunks,
                 backend=backend,
                 runtime_options=options,
-                persistent_runtime_control=True,
+                persistent_runtime_control=False,
             )
         except Exception as exc:
             shutdown_evidence = _shutdown_managed_service_threads(
@@ -497,7 +497,7 @@ class TurboBusRuntimeSession:
                 max_inflight_chunks=max_inflight_chunks,
                 backend=backend,
                 runtime_options=options,
-                persistent_runtime_control=True,
+                persistent_runtime_control=False,
             )
         except Exception as exc:
             shutdown_evidence = _shutdown_managed_service_threads(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from dataclasses import asdict
@@ -21,6 +22,9 @@ class _DaemonSocketClientBase:
     def send(self, request: DaemonRequest) -> DaemonResponse:
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
+            timeout = _daemon_socket_timeout()
+            if timeout is not None:
+                client.settimeout(timeout)
             client.connect(self.socket_path)
             client.sendall((json.dumps(asdict(request)) + "\n").encode("utf-8"))
             data = b""
@@ -167,6 +171,9 @@ class TurboBusPersistentDaemonRuntimeClient(TurboBusDaemonRuntimeClient):
         super().__init__(socket_path)
         self._lock = threading.Lock()
         self._client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        timeout = _daemon_socket_timeout()
+        if timeout is not None:
+            self._client.settimeout(timeout)
         self._client.connect(self.socket_path)
         self._recv_buffer = b""
         self._closed = False
@@ -203,6 +210,16 @@ class TurboBusPersistentDaemonRuntimeClient(TurboBusDaemonRuntimeClient):
             payload=response_data.get("payload", {}),
             error=response_data.get("error"),
         )
+
+
+def _daemon_socket_timeout() -> float | None:
+    raw = os.environ.get("TURBOBUS_DAEMON_SOCKET_TIMEOUT_SECONDS")
+    if raw is None or not raw.strip():
+        return None
+    timeout = float(raw)
+    if timeout <= 0:
+        raise ValueError("TURBOBUS_DAEMON_SOCKET_TIMEOUT_SECONDS must be positive")
+    return timeout
 
 
 class TurboBusDaemonAdminClient(_DaemonSocketClientBase):

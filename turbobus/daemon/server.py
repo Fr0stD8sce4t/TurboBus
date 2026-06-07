@@ -868,11 +868,23 @@ class TurboBusDaemon:
                         final_state=TransferStatusState.FAILED,
                         cleanup_reason="transfer_status_mismatch",
                     )
+                    _merge_removed(
+                        removed,
+                        self._retire_terminal_transfer_without_reservations_locked(
+                            status.transfer_id,
+                            reason="transfer_status_mismatch",
+                        ),
+                    )
+                    promoted = self._promote_delayed_transfers_locked(now=time.time())
                     self._refresh_transfer_queue_record_locked(status.transfer_id)
                     return DaemonResponse(
                         ok=False,
                         error=mismatch,
-                        payload={"status": asdict(failed), "removed": removed},
+                        payload={
+                            "status": asdict(failed),
+                            "removed": removed,
+                            "promoted_transfers": promoted,
+                        },
                     )
                 return DaemonResponse(ok=False, error=str(exc))
             normalized_completion_source = str(completion_source or "").lower()
@@ -1003,6 +1015,15 @@ class TurboBusDaemon:
                     state=updated.state,
                     bytes_completed=updated.bytes_completed,
                 )
+                _merge_removed(
+                    removed,
+                    self._retire_terminal_transfer_without_reservations_locked(
+                        updated.transfer_id,
+                        reason="worker_complete",
+                    ),
+                )
+                if int(removed["transfers"]) > 0:
+                    promoted = self._promote_delayed_transfers_locked(now=time.time())
             elif updated.state is TransferStatusState.FAILED:
                 self._append_transfer_audit_records_locked(
                     event_type="worker_failure",
@@ -1018,6 +1039,13 @@ class TurboBusDaemon:
                         updated.transfer_id,
                         final_state=TransferStatusState.FAILED,
                         cleanup_reason=updated.error or "worker_failed",
+                    ),
+                )
+                _merge_removed(
+                    removed,
+                    self._retire_terminal_transfer_without_reservations_locked(
+                        updated.transfer_id,
+                        reason=updated.error or "worker_failed",
                     ),
                 )
                 promoted = self._promote_delayed_transfers_locked(now=time.time())
@@ -1036,6 +1064,13 @@ class TurboBusDaemon:
                         updated.transfer_id,
                         final_state=TransferStatusState.CANCELED,
                         cleanup_reason=updated.error or "transfer_canceled",
+                    ),
+                )
+                _merge_removed(
+                    removed,
+                    self._retire_terminal_transfer_without_reservations_locked(
+                        updated.transfer_id,
+                        reason=updated.error or "transfer_canceled",
                     ),
                 )
                 promoted = self._promote_delayed_transfers_locked(now=time.time())
@@ -2034,6 +2069,34 @@ class TurboBusDaemon:
                     mark_terminal=mark_terminal,
                 ),
             )
+        return removed
+
+    def _retire_terminal_transfer_without_reservations_locked(
+        self,
+        transfer_id: str,
+        *,
+        reason: str | None = None,
+    ) -> dict[str, int]:
+        normalized_transfer_id = str(transfer_id)
+        status = self._transfer_statuses.get(normalized_transfer_id)
+        if status is None or status.state not in _TERMINAL_TRANSFER_STATES:
+            return _empty_removed_summary()
+        if self._transfer_has_reservations_locked(normalized_transfer_id):
+            return _empty_removed_summary()
+        removed = _empty_removed_summary()
+        transfer_was_live = (
+            normalized_transfer_id in self._transfer_queue_records
+            or normalized_transfer_id in self._transfer_queue
+        )
+        if status.state is TransferStatusState.COMPLETE:
+            self._retire_completed_transfer_lease_state_locked(
+                normalized_transfer_id,
+                reason=reason,
+            )
+        else:
+            self._retire_transfer_runtime_state_locked(normalized_transfer_id)
+        if transfer_was_live:
+            removed["transfers"] = int(removed["transfers"]) + 1
         return removed
 
     def _reservations_for_transfer_locked(

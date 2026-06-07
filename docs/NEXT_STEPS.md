@@ -5,25 +5,24 @@ appending history.
 
 ## Current Main Target
 
-Close one full live scheduler runtime-load-feedback lifecycle in the daemon
-control path.
+Close one full cross-job ownership and cleanup-isolation lifecycle in the
+daemon and worker control path.
 
 ## Exit Criteria
 
-- Scheduler admission and path selection consume live queued, running, and
-  active transfer state from real daemon/runtime records instead of static or
-  stale summaries.
-- Runtime feedback from execution, completion source, and relay use stays on
-  the production daemon path and becomes visible to later scheduling.
-- The closure stays in production daemon/scheduler/runtime code and does not
-  add benchmark-owned, example-owned, or dry-run wrapper paths.
+- Cleanup for live, missing, and archived session/job/buffer/reservation targets
+  stays bound to the owning peer or daemon-owned identity.
+- Worker-issued cleanup and daemon-issued cleanup use the same ownership scope,
+  so shared relay use does not widen cross-job cleanup authority.
+- The closure stays in production daemon/worker/runtime code and does not add
+  benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler/load_feedback.py`
-- `turbobus/runtime/daemon_view.py`
+- `turbobus/worker/validation.py`
 - `turbobus/worker/lifecycle.py`
+- `turbobus/runtime_session.py`
 - `turbobus/schema.py`
 
 Round rules:
@@ -40,10 +39,11 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around transfer queue/runtime-state updates, then
-move through `scheduler/load_feedback.py`, `runtime/daemon_view.py`,
-`worker/lifecycle.py`, and `schema.py` to close one real live scheduler
-feedback loop.
+Start at `daemon/server.py` around cleanup ownership checks for live and
+retired targets, then move through `worker/validation.py` and
+`worker/lifecycle.py` to close one real owner-bound cleanup path. Touch
+`runtime_session.py` and `schema.py` only if the production cleanup contract
+needs it.
 
 After the current target closes, the next round should finish exactly one of
 these:

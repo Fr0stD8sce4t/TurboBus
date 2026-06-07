@@ -5,34 +5,32 @@ appending history.
 
 ## Current Main Target
 
-G4: close the dynamic feedback loop so daemon runtime state reflects real
-queued, running, active, completed, failed, and worker/backend execution
-signals before scheduler decisions are made.
+G5: close the daemon admission loop so transfer planning, relay admission,
+delayed admission, worker authorization, terminal cleanup, and promoted work
+all share one production admission state machine.
 
 ## Exit Criteria
 
-- Daemon runtime feedback uses live transfer status, worker lifecycle, active
-  staging records, relay leases, completion source, and failure evidence from
-  production state.
-- Scheduler input receives one coherent runtime-state view before planning and
-  no longer depends on stale or admission-only counters when current transfer
-  pressure is available.
-- Runtime feedback distinguishes queued, running, active, completed, failed,
-  direct, relay, and mixed pooled work without benchmark-owned, example-owned,
-  test-owned, dry-run, fake, or synthetic evidence.
-- Worker/backend completion and failure updates change the daemon feedback used
-  by later scheduling decisions.
+- Daemon admission decisions are recorded as production state and are refreshed
+  when relay leases, staging records, terminal transfers, or promoted delayed
+  transfers change availability.
+- Delayed transfers are promoted by daemon-owned admission state, not by
+  application, benchmark, example, dry-run, fake, or synthetic paths.
+- Worker authorization consumes the current admission state and exact daemon
+  ticket contract before staging records are registered.
+- Terminal completion, failure, cancellation, lease expiry, and cleanup update
+  admission state and unblock eligible queued work.
 - The closure stays in daemon/scheduler/runtime production code and preserves
-  the daemon-issued plan and exact-ticket execution contract.
+  daemon-issued plans as the only production transfer-plan source.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
 - `turbobus/scheduler/daemon.py`
-- `turbobus/runtime_feedback.py`
-- `turbobus/intent_executor.py`
+- `turbobus/scheduler/load_feedback.py`
+- `turbobus/daemon/receipts.py`
 - `turbobus/worker/lifecycle.py`
-- `turbobus/worker/cuda_executor.py`
+- `turbobus/worker/validation.py`
 
 Round rules:
 
@@ -53,15 +51,15 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around runtime state snapshot construction,
-transfer status updates, worker lifecycle updates, completion evidence storage,
-and scheduler invocation. Then follow the runtime-state payload into
-`scheduler/daemon.py` and `runtime_feedback.py` only as needed to make the
-feedback consumed by scheduling come from current production state.
+Start at `daemon/server.py` around `_admission_for_decision_locked`,
+`_validate_transfer_admission_locked`, `_promote_delayed_transfers_locked`,
+worker authorization, terminal cleanup, and lease expiry. Then follow only the
+production admission state into scheduler feedback or worker validation where
+needed.
 
 After the current target closes in auto-advance mode, the next queued target is:
 
-- G5 daemon admission loop.
+- G6 multi-tenant isolation hardening.
 
 Plan-file rule:
 
@@ -76,9 +74,8 @@ started TurboBus Auto-Advance Mode.
 
 Remaining auto-advance target queue:
 
-1. G4 dynamic feedback loop.
-2. G5 daemon admission loop.
-3. G6 multi-tenant isolation hardening.
+1. G5 daemon admission loop.
+2. G6 multi-tenant isolation hardening.
 
 In auto-advance mode:
 

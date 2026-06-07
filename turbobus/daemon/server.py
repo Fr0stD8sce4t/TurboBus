@@ -3041,6 +3041,12 @@ class TurboBusDaemon:
             if str(record.get("state")) == TransferStatusState.SUBMITTED.value
             and not _record_has_admitted_execution(record)
         ]
+        admitted_transfers = [
+            dict(record)
+            for record in transfer_records
+            if str(record.get("state")) == TransferStatusState.SUBMITTED.value
+            and _record_has_admitted_execution(record)
+        ]
         queued_transfers = [
             dict(record)
             for record in transfer_records
@@ -3098,8 +3104,15 @@ class TurboBusDaemon:
         }
         completion_source_counts: dict[str, int] = {}
         terminal_completion_source_counts: dict[str, int] = {}
+        active_execution_evidence = _empty_execution_path_evidence()
+        active_execution_evidence_by_source: dict[str, dict[str, int]] = {}
         terminal_execution_evidence = _terminal_execution_evidence_from_records(
             (*transfer_records, *recent_terminal_feedback)
+        )
+        terminal_execution_evidence_by_source = (
+            _terminal_execution_evidence_by_source_from_records(
+                (*transfer_records, *recent_terminal_feedback)
+            )
         )
         for key, value in path_summary.items():
             if not key.endswith(":relay"):
@@ -3107,6 +3120,26 @@ class TurboBusDaemon:
             relay_path_summary["path_count"] += int(value.get("path_count", 0) or 0)
             relay_path_summary["chunk_count"] += int(value.get("chunk_count", 0) or 0)
             relay_path_summary["bytes_total"] += int(value.get("bytes_total", 0) or 0)
+        for record in path_records:
+            kind = str(record.get("kind", "unknown"))
+            _accumulate_execution_path_evidence(
+                active_execution_evidence,
+                kind=kind,
+                bytes_total=int(record.get("bytes_total", 0) or 0),
+                chunk_count=int(record.get("chunk_count", 0) or 0),
+            )
+            completion_source = str(record.get("completion_source", "")).lower()
+            if completion_source:
+                source_bucket = active_execution_evidence_by_source.setdefault(
+                    completion_source,
+                    _empty_execution_path_evidence(),
+                )
+                _accumulate_execution_path_evidence(
+                    source_bucket,
+                    kind=kind,
+                    bytes_total=int(record.get("bytes_total", 0) or 0),
+                    chunk_count=int(record.get("chunk_count", 0) or 0),
+                )
         for record in (*transfer_records, *recent_terminal_feedback):
             completion_source = str(record.get("completion_source", "")).lower()
             if not completion_source:
@@ -3146,6 +3179,7 @@ class TurboBusDaemon:
             "transfer_order": tuple(self._transfer_queue),
             "transfers": transfer_records,
             "queued_transfers": queued_transfers,
+            "admitted_transfers": admitted_transfers,
             "delayed_transfers": delayed_transfers,
             "running_transfers": running_transfers,
             "active_transfers": active_transfers,
@@ -3158,6 +3192,7 @@ class TurboBusDaemon:
             "relay_staging": staging_records,
             "summary": {
                 "queued_transfer_count": len(queued_transfers),
+                "admitted_transfer_count": len(admitted_transfers),
                 "delayed_transfer_count": len(delayed_transfers),
                 "running_transfer_count": len(running_transfers),
                 "active_transfer_count": len(active_transfers),
@@ -3181,7 +3216,10 @@ class TurboBusDaemon:
                 "relay_load": relay_load,
                 "completion_source_counts": completion_source_counts,
                 "terminal_completion_source_counts": terminal_completion_source_counts,
+                "active_execution_evidence": active_execution_evidence,
+                "active_execution_evidence_by_source": active_execution_evidence_by_source,
                 "terminal_execution_evidence": terminal_execution_evidence,
+                "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
                 "queued_bytes_by_direction": queued_by_direction,
                 "active_bytes_by_direction": active_by_direction,
                 "active_paths": path_summary,
@@ -5961,6 +5999,7 @@ def _runtime_state_without_transfer(
     for key in (
         "transfers",
         "queued_transfers",
+        "admitted_transfers",
         "delayed_transfers",
         "running_transfers",
         "active_transfers",
@@ -6097,6 +6136,9 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     summary_copy.update(
         {
             "queued_transfer_count": len(runtime_state.get("queued_transfers", ()) or ()),
+            "admitted_transfer_count": len(
+                runtime_state.get("admitted_transfers", ()) or ()
+            ),
             "delayed_transfer_count": len(runtime_state.get("delayed_transfers", ()) or ()),
             "running_transfer_count": len(runtime_state.get("running_transfers", ()) or ()),
             "active_transfer_count": len(runtime_state.get("active_transfers", ()) or ()),

@@ -28,6 +28,7 @@ class RuntimeLoadView:
     active_transfer_count: int
     running_transfer_count: int
     queued_transfer_count: int
+    admitted_transfer_count: int
     delayed_transfer_count: int
     relay_load: dict[int, dict[str, object]]
     completion_source_pressure: dict[str, float]
@@ -67,6 +68,7 @@ class RuntimeLoadView:
             "active_transfer_count": self.active_transfer_count,
             "running_transfer_count": self.running_transfer_count,
             "queued_transfer_count": self.queued_transfer_count,
+            "admitted_transfer_count": self.admitted_transfer_count,
             "delayed_transfer_count": self.delayed_transfer_count,
             "completion_source_counts": {
                 str(key): int(value)
@@ -113,6 +115,7 @@ class RuntimeLoadView:
         if relay_bytes > 0:
             pressure += min(relay_bytes / active_bytes, 1.0) * 0.14
         pressure += min(self.queued_transfer_count, 8) * 0.015
+        pressure += min(self.admitted_transfer_count, 8) * 0.020
         pressure += min(self.delayed_transfer_count, 8) * 0.025
         return max(0.0, pressure)
 
@@ -129,6 +132,7 @@ class RuntimeLoadView:
         direct_bytes = int(self.active_execution_evidence.get("direct_bytes", 0) or 0)
         pressure += min(self.running_transfer_count, 8) * 0.02
         pressure += min(self.queued_transfer_count, 8) * 0.01
+        pressure += min(self.admitted_transfer_count, 8) * 0.015
         if self.total_active_bytes > 0:
             pressure += min(active_bytes / max(self.total_active_bytes, 1), 1.0) * 0.12
             if direct_bytes > 0:
@@ -143,6 +147,7 @@ def runtime_state_metadata(
         return {
             "version": 0,
             "queued_transfer_count": 0,
+            "admitted_transfer_count": 0,
             "delayed_transfer_count": 0,
             "running_transfer_count": 0,
             "active_transfer_count": 0,
@@ -178,6 +183,7 @@ def runtime_state_metadata(
     return {
         "version": int(runtime_state.get("version", 0) or 0),
         "queued_transfer_count": int(summary.get("queued_transfer_count", 0) or 0),
+        "admitted_transfer_count": int(summary.get("admitted_transfer_count", 0) or 0),
         "delayed_transfer_count": int(summary.get("delayed_transfer_count", 0) or 0),
         "running_transfer_count": int(summary.get("running_transfer_count", 0) or 0),
         "active_transfer_count": int(summary.get("active_transfer_count", 0) or 0),
@@ -236,6 +242,7 @@ def runtime_view(
     active_transfer_count = 0
     running_transfer_count = 0
     queued_transfer_count = 0
+    admitted_transfer_count = 0
     delayed_transfer_count = 0
     job_runtime_state: Mapping[str, object] = {}
     if isinstance(runtime_state, Mapping):
@@ -244,6 +251,7 @@ def runtime_view(
             active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
             running_transfer_count = int(summary.get("running_transfer_count", 0) or 0)
             queued_transfer_count = int(summary.get("queued_transfer_count", 0) or 0)
+            admitted_transfer_count = int(summary.get("admitted_transfer_count", 0) or 0)
             delayed_transfer_count = int(summary.get("delayed_transfer_count", 0) or 0)
             nested_jobs = summary.get("job_runtime_state", {})
             if isinstance(nested_jobs, Mapping):
@@ -313,6 +321,7 @@ def runtime_view(
     resource_pressure = 0.0
     resource_pressure += min(int(active_transfer_count), 8) * 0.02
     resource_pressure += min(int(running_transfer_count), 8) * 0.05
+    resource_pressure += min(int(admitted_transfer_count), 8) * 0.03
     resource_pressure += min(active_reservation_count, 8) * 0.03
     resource_pressure += min(active_lease_count, 8) * 0.03
     resource_pressure += min(relay_staging_count, 8) * 0.04
@@ -349,6 +358,7 @@ def runtime_view(
         active_transfer_count=active_transfer_count,
         running_transfer_count=running_transfer_count,
         queued_transfer_count=queued_transfer_count,
+        admitted_transfer_count=admitted_transfer_count,
         delayed_transfer_count=delayed_transfer_count,
         relay_load=relay_load,
         completion_source_pressure=completion_source_pressure,
@@ -406,6 +416,8 @@ def relay_admission_blocked_reason(
         return "relay runtime load is saturated"
     if runtime_view.delayed_transfer_count > 0 and pressure >= 0.65:
         return "relay runtime load is delayed by queued backlog"
+    if runtime_view.admitted_transfer_count >= 2 and pressure >= 0.58:
+        return "relay runtime load is delayed by admitted worker backlog"
     if (
         runtime_view.running_transfer_count >= 3
         and (active_chunk_count > 0 or active_lease_count > 0)

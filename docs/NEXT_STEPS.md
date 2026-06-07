@@ -5,29 +5,29 @@ appending history.
 
 ## Current Main Target
 
-Close one full `TurboBusRuntimeSession` production startup and execution
-authority path across runtime-managed daemon/worker sockets, session/job
-registration, buffer registration, intent submission, and receipt consumption.
+Close one full daemon-issued `TransferIntent -> SchedulingDecision ->
+ExecutionTicket -> worker/backend execution -> TransferReceipt` lifecycle for
+mixed direct + relay execution, with unified completion, failure, cleanup, and
+runtime feedback evidence.
 
 ## Exit Criteria
 
-- `TurboBusRuntimeSession` is the clear production entry for managed
-  daemon/worker startup, runtime control connection, session/job registration,
-  buffer registration, transfer submission, and receipt consumption.
-- Production-looking alternate startup or execution paths no longer carry the
-  same end-to-end responsibility outside the runtime session boundary.
-- The closure stays in system-body runtime/daemon/worker code and does not add
+- A daemon-issued mixed plan must execute all direct chunks and relay chunks on
+  the real worker/backend path and return one valid `TransferReceipt`.
+- Completion, failure, cleanup, and runtime feedback for mixed execution must
+  agree on one daemon-issued transfer contract instead of splitting between
+  partial paths.
+- The closure stays in system-body daemon/runtime/worker code and does not add
   benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
-- `turbobus/runtime/session_state.py`
-- `turbobus/daemon/client.py`
-- `turbobus/daemon/startup.py`
+- `turbobus/intent_executor.py`
+- `turbobus/direct_fallback.py`
 - `turbobus/daemon/server.py`
-- `turbobus/worker/process.py`
-- `turbobus/worker/socket_client.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/worker/resources.py`
+- `turbobus/runtime_session.py`
 
 Round rules:
 
@@ -43,17 +43,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py` around managed production socket startup,
-runtime-owned clients, and close semantics, then move through
-`runtime/session_state.py`, `daemon/client.py`, `daemon/startup.py`,
-`worker/process.py`, and `worker/socket_client.py` to close one real runtime
-session authority path.
+Start at `intent_executor.py` around mixed direct + relay execution and failure
+paths, then move through `direct_fallback.py`, `daemon/server.py`,
+`worker/lifecycle.py`, `worker/resources.py`, and `runtime_session.py` to
+close one real mixed execution lifecycle.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full production system-body closure for the next remaining execution,
-  scheduler-feedback, or ownership-hardening gap.
+- one full production system-body closure for the next remaining runtime
+  authority, scheduler-feedback, or ownership-hardening gap.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

@@ -7,25 +7,24 @@
 - `TurboBusRuntimeSession` stays the intended production entry, and
   daemon-issued execution, receipt formation, cleanup, and runtime feedback
   remain on the real production path.
-- Registered runtime-owned CPU buffer release evidence now flows back into
-  daemon-retained buffer cleanup state and archived transfer receipt buffer
-  snapshots, so runtime buffer lifetime no longer stops at a local session
-  close return payload.
+- `TurboBusRuntimeSession.open_production_socket()` now attaches to a live
+  daemon, probes for a worker socket, and starts a runtime-owned worker service
+  when the worker is missing, so runtime session authority no longer depends on
+  the caller pre-assembling the relay-capable worker path by hand.
 
 ## Remaining Risk
 
-- `TurboBusRuntimeSession` still needs one full production authority closure
-  across managed daemon/worker startup, runtime-owned clients, session/job
-  registration, buffer registration, intent submission, and receipt
-  consumption.
+- Mixed direct + relay daemon-issued execution still needs one full lifecycle
+  closure across execution, failure, cleanup, receipt formation, and runtime
+  feedback.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full `TurboBusRuntimeSession` production startup and execution
-authority path across runtime-managed daemon/worker sockets, session/job
-registration, buffer registration, intent submission, and receipt consumption.
+Finish one full daemon-issued mixed direct + relay execution lifecycle across
+`TransferIntent -> SchedulingDecision -> ExecutionTicket -> worker/backend
+execution -> TransferReceipt`.
 
 Progress-file rule:
 

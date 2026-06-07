@@ -281,16 +281,122 @@ class TurboBusRuntimeSession:
             daemon_socket_path=str(resolved_daemon_socket),
             worker_socket_path=str(resolved_worker_socket),
         )
-        session = cls.open_socket(
-            daemon_socket_path=str(resolved_daemon_socket),
-            worker_socket_path=str(resolved_worker_socket),
-            job_id=job_id,
-            user_id=user_id,
-            max_inflight_chunks=max_inflight_chunks,
-            backend=backend,
-            runtime_options=options,
-            persistent_runtime_control=True,
+        daemon_path = str(resolved_daemon_socket)
+        worker_path = str(resolved_worker_socket)
+        startup_lock = threading.Lock()
+        startup_records: dict[str, dict[str, object]] = {}
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "daemon",
+            service="daemon",
+            state="attaching",
+            owned=False,
+            socket_path=daemon_path,
         )
+        worker_stop_event: threading.Event | None = None
+        worker_thread: threading.Thread | None = None
+        startup_evidence: dict[str, object] | None = None
+        try:
+            _wait_for_daemon_socket_ready(
+                daemon_socket_path=daemon_path,
+                startup_records=startup_records,
+                startup_lock=startup_lock,
+            )
+            _update_managed_service_startup_record(
+                startup_records,
+                startup_lock,
+                "worker",
+                service="worker",
+                state="probing",
+                owned=False,
+                daemon_socket_path=daemon_path,
+                socket_path=worker_path,
+            )
+            try:
+                _wait_for_worker_socket_ready(
+                    worker_socket_path=worker_path,
+                    startup_records=startup_records,
+                    startup_lock=startup_lock,
+                    timeout_seconds=0.1,
+                    poll_interval_seconds=0.01,
+                )
+            except Exception:
+                _update_managed_service_startup_record(
+                    startup_records,
+                    startup_lock,
+                    "worker",
+                    service="worker",
+                    state="starting",
+                    owned=True,
+                    daemon_socket_path=daemon_path,
+                    socket_path=worker_path,
+                )
+                worker_stop_event = threading.Event()
+                worker_thread = threading.Thread(
+                    target=_run_managed_worker_service,
+                    kwargs={
+                        "daemon_socket_path": daemon_path,
+                        "worker_socket_path": worker_path,
+                        "stop_event": worker_stop_event,
+                        "backend": backend,
+                        "runtime_options": options,
+                        "startup_records": startup_records,
+                        "startup_lock": startup_lock,
+                    },
+                    name="turbobus-worker-service",
+                    daemon=True,
+                )
+                worker_thread.start()
+                _wait_for_worker_socket_ready(
+                    worker_socket_path=worker_path,
+                    startup_records=startup_records,
+                    startup_lock=startup_lock,
+                )
+            startup_evidence = _managed_service_startup_snapshot(
+                startup_records,
+                startup_lock,
+            )
+            session = cls.open(
+                TurboBusDaemonClient(daemon_path),
+                job_id=job_id,
+                user_id=user_id,
+                runtime_daemon_client=TurboBusPersistentDaemonRuntimeClient(daemon_path),
+                execution_daemon_client=TurboBusDaemonExecutionClient(daemon_path),
+                profile_daemon_client=TurboBusDaemonProfileClient(daemon_path),
+                worker_client=WorkerServiceSocketClient(worker_path),
+                max_inflight_chunks=max_inflight_chunks,
+                backend=backend,
+                runtime_options=options,
+            )
+        except Exception as exc:
+            shutdown_evidence = _shutdown_managed_service_threads(
+                daemon_stop_event=None,
+                daemon_thread=None,
+                daemon_socket_path=daemon_path,
+                worker_stop_event=worker_stop_event,
+                worker_thread=worker_thread,
+                worker_socket_path=worker_path,
+            )
+            startup_snapshot = _managed_service_startup_snapshot(
+                startup_records,
+                startup_lock,
+            )
+            raise _managed_startup_error(
+                exc,
+                startup_evidence=startup_snapshot,
+                shutdown_evidence=shutdown_evidence,
+            ) from exc
+        session._managed_service_startup_evidence = startup_evidence
+        session._managed_service_records = startup_records
+        session._managed_service_lock = startup_lock
+        if worker_stop_event is not None and worker_thread is not None:
+            session._owned_worker_stop_event = worker_stop_event
+            session._owned_worker_thread = worker_thread
+            session._owned_worker_socket_path = worker_path
+        session._owned_daemon_socket_path = None
+        session._owned_daemon_stop_event = None
+        session._owned_daemon_thread = None
         session._runtime_control_connection_owned = True
         return session
 
@@ -1590,16 +1696,21 @@ class TurboBusRuntimeSession:
             if not isinstance(value, Mapping):
                 continue
             owned = bool(value.get("owned", False))
-            if not owned:
-                continue
             stop_requested = bool(value.get("stop_requested", False))
             state = str(value.get("state", "")).lower()
             thread_alive = bool(value.get("thread_alive", False))
             if state in {"failed", "stopped"} and not stop_requested:
                 failures.append(f"{service}:{state}")
-                continue
-            if not thread_alive and not stop_requested:
+            if owned and not thread_alive and not stop_requested:
                 failures.append(f"{service}:thread_dead")
+            socket_path = value.get("socket_path")
+            socket_exists = value.get("socket_exists")
+            if (
+                socket_path is not None
+                and socket_exists is False
+                and not stop_requested
+            ):
+                failures.append(f"{service}:socket_missing")
         runtime_control = snapshot.get("runtime_control")
         if isinstance(runtime_control, Mapping):
             if bool(runtime_control.get("owned", False)) and bool(
@@ -1896,72 +2007,20 @@ def _wait_for_managed_services_ready(
     timeout_seconds: float = 5.0,
     poll_interval_seconds: float = 0.05,
 ) -> dict[str, object]:
-    deadline = time.time() + max(0.1, float(timeout_seconds))
-    daemon_error: Exception | None = None
-    while time.time() < deadline:
-        daemon_failure = _managed_service_failure_record_or_none(
-            startup_records,
-            startup_lock,
-            "daemon",
-        )
-        if daemon_failure is not None:
-            raise ManagedProductionStartupError(
-                "managed daemon service failed before startup completed",
-                evidence={"startup": {"services": {"daemon": daemon_failure}}},
-            )
-        try:
-            daemon_ready = TurboBusDaemonProfileClient(str(daemon_socket_path))
-            require_ok(daemon_ready.discover_relays(), "daemon startup probe failed")
-            daemon_error = None
-            _update_managed_service_startup_record_if_available(
-                startup_records,
-                startup_lock,
-                "daemon",
-                state="ready",
-                ready_at=time.time(),
-                ready_probe="discover_relays",
-                socket_path=str(daemon_socket_path),
-            )
-            break
-        except Exception as exc:
-            daemon_error = exc
-            time.sleep(max(0.001, float(poll_interval_seconds)))
-    if daemon_error is not None:
-        raise RuntimeError(
-            f"managed daemon socket did not become ready: {daemon_error}"
-        ) from daemon_error
-    worker_error: Exception | None = None
-    while time.time() < deadline:
-        worker_failure = _managed_service_failure_record_or_none(
-            startup_records,
-            startup_lock,
-            "worker",
-        )
-        if worker_failure is not None:
-            raise ManagedProductionStartupError(
-                "managed worker service failed before startup completed",
-                evidence={"startup": {"services": {"worker": worker_failure}}},
-            )
-        try:
-            _probe_worker_socket_ready(str(worker_socket_path))
-            worker_error = None
-            _update_managed_service_startup_record_if_available(
-                startup_records,
-                startup_lock,
-                "worker",
-                state="ready",
-                ready_at=time.time(),
-                ready_probe="worker_socket_connect",
-                socket_path=str(worker_socket_path),
-            )
-            break
-        except Exception as exc:
-            worker_error = exc
-            time.sleep(max(0.001, float(poll_interval_seconds)))
-    if worker_error is not None:
-        raise RuntimeError(
-            f"managed worker socket did not become ready: {worker_error}"
-        ) from worker_error
+    _wait_for_daemon_socket_ready(
+        daemon_socket_path=daemon_socket_path,
+        startup_records=startup_records,
+        startup_lock=startup_lock,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+    _wait_for_worker_socket_ready(
+        worker_socket_path=worker_socket_path,
+        startup_records=startup_records,
+        startup_lock=startup_lock,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
     if startup_records is None or startup_lock is None:
         return {}
     return _managed_service_startup_snapshot(startup_records, startup_lock)
@@ -2046,18 +2105,25 @@ def _managed_service_runtime_snapshot(
             if isinstance(services.get(service_name), Mapping)
             else {}
         )
-        owned = (
+        present = (
             thread is not None
             or stop_event is not None
             or socket_path is not None
             or bool(record)
         )
-        if not owned:
+        if not present:
             continue
+        owned = bool(record.get("owned", False)) or thread is not None or stop_event is not None
         record["service"] = str(service_name)
-        record["owned"] = True
-        record["thread_alive"] = bool(thread is not None and thread.is_alive())
-        record["stop_requested"] = bool(stop_event is not None and stop_event.is_set())
+        record["owned"] = owned
+        if thread is not None:
+            record["thread_alive"] = bool(thread.is_alive())
+        elif owned and "thread_alive" not in record:
+            record["thread_alive"] = False
+        if stop_event is not None:
+            record["stop_requested"] = bool(stop_event.is_set())
+        else:
+            record["stop_requested"] = bool(record.get("stop_requested", False))
         if socket_path is not None:
             record["socket_path"] = str(socket_path)
             record["socket_exists"] = os.path.exists(str(socket_path))
@@ -2088,6 +2154,89 @@ def _runtime_options_with_socket_paths(
     values["daemon_socket_path"] = str(daemon_socket_path)
     values["worker_socket_path"] = str(worker_socket_path)
     return RuntimeOptions(**values)
+
+
+def _wait_for_daemon_socket_ready(
+    *,
+    daemon_socket_path: str,
+    startup_records: dict[str, dict[str, object]] | None = None,
+    startup_lock: threading.Lock | None = None,
+    timeout_seconds: float = 5.0,
+    poll_interval_seconds: float = 0.05,
+) -> None:
+    deadline = time.time() + max(0.1, float(timeout_seconds))
+    daemon_error: Exception | None = None
+    while time.time() < deadline:
+        daemon_failure = _managed_service_failure_record_or_none(
+            startup_records,
+            startup_lock,
+            "daemon",
+        )
+        if daemon_failure is not None:
+            raise ManagedProductionStartupError(
+                "managed daemon service failed before startup completed",
+                evidence={"startup": {"services": {"daemon": daemon_failure}}},
+            )
+        try:
+            daemon_ready = TurboBusDaemonProfileClient(str(daemon_socket_path))
+            require_ok(daemon_ready.discover_relays(), "daemon startup probe failed")
+            _update_managed_service_startup_record_if_available(
+                startup_records,
+                startup_lock,
+                "daemon",
+                state="ready",
+                ready_at=time.time(),
+                ready_probe="discover_relays",
+                socket_path=str(daemon_socket_path),
+            )
+            return
+        except Exception as exc:
+            daemon_error = exc
+            time.sleep(max(0.001, float(poll_interval_seconds)))
+    raise RuntimeError(
+        f"managed daemon socket did not become ready: {daemon_error}"
+    ) from daemon_error
+
+
+def _wait_for_worker_socket_ready(
+    *,
+    worker_socket_path: str,
+    startup_records: dict[str, dict[str, object]] | None = None,
+    startup_lock: threading.Lock | None = None,
+    timeout_seconds: float = 5.0,
+    poll_interval_seconds: float = 0.05,
+) -> None:
+    deadline = time.time() + max(0.1, float(timeout_seconds))
+    worker_error: Exception | None = None
+    while time.time() < deadline:
+        worker_failure = _managed_service_failure_record_or_none(
+            startup_records,
+            startup_lock,
+            "worker",
+        )
+        if worker_failure is not None:
+            raise ManagedProductionStartupError(
+                "managed worker service failed before startup completed",
+                evidence={"startup": {"services": {"worker": worker_failure}}},
+            )
+        try:
+            _probe_worker_socket_ready(str(worker_socket_path))
+            _update_managed_service_startup_record_if_available(
+                startup_records,
+                startup_lock,
+                "worker",
+                state="ready",
+                ready_at=time.time(),
+                ready_probe="worker_socket_connect",
+                socket_path=str(worker_socket_path),
+            )
+            return
+        except Exception as exc:
+            worker_error = exc
+            time.sleep(max(0.001, float(poll_interval_seconds)))
+    raise RuntimeError(
+        f"managed worker socket did not become ready: {worker_error}"
+    ) from worker_error
 
 
 __all__ = ["ManagedProductionStartupError", "TurboBusRuntimeSession"]

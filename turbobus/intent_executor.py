@@ -848,9 +848,9 @@ def _fail_transfer_without_worker_client(
         strict=False,
     )
     failure_message = (
-        "daemon-issued relay execution requires a worker client; "
-        "use TurboBusRuntimeSession.open_production_socket or provide "
-        "an explicit worker client"
+        "daemon-issued relay execution requires a runtime-session-managed "
+        "worker service; use TurboBusRuntimeSession.open_production_socket "
+        "or open_managed_production_socket"
     )
     daemon_client.transfer_status(
         str(payload["transfer_id"]),

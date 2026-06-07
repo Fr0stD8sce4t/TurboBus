@@ -119,8 +119,8 @@ def _multi_relay_profile() -> dict:
 def _authorized_relay_transfer(daemon: TurboBusDaemon):
     register = daemon.register_session(
         target_gpu=0,
-        requested_relays=[1],
         max_inflight_chunks=8,
+        worker_relay_capable=True,
     )
     session_id = register.payload["session"]["session_id"]
     assert daemon.register_job(job_id="job-1", session_id=session_id).ok
@@ -147,19 +147,14 @@ def _authorized_relay_transfer(daemon: TurboBusDaemon):
         metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
     ).ok
     assert daemon.put_profile(target_gpu=0, relay_gpus=[1], profile=_relay_profile()).ok
-    planned = daemon.handle_request(
-        DaemonRequest(
-            request_type=RequestType.PLAN_TRANSFER,
-            session_id=session_id,
-            payload={
-                "total_bytes": 64,
-                "chunk_bytes": 16,
-                "mode": "pool",
-                "direction": "h2d",
-                "job_id": "job-1",
-                "buffer_ids": ["cpu-buffer", "gpu-buffer"],
-            },
-        )
+    planned = daemon._plan_transfer(
+        session_id=session_id,
+        total_bytes=64,
+        chunk_bytes=16,
+        mode="pool",
+        direction="h2d",
+        job_id="job-1",
+        buffer_ids=["cpu-buffer", "gpu-buffer"],
     )
     assert planned.ok
     transfer_id = planned.payload["transfer_id"]
@@ -191,8 +186,8 @@ def _register_intent_job(
     if session_id is None:
         register = daemon.register_session(
             target_gpu=0,
-            requested_relays=[1],
             max_inflight_chunks=8,
+            worker_relay_capable=True,
         )
         assert register.ok
         session_id = register.payload["session"]["session_id"]
@@ -3386,6 +3381,40 @@ class DaemonStateTest(unittest.TestCase):
         self.assertEqual(status.payload["status"]["state"], "failed")
         self.assertEqual(status.payload["status"]["bytes_completed"], 0)
         self.assertEqual(status.payload["status"]["error"], "worker failed")
+
+    def test_worker_complete_cleanup_releases_lease_without_terminal_transfer(self) -> None:
+        daemon = _daemon(
+            relay_gpus=[1],
+            max_sessions_per_relay=1,
+            max_inflight_chunks_per_relay=8,
+        )
+        _, planned, lease_token, _ = _authorized_relay_transfer(daemon)
+        transfer_id = planned.payload["transfer_id"]
+        reservation_id = lease_token["lease_id"]
+
+        cleaned = daemon.cleanup(
+            target_kind="reservation",
+            target_id=reservation_id,
+            reason="worker_complete",
+            force=True,
+        )
+        pending = daemon.transfer_status(transfer_id)
+        completed = daemon.transfer_status(
+            transfer_id,
+            state="complete",
+            bytes_completed=64,
+        )
+
+        self.assertTrue(cleaned.ok)
+        self.assertEqual(cleaned.payload["removed"]["reservations"], 1)
+        self.assertEqual(cleaned.payload["removed"]["staging_records"], 1)
+        self.assertEqual(cleaned.payload["removed"]["transfers"], 0)
+        self.assertTrue(pending.ok)
+        self.assertEqual(pending.payload["status"]["state"], "submitted")
+        self.assertEqual(pending.payload["status"]["bytes_completed"], 0)
+        self.assertTrue(completed.ok)
+        self.assertEqual(completed.payload["status"]["state"], "complete")
+        self.assertEqual(completed.payload["status"]["bytes_completed"], 64)
 
     def test_worker_failure_status_releases_reservation_and_staging_record(self) -> None:
         daemon = _daemon(

@@ -703,10 +703,16 @@ class TurboBusDaemon:
                             **cleanup_result,
                         },
                     )
+                cleanup_marks_transfer_terminal = cleanup.reason != "worker_complete"
                 released = self._release_reservation_and_count_locked(
                     cleanup.target_id,
-                    final_state=TransferStatusState.CANCELED,
+                    final_state=(
+                        TransferStatusState.CANCELED
+                        if cleanup_marks_transfer_terminal
+                        else TransferStatusState.COMPLETE
+                    ),
                     cleanup_reason=cleanup.reason,
+                    mark_terminal=cleanup_marks_transfer_terminal,
                 )
                 if (
                     int(released["reservations"]) == 0

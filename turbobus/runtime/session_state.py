@@ -66,6 +66,9 @@ def clear_runtime_session_state(session) -> None:
     session._client = None
     session._transfer_executor = None
     session._profile_bootstrapped = False
+    profile_bootstrap_evidence = getattr(session, "_profile_bootstrap_evidence", None)
+    if profile_bootstrap_evidence is not None:
+        session._profile_bootstrap_evidence = None
     session._buffers.clear()
     session._registered_buffer_ids.clear()
     session._registered_buffer_fingerprints.clear()

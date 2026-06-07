@@ -168,6 +168,11 @@ class TurboBusRuntimeSession:
         repr=False,
     )
     _profile_bootstrapped: bool = field(default=False, init=False, repr=False)
+    _profile_bootstrap_evidence: dict[str, object] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -593,6 +598,7 @@ class TurboBusRuntimeSession:
                     pass
             self._relay_gpus = None
             self._profile_bootstrapped = False
+            self._profile_bootstrap_evidence = None
             raise
         self._relay_gpus = relay_gpus
         self._session_id = session_id
@@ -769,7 +775,11 @@ class TurboBusRuntimeSession:
         if self._profile_bootstrapped and not force:
             return DaemonResponse(
                 ok=True,
-                payload={"bootstrapped": True, "already_bootstrapped": True},
+                payload={
+                    "bootstrapped": True,
+                    "already_bootstrapped": True,
+                    "profile_bootstrap": self.profile_bootstrap_snapshot(),
+                },
             )
         return self._bootstrap_daemon_profile(relays, force=force)
 
@@ -916,6 +926,26 @@ class TurboBusRuntimeSession:
             runtime_client=self.runtime_daemon_client,
         )
 
+    def profile_bootstrap_snapshot(self) -> dict[str, object]:
+        evidence = (
+            {}
+            if self._profile_bootstrap_evidence is None
+            else dict(self._profile_bootstrap_evidence)
+        )
+        evidence.setdefault("bootstrapped", bool(self._profile_bootstrapped))
+        evidence.setdefault(
+            "profile_on_first_transfer",
+            bool(self.runtime_options.profile_on_first_transfer),
+        )
+        if self._target_gpu is not None:
+            evidence.setdefault("target_gpu", int(self._target_gpu))
+        if self._relay_gpus is not None:
+            evidence.setdefault(
+                "relay_gpus",
+                [int(gpu) for gpu in self._relay_gpus],
+            )
+        return evidence
+
     def _register_buffer(self, buffer: ExecutableBuffer) -> None:
         self._require_open()
         validate_runtime_buffer_backing(buffer)
@@ -1054,6 +1084,7 @@ class TurboBusRuntimeSession:
                 self._session_id = None
                 self._relay_gpus = None
                 self._profile_bootstrapped = False
+                self._profile_bootstrap_evidence = None
             raise
 
     def make_offload_store(
@@ -1607,7 +1638,13 @@ class TurboBusRuntimeSession:
         self._require_open()
         if self._profile_bootstrapped:
             return
-        if not bool(self.runtime_options.profile_on_first_transfer):
+        profile_enabled = bool(self.runtime_options.profile_on_first_transfer)
+        if not profile_enabled:
+            self._profile_bootstrap_evidence = {
+                "bootstrapped": False,
+                "profile_on_first_transfer": False,
+                "source": "disabled",
+            }
             return
         self.bootstrap_profile(force=False)
 
@@ -1626,6 +1663,20 @@ class TurboBusRuntimeSession:
             force=force,
         )
         self._profile_bootstrapped = True
+        evidence = response.payload.get("profile_bootstrap")
+        if isinstance(evidence, Mapping):
+            snapshot = dict(evidence)
+        else:
+            snapshot = {
+                "source": "unknown",
+                "target_gpu": int(self._target_gpu),
+                "relay_gpus": [int(gpu) for gpu in relay_gpus],
+            }
+        snapshot["bootstrapped"] = True
+        snapshot["profile_on_first_transfer"] = bool(
+            self.runtime_options.profile_on_first_transfer
+        )
+        self._profile_bootstrap_evidence = snapshot
         return response
 
     def _require_open(self) -> None:

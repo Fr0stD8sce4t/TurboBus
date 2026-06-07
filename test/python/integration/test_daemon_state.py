@@ -1191,6 +1191,41 @@ class DaemonStateTest(unittest.TestCase):
             1,
         )
 
+    def test_profile_cache_accepts_profiled_relay_subset(self) -> None:
+        daemon = _daemon(relay_gpus=[1, 2])
+        profile = {
+            "target_device": 0,
+            "direct_h2d_bw_gbps": 7.5,
+            "direct_d2h_bw_gbps": 8.5,
+            "relays": [
+                {
+                    "relay_device": 1,
+                    "target_device": 0,
+                    "h2d_bw_gbps": 7.6,
+                    "d2h_bw_gbps": 8.6,
+                    "p2p_bw_gbps": 40.0,
+                    "effective_bw_gbps": 7.6,
+                    "effective_d2h_bw_gbps": 8.6,
+                    "p2p_enabled": True,
+                }
+            ],
+        }
+
+        stored = daemon.put_profile(
+            target_gpu=0,
+            relay_gpus=[1, 2],
+            profile=profile,
+            profile_bytes=1234,
+            updated_at=time.time(),
+        )
+
+        self.assertTrue(stored.ok)
+        loaded = daemon.get_profile(target_gpu=0, relay_gpus=[1, 2])
+        self.assertEqual(
+            loaded.payload["profile"]["profile"]["relays"][0]["relay_device"],
+            1,
+        )
+
     def test_profile_cache_can_be_invalidated_explicitly(self) -> None:
         daemon = _daemon(relay_gpus=[1])
         profile = {

@@ -67,8 +67,9 @@ def profile_entry(
     if len(profile_relays) != len(set(profile_relays)):
         raise ValueError("profile relay devices must be unique")
     profile_relays = sorted(profile_relays)
-    if profile_relays != relays:
-        raise ValueError("profile relay devices must match relay_gpus")
+    unexpected_relays = sorted(set(profile_relays) - set(relays))
+    if unexpected_relays:
+        raise ValueError("profile relay devices must be listed in relay_gpus")
     return {
         "target_gpu": target,
         "relay_gpus": relays,

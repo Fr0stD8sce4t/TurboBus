@@ -66,8 +66,11 @@ def validate_daemon_profile_dict(
     if len(profile_relays) != len(set(profile_relays)):
         raise ValueError("profile relay devices must be unique")
     profile_relays = sorted(profile_relays)
-    if profile_relays != expected_relays:
-        raise ValueError("profile relay devices must match daemon-discovered relays")
+    unexpected_relays = sorted(set(profile_relays) - set(expected_relays))
+    if unexpected_relays:
+        raise ValueError(
+            "profile relay devices must be daemon-discovered relays"
+        )
     normalized["relays"] = relays
     return normalized
 

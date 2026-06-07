@@ -5,24 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close the remaining relay-lease ownership lifecycle across daemon lease
-validation, worker cleanup scope, and retired reservation cleanup.
+Close one full runtime-session-facing adapter expansion for the model-loading
+workload family through `ModelWeightLoader`.
 
 ## Exit Criteria
 
-- Relay lease validation and release stay bound to the owning session/job/buffer
-  identities on the production path.
-- Worker-issued reservation cleanup stays inside the daemon-issued lease scope,
-  including retired reservation or staging cleanup after lease teardown.
-- The closure stays in daemon/worker/control-plane ownership code and does not
-  add compatibility shims or benchmark-owned policy.
+- Model-loading adapter entry stays on `TurboBusRuntimeSession` and does not
+  bypass daemon-issued transfer intent, receipt consumption, or runtime-owned
+  buffer registration.
+- `ModelWeightLoader` and its store/context path use the same production
+  runtime-session submit, wait, cleanup, and state model as the closed core
+  transfer path.
+- The closure stays in production adapter/runtime code and does not add
+  benchmark-owned or example-owned compatibility paths.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`
-- `turbobus/daemon/dispatch.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/worker/validation.py`
+- `turbobus/runtime_session.py`
+- `turbobus/adapters/model_loading.py`
+- `turbobus/offload/store.py`
+- `turbobus/offload/context.py`
 
 Round rules:
 
@@ -38,9 +40,9 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, then follow relay lease ownership, reservation
-cleanup authorization, and retired reservation validation through
-`daemon/dispatch.py`, `worker/lifecycle.py`, and `worker/validation.py`.
+Start at `runtime_session.py`, then follow `make_model_weight_loader()` through
+`adapters/model_loading.py`, `offload/store.py`, and `offload/context.py` to
+close one real runtime-session-facing model-loading path.
 
 After the current target closes, the next round should finish exactly one of
 these:

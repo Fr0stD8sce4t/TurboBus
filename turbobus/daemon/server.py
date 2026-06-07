@@ -1402,6 +1402,13 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         now = time.time()
         with self._lock:
+            cleanup_payload: dict[str, object] | None = None
+
+            def authorization_failure(error: str) -> DaemonResponse:
+                if cleanup_payload is None:
+                    return DaemonResponse(ok=False, error=error)
+                return DaemonResponse(ok=False, error=error, payload=cleanup_payload)
+
             self._reap_stale_sessions_locked(now)
             status = self._transfer_statuses.get(request.transfer_id)
             if status is None:
@@ -1435,19 +1442,25 @@ class TurboBusDaemon:
                 return DaemonResponse(ok=False, error="lease expired")
             if lease.lease_id not in self._reservations:
                 return DaemonResponse(ok=False, error="lease is not active")
+            cleanup_payload = self._authorization_cleanup_payload_locked(
+                transfer_id=request.transfer_id,
+                job_id=request.job_id,
+                session_id=request.session_id,
+                lease_id=request.lease_id,
+            )
             admission_error = self._validate_transfer_admission_locked(
                 request.transfer_id,
                 lease_id=lease.lease_id,
                 now=now,
             )
             if admission_error is not None:
-                return DaemonResponse(ok=False, error=admission_error)
+                return authorization_failure(admission_error)
             reservation = self._reservations[lease.lease_id]
             if reservation.direction not in {"unknown", request.direction}:
-                return DaemonResponse(ok=False, error="reservation direction mismatch")
+                return authorization_failure("reservation direction mismatch")
             plan = self._transfer_plans.get(request.transfer_id)
             if plan is None:
-                return DaemonResponse(ok=False, error="transfer plan is unavailable")
+                return authorization_failure("transfer plan is unavailable")
             related_leases = self._leases_for_worker_plan_locked(
                 request,
                 primary_lease=lease,
@@ -1460,7 +1473,7 @@ class TurboBusDaemon:
                     now=now,
                 )
                 if admission_error is not None:
-                    return DaemonResponse(ok=False, error=admission_error)
+                    return authorization_failure(admission_error)
                 for related_lease in related_leases:
                     if related_lease.lease_id == lease.lease_id:
                         continue
@@ -1470,24 +1483,24 @@ class TurboBusDaemon:
                         now=now,
                     )
                     if admission_error is not None:
-                        return DaemonResponse(ok=False, error=admission_error)
+                        return authorization_failure(admission_error)
                     if related_lease.expires_at and now > related_lease.expires_at:
                         self._release_expired_lease_locked(related_lease.lease_id)
-                        return DaemonResponse(ok=False, error="lease expired")
+                        return authorization_failure("lease expired")
                     if related_lease.lease_id not in self._reservations:
-                        return DaemonResponse(ok=False, error="lease is not active")
+                        return authorization_failure("lease is not active")
                     if related_lease.session_id != request.session_id:
-                        return DaemonResponse(ok=False, error="lease session mismatch")
+                        return authorization_failure("lease session mismatch")
                     if related_lease.job_id != request.job_id:
-                        return DaemonResponse(ok=False, error="lease job mismatch")
+                        return authorization_failure("lease job mismatch")
                     if related_lease.buffer_ids != lease.buffer_ids:
-                        return DaemonResponse(ok=False, error="lease buffer mismatch")
+                        return authorization_failure("lease buffer mismatch")
                 admission = self._transfer_admissions.get(request.transfer_id, {})
                 admission_lease_ids = set(
                     str(item) for item in admission.get("lease_ids", ()) or ()
                 )
                 if admission_lease_ids and admission_lease_ids != related_lease_ids:
-                    return DaemonResponse(ok=False, error="worker lease set mismatch")
+                    return authorization_failure("worker lease set mismatch")
             else:
                 related_leases = (lease,)
             try:
@@ -1497,9 +1510,9 @@ class TurboBusDaemon:
                     direction=request.direction,
                 )
             except ValueError as exc:
-                return DaemonResponse(ok=False, error=str(exc))
+                return authorization_failure(str(exc))
             if request.ranges and request.ranges != authorized_ranges:
-                return DaemonResponse(ok=False, error="worker ranges do not match daemon plan")
+                return authorization_failure("worker ranges do not match daemon plan")
             requested_bytes = sum(item["bytes"] for item in authorized_ranges)
             reservation_bytes = sum(
                 int(self._reservations[item.lease_id].bytes)
@@ -1507,17 +1520,17 @@ class TurboBusDaemon:
                 if item.lease_id in self._reservations
             )
             if requested_bytes > reservation_bytes:
-                return DaemonResponse(ok=False, error="authorization exceeds reservation bytes")
+                return authorization_failure("authorization exceeds reservation bytes")
             required_buffers = (request.src_buffer_id, request.dst_buffer_id)
             if required_buffers != lease.buffer_ids:
-                return DaemonResponse(ok=False, error="lease buffer mismatch")
+                return authorization_failure("lease buffer mismatch")
             src_buffer = self._buffers.get(request.src_buffer_id)
             dst_buffer = self._buffers.get(request.dst_buffer_id)
             if src_buffer is None or dst_buffer is None:
-                return DaemonResponse(ok=False, error="unknown buffer")
+                return authorization_failure("unknown buffer")
             session = self._sessions.get(request.session_id)
             if session is None:
-                return DaemonResponse(ok=False, error="transfer session is unavailable")
+                return authorization_failure("transfer session is unavailable")
             relay_eligibility = self._relay_eligibility_for_session_locked(session)
             planning_relays = tuple(
                 int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
@@ -1539,7 +1552,7 @@ class TurboBusDaemon:
                     peer_identity=peer_identity,
                 )
             except ValueError as exc:
-                return DaemonResponse(ok=False, error=str(exc))
+                return authorization_failure(str(exc))
             authorization = WorkerTransferAuthorization(
                 transfer_id=request.transfer_id,
                 lease_id=request.lease_id,
@@ -3341,6 +3354,52 @@ class TurboBusDaemon:
             ),
         )
 
+    def _authorization_cleanup_payload_locked(
+        self,
+        *,
+        transfer_id: str,
+        job_id: str,
+        session_id: str,
+        lease_id: str,
+    ) -> dict[str, object]:
+        normalized_transfer_id = str(transfer_id)
+        normalized_lease_id = str(lease_id)
+        admission = self._transfer_admissions.get(normalized_transfer_id, {})
+        lease_ids = tuple(str(item) for item in admission.get("lease_ids", ()) or ())
+        if not lease_ids:
+            lease_ids = (normalized_lease_id,)
+        elif normalized_lease_id not in lease_ids:
+            lease_ids = (normalized_lease_id, *lease_ids)
+        relay_gpus: list[int] = []
+        primary_relay_gpu: int | None = None
+        for scoped_lease_id in lease_ids:
+            lease = self._lease_tokens.get(scoped_lease_id)
+            if lease is None:
+                continue
+            relay_gpus.append(int(lease.relay_gpu))
+            if scoped_lease_id == normalized_lease_id:
+                primary_relay_gpu = int(lease.relay_gpu)
+        owner_binding = self._worker_owner_binding_locked(
+            transfer_id=normalized_transfer_id,
+            job_id=str(job_id),
+            session_id=str(session_id),
+            lease_ids=lease_ids,
+        )
+        return {
+            "transfer_id": normalized_transfer_id,
+            "job_id": str(job_id),
+            "session_id": str(session_id),
+            "lease_id": normalized_lease_id,
+            "lease_ids": lease_ids,
+            "relay_gpu": primary_relay_gpu,
+            "relay_gpus": tuple(sorted(set(relay_gpus))),
+            "plan_generation": self._transfer_plan_generations.get(
+                normalized_transfer_id,
+                0,
+            ),
+            "owner_binding": owner_binding,
+        }
+
     def _execution_ticket_owner_metadata_locked(
         self,
         *,
@@ -3348,7 +3407,26 @@ class TurboBusDaemon:
         decision: SchedulingDecision,
         lease_ids: tuple[str, ...],
     ) -> dict[str, object]:
+        return {
+            "owner_binding": self._worker_owner_binding_locked(
+                transfer_id=str(transfer_id),
+                job_id=str(decision.job_id),
+                session_id=str(decision.session_id),
+                lease_ids=lease_ids,
+            )
+        }
+
+    def _worker_owner_binding_locked(
+        self,
+        *,
+        transfer_id: str,
+        job_id: str,
+        session_id: str,
+        lease_ids: Iterable[str],
+    ) -> dict[str, object]:
         normalized_transfer_id = str(transfer_id)
+        normalized_job_id = str(job_id)
+        normalized_session_id = str(session_id)
         normalized_lease_ids = tuple(str(item) for item in lease_ids)
         relay_gpus: list[int] = []
         for lease_id in normalized_lease_ids:
@@ -3357,13 +3435,13 @@ class TurboBusDaemon:
                 continue
             relay_gpus.append(int(lease.relay_gpu))
         owner_peer = self._transfer_peer_identities.get(normalized_transfer_id)
-        if owner_peer is None and decision.job_id in self._job_peer_identities:
-            owner_peer = self._job_peer_identities.get(decision.job_id)
+        if owner_peer is None and normalized_job_id in self._job_peer_identities:
+            owner_peer = self._job_peer_identities.get(normalized_job_id)
         if owner_peer is None:
-            owner_peer = self._session_peer_identities.get(decision.session_id)
+            owner_peer = self._session_peer_identities.get(normalized_session_id)
         owner_binding = {
-            "job_id": str(decision.job_id),
-            "session_id": str(decision.session_id),
+            "job_id": normalized_job_id,
+            "session_id": normalized_session_id,
             "transfer_id": normalized_transfer_id,
             "lease_ids": normalized_lease_ids,
             "relay_gpus": tuple(sorted(set(relay_gpus))),
@@ -3374,7 +3452,7 @@ class TurboBusDaemon:
         }
         if owner_peer is not None and owner_peer.authenticated:
             owner_binding["peer_identity"] = asdict(owner_peer)
-        return {"owner_binding": owner_binding}
+        return owner_binding
 
     def _receipt_for_intent_locked(self, intent_id: str) -> TransferReceipt:
         normalized_intent_id = str(intent_id)

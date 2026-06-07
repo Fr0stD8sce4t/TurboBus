@@ -59,7 +59,10 @@ class _WorkerTransferAuthorizer:
         response: DaemonResponse = self.daemon_client.authorize_worker_transfer(request)
         if not response.ok:
             raise WorkerAuthorizationError(
-                response.error or "worker transfer authorization failed"
+                response.error or "worker transfer authorization failed",
+                daemon_payload=(
+                    response.payload if isinstance(response.payload, Mapping) else None
+                ),
             )
         try:
             validate_at = (
@@ -213,27 +216,35 @@ class _WorkerTransferCleanupCoordinator:
             )
         if not isinstance(authorization_payload, Mapping):
             raise WorkerCleanupError("authorization payload must be a mapping")
-        ticket_payload = authorization_payload.get("ticket")
-        if not isinstance(ticket_payload, Mapping):
-            raise WorkerCleanupError(
-                "authorization failure cleanup requires daemon-issued ticket"
-            )
         try:
-            ticket = ExecutionTicket(**dict(ticket_payload))
-            worker_validation.validate_daemon_issued_ticket(
-                ticket,
-                plan_generation=authorization_payload.get("plan_generation"),
-            )
-            owner_binding = worker_validation.owner_binding_for_ticket(
-                ticket,
-                transfer_id=request.transfer_id,
-                job_id=request.job_id,
-                session_id=request.session_id,
-                lease_id=authorization_payload.get("lease_id"),
-                lease_ids=authorization_payload.get("lease_ids"),
-                relay_gpu=authorization_payload.get("relay_gpu"),
-                relay_gpus=authorization_payload.get("relay_gpus"),
-            )
+            ticket_payload = authorization_payload.get("ticket")
+            if isinstance(ticket_payload, Mapping):
+                ticket = ExecutionTicket(**dict(ticket_payload))
+                worker_validation.validate_daemon_issued_ticket(
+                    ticket,
+                    plan_generation=authorization_payload.get("plan_generation"),
+                )
+                owner_binding = worker_validation.owner_binding_for_ticket(
+                    ticket,
+                    transfer_id=request.transfer_id,
+                    job_id=request.job_id,
+                    session_id=request.session_id,
+                    lease_id=authorization_payload.get("lease_id"),
+                    lease_ids=authorization_payload.get("lease_ids"),
+                    relay_gpu=authorization_payload.get("relay_gpu"),
+                    relay_gpus=authorization_payload.get("relay_gpus"),
+                )
+            else:
+                owner_binding = worker_validation.owner_binding_for_payload(
+                    authorization_payload,
+                    transfer_id=request.transfer_id,
+                    job_id=request.job_id,
+                    session_id=request.session_id,
+                    lease_id=authorization_payload.get("lease_id"),
+                    lease_ids=authorization_payload.get("lease_ids"),
+                    relay_gpu=authorization_payload.get("relay_gpu"),
+                    relay_gpus=authorization_payload.get("relay_gpus"),
+                )
         except (TypeError, ValueError) as exc:
             raise WorkerCleanupError(
                 f"invalid daemon authorization cleanup payload: {exc}"

@@ -13,19 +13,22 @@
 - Runtime-session and connection-scoped session teardown now retire
   session-owned jobs and buffers as daemon cleanup targets, preserving owner
   evidence and visible retired target ids after session close or disconnect.
+- Worker authorization failure now carries a daemon-issued cleanup contract, so
+  relay lease cleanup stays inside the authorized reservation scope instead of
+  falling back to timeout-only retirement when execution never starts.
 
 ## Remaining Risk
 
-- Cross-job isolation still needs the remaining relay-lease ownership closure
-  across worker cleanup scope and retired reservation cleanup.
+- Another real workload family still needs one full runtime-session-facing
+  adapter closure on top of the closed core transfer path.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish the remaining relay-lease ownership closure across daemon lease
-validation, worker cleanup scope, and retired reservation cleanup. After that,
-choose exactly one of these per round:
+Finish one full runtime-session-facing adapter expansion for the model-loading
+workload family through `ModelWeightLoader`. After that, choose exactly one of
+these per round:
 
 - one complete runtime-session-facing adapter expansion closure for another
   workload family.

@@ -12,8 +12,8 @@ from .vllm import (
     VllmKVBlockRef,
     VllmKVSlotAdapter,
     block_bytes_from_vllm_kv_tensor,
-    make_vllm_block_refs_from_ids,
     make_vllm_layer_groups_from_kv_caches,
+    make_vllm_layer_range_refs_from_ids,
 )
 
 
@@ -214,10 +214,24 @@ class VllmTurboBusIntegration:
         if not block_ids_by_group:
             return None
         event = VllmAllocationEvent(request_id, block_ids_by_group)
-        previous = self.state.allocations.get(request_id)
+        return self._store_allocation_event(event)
+
+    def record_request_blocks(
+        self,
+        request_id: str,
+        block_ids: Iterable[int],
+    ) -> VllmAllocationEvent | None:
+        normalized = tuple(int(block_id) for block_id in block_ids)
+        if not normalized:
+            return None
+        event = VllmAllocationEvent(str(request_id), (normalized,))
+        return self._store_allocation_event(event)
+
+    def _store_allocation_event(self, event: VllmAllocationEvent) -> VllmAllocationEvent:
+        previous = self.state.allocations.get(event.request_id)
         if previous is not None:
             event = previous.merge(event)
-        self.state.allocations[request_id] = event
+        self.state.allocations[event.request_id] = event
         return event
 
     def handle_allocation(self, request, blocks) -> VllmAllocationEvent | None:
@@ -283,17 +297,14 @@ class VllmTurboBusIntegration:
         *,
         cpu_slot_start: int = 0,
     ) -> list[VllmKVBlockRef]:
-        refs: list[VllmKVBlockRef] = []
-        for group_id, block_ids in enumerate(self.block_ids_by_group_for_request(request_id)):
-            refs.extend(
-                make_vllm_block_refs_from_ids(
-                    str(request_id),
-                    group_id,
-                    block_ids,
-                    cpu_slot_start=cpu_slot_start,
-                )
-            )
-        return refs
+        if not self.state.kv_caches:
+            raise RuntimeError("vLLM KV caches must be bound before request restore/save")
+        return make_vllm_layer_range_refs_from_ids(
+            str(request_id),
+            self.block_ids_for_request(request_id),
+            self.state.kv_caches,
+            cpu_slot_start=cpu_slot_start,
+        )
 
     def restore_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
@@ -362,6 +373,7 @@ class VllmTurboBusIntegration:
                 f"cpu_slot_start={existing}"
             )
         return existing
+
 
 def extract_vllm_block_ids(blocks) -> tuple[tuple[int, ...], ...]:
     if blocks is None:

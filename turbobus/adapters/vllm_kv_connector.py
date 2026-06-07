@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import time
 from typing import Any
 
-from ..offload.stats import TransferStats, summarize_transfer_handles
+from ..offload.stats import TransferStats
 from ..runtime.validation import validate_runtime_receipt
 from ..runtime_session import TurboBusRuntimeSession
 from ..runtime_options import RuntimeOptions
 from ..schema import TransferReceipt, WorkloadKind
-from .vllm import make_vllm_layer_range_refs_from_ids
 from .vllm_backing_pool import TurboBusCPUBackingPool
 from .vllm_config import TurboBusConnectorConfig
 from .vllm_events import (
@@ -17,7 +16,7 @@ from .vllm_events import (
     emit_event as _emit_event,
     get_connector_events,
 )
-from .vllm_integration import extract_vllm_block_ids
+from .vllm_integration import VllmTurboBusIntegration, extract_vllm_block_ids
 from .vllm_prefix_store import (
     TurboBusPrefixStore,
     TurboBusRequestMetadata,
@@ -76,6 +75,7 @@ class _LayerSaveContext:
     request: TurboBusRequestMetadata
     cpu_backings: list[Any]
     kv_caches: list[Any]
+    integration: VllmTurboBusIntegration
     reused_backing: bool
     total_start: float
     client_init_ms: float = 0.0
@@ -95,7 +95,7 @@ class _LayerSaveContext:
     ticket_ids: list[str] = field(default_factory=list)
     fallback_reasons: list[str] = field(default_factory=list)
     ranges: int = 0
-    saved_layers: set[int] = field(default_factory=set)
+    ready_layers: set[int] = field(default_factory=set)
 
 
 class TurboBusConnectorMetadata(KVConnectorMetadata):
@@ -439,7 +439,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             context = self._layer_save_contexts.get(request.request_id)
             if context is None:
                 context = self._start_layer_save_context(request, kv_caches)
-            if layer_index in context.saved_layers:
+            if layer_index in context.ready_layers:
                 continue
             self._save_request_layer(context, layer_name, layer_index, kv_layer)
         return None
@@ -451,17 +451,21 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         completed = 0
         for request in metadata.save_requests:
             context = self._layer_save_contexts.pop(request.request_id, None)
-            if context is None or not context.saved_layers:
+            if context is None or not context.ready_layers:
                 raise RuntimeError(
                     "vLLM did not call save_kv_layer before wait_for_save "
                     f"for request {request.request_id}"
                 )
-            if len(context.saved_layers) != len(context.kv_caches):
+            if len(context.ready_layers) != len(context.kv_caches):
                 raise RuntimeError(
-                    f"saved {len(context.saved_layers)} of {len(context.kv_caches)} "
+                    f"observed {len(context.ready_layers)} of {len(context.kv_caches)} "
                     f"KV layers for request {request.request_id}"
                 )
-            self._finish_layer_save_context(context)
+            try:
+                self._finish_layer_save_context(context)
+            except Exception:
+                self._backing_pool.close_backings(context.cpu_backings)
+                raise
             completed += 1
         self.state.events.append(
             {
@@ -627,14 +631,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 block_count=meta.block_count,
             )
 
-    def _adapter_for_saved_prefix(
+    def _integration_for_saved_prefix(
         self,
         saved: TurboBusSavedPrefix,
         request: TurboBusRequestMetadata,
-    ):
+    ) -> tuple[VllmTurboBusIntegration, list[Any], float]:
         if not self.state.kv_caches:
             raise RuntimeError("vLLM did not register KV caches for TurboBus")
-        from .vllm import make_vllm_layer_groups_from_kv_caches
 
         kv_caches = list(self.state.kv_caches.values())
         if len(saved.cpu_backings) != len(kv_caches):
@@ -642,9 +645,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 f"saved prefix {saved.key!r} has {len(saved.cpu_backings)} backing tensors, "
                 f"but vLLM registered {len(kv_caches)} KV cache tensors"
             )
-        groups = make_vllm_layer_groups_from_kv_caches(saved.cpu_backings, kv_caches)
-        adapter = self.runtime_session.make_vllm_kv_slot_adapter(
-            groups,
+        integration, _, client_init_ms = self._make_integration(
+            saved.cpu_backings,
             workload_kind=WorkloadKind.KV_CACHE,
             metadata=self._adapter_metadata(
                 {
@@ -659,10 +661,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 }
             ),
             intent_prefix=f"vllm-kv-restore-{saved.key}",
-            wait_timeout_seconds=self.config.wait_timeout_seconds,
-            gpu_buffer_id=self.config.gpu_buffer_id,
         )
-        return adapter
+        return integration, kv_caches, client_init_ms
 
     def _restore_request(self, request: TurboBusRequestMetadata) -> None:
         total_start = time.perf_counter()
@@ -674,22 +674,35 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         if saved is None:
             raise RuntimeError(f"saved prefix {request.prefix_key!r} is not registered")
         prepare_start = time.perf_counter()
-        adapter = self._adapter_for_saved_prefix(saved, request)
-        kv_caches = list(self.state.kv_caches.values())
-        refs = make_vllm_layer_range_refs_from_ids(
+        integration, kv_caches, client_init_ms = self._integration_for_saved_prefix(
+            saved,
+            request,
+        )
+        register_start = time.perf_counter()
+        if integration.record_request_blocks(request.request_id, request.block_ids) is None:
+            raise RuntimeError(f"restore request {request.request_id} has no block ids")
+        range_names = integration.register_request(
             request.request_id,
-            request.block_ids,
-            kv_caches,
             cpu_slot_start=request.cpu_slot_start,
         )
+        register_ms = (time.perf_counter() - register_start) * 1000.0
         prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
-        transfer_start = time.perf_counter()
-        handles = adapter.submit_restore_prefix(refs)
-        _wait_transfer_handles(handles)
-        transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
-        total_ms = (time.perf_counter() - total_start) * 1000.0
-        stats = _adapter_transfer_stats(adapter, refs, handles).as_dict()
-        receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
+        try:
+            transfer_start = time.perf_counter()
+            handles = integration.submit_restore_request_prefix(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
+            _wait_transfer_handles(handles)
+            transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
+            total_ms = (time.perf_counter() - total_start) * 1000.0
+            stats = integration.transfer_stats_for_request(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            ).as_dict()
+            receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
+        finally:
+            integration.forget_request(request.request_id)
         self.state.events.append(
             {
                 "event": "restore",
@@ -700,11 +713,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "block_count": len(request.block_ids),
                 "matched_tokens": request.matched_tokens,
                 "elapsed_ms": transfer_ms,
+                "client_init_ms": client_init_ms,
+                "register_ms": register_ms,
                 "prepare_ms": prepare_ms,
                 "transfer_ms": transfer_ms,
                 "total_ms": total_ms,
                 "layers": len(kv_caches),
-                "ranges": len(refs),
+                "ranges": len(range_names),
                 **stats,
                 **receipt_trace,
             }
@@ -718,11 +733,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             block_count=len(request.block_ids),
             matched_tokens=request.matched_tokens,
             elapsed_ms=f"{transfer_ms:.3f}",
+            client_init_ms=f"{client_init_ms:.3f}",
+            register_ms=f"{register_ms:.3f}",
             prepare_ms=f"{prepare_ms:.3f}",
             transfer_ms=f"{transfer_ms:.3f}",
             total_ms=f"{total_ms:.3f}",
             layers=len(kv_caches),
-            ranges=len(refs),
+            ranges=len(range_names),
             **stats,
             **receipt_trace,
         )
@@ -739,13 +756,48 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             kv_caches,
         )
         cpu_alloc_ms = (time.perf_counter() - alloc_start) * 1000.0
+        try:
+            integration, _, client_init_ms = self._make_integration(
+                cpu_backings,
+                workload_kind=WorkloadKind.KV_CACHE,
+                metadata=self._adapter_metadata(
+                    {
+                        "prefix_key": request.prefix_key,
+                        "request_id": request.request_id,
+                        "vllm_operation": "save",
+                        "vllm_lifecycle": "save_kv_request",
+                        "matched_tokens": request.matched_tokens,
+                        "block_count": request.block_count,
+                        "block_ids": list(request.block_ids),
+                    }
+                ),
+                intent_prefix=f"vllm-kv-save-{request.prefix_key}",
+            )
+            register_start = time.perf_counter()
+            if integration.record_request_blocks(request.request_id, request.block_ids) is None:
+                raise RuntimeError(f"save request {request.request_id} has no block ids")
+            integration.register_request(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
+            refs_ms = (time.perf_counter() - register_start) * 1000.0
+        except Exception:
+            self._backing_pool.release(
+                request.block_count,
+                kv_caches,
+                cpu_backings,
+            )
+            raise
         context = _LayerSaveContext(
             request=request,
             cpu_backings=cpu_backings,
             kv_caches=list(kv_caches),
+            integration=integration,
             reused_backing=reused_backing,
             total_start=total_start,
+            client_init_ms=client_init_ms,
             cpu_alloc_ms=cpu_alloc_ms,
+            refs_ms=refs_ms,
         )
         self._layer_save_contexts[request.request_id] = context
         return context
@@ -757,99 +809,66 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         layer_index: int,
         kv_layer,
     ) -> None:
-        from .vllm import VllmKVGroup
-
         request = context.request
-        group_start = time.perf_counter()
-        from .vllm import block_bytes_from_vllm_kv_tensor
-
-        group = VllmKVGroup(
-            group_id=layer_index,
-            layer_id=layer_index,
-            cpu_backing=context.cpu_backings[layer_index],
-            gpu_kv_backing=kv_layer,
-            block_bytes=block_bytes_from_vllm_kv_tensor(kv_layer),
-        )
-        context.group_ms += (time.perf_counter() - group_start) * 1000.0
-        adapter_start = time.perf_counter()
-        adapter = self.runtime_session.make_vllm_kv_slot_adapter(
-            [group],
-            workload_kind=WorkloadKind.KV_CACHE,
-            metadata=self._adapter_metadata(
-                {
-                    "prefix_key": request.prefix_key,
-                    "request_id": request.request_id,
-                    "vllm_operation": "save",
-                    "vllm_lifecycle": "save_kv_layer",
-                    "layer_index": layer_index,
-                    "layer_name": str(layer_name),
-                    "matched_tokens": request.matched_tokens,
-                    "block_count": request.block_count,
-                    "block_ids": list(request.block_ids),
-                }
-            ),
-            intent_prefix=f"vllm-kv-save-{request.prefix_key}-layer{layer_index}",
-            wait_timeout_seconds=self.config.wait_timeout_seconds,
-            gpu_buffer_id=self.config.gpu_buffer_id,
-        )
-        context.adapter_ms += (time.perf_counter() - adapter_start) * 1000.0
-        refs_start = time.perf_counter()
-        refs = make_vllm_layer_range_refs_from_ids(
-            request.request_id,
-            request.block_ids,
-            [kv_layer],
-            cpu_slot_start=request.cpu_slot_start,
-        )
-        refs = [replace(ref, group_id=layer_index) for ref in refs]
-        context.refs_ms += (time.perf_counter() - refs_start) * 1000.0
-        transfer_start = time.perf_counter()
-        handles = adapter.submit_save_prefix(refs)
-        _wait_transfer_handles(handles)
-        transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
-        stats = _adapter_transfer_stats(adapter, refs, handles)
-        receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
-        context.transfer_ms += transfer_ms
-        context.bytes += stats.bytes
-        context.direct_chunks += stats.direct_chunks
-        context.relay_chunks += stats.relay_chunks
-        context.direct_bytes += int(receipt_trace["direct_bytes"])
-        context.relay_bytes += int(receipt_trace["relay_bytes"])
-        context.receipt_ids.extend(_csv_values(receipt_trace["receipt_ids"]))
-        context.decision_ids.extend(_csv_values(receipt_trace["decision_ids"]))
-        context.topology_snapshot_ids.extend(_csv_values(receipt_trace["topology_snapshot_ids"]))
-        context.ticket_ids.extend(_csv_values(receipt_trace["ticket_ids"]))
-        context.fallback_reasons.extend(_csv_values(receipt_trace["fallback_reason"]))
-        context.ranges += len(refs)
-        context.saved_layers.add(layer_index)
+        layer_ready_start = time.perf_counter()
+        context.ready_layers.add(layer_index)
+        ready_ms = (time.perf_counter() - layer_ready_start) * 1000.0
+        context.group_ms += ready_ms
         self.state.events.append(
             {
-                "event": "save_layer",
+                "event": "save_layer_ready",
                 "request_id": request.request_id,
                 "prefix_key": request.prefix_key,
                 "session_id": self.session_id,
                 "layer_name": str(layer_name),
                 "layer_index": layer_index,
-                "ranges": len(refs),
-                "elapsed_ms": transfer_ms,
-                **stats.as_dict(),
-                **receipt_trace,
+                "ready_layers": len(context.ready_layers),
+                "elapsed_ms": ready_ms,
             }
         )
         _emit_event(
-            "save_layer",
+            "save_layer_ready",
             request_id=request.request_id,
             prefix_key=request.prefix_key,
             session_id=self.session_id,
             layer_name=str(layer_name),
             layer_index=layer_index,
-            ranges=len(refs),
-            elapsed_ms=f"{transfer_ms:.3f}",
-            **stats.as_dict(),
-            **receipt_trace,
+            ready_layers=len(context.ready_layers),
+            elapsed_ms=f"{ready_ms:.3f}",
         )
 
     def _finish_layer_save_context(self, context: _LayerSaveContext) -> None:
         request = context.request
+        try:
+            transfer_start = time.perf_counter()
+            range_names = context.integration.block_names_for_request(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
+            handles = context.integration.submit_save_request_prefix(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
+            _wait_transfer_handles(handles)
+            context.transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
+            stats = context.integration.transfer_stats_for_request(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
+            receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
+        finally:
+            context.integration.forget_request(request.request_id)
+        context.bytes = stats.bytes
+        context.direct_chunks = stats.direct_chunks
+        context.relay_chunks = stats.relay_chunks
+        context.direct_bytes = int(receipt_trace["direct_bytes"])
+        context.relay_bytes = int(receipt_trace["relay_bytes"])
+        context.receipt_ids.extend(_csv_values(receipt_trace["receipt_ids"]))
+        context.decision_ids.extend(_csv_values(receipt_trace["decision_ids"]))
+        context.topology_snapshot_ids.extend(_csv_values(receipt_trace["topology_snapshot_ids"]))
+        context.ticket_ids.extend(_csv_values(receipt_trace["ticket_ids"]))
+        context.fallback_reasons.extend(_csv_values(receipt_trace["fallback_reason"]))
+        context.ranges = len(range_names)
         register_start = time.perf_counter()
         prefix = TurboBusSavedPrefix(
             key=request.prefix_key,
@@ -863,6 +882,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             client_init_ms=context.client_init_ms,
             prepare_ms=(
                 context.cpu_alloc_ms
+                + context.client_init_ms
                 + context.group_ms
                 + context.adapter_ms
                 + context.refs_ms
@@ -883,7 +903,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             topology_snapshot_ids=_join_unique(context.topology_snapshot_ids),
             ticket_ids=_join_unique(context.ticket_ids),
             fallback_reason=_join_unique(context.fallback_reasons),
-            save_layer_count=len(context.saved_layers),
+            save_layer_count=len(context.ready_layers),
             save_layer_ranges=context.ranges,
         )
         evicted = self._store_prefix(prefix)
@@ -978,6 +998,31 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             **receipt_trace,
         )
 
+    def _make_integration(
+        self,
+        cpu_backings: list[Any],
+        *,
+        workload_kind: WorkloadKind | str,
+        metadata: dict[str, Any],
+        intent_prefix: str,
+    ) -> tuple[VllmTurboBusIntegration, list[Any], float]:
+        if not self.state.kv_caches:
+            raise RuntimeError("vLLM did not register KV caches for TurboBus")
+        kv_caches = list(self.state.kv_caches.values())
+        client_init_start = time.perf_counter()
+        integration = self.runtime_session.make_vllm_turbobus_integration(
+            cpu_backings,
+            workload_kind=workload_kind,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=self.config.wait_timeout_seconds,
+            cpu_buffer_id=self.config.cpu_buffer_id,
+            gpu_buffer_id=self.config.gpu_buffer_id,
+        )
+        integration.bind_kv_caches(kv_caches)
+        client_init_ms = (time.perf_counter() - client_init_start) * 1000.0
+        return integration, kv_caches, client_init_ms
+
     def _allocate_cpu_backings(self, block_count: int, kv_caches: list[Any]) -> list[Any]:
         return self._backing_pool._allocate_for_pool(block_count, kv_caches)
 
@@ -1021,6 +1066,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         contexts = list(self._layer_save_contexts.values())
         self._layer_save_contexts.clear()
         for context in contexts:
+            try:
+                context.integration.forget_request(context.request.request_id)
+            except Exception:
+                pass
             self._backing_pool.close_backings(context.cpu_backings)
         return len(contexts)
 
@@ -1063,21 +1112,6 @@ def _request_params(request) -> dict[str, Any]:
         if isinstance(params, dict):
             return params
     return {}
-
-
-def _adapter_transfer_stats(adapter, refs, handles) -> TransferStats:
-    getter = getattr(adapter, "transfer_stats", None)
-    if getter is None:
-        return summarize_transfer_handles(handles)
-    stats = getter(refs)
-    if isinstance(stats, TransferStats):
-        return stats
-    return TransferStats(
-        bytes=int(getattr(stats, "bytes", 0) or 0),
-        direct_chunks=int(getattr(stats, "direct_chunks", 0) or 0),
-        relay_chunks=int(getattr(stats, "relay_chunks", 0) or 0),
-    )
-
 
 def _wait_transfer_handles(handles) -> list[object]:
     resolved = list(handles)

@@ -5,27 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close one full runtime-session-facing production vLLM connector lifecycle on
-top of `VllmTurboBusIntegration`.
+Close one full `TurboBusRuntimeSession`-managed production startup and
+shutdown lifecycle through `open_managed_production_socket()`.
 
 ## Exit Criteria
 
-- The production vLLM connector save/restore path uses one
-  `VllmTurboBusIntegration` request lifecycle instead of rebuilding one-off
-  `VllmKVSlotAdapter` flows around each operation.
-- Request allocation recording, request registration, request restore/save,
-  request stats, and request forget/cleanup stay on the
-  `TurboBusRuntimeSession` path.
-- The closure stays in production connector/adapter/runtime code and does not
-  add benchmark-owned, example-owned, or dry-run compatibility paths.
+- `TurboBusRuntimeSession` becomes the owning production entry for managed
+  daemon and worker startup, readiness, session open, and shutdown evidence.
+- The managed socket path closes one real lifecycle from runtime startup
+  through transfer-capable session use to owned service shutdown and cleanup.
+- The closure stays in production runtime/daemon/worker code and does not add
+  benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/adapters/vllm_integration.py`
-- `turbobus/adapters/vllm_kv_connector.py`
-- `turbobus/adapters/vllm_backing_pool.py`
-- `turbobus/adapters/vllm_prefix_store.py`
 - `turbobus/runtime_session.py`
+- `turbobus/daemon/startup.py`
+- `turbobus/runtime/session_state.py`
+- `turbobus/worker/process.py`
+- `turbobus/worker/socket_client.py`
 
 Round rules:
 
@@ -41,16 +39,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `vllm_kv_connector.py` where prefix save/restore still creates
-one-off adapter flows, then move through `vllm_integration.py`,
-`vllm_backing_pool.py`, `vllm_prefix_store.py`, and `runtime_session.py` to
-close one real connector-facing request/session lifecycle.
+Start at `runtime_session.py` around `open_managed_production_socket()`, then
+move through `daemon/startup.py`, `runtime/session_state.py`,
+`worker/process.py`, and `worker/socket_client.py` to close one real
+runtime-owned managed startup and shutdown lifecycle.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full runtime-session-facing closure for the next remaining production
-  workload entry.
+- one full production system-body closure for the next remaining runtime,
+  scheduler, worker, or execution path gap.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

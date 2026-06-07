@@ -5,33 +5,31 @@ appending history.
 
 ## Current Main Target
 
-G6: close multi-tenant isolation hardening so daemon-owned job, session,
-buffer, lease, staging, ticket, cleanup, and receipt ownership remain bound to
-authenticated peers across shared relay execution.
+Auto-advance queue G1 through G6 is complete. There is no active target in the
+current auto-advance queue.
 
 ## Exit Criteria
 
-- Worker authorization, transfer status updates, cleanup, receipt queries, and
-  retained cleanup targets consistently validate peer ownership against the
-  daemon-owned job/session/buffer/transfer binding.
-- Relay leases and staging records cannot be reused across jobs, sessions,
-  buffers, or transfers even when multiple tenants share the same relay GPU.
-- Terminal cleanup and archived receipt access preserve ownership evidence
-  after live runtime maps are retired.
-- The isolation closure stays in daemon, worker validation, and runtime
-  production code; it does not add benchmark, example, test, dry-run, fake, or
-  synthetic validation paths.
-- The daemon/scheduler remains the only production plan source, and workers
-  still execute only daemon-issued tickets or exact daemon-issued plans.
+- G1 long-lived asynchronous data-plane closure is present in worker production
+  code.
+- G2 mixed pooled worker/backend execution is present in production code.
+- G3 unified scheduling-model closure is present across daemon-issued plans,
+  direct-only fallback, worker/backend completion, and receipt evidence.
+- G4 dynamic feedback-loop closure is present across daemon runtime snapshots
+  and scheduler load feedback.
+- G5 daemon admission-loop closure is present across production admission state,
+  delayed promotion, worker authorization, terminal cleanup, lease expiry, and
+  scheduler/runtime feedback.
+- G6 multi-tenant isolation closure is present across daemon peer ownership,
+  worker authorization, transfer status updates, cleanup retention, staging
+  records, lease ownership, and archived receipt access.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`
-- `turbobus/worker/validation.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/daemon/receipts.py`
-- `turbobus/runtime_session.py`
-- `turbobus/intent_executor.py`
+- No active G1-G6 code target remains in the auto-advance queue.
+- Future work must start from a new user-approved system target and must still
+  respect the current no-benchmark/no-test/no-fake-evidence constraints unless
+  the active plan explicitly moves into validation work.
 
 Round rules:
 
@@ -52,14 +50,8 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around peer identity validation for worker
-authorization, transfer status updates, cleanup target retention, archived
-receipt lookup, staging record validation, and lease ownership. Then follow only
-the production ownership binding into worker validation or runtime receipt
-consumption if needed.
-
-After the current target closes in auto-advance mode, the auto-advance queue is
-complete for G1 through G6.
+Auto-advance for G1 through G6 is complete. Stop here unless the user provides a
+new active system-body target.
 
 Plan-file rule:
 
@@ -69,12 +61,11 @@ Plan-file rule:
 
 ## Auto-Advance Policy
 
-Auto-advance is enabled for the current goal run because the user explicitly
-started TurboBus Auto-Advance Mode.
+Auto-advance for the current goal run has completed the requested G1-G6 queue.
 
 Remaining auto-advance target queue:
 
-1. G6 multi-tenant isolation hardening.
+- None.
 
 In auto-advance mode:
 
@@ -84,7 +75,6 @@ In auto-advance mode:
 - for each queued target, carry forward the same system contracts from
   `AGENTS.md` and the same no-benchmark/no-test/no-fake-evidence constraints
   from this file;
-- continue only while the next queued target is still system-body work;
 - stop when the queue is complete, external environment blocks the target, a
   real architecture choice needs user review, or continuing would require
   benchmark, example, paper-validation, server-validation, new test, fake

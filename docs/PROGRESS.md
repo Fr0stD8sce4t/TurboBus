@@ -11,39 +11,36 @@
   direct-only fallback, worker/backend completion, and receipt evidence.
 - G4 dynamic feedback-loop closure is present across daemon runtime snapshots
   and scheduler load feedback.
-- G5 daemon admission-loop closure is present: resource changes, lease expiry,
-  cleanup, terminal status updates, delayed promotion, queue records, and
-  admission summaries now flow through one daemon-owned admission refresh path.
-- Auto-advance remains active for this goal run, with exactly one active target
-  at a time.
-- The active target is G6 multi-tenant isolation hardening.
-- Current rounds must still deliver complete production system capabilities,
-  not benchmark/example/test scaffolding or narrow bug-style edits.
+- G5 daemon admission-loop closure is present across production admission state,
+  delayed transfer promotion, worker authorization, terminal cleanup, lease
+  expiry, and scheduler/runtime feedback.
+- G6 multi-tenant isolation closure is present: daemon-owned job, session,
+  buffer, lease, staging, ticket, cleanup, and archived receipt ownership now
+  preserve authenticated peer binding across shared relay use and terminal
+  cleanup.
+- Auto-advance queue G1 through G6 is complete.
+- Current rounds must still avoid benchmark/example/test scaffolding,
+  paper-validation, server-validation, fake evidence, synthetic evidence,
+  dry-run deliverables, and replacement verification paths unless a future
+  active plan explicitly moves into validation work.
 
 ## Remaining Risk
 
-- G6 still needs one full closure so daemon-owned job, session, buffer, lease,
-  staging, ticket, cleanup, and receipt ownership remain bound to authenticated
-  peers across shared relay use and archived terminal state.
 - Direct-only worker authorization remains a later daemon admission concern:
   current production direct-only execution stays a daemon-issued direct
   fallback outcome rather than a fake relay-worker route.
 - Existing worker CUDA unit fixtures still encode the retired relay-scoped
   worker-plan expectation for mixed plans; they should be repaired only when the
   active plan moves to validation/test update work.
-- Server, CUDA, benchmark, and adapter validation remain later-stage risks and
-  do not block current implementation rounds.
+- Server, CUDA, benchmark, adapter, and paper validation remain later-stage
+  risks and do not block the completed G1-G6 system-body queue.
 - Alternative verification paths, fake receipts, synthetic evidence, and dry-run
   deliverables remain out of scope for the current system-body pass.
-- Auto-advance must stop rather than skip ahead if G6 requires benchmark,
-  example, paper-validation, server-validation, new test, fake receipt,
-  synthetic evidence, dry-run, or replacement verification work.
 
 ## Next Main Target
 
-G6: finish one multi-tenant isolation closure across daemon peer ownership,
-worker authorization, transfer status updates, cleanup retention, staging
-records, lease ownership, and archived receipt access.
+No active G1-G6 target remains. A new user-approved system-body target is needed
+before further auto-advance work.
 
 Progress-file rule:
 

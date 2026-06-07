@@ -409,7 +409,10 @@ class TurboBusDaemon:
         )
         with self._lock:
             validated_owner_binding = (
-                self._validate_cleanup_owner_binding_locked(cleanup)
+                self._validate_cleanup_owner_binding_locked(
+                    cleanup,
+                    peer_identity=peer_identity,
+                )
             )
             removed = _empty_removed_summary()
             cleanup_result: dict[str, object] = {}
@@ -4173,6 +4176,62 @@ class TurboBusDaemon:
             return session_peer
         return None
 
+    def _coerce_peer_identity(
+        self,
+        value: object,
+    ) -> PeerIdentity | None:
+        if isinstance(value, PeerIdentity):
+            return value
+        if isinstance(value, Mapping):
+            try:
+                return PeerIdentity(**dict(value))
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    def _archived_transfer_owner_peer_locked(
+        self,
+        transfer_id: str,
+    ) -> PeerIdentity | None:
+        archived = self._transfer_receipt_archive.get(str(transfer_id), {})
+        if not isinstance(archived, Mapping):
+            return None
+        archived_peer = self._coerce_peer_identity(archived.get("peer_identity"))
+        if archived_peer is not None and archived_peer.authenticated:
+            return archived_peer
+        archived_status = archived.get("status")
+        job_id = getattr(archived_status, "job_id", None)
+        if job_id is not None:
+            job_peer = self._job_peer_identities.get(str(job_id))
+            if job_peer is not None and job_peer.authenticated:
+                return job_peer
+        archived_intent = archived.get("intent")
+        session_id = getattr(archived_intent, "session_id", None)
+        if session_id is not None:
+            session_peer = self._session_peer_identities.get(str(session_id))
+            if session_peer is not None and session_peer.authenticated:
+                return session_peer
+        return None
+
+    def _transfer_owner_peer_for_archive_locked(
+        self,
+        *,
+        transfer_id: str,
+        status: TransferStatus,
+        existing: Mapping[str, object],
+    ) -> PeerIdentity | None:
+        transfer_peer = self._transfer_peer_identities.get(str(transfer_id))
+        if transfer_peer is not None and transfer_peer.authenticated:
+            return transfer_peer
+        existing_peer = self._coerce_peer_identity(existing.get("peer_identity"))
+        if existing_peer is not None and existing_peer.authenticated:
+            return existing_peer
+        return self._transfer_peer_identity_for_owner_locked(
+            job_id=status.job_id,
+            session_id=status.session_id or "",
+            peer_identity=None,
+        )
+
     def _validate_peer_owns_receipt_transfer_locked(
         self,
         *,
@@ -4193,10 +4252,9 @@ class TurboBusDaemon:
             return
         transfer_peer = self._transfer_peer_identities.get(str(transfer_id))
         if transfer_peer is None:
-            archived = self._transfer_receipt_archive.get(str(transfer_id), {})
-            archived_peer = archived.get("peer_identity")
-            if isinstance(archived_peer, PeerIdentity):
-                transfer_peer = archived_peer
+            transfer_peer = self._archived_transfer_owner_peer_locked(
+                str(transfer_id)
+            )
         if transfer_peer is None or not transfer_peer.authenticated:
             raise ValueError("transfer owner identity is unavailable")
         peer_auth.validate_peer_owner_match(
@@ -4329,8 +4387,10 @@ class TurboBusDaemon:
             )
             if archived_target is None:
                 raise ValueError(f"unknown {target_kind}")
-            archived_peer = archived_target.get("peer_identity")
-            if isinstance(archived_peer, PeerIdentity) and archived_peer.authenticated:
+            archived_peer = self._coerce_peer_identity(
+                archived_target.get("peer_identity")
+            )
+            if archived_peer is not None and archived_peer.authenticated:
                 peer_auth.validate_peer_owner_match(
                     expected=archived_peer,
                     actual=peer_identity,
@@ -4348,6 +4408,8 @@ class TurboBusDaemon:
                 )
                 continue
             transfer_peer = self._transfer_peer_identities.get(transfer_id)
+            if transfer_peer is None:
+                transfer_peer = self._archived_transfer_owner_peer_locked(transfer_id)
             if transfer_peer is None or not transfer_peer.authenticated:
                 raise ValueError("transfer owner identity is unavailable")
             peer_auth.validate_peer_owner_match(
@@ -4359,6 +4421,8 @@ class TurboBusDaemon:
     def _validate_cleanup_owner_binding_locked(
         self,
         cleanup: CleanupRequest,
+        *,
+        peer_identity: PeerIdentity | None,
     ) -> dict[str, object] | None:
         owner_binding = cleanup.owner_binding
         if owner_binding is None:
@@ -4417,6 +4481,16 @@ class TurboBusDaemon:
         if isinstance(owner_peer, Mapping):
             owner_peer_identity = PeerIdentity(**dict(owner_peer))
             normalized_owner_peer = asdict(owner_peer_identity)
+        if (
+            owner_peer_identity is not None
+            and peer_identity is not None
+            and peer_identity.authenticated
+        ):
+            peer_auth.validate_peer_owner_match(
+                expected=owner_peer_identity,
+                actual=peer_identity,
+                owner_name="cleanup owner_binding",
+            )
         for scoped_lease_id in normalized_cleanup_target_ids:
             reservation = self._reservations.get(scoped_lease_id)
             if reservation is not None:
@@ -4434,6 +4508,10 @@ class TurboBusDaemon:
                     raise ValueError(
                         "cleanup owner_binding transfer does not match reservation"
                     )
+                self._validate_peer_owns_lease_locked(
+                    lease_id=scoped_lease_id,
+                    peer_identity=peer_identity,
+                )
                 continue
             staging_record = self._staging_records.get(scoped_lease_id)
             if staging_record is not None:
@@ -4449,6 +4527,10 @@ class TurboBusDaemon:
                     raise ValueError(
                         "cleanup owner_binding transfer does not match staging record"
                     )
+                self._validate_peer_owns_staging_record_locked(
+                    staging_record=staging_record,
+                    peer_identity=peer_identity,
+                )
                 continue
             archived_target = self._retired_cleanup_target_record_locked(
                 target_kind="reservation",
@@ -4463,10 +4545,18 @@ class TurboBusDaemon:
                 raise ValueError(
                     "cleanup owner_binding transfer does not match archived reservation"
                 )
-            archived_peer = archived_target.get("peer_identity")
+            if archived_transfer_ids:
+                self._validate_peer_owns_receipt_transfer_locked(
+                    transfer_id=transfer_id,
+                    job_id=job_id,
+                    peer_identity=peer_identity,
+                )
+            archived_peer = self._coerce_peer_identity(
+                archived_target.get("peer_identity")
+            )
             if (
                 owner_peer_identity is not None
-                and isinstance(archived_peer, PeerIdentity)
+                and archived_peer is not None
                 and archived_peer.authenticated
             ):
                 peer_auth.validate_peer_owner_match(
@@ -4474,6 +4564,25 @@ class TurboBusDaemon:
                     actual=owner_peer_identity,
                     owner_name="reservation",
                 )
+            elif owner_peer_identity is None:
+                for archived_transfer_id in archived_transfer_ids:
+                    archived_transfer_peer = self._archived_transfer_owner_peer_locked(
+                        archived_transfer_id
+                    )
+                    if archived_transfer_peer is not None:
+                        owner_peer_identity = archived_transfer_peer
+                        normalized_owner_peer = asdict(archived_transfer_peer)
+                        break
+                if (
+                    owner_peer_identity is not None
+                    and peer_identity is not None
+                    and peer_identity.authenticated
+                ):
+                    peer_auth.validate_peer_owner_match(
+                        expected=owner_peer_identity,
+                        actual=peer_identity,
+                        owner_name="cleanup owner_binding",
+                    )
         result = {
             "job_id": job_id,
             "session_id": session_id,
@@ -4655,10 +4764,12 @@ class TurboBusDaemon:
         existing = dict(
             self._retired_cleanup_targets.get((normalized_kind, normalized_id), {})
         )
+        existing_peer = self._coerce_peer_identity(existing.get("peer_identity"))
+        archived_peer = peer_identity if peer_identity is not None else existing_peer
         record = {
             "target_kind": normalized_kind,
             "target_id": normalized_id,
-            "peer_identity": peer_identity,
+            "peer_identity": archived_peer,
             "reason": None if reason is None else str(reason),
             "retired_at": time.time(),
             "transfer_ids": tuple(str(item) for item in transfer_ids),
@@ -4848,7 +4959,11 @@ class TurboBusDaemon:
             "buffer_snapshots": dict(
                 self._transfer_buffer_snapshots.get(normalized, {})
             ),
-            "peer_identity": self._transfer_peer_identities.get(normalized),
+            "peer_identity": self._transfer_owner_peer_for_archive_locked(
+                transfer_id=normalized,
+                status=status,
+                existing=existing,
+            ),
         }
         if archived_record["intent_id"] is not None:
             self._archived_intent_transfers[str(archived_record["intent_id"])] = normalized

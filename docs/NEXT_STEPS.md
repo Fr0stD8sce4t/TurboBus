@@ -5,27 +5,27 @@ appending history.
 
 ## Current Main Target
 
-Close one full runtime-session-facing adapter expansion for the vLLM KV
-workload family through `VllmKVSlotAdapter`.
+Close one full runtime-session-facing production vLLM connector lifecycle on
+top of `VllmTurboBusIntegration`.
 
 ## Exit Criteria
 
-- vLLM KV adapter entry stays on `TurboBusRuntimeSession` and does not
-  bypass daemon-issued transfer intent, receipt consumption, or runtime-owned
-  buffer registration.
-- `VllmKVSlotAdapter` and its grouped slot/context path use the same production
-  runtime-session submit, wait, cleanup, and state model as the closed core
-  transfer path.
-- The closure stays in production adapter/runtime code and does not add
-  benchmark-owned or example-owned compatibility paths.
+- The production vLLM connector save/restore path uses one
+  `VllmTurboBusIntegration` request lifecycle instead of rebuilding one-off
+  `VllmKVSlotAdapter` flows around each operation.
+- Request allocation recording, request registration, request restore/save,
+  request stats, and request forget/cleanup stay on the
+  `TurboBusRuntimeSession` path.
+- The closure stays in production connector/adapter/runtime code and does not
+  add benchmark-owned, example-owned, or dry-run compatibility paths.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
-- `turbobus/adapters/vllm.py`
 - `turbobus/adapters/vllm_integration.py`
-- `turbobus/adapters/inference.py`
-- `turbobus/offload/store.py`
+- `turbobus/adapters/vllm_kv_connector.py`
+- `turbobus/adapters/vllm_backing_pool.py`
+- `turbobus/adapters/vllm_prefix_store.py`
+- `turbobus/runtime_session.py`
 
 Round rules:
 
@@ -41,16 +41,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py`, then follow
-`make_vllm_kv_slot_adapter()` through `adapters/vllm.py`,
-`adapters/vllm_integration.py`, `adapters/inference.py`, and
-`offload/store.py` to close one real runtime-session-facing vLLM KV path.
+Start at `vllm_kv_connector.py` where prefix save/restore still creates
+one-off adapter flows, then move through `vllm_integration.py`,
+`vllm_backing_pool.py`, `vllm_prefix_store.py`, and `runtime_session.py` to
+close one real connector-facing request/session lifecycle.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full runtime-session-facing adapter expansion closure for another real
-  workload family.
+- one full runtime-session-facing closure for the next remaining production
+  workload entry.
 - one full validation/evaluation preparation closure only if system-body
   implementation no longer blocks it.
 

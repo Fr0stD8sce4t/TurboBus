@@ -107,14 +107,20 @@ class VllmKVSlotAdapter:
         if self.transfer_context is None:
             raise ValueError("vLLM adapter requires at least one group")
         self._registered_names: set[str] = set()
+        self._request_group_names: dict[str, dict[int, tuple[str, ...]]] = {}
 
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         slots_by_group: dict[int, list[InferenceKVSlot]] = {}
+        request_group_names: dict[str, dict[int, list[str]]] = {}
         names = []
         for ref in refs:
             group = self.groups[ref.group_id]
             name = vllm_block_name(ref)
             names.append(name)
+            request_group_names.setdefault(str(ref.request_id), {}).setdefault(
+                int(ref.group_id),
+                [],
+            ).append(name)
             if name in self._registered_names:
                 continue
             slots_by_group.setdefault(ref.group_id, []).append(
@@ -145,7 +151,21 @@ class VllmKVSlotAdapter:
             self.adapters[group_id].register_slots(slots)
             for slot in slots:
                 self._registered_names.add(slot.name)
+        self._merge_request_group_names(request_group_names)
         return names
+
+    def request_ids(self) -> list[str]:
+        return sorted(self._request_group_names)
+
+    def block_names_for_request(self, request_id: str) -> list[str]:
+        return [
+            name
+            for _, names in sorted(self._group_names_for_request(request_id).items())
+            for name in names
+        ]
+
+    def register_request(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
+        return self.register_blocks(refs)
 
     def restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
         return self._transfer_prefix(refs, "restore")
@@ -159,12 +179,51 @@ class VllmKVSlotAdapter:
     def submit_save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
         return self._submit_prefix_transfer(refs, "save")
 
+    def restore_request(self, request_id: str) -> list:
+        return self._run_submitted_handles(self.submit_restore_request(request_id))
+
+    def save_request(self, request_id: str) -> list:
+        return self._run_submitted_handles(self.submit_save_request(request_id))
+
+    def submit_restore_request(self, request_id: str) -> list:
+        return self._submit_request_transfer(request_id, "restore")
+
+    def submit_save_request(self, request_id: str) -> list:
+        return self._submit_request_transfer(request_id, "save")
+
     def transfer_stats(self, refs: Iterable[VllmKVBlockRef]) -> TransferStats:
         names_by_group = self._register_and_group(refs)
         total = TransferStats()
         for group_id, names in names_by_group.items():
             total = self._sum_transfer_stats(total, self.adapters[group_id].transfer_stats(names))
         return total
+
+    def transfer_stats_for_request(self, request_id: str) -> TransferStats:
+        total = TransferStats()
+        for group_id, names in self._group_names_for_request(request_id).items():
+            total = self._sum_transfer_stats(
+                total,
+                self.adapters[group_id].transfer_stats(names),
+            )
+        return total
+
+    def forget_request(self, request_id: str) -> tuple[str, ...]:
+        grouped_names = self._request_group_names.pop(str(request_id), None)
+        if grouped_names is None:
+            return ()
+        removed: list[str] = []
+        for group_id, names in sorted(grouped_names.items()):
+            adapter = self.adapters.get(group_id)
+            if adapter is None:
+                continue
+            for name in names:
+                try:
+                    adapter.remove(name)
+                except KeyError:
+                    pass
+                self._registered_names.discard(name)
+                removed.append(name)
+        return tuple(removed)
 
     def _transfer_prefix(self, refs: Iterable[VllmKVBlockRef], operation: str) -> list:
         handles = self._submit_prefix_transfer(refs, operation)
@@ -186,6 +245,21 @@ class VllmKVSlotAdapter:
             handles.extend(group_handles)
         return handles
 
+    def _submit_request_transfer(
+        self,
+        request_id: str,
+        operation: str,
+    ) -> list:
+        handles = []
+        submit_method = (
+            "submit_restore_prefix" if operation == "restore" else "submit_save_prefix"
+        )
+        for group_id, names in self._group_names_for_request(request_id).items():
+            submit = getattr(self.adapters[group_id], submit_method)
+            _, group_handles = submit(names)
+            handles.extend(group_handles)
+        return handles
+
     @staticmethod
     def _wait_handles(handles: Iterable[object]) -> None:
         seen = set()
@@ -198,6 +272,12 @@ class VllmKVSlotAdapter:
             if not callable(waiter):
                 raise TypeError("vLLM TurboBus prefix handle must expose wait()")
             waiter()
+
+    @staticmethod
+    def _run_submitted_handles(handles: Iterable[object]) -> list:
+        resolved = list(handles)
+        VllmKVSlotAdapter._wait_handles(resolved)
+        return resolved
 
     @staticmethod
     def _sum_transfer_stats(total: TransferStats, stats: TransferStats) -> TransferStats:
@@ -217,6 +297,33 @@ class VllmKVSlotAdapter:
         for ref in refs:
             names_by_group.setdefault(ref.group_id, []).append(vllm_block_name(ref))
         return names_by_group
+
+    def _group_names_for_request(self, request_id: str) -> dict[int, tuple[str, ...]]:
+        grouped_names = self._request_group_names.get(str(request_id))
+        if grouped_names is None:
+            raise KeyError(f"unknown vLLM request: {request_id}")
+        return grouped_names
+
+    def _merge_request_group_names(
+        self,
+        request_group_names: Mapping[str, Mapping[int, list[str]]],
+    ) -> None:
+        for request_id, grouped_names in request_group_names.items():
+            existing = self._request_group_names.get(str(request_id), {})
+            merged: dict[int, tuple[str, ...]] = dict(existing)
+            for group_id, names in grouped_names.items():
+                ordered: list[str] = []
+                seen = set()
+                for name in (
+                    *existing.get(int(group_id), ()),
+                    *(str(item) for item in names),
+                ):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    ordered.append(name)
+                merged[int(group_id)] = tuple(ordered)
+            self._request_group_names[str(request_id)] = merged
 
     def _batch_size(self, refs: Iterable[VllmKVBlockRef]) -> tuple[int, int]:
         total_bytes = 0

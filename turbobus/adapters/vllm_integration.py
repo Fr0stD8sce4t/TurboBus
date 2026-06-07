@@ -12,7 +12,7 @@ from .vllm import (
     VllmKVBlockRef,
     VllmKVSlotAdapter,
     block_bytes_from_vllm_kv_tensor,
-    make_vllm_layer_block_refs_from_ids,
+    make_vllm_block_refs_from_ids,
     make_vllm_layer_groups_from_kv_caches,
 )
 
@@ -79,6 +79,7 @@ class VllmIntegrationState:
     kv_cache_config: object | None = None
     kv_caches: list[object] = field(default_factory=list)
     allocations: dict[str, VllmAllocationEvent] = field(default_factory=dict)
+    request_cpu_slot_starts: dict[str, int] = field(default_factory=dict)
     adapter: VllmKVSlotAdapter | None = None
 
 
@@ -226,8 +227,55 @@ class VllmTurboBusIntegration:
         return event
 
     def block_ids_for_request(self, request_id: str) -> tuple[int, ...]:
-        event = self.state.allocations[str(request_id)]
+        event = self._allocation_for_request(request_id)
         return event.block_ids
+
+    def block_ids_by_group_for_request(self, request_id: str) -> tuple[tuple[int, ...], ...]:
+        event = self._allocation_for_request(request_id)
+        return event.block_ids_by_group
+
+    def request_ids(self) -> list[str]:
+        return sorted(self.state.allocations)
+
+    def register_request(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list[str]:
+        request_id = str(request_id)
+        slot_start = self._resolve_cpu_slot_start(request_id, cpu_slot_start)
+        refs = self.make_refs_for_request(request_id, cpu_slot_start=slot_start)
+        names = self.require_adapter().register_request(refs)
+        self.state.request_cpu_slot_starts[request_id] = slot_start
+        return names
+
+    def block_names_for_request(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list[str]:
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().block_names_for_request(str(request_id))
+
+    def transfer_stats_for_request(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ):
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().transfer_stats_for_request(str(request_id))
+
+    def forget_request(self, request_id: str) -> tuple[str, ...]:
+        request_id = str(request_id)
+        self.state.allocations.pop(request_id, None)
+        self.state.request_cpu_slot_starts.pop(request_id, None)
+        adapter = self.state.adapter
+        if adapter is None:
+            return ()
+        return adapter.forget_request(request_id)
 
     def make_refs_for_request(
         self,
@@ -235,21 +283,21 @@ class VllmTurboBusIntegration:
         *,
         cpu_slot_start: int = 0,
     ) -> list[VllmKVBlockRef]:
-        block_ids = self.block_ids_for_request(request_id)
-        return make_vllm_layer_block_refs_from_ids(
-            str(request_id),
-            block_ids,
-            layer_count=len(self.state.kv_caches),
-            cpu_slot_start=cpu_slot_start,
-        )
+        refs: list[VllmKVBlockRef] = []
+        for group_id, block_ids in enumerate(self.block_ids_by_group_for_request(request_id)):
+            refs.extend(
+                make_vllm_block_refs_from_ids(
+                    str(request_id),
+                    group_id,
+                    block_ids,
+                    cpu_slot_start=cpu_slot_start,
+                )
+            )
+        return refs
 
     def restore_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
-        return self._run_submitted_handles(
-            self.submit_restore_request_prefix(
-                request_id,
-                cpu_slot_start=cpu_slot_start,
-            )
-        )
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().restore_request(str(request_id))
 
     def submit_restore_request_prefix(
         self,
@@ -257,18 +305,12 @@ class VllmTurboBusIntegration:
         *,
         cpu_slot_start: int = 0,
     ) -> list:
-        adapter = self.require_adapter()
-        return adapter.submit_restore_prefix(
-            self.make_refs_for_request(request_id, cpu_slot_start=cpu_slot_start)
-        )
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().submit_restore_request(str(request_id))
 
     def save_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
-        return self._run_submitted_handles(
-            self.submit_save_request_prefix(
-                request_id,
-                cpu_slot_start=cpu_slot_start,
-            )
-        )
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().save_request(str(request_id))
 
     def submit_save_request_prefix(
         self,
@@ -276,10 +318,8 @@ class VllmTurboBusIntegration:
         *,
         cpu_slot_start: int = 0,
     ) -> list:
-        adapter = self.require_adapter()
-        return adapter.submit_save_prefix(
-            self.make_refs_for_request(request_id, cpu_slot_start=cpu_slot_start)
-        )
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter().submit_save_request(str(request_id))
 
     def _refresh_adapter(self) -> None:
         if not self.state.kv_caches or self._cpu_backings is None:
@@ -303,21 +343,25 @@ class VllmTurboBusIntegration:
 
     _require_adapter = require_adapter
 
-    @staticmethod
-    def _run_submitted_handles(handles: Iterable[object]) -> list:
-        resolved = list(handles)
-        seen = set()
-        for handle in resolved:
-            handle_id = id(handle)
-            if handle_id in seen:
-                continue
-            seen.add(handle_id)
-            waiter = getattr(handle, "wait", None)
-            if not callable(waiter):
-                raise TypeError("vLLM TurboBus submitted handle must expose wait()")
-            waiter()
-        return resolved
+    def _allocation_for_request(self, request_id: str) -> VllmAllocationEvent:
+        request_id = str(request_id)
+        try:
+            return self.state.allocations[request_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown vLLM request: {request_id}") from exc
 
+    def _resolve_cpu_slot_start(self, request_id: str, cpu_slot_start: int) -> int:
+        request_id = str(request_id)
+        requested = int(cpu_slot_start)
+        existing = self.state.request_cpu_slot_starts.get(request_id)
+        if existing is None:
+            return requested
+        if requested not in (0, existing):
+            raise ValueError(
+                f"vLLM request {request_id} is already registered with "
+                f"cpu_slot_start={existing}"
+            )
+        return existing
 
 def extract_vllm_block_ids(blocks) -> tuple[tuple[int, ...], ...]:
     if blocks is None:

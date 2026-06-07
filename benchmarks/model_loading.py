@@ -347,46 +347,55 @@ class TorchRuntimeBufferFactory:
 
         from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 
-        trace_event("torch_buffers_shared_cpu_allocate_start", bytes=byte_count)
-        cpu_buffer = SharedPinnedCpuBuffer.allocate(
-            buffer_id=cpu_buffer_id,
-            job_id=args.job_id,
-            size_bytes=byte_count,
-            name_prefix="turbobus-model-load",
-        )
-        trace_event("torch_buffers_shared_cpu_allocate_done", name=cpu_buffer.shared_memory_name)
-        trace_event("torch_buffers_source_tensor_start", bytes=byte_count)
-        source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
-        source.random_(0, 256)
-        trace_event("torch_buffers_source_tensor_done")
-        trace_event("torch_buffers_cpu_write_start", bytes=byte_count)
-        cpu_buffer.write(source.numpy().tobytes())
-        trace_event("torch_buffers_cpu_write_done")
+        cpu_buffer = None
+        try:
+            trace_event("torch_buffers_shared_cpu_allocate_start", bytes=byte_count)
+            cpu_buffer = SharedPinnedCpuBuffer.allocate(
+                buffer_id=cpu_buffer_id,
+                job_id=args.job_id,
+                size_bytes=byte_count,
+                name_prefix="turbobus-model-load",
+            )
+            trace_event(
+                "torch_buffers_shared_cpu_allocate_done",
+                shm_name=cpu_buffer.shared_memory_name,
+            )
+            trace_event("torch_buffers_source_tensor_start", bytes=byte_count)
+            source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
+            source.random_(0, 256)
+            trace_event("torch_buffers_source_tensor_done")
+            trace_event("torch_buffers_cpu_write_start", bytes=byte_count)
+            cpu_buffer.write(source.numpy().tobytes())
+            trace_event("torch_buffers_cpu_write_done")
 
-        trace_event("torch_buffers_set_device_start", target_gpu=args.target_gpu)
-        torch.cuda.set_device(int(args.target_gpu))
-        trace_event("torch_buffers_set_device_done", target_gpu=args.target_gpu)
-        trace_event("torch_buffers_target_tensor_start", bytes=byte_count)
-        target = torch.empty(
-            byte_count,
-            dtype=torch.uint8,
-            device=f"cuda:{int(args.target_gpu)}",
-        )
-        trace_event("torch_buffers_target_tensor_done", ptr=target.data_ptr())
-        trace_event("torch_buffers_cuda_ipc_export_start")
-        gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
-            buffer_id=gpu_buffer_id,
-            job_id=args.job_id,
-            device_index=int(args.target_gpu),
-            size_bytes=byte_count,
-            device_ptr=target.data_ptr(),
-        )
-        trace_event("torch_buffers_cuda_ipc_export_done")
-        return RuntimeBuffers(
-            cpu_buffer=cpu_buffer,
-            gpu_buffer=gpu_buffer,
-            target_tensor=target,
-        )
+            trace_event("torch_buffers_set_device_start", target_gpu=args.target_gpu)
+            torch.cuda.set_device(int(args.target_gpu))
+            trace_event("torch_buffers_set_device_done", target_gpu=args.target_gpu)
+            trace_event("torch_buffers_target_tensor_start", bytes=byte_count)
+            target = torch.empty(
+                byte_count,
+                dtype=torch.uint8,
+                device=f"cuda:{int(args.target_gpu)}",
+            )
+            trace_event("torch_buffers_target_tensor_done", ptr=target.data_ptr())
+            trace_event("torch_buffers_cuda_ipc_export_start")
+            gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
+                buffer_id=gpu_buffer_id,
+                job_id=args.job_id,
+                device_index=int(args.target_gpu),
+                size_bytes=byte_count,
+                device_ptr=target.data_ptr(),
+            )
+            trace_event("torch_buffers_cuda_ipc_export_done")
+            return RuntimeBuffers(
+                cpu_buffer=cpu_buffer,
+                gpu_buffer=gpu_buffer,
+                target_tensor=target,
+            )
+        except Exception:
+            if cpu_buffer is not None:
+                cpu_buffer.release()
+            raise
 
 
 class ProductionRuntimeSessionFactory:

@@ -862,20 +862,30 @@ class WorkerTransferClient:
                 self._executor.execute(worker_request, staging_slot),
                 self._worker_startup_evidence,
             )
+        binding = self._resource_binder.bind(worker_request)
         resources = None
         result: WorkerTransferResult | None = None
         execution_error: Exception | None = None
-        with self._resource_binder.bind(worker_request) as bound_resources:
-            resources = bound_resources
-            try:
-                result = execute_worker_transfer(
-                    self._executor,
-                    worker_request,
-                    staging_slot,
-                    resources,
-                )
-            except Exception as exc:
-                execution_error = exc
+        try:
+            with binding as bound_resources:
+                resources = bound_resources
+                try:
+                    result = execute_worker_transfer(
+                        self._executor,
+                        worker_request,
+                        staging_slot,
+                        resources,
+                    )
+                except Exception as exc:
+                    execution_error = exc
+        except Exception as exc:
+            failure_metadata = _resource_binding_failure_metadata(binding)
+            result = failed_worker_result_from_exception(
+                worker_request,
+                staging_slot,
+                exc,
+                metadata=failure_metadata,
+            )
         if result is None:
             if execution_error is None:
                 raise RuntimeError("worker execution did not produce a result")
@@ -1287,7 +1297,12 @@ def failed_worker_result_from_exception(
     worker_request: WorkerTransferRequest,
     staging_slot: WorkerStagingSlot,
     exc: Exception,
+    *,
+    metadata: Mapping[str, object] | None = None,
 ) -> WorkerTransferResult:
+    failure_metadata = {} if metadata is None else dict(metadata)
+    resource_evidence = None if not failure_metadata else dict(failure_metadata)
+    failure_source = failure_metadata.get("failure_source")
     return _worker_result_with_ticket_binding(
         worker_request,
         WorkerTransferResult(
@@ -1296,6 +1311,11 @@ def failed_worker_result_from_exception(
             error=str(exc) or exc.__class__.__name__,
             bytes_completed=0,
             metadata={
+                **(
+                    {}
+                    if failure_source is None
+                    else {"failure_source": str(failure_source)}
+                ),
                 "relay_gpu": worker_request.authorization.relay_gpu,
                 "relay_gpus": worker_validation.authorized_relay_gpus_for_request(
                     worker_request
@@ -1303,6 +1323,11 @@ def failed_worker_result_from_exception(
                 "src_buffer_id": worker_request.authorization.src_buffer.buffer_id,
                 "dst_buffer_id": worker_request.authorization.dst_buffer.buffer_id,
                 "staging_slot_id": staging_slot.slot_id,
+                **(
+                    {}
+                    if resource_evidence is None
+                    else {"resource_evidence": resource_evidence}
+                ),
             },
         ),
     )
@@ -1355,6 +1380,14 @@ def default_worker_executor():
     from .cuda_executor import CudaWorkerExecutor
 
     return CudaWorkerExecutor()
+
+
+def _resource_binding_failure_metadata(binding) -> dict[str, object] | None:
+    failure_evidence = getattr(binding, "failure_evidence", None)
+    if callable(failure_evidence):
+        resolved = failure_evidence()
+        return None if resolved is None else dict(resolved)
+    return None
 
 
 __all__ = [

@@ -166,6 +166,64 @@ def _require_runtime_buffer_record(
         raise ValueError(
             f"runtime receipt {label} buffer runtime_session_id does not match session"
         )
+    resource_evidence = record.get("resource_evidence")
+    if not isinstance(resource_evidence, Mapping):
+        raise ValueError(f"runtime receipt missing {label} buffer resource evidence")
+    _require_runtime_buffer_resource_evidence(
+        resource_evidence,
+        expected_buffer_id=expected_buffer_id,
+        runtime_buffer_kind=metadata.get("runtime_buffer_kind"),
+        label=label,
+    )
+
+
+def _require_runtime_buffer_resource_evidence(
+    resource_evidence: Mapping[str, object],
+    *,
+    expected_buffer_id: str | None,
+    runtime_buffer_kind: object,
+    label: str,
+) -> None:
+    if expected_buffer_id is not None:
+        matched = any(
+            str(resource_evidence.get(field_name, "")) == str(expected_buffer_id)
+            for field_name in (
+                "src_buffer_id",
+                "dst_buffer_id",
+                "cpu_buffer_id",
+                "device_buffer_id",
+            )
+        )
+        if not matched:
+            raise ValueError(
+                f"runtime receipt {label} buffer resource evidence does not match buffer_id"
+            )
+    normalized_kind = str(runtime_buffer_kind or "").lower()
+    if normalized_kind == "shared_pinned_cpu":
+        if str(resource_evidence.get("cpu_handle_type", "")).lower() != "shared_pinned_cpu":
+            raise ValueError(
+                f"runtime receipt {label} CPU buffer resource evidence has the wrong handle type"
+            )
+        if not any(
+            key in resource_evidence
+            for key in ("cpu_buffer_opened", "cuda_host_registered", "close_evidence")
+        ):
+            raise ValueError(
+                f"runtime receipt {label} CPU buffer resource evidence is missing lifecycle markers"
+            )
+        return
+    if normalized_kind == "cuda_ipc_device":
+        if str(resource_evidence.get("device_handle_type", "")).lower() != "cuda_ipc_device":
+            raise ValueError(
+                f"runtime receipt {label} CUDA buffer resource evidence has the wrong handle type"
+            )
+        if not any(
+            key in resource_evidence
+            for key in ("device_ipc_opened", "device_ptr", "device_index", "close_evidence")
+        ):
+            raise ValueError(
+                f"runtime receipt {label} CUDA buffer resource evidence is missing lifecycle markers"
+            )
 
 
 __all__ = [

@@ -24,6 +24,11 @@ class WorkerDataPlaneResources:
     cuda_host_registered: bool = False
     cuda_backend: object | None = field(default=None, repr=False, compare=False)
     device_index: int | None = None
+    open_evidence: dict[str, object] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     _closed: bool = field(default=False, init=False, repr=False, compare=False)
     _device_ipc_closed: bool = field(
         default=False,
@@ -146,6 +151,9 @@ class WorkerDataPlaneResources:
             "cuda_host_registered": self.cuda_host_registered,
             "device_ipc_closed": self._device_ipc_closed,
             "closed": self.closed,
+            "open_evidence": (
+                None if self.open_evidence is None else dict(self.open_evidence)
+            ),
         }
 
     def close_evidence(self) -> dict[str, object]:
@@ -180,6 +188,9 @@ class WorkerDataPlaneResources:
             "device_buffer_role": self.device_buffer_role,
             "device_ipc_closed": self._device_ipc_closed,
             "resources_closed": self.closed,
+            "open_evidence": (
+                None if self.open_evidence is None else dict(self.open_evidence)
+            ),
         }
 
     def _require_open(self) -> None:
@@ -210,25 +221,46 @@ class WorkerDataPlaneResourceBinding:
         self._resources: WorkerDataPlaneResources | None = None
         self._device_ptr: int | None = None
         self._device_index: int | None = None
+        self._failure_evidence: dict[str, object] | None = None
+
+    @property
+    def failure_evidence(self) -> dict[str, object] | None:
+        if self._failure_evidence is None:
+            return None
+        return dict(self._failure_evidence)
 
     def __enter__(self) -> WorkerDataPlaneResources:
         if self._resources is not None or self._device_ptr is not None:
             raise WorkerDataPlaneResourceError("worker data-plane resources already bound")
         cpu_buffer: SharedPinnedCpuBuffer | None = None
+        cpu_handle = _cpu_handle_for_request(self.request)
+        device_handle = _device_handle_for_request(self.request)
+        self._failure_evidence = None
+        open_evidence = _resource_binding_evidence(
+            request=self.request,
+            ticket_id=self.worker_request.ticket.ticket_id,
+            plan_generation=int(self.worker_request.ticket.metadata["plan_generation"]),
+            cpu_handle=cpu_handle,
+            device_handle=device_handle,
+            register_cuda_host=self.register_cuda_host,
+        )
         try:
-            cpu_handle = _cpu_handle_for_request(self.request)
-            device_handle = _device_handle_for_request(self.request)
             self._device_index = device_handle.device_index
             _set_cuda_device_for_handle(self.backend, device_handle)
             cpu_buffer = SharedPinnedCpuBuffer.open_from_registration(
                 _registration_from_worker_handle(cpu_handle)
             )
+            open_evidence["cpu_buffer_opened"] = True
+            open_evidence["cpu_buffer_closed"] = bool(cpu_buffer.closed)
             if self.register_cuda_host:
                 cpu_buffer.register_for_cuda(self.backend)
+            open_evidence["cuda_host_registered"] = bool(cpu_buffer.cuda_registered)
             self._device_ptr = _open_cuda_ipc_device_handle(
                 self.backend,
                 device_handle,
             )
+            open_evidence["device_ipc_opened"] = True
+            open_evidence["device_ptr"] = int(self._device_ptr)
             self._resources = WorkerDataPlaneResources(
                 request=self.request,
                 cpu_buffer=cpu_buffer,
@@ -241,20 +273,46 @@ class WorkerDataPlaneResourceBinding:
                 cuda_host_registered=self.register_cuda_host,
                 cuda_backend=self.backend,
                 device_index=self._device_index,
+                open_evidence=open_evidence,
             )
             return self._resources
         except Exception as exc:
+            failure_evidence = dict(open_evidence)
+            failure_evidence["failure_source"] = "worker_resource_binding"
+            failure_evidence["error"] = str(exc) or exc.__class__.__name__
+            failure_cleanup: dict[str, object] = {}
             try:
                 if self._device_ptr is not None:
-                    _set_cuda_device_index(self.backend, self._device_index)
-                    self.backend.close_device_ipc_handle(self._device_ptr)
-                    self._device_ptr = None
+                    try:
+                        _set_cuda_device_index(self.backend, self._device_index)
+                        self.backend.close_device_ipc_handle(self._device_ptr)
+                        failure_cleanup["device_ipc_closed_after_failure"] = True
+                    except Exception as close_exc:
+                        failure_cleanup["device_ipc_close_error"] = (
+                            str(close_exc) or close_exc.__class__.__name__
+                        )
+                    finally:
+                        self._device_ptr = None
                 if cpu_buffer is not None:
-                    _set_cuda_device_index(self.backend, self._device_index)
-                    cpu_buffer.close()
+                    try:
+                        _set_cuda_device_index(self.backend, self._device_index)
+                        cpu_buffer.close()
+                        failure_cleanup["cpu_buffer_closed_after_failure"] = bool(
+                            cpu_buffer.closed
+                        )
+                        failure_cleanup["cpu_cuda_registered_after_failure"] = bool(
+                            cpu_buffer.cuda_registered
+                        )
+                    except Exception as close_exc:
+                        failure_cleanup["cpu_buffer_close_error"] = (
+                            str(close_exc) or close_exc.__class__.__name__
+                        )
             finally:
                 self._resources = None
                 self._device_index = None
+            if failure_cleanup:
+                failure_evidence["failure_cleanup"] = failure_cleanup
+            self._failure_evidence = failure_evidence
             raise WorkerDataPlaneResourceError(
                 f"failed to bind worker data-plane resources: {exc}"
             ) from exc
@@ -343,6 +401,43 @@ def _set_cuda_device_index(backend, device_index: int | None) -> None:
     setter = getattr(backend, "set_device", None)
     if callable(setter):
         setter(int(device_index))
+
+
+def _resource_binding_evidence(
+    *,
+    request: WorkerDataPlaneRequest,
+    ticket_id: str,
+    plan_generation: int,
+    cpu_handle: WorkerBufferHandle,
+    device_handle: WorkerBufferHandle,
+    register_cuda_host: bool,
+) -> dict[str, object]:
+    return {
+        "transfer_id": str(request.transfer_id),
+        "lease_id": str(request.lease_id),
+        "ticket_id": str(ticket_id),
+        "plan_generation": int(plan_generation),
+        "session_id": str(request.session_id),
+        "job_id": str(request.job_id),
+        "direction": str(request.direction),
+        "src_buffer_id": str(request.src_handle.buffer_id),
+        "src_handle_type": str(request.src_handle.handle_type),
+        "dst_buffer_id": str(request.dst_handle.buffer_id),
+        "dst_handle_type": str(request.dst_handle.handle_type),
+        "cpu_buffer_id": str(cpu_handle.buffer_id),
+        "cpu_handle_type": str(cpu_handle.handle_type),
+        "cpu_buffer_role": "source" if request.direction == "h2d" else "destination",
+        "device_buffer_id": str(device_handle.buffer_id),
+        "device_handle_type": str(device_handle.handle_type),
+        "device_buffer_role": (
+            "destination" if request.direction == "h2d" else "source"
+        ),
+        "device_index": device_handle.device_index,
+        "cpu_buffer_opened": False,
+        "cuda_host_registration_requested": bool(register_cuda_host),
+        "cuda_host_registered": False,
+        "device_ipc_opened": False,
+    }
 
 
 __all__ = [

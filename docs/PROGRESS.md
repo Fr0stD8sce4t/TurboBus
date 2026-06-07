@@ -5,9 +5,9 @@
 - The project is still in system-body implementation, not adapters,
   benchmarks, or paper work.
 - `TurboBusRuntimeSession` remains the intended single production entry.
-- Managed daemon/worker startup and buffer lifetime closure are in place, and
-  the runtime production socket path now owns a persistent control connection
-  plus connection-scoped daemon session cleanup.
+- Managed daemon/worker startup is in place, and the runtime production socket
+  path owns a persistent control connection plus connection-scoped daemon
+  session cleanup.
 - Scheduler/load-accounting now uses live queued, running, active, and recent
   terminal runtime feedback to influence relay admission and delayed-promotion
   behavior, not just bandwidth estimation.
@@ -21,25 +21,29 @@
   production path: direct chunks run on the backend, relay chunks run on the
   worker, and daemon completion evidence keeps unified path split plus cleanup
   evidence for one valid receipt.
+- Registered buffer lifetime now closes through one production receipt
+  contract: runtime-owned registration snapshots are paired with worker resource
+  open/close evidence, and binding failures keep explicit cleanup evidence
+  instead of dropping out before receipt formation.
 
 ## Remaining Risk
 
-- Registered buffer lifetime still needs one full closure from runtime
-  registration through execution, cleanup, and receipt evidence.
-- Buffer lifetime, server, CUDA, benchmark, and adapter validation remain
-  later-stage risks and do not block current implementation rounds.
+- Daemon/worker production startup still needs one full closure from runtime
+  bootstrap through authenticated execution, failure handling, and cleanup
+  evidence.
+- Server, CUDA, benchmark, and adapter validation remain later-stage risks and
+  do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full registered buffer lifecycle closure from production
-registration through execution, cleanup, and receipt. After that, choose
-exactly one of these per round:
+Finish one full daemon/worker production startup closure from runtime-session
+bootstrap through authenticated execution, failure handling, and cleanup.
+After that, choose exactly one of these per round:
 
-- one complete daemon/worker production startup hardening closure only if
-  buffer lifetime no longer blocks the main system path.
 - one complete runtime-session-facing adapter expansion closure for another
-  workload family only if buffer lifetime no longer blocks the main system
-  path.
+  workload family.
+- one complete scheduler/topology feedback closure only if startup no longer
+  blocks the main system path.
 
 Progress-file rule:
 

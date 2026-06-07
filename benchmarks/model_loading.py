@@ -412,25 +412,28 @@ def require_torch():
 
 
 def start_daemon_process(args, daemon_socket: str) -> subprocess.Popen:
-    return start_service(
-        [
-            sys.executable,
-            "-m",
-            "turbobus.daemon",
-            "--socket-path",
-            daemon_socket,
-            "--target-gpu",
-            str(args.target_gpu),
-            "--min-relays",
-            str(args.min_relays),
-            "--max-sessions-per-relay",
-            str(args.max_sessions_per_relay),
-            "--max-inflight-chunks-per-relay",
-            str(args.daemon_max_inflight_chunks),
-            "--profile-max-age-seconds",
-            str(args.daemon_profile_max_age_seconds),
-        ]
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "turbobus.daemon",
+        "--socket-path",
+        daemon_socket,
+        "--target-gpu",
+        str(args.target_gpu),
+        "--min-relays",
+        str(args.min_relays),
+        "--max-sessions-per-relay",
+        str(args.max_sessions_per_relay),
+        "--max-inflight-chunks-per-relay",
+        str(args.daemon_max_inflight_chunks),
+        "--profile-max-age-seconds",
+        str(args.daemon_profile_max_age_seconds),
+    ]
+    if args.allow_missing_fabric:
+        command.append("--allow-missing-fabric")
+    if args.allow_missing_pcie:
+        command.append("--allow-missing-pcie")
+    return start_service(command)
 
 
 def start_worker_process(args, daemon_socket: str, worker_socket: str) -> subprocess.Popen:
@@ -607,6 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daemon-socket-path")
     parser.add_argument("--worker-socket-path")
     parser.add_argument("--start-services", action="store_true")
+    parser.add_argument("--allow-missing-fabric", action="store_true", default=True)
+    parser.add_argument("--allow-missing-pcie", action="store_true")
     parser.add_argument("--min-relays", type=int, default=1)
     parser.add_argument("--max-sessions-per-relay", type=int, default=1)
     parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)

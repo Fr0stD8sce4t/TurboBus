@@ -106,6 +106,10 @@ def runtime_service_command_args(args) -> list[str]:
         command.append("--start-services")
         command.extend(["--min-relays", str(args.min_relays)])
         command.extend(["--max-sessions-per-relay", str(args.max_sessions_per_relay)])
+    if args.allow_missing_fabric:
+        command.append("--allow-missing-fabric")
+    if args.allow_missing_pcie:
+        command.append("--allow-missing-pcie")
     return command
 
 
@@ -720,6 +724,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-gpu", type=int, required=True)
     parser.add_argument("--worker-socket-path")
     parser.add_argument("--start-services", action="store_true")
+    parser.add_argument("--allow-missing-fabric", action="store_true", default=True)
+    parser.add_argument("--allow-missing-pcie", action="store_true")
     parser.add_argument("--min-relays", type=int, default=1)
     parser.add_argument("--max-sessions-per-relay", type=int, default=1)
     parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)

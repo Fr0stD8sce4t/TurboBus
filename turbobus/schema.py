@@ -1330,6 +1330,7 @@ class CleanupRequest:
     target_id: str
     reason: str
     force: bool = False
+    owner_binding: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not str(self.target_kind).strip():
@@ -1341,6 +1342,12 @@ class CleanupRequest:
         object.__setattr__(self, "target_kind", str(self.target_kind))
         object.__setattr__(self, "target_id", str(self.target_id))
         object.__setattr__(self, "reason", str(self.reason))
+        if self.owner_binding is not None:
+            object.__setattr__(
+                self,
+                "owner_binding",
+                _copy_mapping(self.owner_binding, "owner_binding"),
+            )
 
 
 @dataclass

@@ -395,6 +395,7 @@ class TurboBusDaemon:
         target_id: str,
         reason: str,
         force: bool = False,
+        owner_binding: Mapping[str, object] | None = None,
         peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
         cleanup = CleanupRequest(
@@ -402,8 +403,12 @@ class TurboBusDaemon:
             target_id=target_id,
             reason=reason,
             force=force,
+            owner_binding=owner_binding,
         )
         with self._lock:
+            validated_owner_binding = (
+                self._validate_cleanup_owner_binding_locked(cleanup)
+            )
             removed = _empty_removed_summary()
             cleanup_result: dict[str, object] = {}
             if cleanup.target_kind == "job":
@@ -580,26 +585,53 @@ class TurboBusDaemon:
                     target_kind=cleanup.target_kind,
                     target_id=cleanup.target_id,
                 )
-                try:
-                    self._validate_peer_owns_lease_locked(
-                        lease_id=cleanup.target_id,
-                        peer_identity=peer_identity,
-                    )
-                except ValueError as exc:
-                    if str(exc) != "unknown lease":
-                        return DaemonResponse(ok=False, error=str(exc))
-                    staging_record = self._staging_records.get(cleanup.target_id)
-                    if staging_record is not None and cleanup.force:
-                        try:
-                            self._validate_peer_owns_staging_record_locked(
-                                staging_record=staging_record,
-                                peer_identity=peer_identity,
-                            )
-                        except ValueError as staging_exc:
-                            return DaemonResponse(ok=False, error=str(staging_exc))
-                    elif archived_target is None or not cleanup.force:
-                        if archived_target is None:
+                if validated_owner_binding is None:
+                    try:
+                        self._validate_peer_owns_lease_locked(
+                            lease_id=cleanup.target_id,
+                            peer_identity=peer_identity,
+                        )
+                    except ValueError as exc:
+                        if str(exc) != "unknown lease":
                             return DaemonResponse(ok=False, error=str(exc))
+                        staging_record = self._staging_records.get(cleanup.target_id)
+                        if staging_record is not None and cleanup.force:
+                            try:
+                                self._validate_peer_owns_staging_record_locked(
+                                    staging_record=staging_record,
+                                    peer_identity=peer_identity,
+                                )
+                            except ValueError as staging_exc:
+                                return DaemonResponse(ok=False, error=str(staging_exc))
+                        elif archived_target is None or not cleanup.force:
+                            if archived_target is None:
+                                return DaemonResponse(ok=False, error=str(exc))
+                            try:
+                                self._validate_peer_owns_missing_cleanup_target_locked(
+                                    target_kind=cleanup.target_kind,
+                                    target_id=cleanup.target_id,
+                                    peer_identity=peer_identity,
+                                )
+                            except ValueError as owner_exc:
+                                return DaemonResponse(ok=False, error=str(owner_exc))
+                            return DaemonResponse(
+                                ok=True,
+                                payload={
+                                    "cleanup": asdict(cleanup),
+                                    "removed": removed,
+                                    "reservation_id": cleanup.target_id,
+                                    "cleaned_reservation_ids": (),
+                                    "cleanup_kind": cleanup.target_kind,
+                                    "cleanup_mode": "noop",
+                                },
+                            )
+                if (
+                    cleanup.target_id not in self._reservations
+                    and cleanup.target_id not in self._staging_records
+                ):
+                    if archived_target is None:
+                        return DaemonResponse(ok=False, error="unknown reservation")
+                    if validated_owner_binding is None:
                         try:
                             self._validate_peer_owns_missing_cleanup_target_locked(
                                 target_kind=cleanup.target_kind,
@@ -608,31 +640,6 @@ class TurboBusDaemon:
                             )
                         except ValueError as owner_exc:
                             return DaemonResponse(ok=False, error=str(owner_exc))
-                        return DaemonResponse(
-                            ok=True,
-                            payload={
-                                "cleanup": asdict(cleanup),
-                                "removed": removed,
-                                "reservation_id": cleanup.target_id,
-                                "cleaned_reservation_ids": (),
-                                "cleanup_kind": cleanup.target_kind,
-                                "cleanup_mode": "noop",
-                            },
-                        )
-                if (
-                    cleanup.target_id not in self._reservations
-                    and cleanup.target_id not in self._staging_records
-                ):
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown reservation")
-                    try:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as owner_exc:
-                        return DaemonResponse(ok=False, error=str(owner_exc))
                     return DaemonResponse(
                         ok=True,
                         payload={
@@ -651,14 +658,15 @@ class TurboBusDaemon:
                 ):
                     if archived_target is None:
                         return DaemonResponse(ok=False, error="unknown reservation")
-                    try:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
+                    if validated_owner_binding is None:
+                        try:
+                            self._validate_peer_owns_missing_cleanup_target_locked(
+                                target_kind=cleanup.target_kind,
+                                target_id=cleanup.target_id,
+                                peer_identity=peer_identity,
+                            )
+                        except ValueError as exc:
+                            return DaemonResponse(ok=False, error=str(exc))
                     cleanup_result = {
                         "reservation_id": cleanup.target_id,
                         "cleaned_reservation_ids": (),
@@ -707,6 +715,11 @@ class TurboBusDaemon:
                     "cleanup": asdict(cleanup),
                     "removed": removed,
                     "promoted_transfers": promoted,
+                    **(
+                        {}
+                        if validated_owner_binding is None
+                        else {"owner_binding": validated_owner_binding}
+                    ),
                     **cleanup_result,
                 },
             )
@@ -4186,6 +4199,141 @@ class TurboBusDaemon:
                 actual=peer_identity,
                 owner_name="transfer",
             )
+
+    def _validate_cleanup_owner_binding_locked(
+        self,
+        cleanup: CleanupRequest,
+    ) -> dict[str, object] | None:
+        owner_binding = cleanup.owner_binding
+        if owner_binding is None:
+            return None
+        if cleanup.target_kind != "reservation":
+            raise ValueError("cleanup owner_binding is only supported for reservations")
+        if not isinstance(owner_binding, Mapping):
+            raise ValueError("cleanup owner_binding must be a mapping")
+        job_id = str(owner_binding.get("job_id", ""))
+        session_id = str(owner_binding.get("session_id", ""))
+        transfer_id = str(owner_binding.get("transfer_id", ""))
+        if not job_id.strip():
+            raise ValueError("cleanup owner_binding job_id must be non-empty")
+        if not session_id.strip():
+            raise ValueError("cleanup owner_binding session_id must be non-empty")
+        if not transfer_id.strip():
+            raise ValueError("cleanup owner_binding transfer_id must be non-empty")
+        lease_ids = owner_binding.get("lease_ids")
+        if not isinstance(lease_ids, Iterable) or isinstance(lease_ids, (str, bytes)):
+            raise ValueError("cleanup owner_binding lease_ids must be iterable")
+        normalized_lease_ids = tuple(str(item) for item in lease_ids)
+        if not normalized_lease_ids or any(not item.strip() for item in normalized_lease_ids):
+            raise ValueError("cleanup owner_binding lease_ids must be non-empty")
+        cleanup_scope = owner_binding.get("cleanup_scope")
+        if not isinstance(cleanup_scope, Mapping):
+            raise ValueError("cleanup owner_binding cleanup_scope must be a mapping")
+        cleanup_target_kind = str(cleanup_scope.get("target_kind", "")).lower()
+        if cleanup_target_kind != "reservation":
+            raise ValueError("cleanup owner_binding cleanup_scope must target reservations")
+        cleanup_target_ids = cleanup_scope.get("target_ids")
+        if not isinstance(cleanup_target_ids, Iterable) or isinstance(
+            cleanup_target_ids,
+            (str, bytes),
+        ):
+            raise ValueError(
+                "cleanup owner_binding cleanup_scope target_ids must be iterable"
+            )
+        normalized_cleanup_target_ids = tuple(str(item) for item in cleanup_target_ids)
+        if (
+            not normalized_cleanup_target_ids
+            or any(not item.strip() for item in normalized_cleanup_target_ids)
+        ):
+            raise ValueError(
+                "cleanup owner_binding cleanup_scope target_ids must be non-empty"
+            )
+        if normalized_cleanup_target_ids != normalized_lease_ids:
+            raise ValueError(
+                "cleanup owner_binding cleanup_scope does not match lease_ids"
+            )
+        normalized_target_id = str(cleanup.target_id)
+        if normalized_target_id not in normalized_cleanup_target_ids:
+            raise ValueError("cleanup target escaped daemon-issued cleanup scope")
+        owner_peer = owner_binding.get("peer_identity")
+        normalized_owner_peer: dict[str, object] | None = None
+        owner_peer_identity: PeerIdentity | None = None
+        if isinstance(owner_peer, Mapping):
+            owner_peer_identity = PeerIdentity(**dict(owner_peer))
+            normalized_owner_peer = asdict(owner_peer_identity)
+        for scoped_lease_id in normalized_cleanup_target_ids:
+            reservation = self._reservations.get(scoped_lease_id)
+            if reservation is not None:
+                if str(reservation.session_id) != session_id:
+                    raise ValueError(
+                        "cleanup owner_binding session does not match reservation"
+                    )
+                lease = self._lease_tokens.get(scoped_lease_id)
+                if lease is None:
+                    raise ValueError("cleanup owner_binding lease token is unavailable")
+                if lease.job_id is not None and str(lease.job_id) != job_id:
+                    raise ValueError("cleanup owner_binding job does not match lease")
+                mapped_transfer_id = self._reservation_transfers.get(scoped_lease_id)
+                if mapped_transfer_id != transfer_id:
+                    raise ValueError(
+                        "cleanup owner_binding transfer does not match reservation"
+                    )
+                continue
+            staging_record = self._staging_records.get(scoped_lease_id)
+            if staging_record is not None:
+                if str(staging_record.get("session_id", "")) != session_id:
+                    raise ValueError(
+                        "cleanup owner_binding session does not match staging record"
+                    )
+                if str(staging_record.get("job_id", "")) != job_id:
+                    raise ValueError(
+                        "cleanup owner_binding job does not match staging record"
+                    )
+                if str(staging_record.get("transfer_id", "")) != transfer_id:
+                    raise ValueError(
+                        "cleanup owner_binding transfer does not match staging record"
+                    )
+                continue
+            archived_target = self._retired_cleanup_target_record_locked(
+                target_kind="reservation",
+                target_id=scoped_lease_id,
+            )
+            if archived_target is None:
+                raise ValueError("cleanup owner_binding references unknown reservation")
+            archived_transfer_ids = tuple(
+                str(item) for item in archived_target.get("transfer_ids", ()) or ()
+            )
+            if archived_transfer_ids and transfer_id not in archived_transfer_ids:
+                raise ValueError(
+                    "cleanup owner_binding transfer does not match archived reservation"
+                )
+            archived_peer = archived_target.get("peer_identity")
+            if (
+                owner_peer_identity is not None
+                and isinstance(archived_peer, PeerIdentity)
+                and archived_peer.authenticated
+            ):
+                peer_auth.validate_peer_owner_match(
+                    expected=archived_peer,
+                    actual=owner_peer_identity,
+                    owner_name="reservation",
+                )
+        result = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "transfer_id": transfer_id,
+            "lease_ids": normalized_lease_ids,
+            "cleanup_scope": {
+                "target_kind": cleanup_target_kind,
+                "target_ids": normalized_cleanup_target_ids,
+            },
+        }
+        relay_gpus = owner_binding.get("relay_gpus")
+        if isinstance(relay_gpus, Iterable) and not isinstance(relay_gpus, (str, bytes)):
+            result["relay_gpus"] = tuple(sorted({int(item) for item in relay_gpus}))
+        if normalized_owner_peer is not None:
+            result["peer_identity"] = normalized_owner_peer
+        return result
 
     def _residual_transfer_ids_for_cleanup_target_locked(
         self,

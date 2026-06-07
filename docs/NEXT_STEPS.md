@@ -5,24 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close one full cross-job ownership and cleanup-isolation lifecycle in the
-daemon and worker control path.
+Close one full registered buffer lifetime lifecycle across runtime session,
+daemon, worker resource binding, execution cleanup, and receipt retention.
 
 ## Exit Criteria
 
-- Cleanup for live, missing, and archived session/job/buffer/reservation targets
-  stays bound to the owning peer or daemon-owned identity.
-- Worker-issued cleanup and daemon-issued cleanup use the same ownership scope,
-  so shared relay use does not widen cross-job cleanup authority.
-- The closure stays in production daemon/worker/runtime code and does not add
+- Shared pinned CPU buffers and CUDA IPC GPU buffers stay on one production
+  lifecycle from registration through worker/backend use, cleanup, and receipt
+  evidence.
+- Success, failure, and session-close paths release the same registered buffer
+  state instead of splitting ownership between ad hoc local/runtime paths.
+- The closure stays in production runtime/daemon/worker code and does not add
   benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`
-- `turbobus/worker/validation.py`
-- `turbobus/worker/lifecycle.py`
 - `turbobus/runtime_session.py`
+- `turbobus/buffer_registration.py`
+- `turbobus/worker/resources.py`
+- `turbobus/daemon/server.py`
+- `turbobus/worker/lifecycle.py`
 - `turbobus/schema.py`
 
 Round rules:
@@ -39,11 +41,10 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py` around cleanup ownership checks for live and
-retired targets, then move through `worker/validation.py` and
-`worker/lifecycle.py` to close one real owner-bound cleanup path. Touch
-`runtime_session.py` and `schema.py` only if the production cleanup contract
-needs it.
+Start at `runtime_session.py` around registered buffer cleanup and session
+close, then move through `buffer_registration.py`, `worker/resources.py`,
+`daemon/server.py`, and `worker/lifecycle.py` to close one real registered
+buffer lifetime path.
 
 After the current target closes, the next round should finish exactly one of
 these:

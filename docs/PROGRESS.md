@@ -7,23 +7,23 @@
 - `TurboBusRuntimeSession` stays the intended production entry, and
   daemon-issued execution, receipt formation, cleanup, and runtime feedback
   remain on the real production path.
-- Live scheduler feedback now retires terminal no-reservation transfers out of
-  the live runtime queue, moves them into terminal feedback state, and lets
-  delayed-transfer promotion see the current daemon load instead of stale
-  completed direct transfers.
+- Worker-issued reservation cleanup now carries daemon-issued `owner_binding`
+  back into the daemon cleanup path, so reservation cleanup authorization is
+  checked against daemon-issued owner scope for live, staging, and archived
+  reservation state instead of relying only on the worker socket peer.
 
 ## Remaining Risk
 
-- Cross-job cleanup ownership still needs one full closure across live,
-  archived, and missing targets so shared relay cleanup cannot escape the
-  owning peer scope.
+- Registered shared pinned CPU buffers and CUDA IPC GPU buffers still need one
+  full lifetime closure across registration, worker binding, cleanup, session
+  close, and receipt-visible retention.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full cross-job ownership and cleanup-isolation lifecycle in the
-daemon and worker control path.
+Finish one full registered buffer lifetime lifecycle across runtime session,
+daemon, worker resource binding, execution cleanup, and receipt retention.
 
 Progress-file rule:
 

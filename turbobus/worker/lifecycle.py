@@ -384,6 +384,9 @@ class _WorkerTransferCleanupCoordinator:
             target_id=target_id,
             reason=reason,
             force=force,
+            owner_binding=(
+                None if owner_binding is None else dict(owner_binding)
+            ),
         )
         if not response.ok:
             raise WorkerCleanupError(response.error or "worker cleanup failed")

@@ -299,16 +299,20 @@ class TurboBusDaemonExecutionClient(_DaemonSocketClientBase):
         target_id: str,
         reason: str = "manual",
         force: bool = False,
+        owner_binding: dict[str, object] | None = None,
     ) -> DaemonResponse:
+        payload = {
+            "target_kind": str(target_kind),
+            "target_id": str(target_id),
+            "reason": str(reason),
+            "force": bool(force),
+        }
+        if owner_binding is not None:
+            payload["owner_binding"] = dict(owner_binding)
         return self.send(
             DaemonRequest(
                 request_type=RequestType.CLEANUP,
-                payload={
-                    "target_kind": str(target_kind),
-                    "target_id": str(target_id),
-                    "reason": str(reason),
-                    "force": bool(force),
-                },
+                payload=payload,
             )
         )
 

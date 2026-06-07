@@ -5,24 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close one full scheduler/runtime feedback lifecycle from real execution state
-through daemon relay admission and path selection.
+Close one full cross-job isolation and ownership lifecycle across daemon
+sessions, jobs, buffers, relay leases, and cleanup.
 
 ## Exit Criteria
 
-- Scheduler decisions consume real queued, running, active, and terminal
-  transfer state instead of stale or synthetic summaries.
-- Relay admission, delayed promotion, and path selection react to worker/backend
-  runtime feedback on the production path.
-- The closure stays in daemon/runtime scheduling code and does not use
-  benchmark-only or local substitute control loops.
+- Session, job, buffer, reservation, and cleanup ownership stay bound to
+  authenticated peers or explicit daemon-owned identities on the production
+  path.
+- Shared relay use does not let one job or peer observe, clean up, or reuse
+  another job's runtime resources outside daemon authorization.
+- The closure stays in daemon/worker/control-plane ownership code and does not
+  add compatibility shims or benchmark-owned policy.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/scheduler/`
-- `turbobus/intent_executor.py`
-- `turbobus/runtime/daemon_view.py`
+- `turbobus/daemon/dispatch.py`
+- `turbobus/runtime_session.py`
+- `turbobus/worker/lifecycle.py`
+- `turbobus/worker/validation.py`
 - `turbobus/schema.py`
 
 Round rules:
@@ -39,16 +41,17 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, then follow runtime-state aggregation and
-relay-admission inputs through `scheduler/`, `intent_executor.py`, and
-`runtime/daemon_view.py`.
+Start at `daemon/server.py`, then follow peer ownership, lease authorization,
+cleanup validation, and runtime-session cleanup through `daemon/dispatch.py`,
+`runtime_session.py`, `worker/lifecycle.py`, and `worker/validation.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full cross-job isolation and ownership hardening closure.
-- one full runtime-session-facing adapter expansion closure only if scheduler
-  feedback no longer blocks the main system body.
+- one full runtime-session-facing adapter expansion closure for another real
+  workload family.
+- one full validation/evaluation preparation closure only if system-body
+  implementation no longer blocks it.
 
 Plan-file rule:
 

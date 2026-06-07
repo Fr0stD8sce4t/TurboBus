@@ -788,16 +788,18 @@ class TurboBusDaemon:
             if admission_error is not None:
                 return DaemonResponse(ok=False, error=admission_error)
             try:
+                resolved_bytes_completed = status.bytes_completed
+                if bytes_completed is not None:
+                    resolved_bytes_completed = max(
+                        int(status.bytes_completed),
+                        int(bytes_completed),
+                    )
                 updated = TransferStatus(
                     transfer_id=status.transfer_id,
                     job_id=status.job_id,
                     state=requested_state,
                     bytes_total=status.bytes_total,
-                    bytes_completed=(
-                        status.bytes_completed
-                        if bytes_completed is None
-                        else int(bytes_completed)
-                    ),
+                    bytes_completed=resolved_bytes_completed,
                     session_id=status.session_id,
                     error=status.error if error is None else error,
                 )
@@ -3099,52 +3101,35 @@ class TurboBusDaemon:
         self,
         active_transfers: list[dict[str, object]],
     ) -> tuple[list[dict[str, object]], dict[str, dict[str, int]]]:
-        transfer_ids = {str(record["transfer_id"]) for record in active_transfers}
         records: list[dict[str, object]] = []
         summary: dict[str, dict[str, int]] = {}
-        for transfer_id in sorted(transfer_ids):
+        for record in active_transfers:
+            if not isinstance(record, Mapping):
+                continue
+            transfer_id = str(record.get("transfer_id", ""))
+            if not transfer_id:
+                continue
             admission = self._transfer_admissions.get(transfer_id, {})
             if admission.get("state") != _ADMISSION_ADMITTED:
                 continue
             decision = self._scheduling_decisions.get(transfer_id)
             if decision is None:
                 continue
-            for assignment in decision.plan.get("assignments", ()) or ():
-                if not isinstance(assignment, Mapping):
-                    continue
-                path = assignment.get("path")
-                if not isinstance(path, Mapping):
-                    continue
-                chunks = assignment.get("chunks", ()) or ()
-                chunk_count = len(chunks) if isinstance(chunks, list | tuple) else 0
-                bytes_total = int(assignment.get("bytes", 0) or 0)
-                if not bytes_total and isinstance(chunks, list | tuple):
-                    bytes_total = sum(
-                        int(chunk.get("bytes", 0) or 0)
-                        for chunk in chunks
-                        if isinstance(chunk, Mapping)
-                    )
-                kind = str(path.get("kind", "unknown"))
-                direction = str(path.get("direction", "unknown"))
+            for path_record in _runtime_active_path_records_for_transfer(
+                record=record,
+                decision=decision,
+            ):
+                kind = str(path_record.get("kind", "unknown"))
+                direction = str(path_record.get("direction", "unknown"))
                 key = f"{direction}:{kind}"
                 bucket = summary.setdefault(
                     key,
                     {"path_count": 0, "chunk_count": 0, "bytes_total": 0},
                 )
                 bucket["path_count"] += 1
-                bucket["chunk_count"] += chunk_count
-                bucket["bytes_total"] += bytes_total
-                records.append(
-                    {
-                        "transfer_id": transfer_id,
-                        "kind": kind,
-                        "direction": direction,
-                        "target_device": path.get("target_device"),
-                        "relay_device": path.get("relay_device"),
-                        "bytes_total": bytes_total,
-                        "chunk_count": chunk_count,
-                    }
-                )
+                bucket["chunk_count"] += int(path_record.get("chunk_count", 0) or 0)
+                bucket["bytes_total"] += int(path_record.get("bytes_total", 0) or 0)
+                records.append(dict(path_record))
         return records, summary
 
     def _execution_ticket_for_worker_locked(
@@ -5165,6 +5150,159 @@ def _decision_is_direct_only(decision: SchedulingDecision) -> bool:
         if str(path.get("kind", "")).lower() != "direct":
             return False
     return True
+
+
+def _runtime_active_path_records_for_transfer(
+    *,
+    record: Mapping[str, object],
+    decision: SchedulingDecision,
+) -> tuple[dict[str, object], ...]:
+    state = str(record.get("state", ""))
+    if state != TransferStatusState.RUNNING.value:
+        return ()
+    assignments = _normalized_plan_assignments(decision.plan.get("assignments", ()) or ())
+    if not assignments:
+        return ()
+    direct_total = sum(
+        assignment["bytes_total"]
+        for assignment in assignments
+        if assignment["kind"] == "direct"
+    )
+    relay_total = sum(
+        assignment["bytes_total"]
+        for assignment in assignments
+        if assignment["kind"] == "relay"
+    )
+    completion_source = str(record.get("completion_source", "")).lower()
+    active_kind = _active_path_kind_for_record(
+        completion_source=completion_source,
+        bytes_completed=int(record.get("bytes_completed", 0) or 0),
+        direct_total=direct_total,
+        relay_total=relay_total,
+    )
+    if active_kind is None:
+        return ()
+    if active_kind == "direct":
+        completed_in_kind = min(
+            int(record.get("bytes_completed", 0) or 0),
+            direct_total,
+        )
+    else:
+        completed_in_kind = max(
+            0,
+            int(record.get("bytes_completed", 0) or 0) - direct_total,
+        )
+    remaining_phase_cursor = completed_in_kind
+    records: list[dict[str, object]] = []
+    for assignment in assignments:
+        if assignment["kind"] != active_kind:
+            continue
+        bytes_total = int(assignment["bytes_total"])
+        bytes_remaining, chunk_count = _remaining_assignment_load(
+            assignment,
+            completed_bytes=remaining_phase_cursor,
+        )
+        remaining_phase_cursor = max(0, remaining_phase_cursor - bytes_total)
+        if bytes_remaining <= 0 or chunk_count <= 0:
+            continue
+        path = assignment["path"]
+        records.append(
+            {
+                "transfer_id": str(record.get("transfer_id")),
+                "kind": assignment["kind"],
+                "direction": assignment["direction"],
+                "target_device": path.get("target_device"),
+                "relay_device": path.get("relay_device"),
+                "bytes_total": bytes_remaining,
+                "chunk_count": chunk_count,
+                "completion_source": completion_source,
+                "phase": "running",
+            }
+        )
+    return tuple(records)
+
+
+def _normalized_plan_assignments(
+    assignments: object,
+) -> tuple[dict[str, object], ...]:
+    if not isinstance(assignments, list | tuple):
+        return ()
+    normalized: list[dict[str, object]] = []
+    for assignment in assignments:
+        if not isinstance(assignment, Mapping):
+            continue
+        path = assignment.get("path")
+        if not isinstance(path, Mapping):
+            continue
+        chunks = assignment.get("chunks", ()) or ()
+        chunk_records = (
+            tuple(dict(chunk) for chunk in chunks if isinstance(chunk, Mapping))
+            if isinstance(chunks, list | tuple)
+            else ()
+        )
+        bytes_total = int(assignment.get("bytes", 0) or 0)
+        if bytes_total <= 0:
+            bytes_total = sum(
+                int(chunk.get("bytes", 0) or 0)
+                for chunk in chunk_records
+            )
+        normalized.append(
+            {
+                "kind": str(path.get("kind", "unknown")).lower(),
+                "direction": str(path.get("direction", "unknown")).lower(),
+                "path": dict(path),
+                "chunks": chunk_records,
+                "bytes_total": max(0, bytes_total),
+            }
+        )
+    return tuple(normalized)
+
+
+def _active_path_kind_for_record(
+    *,
+    completion_source: str,
+    bytes_completed: int,
+    direct_total: int,
+    relay_total: int,
+) -> str | None:
+    if completion_source == "worker":
+        if relay_total > 0:
+            return "relay"
+        if direct_total > 0:
+            return "direct"
+        return None
+    if completion_source == "backend":
+        if direct_total <= 0:
+            return None
+        if relay_total > 0 and bytes_completed >= direct_total:
+            return None
+        return "direct"
+    return None
+
+
+def _remaining_assignment_load(
+    assignment: Mapping[str, object],
+    *,
+    completed_bytes: int,
+) -> tuple[int, int]:
+    total_bytes = int(assignment.get("bytes_total", 0) or 0)
+    remaining_bytes = max(0, total_bytes - max(0, int(completed_bytes)))
+    chunks = assignment.get("chunks", ())
+    if not isinstance(chunks, tuple):
+        chunks = ()
+    if not chunks:
+        return remaining_bytes, 0 if remaining_bytes <= 0 else 1
+    remaining_chunk_count = 0
+    completed_cursor = max(0, int(completed_bytes))
+    for chunk in chunks:
+        chunk_bytes = int(chunk.get("bytes", 0) or 0)
+        if chunk_bytes <= 0:
+            continue
+        if completed_cursor >= chunk_bytes:
+            completed_cursor -= chunk_bytes
+            continue
+        remaining_chunk_count += 1
+    return remaining_bytes, remaining_chunk_count
 
 
 def _runtime_state_without_transfer(

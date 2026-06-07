@@ -29,24 +29,28 @@
   production path: startup failures return explicit daemon/worker evidence plus
   shutdown evidence, and worker startup/authentication evidence survives into
   worker-backed receipts instead of disappearing during daemon normalization.
+- Scheduler/runtime feedback now closes through real execution state: mixed and
+  relay-backed running transfers keep monotonic completed-byte progress, and
+  daemon active-path / relay-load views are derived from live execution phase
+  instead of treating every planned path as currently active.
 
 ## Remaining Risk
 
-- Scheduler/runtime feedback still needs one full closure from real
-  queued/running/active execution state through relay admission and path
-  selection.
+- Cross-job isolation and ownership still need one full closure across daemon
+  sessions, jobs, buffers, relay leases, and cleanup authorization.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full scheduler/runtime feedback closure from real
-queued/running/active execution state through relay admission and path
-selection. After that, choose exactly one of these per round:
+Finish one full cross-job isolation and ownership closure across daemon
+sessions, jobs, buffers, relay leases, and cleanup authorization. After that,
+choose exactly one of these per round:
 
-- one complete cross-job isolation and ownership hardening closure.
-- one complete runtime-session-facing adapter expansion closure only if
-  scheduler feedback no longer blocks the main system path.
+- one complete runtime-session-facing adapter expansion closure for another
+  workload family.
+- one complete validation/evaluation preparation closure only if system-body
+  implementation no longer blocks it.
 
 Progress-file rule:
 

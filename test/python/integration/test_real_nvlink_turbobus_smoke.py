@@ -64,6 +64,7 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
             completed = subprocess.run(
                 command,
                 cwd=REPO_ROOT,
+                env={**os.environ, "TURBOBUS_BENCHMARK_TRACE": "1"},
                 capture_output=True,
                 text=True,
                 check=False,

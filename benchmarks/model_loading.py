@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from daemon_support import benchmark_job_id, receipt_to_trace, receipt_trace_line
 from turbobus.schema import TransferReceipt, WorkloadKind
+
+
+def trace_event(name: str, **fields) -> None:
+    if os.environ.get("TURBOBUS_BENCHMARK_TRACE") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    print(f"turbobus_benchmark_stage name={name} {details}".rstrip(), flush=True)
 
 
 def total_bytes(args) -> int:
@@ -65,9 +73,12 @@ def run_warmup(runtime, args) -> list[dict]:
 def run_load_iteration(runtime, args, *, iteration: int, phase: str) -> dict:
     loader = runtime.loader
     names = bucket_names(args, iteration=iteration)
+    trace_event("model_load_batch_start", phase=phase, iteration=iteration, buckets=len(names))
     start = time.perf_counter()
     batch = loader.load_batch(names)
+    trace_event("model_load_batch_submitted", phase=phase, iteration=iteration)
     batch.wait()
+    trace_event("model_load_batch_waited", phase=phase, iteration=iteration)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
     receipt = first_receipt(batch.handles)
     trace = receipt_to_trace(receipt)
@@ -244,25 +255,39 @@ def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_f
         session_factory = ProductionRuntimeSessionFactory()
     if buffer_factory is None:
         buffer_factory = TorchRuntimeBufferFactory()
+    trace_event("runtime_context_open_start")
     with session_factory.open(args) as session:
+        trace_event("runtime_context_session_opened")
+        trace_event("runtime_context_allocate_buffers_start")
         buffers = buffer_factory.allocate(args)
+        trace_event("runtime_context_allocate_buffers_done")
         try:
+            trace_event("runtime_context_register_cuda_start")
             session.register_cuda_buffer(buffers.gpu_buffer)
+            trace_event("runtime_context_register_cuda_done")
+            trace_event("runtime_context_open_session_start")
             args.session_id = session.open_session()
+            trace_event("runtime_context_open_session_done", session_id=args.session_id)
+            trace_event("runtime_context_register_cpu_start")
             session.register_cpu_buffer(buffers.cpu_buffer)
+            trace_event("runtime_context_register_cpu_done")
             args.source_buffer_id = buffers.cpu_buffer.buffer_id
             args.destination_buffer_id = buffers.gpu_buffer.buffer_id
+            trace_event("runtime_context_make_loader_start")
             if loader_factory is None:
                 loader = make_loader(args, session, buffers)
             else:
                 loader = loader_factory(args, session, buffers)
+            trace_event("runtime_context_make_loader_done")
             yield RuntimeBenchmarkState(
                 session=session,
                 buffers=buffers,
                 loader=loader,
             )
         finally:
+            trace_event("runtime_context_release_buffers_start")
             buffers.release()
+            trace_event("runtime_context_release_buffers_done")
 
 
 def make_loader(args, session, buffers):
@@ -312,7 +337,9 @@ class RuntimeBuffers:
 
 class TorchRuntimeBufferFactory:
     def allocate(self, args) -> RuntimeBuffers:
+        trace_event("torch_buffers_require_torch_start")
         torch = require_torch()
+        trace_event("torch_buffers_require_torch_done")
         byte_count = total_bytes(args)
         run_id = str(args.run_id).replace("/", "-")
         cpu_buffer_id = args.source_buffer_id or f"model-load-cpu-{run_id}"
@@ -320,22 +347,33 @@ class TorchRuntimeBufferFactory:
 
         from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 
+        trace_event("torch_buffers_shared_cpu_allocate_start", bytes=byte_count)
         cpu_buffer = SharedPinnedCpuBuffer.allocate(
             buffer_id=cpu_buffer_id,
             job_id=args.job_id,
             size_bytes=byte_count,
             name_prefix="turbobus-model-load",
         )
+        trace_event("torch_buffers_shared_cpu_allocate_done", name=cpu_buffer.shared_memory_name)
+        trace_event("torch_buffers_source_tensor_start", bytes=byte_count)
         source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
         source.random_(0, 256)
+        trace_event("torch_buffers_source_tensor_done")
+        trace_event("torch_buffers_cpu_write_start", bytes=byte_count)
         cpu_buffer.write(source.numpy().tobytes())
+        trace_event("torch_buffers_cpu_write_done")
 
+        trace_event("torch_buffers_set_device_start", target_gpu=args.target_gpu)
         torch.cuda.set_device(int(args.target_gpu))
+        trace_event("torch_buffers_set_device_done", target_gpu=args.target_gpu)
+        trace_event("torch_buffers_target_tensor_start", bytes=byte_count)
         target = torch.empty(
             byte_count,
             dtype=torch.uint8,
             device=f"cuda:{int(args.target_gpu)}",
         )
+        trace_event("torch_buffers_target_tensor_done", ptr=target.data_ptr())
+        trace_event("torch_buffers_cuda_ipc_export_start")
         gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
             buffer_id=gpu_buffer_id,
             job_id=args.job_id,
@@ -343,6 +381,7 @@ class TorchRuntimeBufferFactory:
             size_bytes=byte_count,
             device_ptr=target.data_ptr(),
         )
+        trace_event("torch_buffers_cuda_ipc_export_done")
         return RuntimeBuffers(
             cpu_buffer=cpu_buffer,
             gpu_buffer=gpu_buffer,
@@ -365,14 +404,19 @@ class ProductionRuntimeSessionFactory:
             args.worker_socket_path = worker_socket
 
             if args.start_services:
+                trace_event("production_start_daemon_start", socket=daemon_socket)
                 daemon_process = start_daemon_process(args, daemon_socket)
                 wait_for_socket(daemon_socket, daemon_process)
+                trace_event("production_start_daemon_done", socket=daemon_socket)
+                trace_event("production_start_worker_start", socket=worker_socket)
                 worker_process = start_worker_process(args, daemon_socket, worker_socket)
                 wait_for_socket(worker_socket, worker_process)
+                trace_event("production_start_worker_done", socket=worker_socket)
 
             from turbobus.runtime_options import RuntimeOptions
             from turbobus.runtime_session import TurboBusRuntimeSession
 
+            trace_event("production_open_runtime_session_start")
             session = TurboBusRuntimeSession.open_production_socket(
                 job_id=args.job_id,
                 daemon_socket_path=daemon_socket,
@@ -389,10 +433,13 @@ class ProductionRuntimeSessionFactory:
                     ),
                 ),
             )
+            trace_event("production_open_runtime_session_done")
             yield session
         finally:
             if session is not None:
+                trace_event("production_close_runtime_session_start")
                 session.close()
+                trace_event("production_close_runtime_session_done")
             worker_stdout, worker_stderr = stop_service(worker_process)
             daemon_stdout, daemon_stderr = stop_service(daemon_process)
             print_service_output("worker", worker_stdout, worker_stderr)
@@ -657,6 +704,7 @@ def validate_args(args) -> None:
 
 
 def main() -> None:
+    faulthandler.enable(all_threads=True)
     args = build_parser().parse_args()
     validate_args(args)
     result = run_benchmark(args)

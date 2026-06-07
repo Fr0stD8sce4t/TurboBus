@@ -636,6 +636,9 @@ def _relay_only_completion_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
+    worker_startup = worker_evidence.get("worker_startup")
+    if isinstance(worker_startup, Mapping):
+        evidence["worker_startup"] = dict(worker_startup)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
@@ -702,6 +705,9 @@ def _merge_mixed_completion_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
+    worker_startup = worker_evidence.get("worker_startup")
+    if isinstance(worker_startup, Mapping):
+        evidence["worker_startup"] = dict(worker_startup)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
         expected_bytes=expected,
@@ -782,6 +788,9 @@ def _relay_only_failure_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
+    worker_startup = worker_evidence.get("worker_startup")
+    if isinstance(worker_startup, Mapping):
+        evidence["worker_startup"] = dict(worker_startup)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
@@ -884,6 +893,9 @@ def _merge_mixed_worker_failure_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
+    worker_startup = worker_evidence.get("worker_startup")
+    if isinstance(worker_startup, Mapping):
+        evidence["worker_startup"] = dict(worker_startup)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
         expected_bytes=expected,

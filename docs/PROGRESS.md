@@ -4,25 +4,39 @@
 
 - The project is still in system-body implementation; benchmarks, paper
   validation, and server validation remain deferred.
-- `TurboBusRuntimeSession` stays the intended production entry, and
-  daemon-issued execution, receipt formation, cleanup, and runtime feedback
-  remain on the real production path.
-- Scheduler-facing runtime feedback now carries execution-path-aware active and
-  terminal direct/relay evidence from real daemon-issued transfer records, so
-  scheduler pressure uses more than shallow queued/running counters.
+- G1 long-lived asynchronous data-plane closure is now present in worker
+  production code: `CudaWorkerExecutor` separates submit and wait, retains
+  reusable native runtimes, tracks in-flight and terminal transfer handles, and
+  reports async execution evidence through worker completion metadata.
+- `WorkerTransferClient` now prefers the submit/wait worker path while keeping
+  the existing synchronous execution helper as a compatibility wrapper.
+- Auto-advance remains active for this goal run, with exactly one active target
+  at a time.
+- The active target is G2 mixed pool unified execution.
+- Current rounds must still deliver complete production system capabilities,
+  not benchmark/example/test scaffolding or narrow bug-style edits.
 
 ## Remaining Risk
 
-- Cross-job ownership and retained-state isolation still need one full closure
-  so archived receipts, cleanup, and terminal retention stay bound to the same
+- G2 still needs one full closure so daemon-issued plans containing both direct
+  and relay assignments execute through one worker/backend path instead of
+  relay-only worker narrowing.
+- Cross-job ownership and retained-state isolation remain queued for G6 so
+  archived receipts, cleanup, and terminal retention stay bound to the same
   authenticated owner contract during shared relay use.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
+- Alternative verification paths, fake receipts, synthetic evidence, and dry-run
+  deliverables remain out of scope for the current system-body pass.
+- Auto-advance must stop rather than skip ahead if the next queued target needs
+  benchmark, example, paper-validation, server-validation, new test, fake
+  receipt, synthetic evidence, dry-run, or replacement verification work.
 
 ## Next Main Target
 
-Finish one full cross-job ownership and isolation closure across daemon cleanup,
-archived receipt access, terminal retention, and worker-issued relay cleanup.
+G2: finish one mixed direct+relay pooled execution closure across daemon-issued
+worker plans, native plan conversion, backend execution, and unified completion
+evidence.
 
 Progress-file rule:
 

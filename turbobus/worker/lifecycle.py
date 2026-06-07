@@ -931,17 +931,27 @@ class WorkerTransferClient:
                 )
                 try:
                     _trace_worker_stage(
-                        "worker_executor_call_start",
+                        "worker_executor_submit_start",
                         transfer_id=worker_request.transfer_id,
                     )
-                    result = execute_worker_transfer(
+                    submitted = submit_worker_transfer(
                         self._executor,
                         worker_request,
                         staging_slot,
                         resources,
                     )
                     _trace_worker_stage(
-                        "worker_executor_call_done",
+                        "worker_executor_submit_done",
+                        transfer_id=worker_request.transfer_id,
+                        state=_submitted_worker_transfer_state(submitted),
+                    )
+                    _trace_worker_stage(
+                        "worker_executor_wait_start",
+                        transfer_id=worker_request.transfer_id,
+                    )
+                    result = wait_worker_transfer(self._executor, submitted)
+                    _trace_worker_stage(
+                        "worker_executor_wait_done",
                         transfer_id=worker_request.transfer_id,
                         state=result.state.value,
                     )
@@ -1439,10 +1449,52 @@ def execute_worker_transfer(
     staging_slot: WorkerStagingSlot,
     resources: WorkerDataPlaneResources,
 ) -> WorkerTransferResult:
+    return wait_worker_transfer(
+        executor,
+        submit_worker_transfer(executor, request, staging_slot, resources),
+    )
+
+
+def submit_worker_transfer(
+    executor,
+    request: WorkerTransferRequest,
+    staging_slot: WorkerStagingSlot,
+    resources: WorkerDataPlaneResources,
+):
+    submit_bound = getattr(executor, "submit_bound", None)
+    if callable(submit_bound):
+        return submit_bound(request, staging_slot, resources)
     execute_bound = getattr(executor, "execute_bound", None)
     if callable(execute_bound):
         return execute_bound(request, staging_slot, resources)
     return executor.execute(request, staging_slot)
+
+
+def wait_worker_transfer(
+    executor,
+    submitted,
+) -> WorkerTransferResult:
+    if isinstance(submitted, WorkerTransferResult):
+        return submitted
+    waiter = getattr(executor, "wait", None)
+    if not callable(waiter):
+        raise RuntimeError("worker executor returned an asynchronous handle without wait")
+    result = waiter(submitted)
+    if not isinstance(result, WorkerTransferResult):
+        raise TypeError("worker executor wait must return WorkerTransferResult")
+    return result
+
+
+def _submitted_worker_transfer_state(submitted) -> str:
+    if isinstance(submitted, WorkerTransferResult):
+        return submitted.state.value
+    state = getattr(submitted, "state", None)
+    if state is None:
+        return "submitted"
+    try:
+        return WorkerTransferState(state).value
+    except ValueError:
+        return str(state)
 
 
 def default_worker_executor():
@@ -1479,5 +1531,7 @@ __all__ = [
     "failed_worker_result_from_exception",
     "parse_worker_authorization_request_payload",
     "require_daemon_worker_plan",
+    "submit_worker_transfer",
     "validate_worker_completion_bytes",
+    "wait_worker_transfer",
 ]

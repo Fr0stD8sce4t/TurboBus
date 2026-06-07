@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..backends.cuda import default_cuda_backend
@@ -29,6 +29,9 @@ class CudaWorkerExecutor:
     ) -> None:
         self.backend = backend
         self.options = options or RuntimeOptions()
+        self._runtime_cache: dict[tuple[object, ...], object] = {}
+        self._inflight: dict[str, CudaWorkerTransferHandle] = {}
+        self._terminal: dict[str, CudaWorkerTransferHandle] = {}
 
     def execute(
         self,
@@ -45,26 +48,42 @@ class CudaWorkerExecutor:
         staging_slot: WorkerStagingSlot,
         resources: WorkerDataPlaneResources,
     ) -> WorkerTransferResult:
+        return self.wait(self.submit_bound(request, staging_slot, resources))
+
+    def submit_bound(
+        self,
+        request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        resources: WorkerDataPlaneResources,
+    ) -> "CudaWorkerTransferHandle":
         _validate_request_and_slot(request, staging_slot)
         if not isinstance(resources, WorkerDataPlaneResources):
             raise TypeError("resources must be WorkerDataPlaneResources")
         if resources.request != request.data_plane:
-            return _failed_result(
-                request,
-                staging_slot,
-                "bound resources do not match the worker request",
+            return CudaWorkerTransferHandle.failed_before_submit(
+                request=request,
+                staging_slot=staging_slot,
                 resources=resources,
+                target_device=-1,
+                plan_payload={},
+                resource_evidence=_resource_evidence(request, resources),
+                error=ValueError("bound resources do not match the worker request"),
             )
+        if request.transfer_id in self._inflight:
+            raise RuntimeError("worker transfer is already in flight")
         target_device = _target_device_for_request(request)
         if target_device is None:
-            return _failed_result(
-                request,
-                staging_slot,
-                "CUDA worker executor requires a GPU device index",
+            return CudaWorkerTransferHandle.failed_before_submit(
+                request=request,
+                staging_slot=staging_slot,
                 resources=resources,
+                target_device=-1,
+                plan_payload={},
+                resource_evidence=_resource_evidence(request, resources),
+                error=ValueError("CUDA worker executor requires a GPU device index"),
             )
         resource_evidence = _resource_evidence(request, resources)
-
+        plan_payload: dict[str, object] = {}
         try:
             plan_payload = _worker_plan_payload(request, int(target_device))
             _trace_cuda_worker_stage(
@@ -73,36 +92,8 @@ class CudaWorkerExecutor:
                 target_device=target_device,
             )
             native_plan = self.backend.make_transfer_plan(plan_payload)
-            _trace_cuda_worker_stage(
-                "cuda_executor_runtime_create_start",
-                transfer_id=request.transfer_id,
-            )
-            runtime = self.backend.create_runtime(_runtime_options_for_request(
-                self.options,
+            runtime, runtime_reused, runtime_cache_key = self._runtime_for_request(
                 request,
-            ))
-            _trace_cuda_worker_stage(
-                "cuda_executor_runtime_create_done",
-                transfer_id=request.transfer_id,
-            )
-            _trace_cuda_worker_stage(
-                "cuda_executor_runtime_init_start",
-                transfer_id=request.transfer_id,
-                relay_gpus=_relay_gpus_for_request(request),
-            )
-            self.backend.initialize_runtime(
-                runtime,
-                int(target_device),
-                _relay_gpus_for_request(request),
-            )
-            _trace_cuda_worker_stage(
-                "cuda_executor_runtime_init_done",
-                transfer_id=request.transfer_id,
-            )
-            _install_daemon_profile_if_available(
-                backend=self.backend,
-                runtime=runtime,
-                request=request,
                 target_device=int(target_device),
             )
             if request.data_plane.direction == "h2d":
@@ -112,7 +103,7 @@ class CudaWorkerExecutor:
                     host_bytes=resources.host_bytes,
                     device_bytes=resources.device_bytes,
                 )
-                handle = self.backend.fetch_plan_to_gpu(
+                native_handle = self.backend.fetch_plan_to_gpu(
                     runtime,
                     resources.host_ptr,
                     resources.host_bytes,
@@ -127,7 +118,7 @@ class CudaWorkerExecutor:
                     host_bytes=resources.host_bytes,
                     device_bytes=resources.device_bytes,
                 )
-                handle = self.backend.offload_plan_to_cpu(
+                native_handle = self.backend.offload_plan_to_cpu(
                     runtime,
                     resources.device_ptr,
                     resources.device_bytes,
@@ -135,25 +126,76 @@ class CudaWorkerExecutor:
                     resources.host_bytes,
                     native_plan,
                 )
-            _trace_cuda_worker_stage(
-                "cuda_executor_submit_done",
-                transfer_id=request.transfer_id,
+        except Exception as exc:
+            handle = CudaWorkerTransferHandle.failed_before_submit(
+                request=request,
+                staging_slot=staging_slot,
+                resources=resources,
+                target_device=int(target_device),
+                plan_payload=plan_payload,
+                resource_evidence=resource_evidence,
+                error=exc,
             )
+            self._terminal[request.transfer_id] = handle
+            return handle
+        handle = CudaWorkerTransferHandle(
+            transfer_id=request.transfer_id,
+            request=request,
+            staging_slot=staging_slot,
+            resources=resources,
+            runtime=runtime,
+            native_handle=native_handle,
+            plan_payload=plan_payload,
+            target_device=int(target_device),
+            resource_evidence=resource_evidence,
+            runtime_reused=runtime_reused,
+            runtime_cache_key=runtime_cache_key,
+        )
+        self._inflight[request.transfer_id] = handle
+        _trace_cuda_worker_stage(
+            "cuda_executor_submit_done",
+            transfer_id=request.transfer_id,
+        )
+        return handle
+
+    def wait(
+        self,
+        handle: "CudaWorkerTransferHandle",
+    ) -> WorkerTransferResult:
+        if not isinstance(handle, CudaWorkerTransferHandle):
+            raise TypeError("handle must be a CudaWorkerTransferHandle")
+        request = handle.request
+        staging_slot = handle.staging_slot
+        resources = handle.resources
+        if handle.state is WorkerTransferState.FAILED:
+            self._terminal[handle.transfer_id] = handle
+            self._inflight.pop(handle.transfer_id, None)
+            return _failed_result(
+                request,
+                staging_slot,
+                handle.error or "CUDA worker transfer failed before submit",
+                resources=resources,
+            )
+        try:
             _trace_cuda_worker_stage(
                 "cuda_executor_wait_start",
                 transfer_id=request.transfer_id,
             )
-            self.backend.wait(runtime, handle)
+            self.backend.wait(handle.runtime, handle.native_handle)
             _trace_cuda_worker_stage(
                 "cuda_executor_wait_done",
                 transfer_id=request.transfer_id,
             )
-            stats = self.backend.stats(runtime, handle)
+            stats = self.backend.stats(handle.runtime, handle.native_handle)
+            handle.mark_complete(stats)
             _trace_cuda_worker_stage(
                 "cuda_executor_stats_done",
                 transfer_id=request.transfer_id,
             )
         except Exception as exc:
+            handle.mark_failed(exc)
+            self._terminal[handle.transfer_id] = handle
+            self._inflight.pop(handle.transfer_id, None)
             return _failed_result(
                 request,
                 staging_slot,
@@ -161,6 +203,9 @@ class CudaWorkerExecutor:
                 resources=resources,
             )
 
+        plan_payload = handle.plan_payload
+        target_device = handle.target_device
+        resource_evidence = handle.resource_evidence
         bytes_completed = _stats_int(stats, "bytes", int(plan_payload["total_bytes"]))
         planned_direct_bytes = _assignment_byte_count(plan_payload, "direct")
         planned_relay_bytes = _assignment_byte_count(plan_payload, "relay")
@@ -188,6 +233,9 @@ class CudaWorkerExecutor:
                 transfer_id=request.transfer_id,
             )
         except Exception as exc:
+            handle.mark_failed(exc)
+            self._terminal[handle.transfer_id] = handle
+            self._inflight.pop(handle.transfer_id, None)
             return _failed_result(
                 request,
                 staging_slot,
@@ -204,7 +252,7 @@ class CudaWorkerExecutor:
             "relay_chunks",
             _assignment_chunk_count(plan_payload, "relay"),
         )
-        return WorkerTransferResult(
+        result = WorkerTransferResult(
             transfer_id=request.transfer_id,
             state=WorkerTransferState.COMPLETE,
             bytes_completed=bytes_completed,
@@ -222,6 +270,7 @@ class CudaWorkerExecutor:
                 "dst_buffer_id": request.data_plane.dst_handle.buffer_id,
                 "staging_slot_id": staging_slot.slot_id,
                 "resource_evidence": resource_evidence,
+                "async_data_plane": handle.execution_evidence(),
                 "direct_bytes": _stats_int(
                     stats,
                     "direct_bytes",
@@ -238,6 +287,162 @@ class CudaWorkerExecutor:
                 **_ticket_binding_metadata(request),
             },
         )
+        self._terminal[handle.transfer_id] = handle
+        self._inflight.pop(handle.transfer_id, None)
+        return result
+
+    def describe_inflight(self) -> dict[str, dict[str, object]]:
+        return {
+            transfer_id: handle.as_dict()
+            for transfer_id, handle in sorted(self._inflight.items())
+        }
+
+    def describe_terminal(self) -> dict[str, dict[str, object]]:
+        return {
+            transfer_id: handle.as_dict()
+            for transfer_id, handle in sorted(self._terminal.items())
+        }
+
+    def _runtime_for_request(
+        self,
+        request: WorkerTransferRequest,
+        *,
+        target_device: int,
+    ) -> tuple[object, bool, tuple[object, ...]]:
+        runtime_options = _runtime_options_for_request(self.options, request)
+        key = _runtime_cache_key(
+            runtime_options,
+            target_device=int(target_device),
+            relay_gpus=_relay_gpus_for_request(request),
+            profile_key=request.data_plane.metadata.get("daemon_profile_key"),
+        )
+        runtime = self._runtime_cache.get(key)
+        if runtime is not None:
+            return runtime, True, key
+        _trace_cuda_worker_stage(
+            "cuda_executor_runtime_create_start",
+            transfer_id=request.transfer_id,
+        )
+        runtime = self.backend.create_runtime(runtime_options)
+        _trace_cuda_worker_stage(
+            "cuda_executor_runtime_create_done",
+            transfer_id=request.transfer_id,
+        )
+        _trace_cuda_worker_stage(
+            "cuda_executor_runtime_init_start",
+            transfer_id=request.transfer_id,
+            relay_gpus=_relay_gpus_for_request(request),
+        )
+        self.backend.initialize_runtime(
+            runtime,
+            int(target_device),
+            _relay_gpus_for_request(request),
+        )
+        _trace_cuda_worker_stage(
+            "cuda_executor_runtime_init_done",
+            transfer_id=request.transfer_id,
+        )
+        _install_daemon_profile_if_available(
+            backend=self.backend,
+            runtime=runtime,
+            request=request,
+            target_device=int(target_device),
+        )
+        self._runtime_cache[key] = runtime
+        return runtime, False, key
+
+
+@dataclass
+class CudaWorkerTransferHandle:
+    transfer_id: str
+    request: WorkerTransferRequest
+    staging_slot: WorkerStagingSlot
+    resources: WorkerDataPlaneResources
+    runtime: object | None
+    native_handle: object | None
+    plan_payload: dict[str, object]
+    target_device: int
+    resource_evidence: dict[str, object]
+    runtime_reused: bool = False
+    runtime_cache_key: tuple[object, ...] = ()
+    submitted_at: float = 0.0
+    completed_at: float | None = None
+    state: WorkerTransferState = WorkerTransferState.RUNNING
+    error: str | None = None
+    stats: object | None = None
+
+    def __post_init__(self) -> None:
+        if self.submitted_at == 0.0:
+            self.submitted_at = time.time()
+        self.transfer_id = str(self.transfer_id)
+        self.target_device = int(self.target_device)
+        self.resource_evidence = dict(self.resource_evidence)
+        self.runtime_reused = bool(self.runtime_reused)
+        self.runtime_cache_key = tuple(self.runtime_cache_key)
+        self.state = WorkerTransferState(self.state)
+
+    @classmethod
+    def failed_before_submit(
+        cls,
+        *,
+        request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        resources: WorkerDataPlaneResources,
+        target_device: int,
+        plan_payload: dict[str, object],
+        resource_evidence: dict[str, object],
+        error: Exception,
+    ) -> "CudaWorkerTransferHandle":
+        return cls(
+            transfer_id=request.transfer_id,
+            request=request,
+            staging_slot=staging_slot,
+            resources=resources,
+            runtime=None,
+            native_handle=None,
+            plan_payload=plan_payload,
+            target_device=int(target_device),
+            resource_evidence=resource_evidence,
+            state=WorkerTransferState.FAILED,
+            error=str(error) or error.__class__.__name__,
+            completed_at=time.time(),
+        )
+
+    def mark_complete(self, stats: object) -> None:
+        self.stats = stats
+        self.state = WorkerTransferState.COMPLETE
+        self.completed_at = time.time()
+
+    def mark_failed(self, error: Exception) -> None:
+        self.state = WorkerTransferState.FAILED
+        self.error = str(error) or error.__class__.__name__
+        self.completed_at = time.time()
+
+    def as_dict(self) -> dict[str, object]:
+        evidence = self.execution_evidence()
+        evidence["resource_evidence"] = dict(self.resource_evidence)
+        return evidence
+
+    def execution_evidence(self) -> dict[str, object]:
+        return {
+            "transfer_id": self.transfer_id,
+            "state": self.state.value,
+            "ticket_id": self.request.ticket.ticket_id,
+            "plan_generation": int(self.request.ticket.metadata["plan_generation"]),
+            "target_device": self.target_device,
+            "relay_gpus": _relay_gpus_for_request(self.request),
+            "runtime_reused": self.runtime_reused,
+            "runtime_cache_key": tuple(self.runtime_cache_key),
+            "submitted_at": self.submitted_at,
+            "completed_at": self.completed_at,
+            "submit_to_complete_ms": (
+                None
+                if self.completed_at is None
+                else (self.completed_at - self.submitted_at) * 1000.0
+            ),
+            "error": self.error,
+            "staging_slot_id": self.staging_slot.slot_id,
+        }
 
 
 def _runtime_options_for_request(
@@ -248,6 +453,32 @@ def _runtime_options_for_request(
     return replace(
         options,
         chunk_bytes=max(int(options.chunk_bytes), int(max_chunk_bytes)),
+    )
+
+
+def _runtime_cache_key(
+    options: RuntimeOptions,
+    *,
+    target_device: int,
+    relay_gpus: list[int],
+    profile_key: object | None,
+) -> tuple[object, ...]:
+    return (
+        int(target_device),
+        tuple(int(gpu) for gpu in relay_gpus),
+        int(options.chunk_bytes),
+        int(options.staging_slots),
+        bool(options.enable_peer_access),
+        int(options.profile_bytes),
+        bool(options.profile_on_first_transfer),
+        bool(options.profile_cache_enabled),
+        int(options.min_chunks_for_relay),
+        int(options.min_pool_bytes),
+        float(options.relay_min_effective_bw_gbps),
+        float(options.relay_min_direct_ratio),
+        bool(options.enable_dynamic_weights),
+        float(options.dynamic_weight_alpha),
+        None if profile_key is None else str(profile_key),
     )
 
 

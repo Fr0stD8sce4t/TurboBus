@@ -16,16 +16,21 @@ class FakeNativeModule:
 
 
 class FakeHostRegisterNativeModule:
-    def __init__(self, exported_ipc_handle: bytes = b"i" * 64) -> None:
+    def __init__(
+        self,
+        exported_ipc_handle: bytes = b"i" * 64,
+        exported_device_offset_bytes: int = 0,
+    ) -> None:
         self.set_device_calls = []
         self.register_host_memory_calls = []
         self.unregister_host_memory_calls = []
         self.allocate_device_memory_calls = []
         self.free_device_memory_calls = []
-        self.export_device_ipc_handle_calls = []
+        self.export_device_ipc_mapping_calls = []
         self.open_device_ipc_handle_calls = []
         self.close_device_ipc_handle_calls = []
         self.exported_ipc_handle = bytes(exported_ipc_handle)
+        self.exported_device_offset_bytes = int(exported_device_offset_bytes)
 
     def set_device(self, device_index):
         self.set_device_calls.append(device_index)
@@ -43,9 +48,14 @@ class FakeHostRegisterNativeModule:
     def free_device_memory(self, device_ptr):
         self.free_device_memory_calls.append(device_ptr)
 
-    def export_device_ipc_handle(self, device_ptr):
-        self.export_device_ipc_handle_calls.append(device_ptr)
-        return self.exported_ipc_handle
+    def export_device_ipc_mapping(self, device_ptr):
+        self.export_device_ipc_mapping_calls.append(device_ptr)
+        return {
+            "cuda_ipc_handle": self.exported_ipc_handle,
+            "allocation_base_ptr": device_ptr - self.exported_device_offset_bytes,
+            "allocation_size_bytes": 4096,
+            "device_offset_bytes": self.exported_device_offset_bytes,
+        }
 
     def open_device_ipc_handle(self, cuda_ipc_handle):
         self.open_device_ipc_handle_calls.append(cuda_ipc_handle)
@@ -322,18 +332,21 @@ class CudaNativeBackendTest(unittest.TestCase):
 
     def test_backend_exports_and_opens_cuda_ipc_handles(self) -> None:
         native_runtime = FakeNativeRuntimeModule()
-        native = FakeHostRegisterNativeModule()
+        native = FakeHostRegisterNativeModule(exported_device_offset_bytes=24)
         native_runtime._turbobus = native
         backend = make_backend(native_runtime_module=native_runtime)
 
         backend.set_device(2)
-        handle = backend.export_device_ipc_handle(100)
-        ptr = backend.open_device_ipc_handle(handle.hex())
+        mapping = backend.export_device_ipc_mapping(100)
+        ptr = backend.open_device_ipc_handle(mapping["cuda_ipc_handle"].hex())
         backend.close_device_ipc_handle(ptr)
 
         self.assertEqual(native.set_device_calls, [2])
-        self.assertEqual(handle, b"i" * 64)
-        self.assertEqual(native.export_device_ipc_handle_calls, [100])
+        self.assertEqual(mapping["allocation_base_ptr"], 76)
+        self.assertEqual(mapping["allocation_size_bytes"], 4096)
+        self.assertEqual(mapping["device_offset_bytes"], 24)
+        self.assertEqual(mapping["cuda_ipc_handle"], b"i" * 64)
+        self.assertEqual(native.export_device_ipc_mapping_calls, [100])
         self.assertEqual(native.open_device_ipc_handle_calls, [b"i" * 64])
         self.assertEqual(native.close_device_ipc_handle_calls, [200])
 
@@ -357,9 +370,9 @@ class CudaNativeBackendTest(unittest.TestCase):
         backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(ValueError, "64 bytes"):
-            backend.export_device_ipc_handle(100)
+            backend.export_device_ipc_mapping(100)
 
-        self.assertEqual(native.export_device_ipc_handle_calls, [100])
+        self.assertEqual(native.export_device_ipc_mapping_calls, [100])
 
     def test_backend_rejects_missing_cuda_ipc_support(self) -> None:
         native_runtime = FakeNativeRuntimeModule()
@@ -367,7 +380,20 @@ class CudaNativeBackendTest(unittest.TestCase):
         backend = make_backend(native_runtime_module=native_runtime)
 
         with self.assertRaisesRegex(RuntimeError, "CUDA IPC handles"):
-            backend.export_device_ipc_handle(100)
+            backend.export_device_ipc_mapping(100)
+
+    def test_backend_rejects_non_mapping_cuda_ipc_export(self) -> None:
+        native_runtime = FakeNativeRuntimeModule()
+
+        class InvalidExportModule:
+            def export_device_ipc_mapping(self, device_ptr):
+                return b"i" * 64
+
+        native_runtime._turbobus = InvalidExportModule()
+        backend = make_backend(native_runtime_module=native_runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "invalid CUDA IPC export mapping"):
+            backend.export_device_ipc_mapping(100)
 
 
 if __name__ == "__main__":

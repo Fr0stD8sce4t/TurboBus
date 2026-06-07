@@ -302,6 +302,10 @@ class SchemaTest(unittest.TestCase):
             CUDA_IPC_TARGET_HANDLE,
         )
         self.assertEqual(
+            payload["data_plane_request"]["dst_handle"]["metadata"]["device_offset_bytes"],
+            0,
+        )
+        self.assertEqual(
             payload["data_plane_request"]["staging"]["total_bytes"],
             4096,
         )
@@ -364,6 +368,19 @@ class SchemaTest(unittest.TestCase):
                 device_index=0,
                 handle_type="cuda_ipc_device",
                 metadata={"cuda_ipc_handle": b"short".hex()},
+            )
+        with self.assertRaisesRegex(ValueError, "device_offset_bytes"):
+            BufferRegistration(
+                buffer_id="buffer-1",
+                job_id="job-1",
+                kind="gpu",
+                size_bytes=1,
+                device_index=0,
+                handle_type="cuda_ipc_device",
+                metadata={
+                    "cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE,
+                    "device_offset_bytes": -1,
+                },
             )
         with self.assertRaises(ValueError):
             LeaseToken(

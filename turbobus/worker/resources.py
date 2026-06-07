@@ -24,6 +24,7 @@ class WorkerDataPlaneResources:
     cuda_host_registered: bool = False
     cuda_backend: object | None = field(default=None, repr=False, compare=False)
     device_index: int | None = None
+    device_ipc_base_ptr: int | None = None
     open_evidence: dict[str, object] | None = field(
         default=None,
         repr=False,
@@ -110,7 +111,8 @@ class WorkerDataPlaneResources:
             backend = self.cuda_backend
             if backend is not None:
                 _set_cuda_device_index(backend, self.device_index)
-                backend.close_device_ipc_handle(self.device_ptr)
+                device_ipc_base_ptr = self.device_ipc_base_ptr or self.device_ptr
+                backend.close_device_ipc_handle(device_ipc_base_ptr)
         finally:
             object.__setattr__(self, "_device_ipc_closed", True)
 
@@ -220,6 +222,7 @@ class WorkerDataPlaneResourceBinding:
         self.register_cuda_host = bool(register_cuda_host)
         self._resources: WorkerDataPlaneResources | None = None
         self._device_ptr: int | None = None
+        self._device_ipc_base_ptr: int | None = None
         self._device_index: int | None = None
         self._failure_evidence: dict[str, object] | None = None
 
@@ -230,7 +233,11 @@ class WorkerDataPlaneResourceBinding:
         return dict(self._failure_evidence)
 
     def __enter__(self) -> WorkerDataPlaneResources:
-        if self._resources is not None or self._device_ptr is not None:
+        if (
+            self._resources is not None
+            or self._device_ptr is not None
+            or self._device_ipc_base_ptr is not None
+        ):
             raise WorkerDataPlaneResourceError("worker data-plane resources already bound")
         cpu_buffer: SharedPinnedCpuBuffer | None = None
         cpu_handle = _cpu_handle_for_request(self.request)
@@ -255,11 +262,12 @@ class WorkerDataPlaneResourceBinding:
             if self.register_cuda_host:
                 cpu_buffer.register_for_cuda(self.backend)
             open_evidence["cuda_host_registered"] = bool(cpu_buffer.cuda_registered)
-            self._device_ptr = _open_cuda_ipc_device_handle(
+            self._device_ipc_base_ptr, self._device_ptr = _open_cuda_ipc_device_handle(
                 self.backend,
                 device_handle,
             )
             open_evidence["device_ipc_opened"] = True
+            open_evidence["device_ipc_base_ptr"] = int(self._device_ipc_base_ptr)
             open_evidence["device_ptr"] = int(self._device_ptr)
             self._resources = WorkerDataPlaneResources(
                 request=self.request,
@@ -273,6 +281,7 @@ class WorkerDataPlaneResourceBinding:
                 cuda_host_registered=self.register_cuda_host,
                 cuda_backend=self.backend,
                 device_index=self._device_index,
+                device_ipc_base_ptr=self._device_ipc_base_ptr,
                 open_evidence=open_evidence,
             )
             return self._resources
@@ -282,10 +291,12 @@ class WorkerDataPlaneResourceBinding:
             failure_evidence["error"] = str(exc) or exc.__class__.__name__
             failure_cleanup: dict[str, object] = {}
             try:
-                if self._device_ptr is not None:
+                if self._device_ipc_base_ptr is not None:
                     try:
                         _set_cuda_device_index(self.backend, self._device_index)
-                        self.backend.close_device_ipc_handle(self._device_ptr)
+                        self.backend.close_device_ipc_handle(
+                            self._device_ipc_base_ptr
+                        )
                         failure_cleanup["device_ipc_closed_after_failure"] = True
                     except Exception as close_exc:
                         failure_cleanup["device_ipc_close_error"] = (
@@ -293,6 +304,7 @@ class WorkerDataPlaneResourceBinding:
                         )
                     finally:
                         self._device_ptr = None
+                        self._device_ipc_base_ptr = None
                 if cpu_buffer is not None:
                     try:
                         _set_cuda_device_index(self.backend, self._device_index)
@@ -310,6 +322,7 @@ class WorkerDataPlaneResourceBinding:
             finally:
                 self._resources = None
                 self._device_index = None
+                self._device_ipc_base_ptr = None
             if failure_cleanup:
                 failure_evidence["failure_cleanup"] = failure_cleanup
             self._failure_evidence = failure_evidence
@@ -324,11 +337,13 @@ class WorkerDataPlaneResourceBinding:
             if resources is not None:
                 resources.close()
                 self._device_ptr = None
+                self._device_ipc_base_ptr = None
         finally:
-            if self._device_ptr is not None:
+            if self._device_ipc_base_ptr is not None:
                 _set_cuda_device_index(self.backend, self._device_index)
-                self.backend.close_device_ipc_handle(self._device_ptr)
+                self.backend.close_device_ipc_handle(self._device_ipc_base_ptr)
                 self._device_ptr = None
+                self._device_ipc_base_ptr = None
             self._device_index = None
 
 
@@ -381,14 +396,23 @@ def _device_handle_for_request(request: WorkerDataPlaneRequest) -> WorkerBufferH
     return request.dst_handle if request.direction == "h2d" else request.src_handle
 
 
-def _open_cuda_ipc_device_handle(backend, handle: WorkerBufferHandle) -> int:
+def _open_cuda_ipc_device_handle(
+    backend,
+    handle: WorkerBufferHandle,
+) -> tuple[int, int]:
     if not isinstance(handle, WorkerBufferHandle):
         raise TypeError("handle must be a WorkerBufferHandle")
     if handle.handle_type != "cuda_ipc_device":
         raise WorkerDataPlaneResourceError(
             "worker device binding requires a cuda_ipc_device handle"
         )
-    return backend.open_device_ipc_handle(handle.metadata["cuda_ipc_handle"])
+    base_ptr = backend.open_device_ipc_handle(handle.metadata["cuda_ipc_handle"])
+    offset_bytes = int(handle.metadata.get("device_offset_bytes", 0))
+    if offset_bytes < 0:
+        raise WorkerDataPlaneResourceError(
+            "worker device binding requires non-negative device_offset_bytes"
+        )
+    return int(base_ptr), int(base_ptr) + offset_bytes
 
 
 def _set_cuda_device_for_handle(backend, handle: WorkerBufferHandle) -> None:

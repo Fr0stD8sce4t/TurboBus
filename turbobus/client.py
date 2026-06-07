@@ -283,6 +283,7 @@ class CudaIpcDeviceBuffer:
     device_index: int
     size_bytes: int
     cuda_ipc_handle: bytes
+    device_offset_bytes: int = 0
     device_ptr: int | None = None
 
     @classmethod
@@ -303,18 +304,23 @@ class CudaIpcDeviceBuffer:
         if ptr <= 0:
             raise ValueError("device_ptr must be positive")
         _set_cuda_device_if_available(backend, int(device_index))
+        ipc_mapping = backend.export_device_ipc_mapping(ptr)
         return cls(
             buffer_id=str(buffer_id),
             job_id=str(job_id),
             device_index=int(device_index),
             size_bytes=size_bytes,
-            cuda_ipc_handle=backend.export_device_ipc_handle(ptr),
+            cuda_ipc_handle=bytes(ipc_mapping["cuda_ipc_handle"]),
+            device_offset_bytes=int(ipc_mapping.get("device_offset_bytes", 0)),
             device_ptr=ptr,
         )
 
     @property
     def metadata(self) -> dict[str, object]:
-        return {"cuda_ipc_handle": self.cuda_ipc_handle.hex()}
+        return {
+            "cuda_ipc_handle": self.cuda_ipc_handle.hex(),
+            "device_offset_bytes": self.device_offset_bytes,
+        }
 
     def buffer_registration(self) -> BufferRegistration:
         return BufferRegistration(

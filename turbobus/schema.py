@@ -1307,6 +1307,9 @@ def _normalize_buffer_handle_metadata(
         metadata["cuda_ipc_handle"] = _normalize_cuda_ipc_handle(
             metadata["cuda_ipc_handle"]
         )
+        metadata["device_offset_bytes"] = int(metadata.get("device_offset_bytes", 0))
+        if metadata["device_offset_bytes"] < 0:
+            raise ValueError("cuda_ipc_device device_offset_bytes must be non-negative")
     elif not isinstance(metadata, dict):
         raise TypeError("metadata must be a dict")
     return dict(metadata)

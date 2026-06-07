@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .. import native_plan, native_runtime, tensor_validation
 
@@ -151,19 +151,39 @@ class CudaNativeBackend:
             raise RuntimeError("native runtime does not support device memory allocation")
         freer(ptr)
 
-    def export_device_ipc_handle(self, device_ptr: int) -> bytes:
+    def export_device_ipc_mapping(self, device_ptr: int) -> dict[str, int | bytes]:
         ptr = int(device_ptr)
         if ptr <= 0:
             raise ValueError("device_ptr must be positive")
         self.require_available()
         exporter = getattr(
             self._native_runtime.native_module(),
-            "export_device_ipc_handle",
+            "export_device_ipc_mapping",
             None,
         )
         if not callable(exporter):
             raise RuntimeError("native runtime does not support CUDA IPC handles")
-        return _require_cuda_ipc_handle_size(bytes(exporter(ptr)))
+        exported = exporter(ptr)
+        if not isinstance(exported, Mapping):
+            raise RuntimeError(
+                "native runtime returned an invalid CUDA IPC export mapping"
+            )
+        handle = _require_cuda_ipc_handle_size(bytes(exported["cuda_ipc_handle"]))
+        allocation_base_ptr = int(exported["allocation_base_ptr"])
+        allocation_size_bytes = int(exported["allocation_size_bytes"])
+        device_offset_bytes = int(exported["device_offset_bytes"])
+        if allocation_base_ptr <= 0:
+            raise ValueError("allocation_base_ptr must be positive")
+        if allocation_size_bytes < 0:
+            raise ValueError("allocation_size_bytes must be non-negative")
+        if device_offset_bytes < 0:
+            raise ValueError("device_offset_bytes must be non-negative")
+        return {
+            "cuda_ipc_handle": handle,
+            "allocation_base_ptr": allocation_base_ptr,
+            "allocation_size_bytes": allocation_size_bytes,
+            "device_offset_bytes": device_offset_bytes,
+        }
 
     def open_device_ipc_handle(self, cuda_ipc_handle: bytes | bytearray | str) -> int:
         handle = _coerce_cuda_ipc_handle(cuda_ipc_handle)

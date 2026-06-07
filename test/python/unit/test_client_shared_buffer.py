@@ -28,9 +28,14 @@ class FakeCudaBackend:
     def unregister_host_memory(self, host_ptr: int) -> None:
         self.unregister_calls.append(int(host_ptr))
 
-    def export_device_ipc_handle(self, device_ptr: int) -> bytes:
+    def export_device_ipc_mapping(self, device_ptr: int) -> dict[str, object]:
         self.export_ipc_calls.append(int(device_ptr))
-        return b"c" * 64
+        return {
+            "cuda_ipc_handle": b"c" * 64,
+            "allocation_base_ptr": int(device_ptr) - 16,
+            "allocation_size_bytes": 4096,
+            "device_offset_bytes": 16,
+        }
 
 
 class FakeDaemonClient:
@@ -192,11 +197,16 @@ class SharedPinnedCpuBufferTest(unittest.TestCase):
         self.assertEqual(backend.export_ipc_calls, [1234])
         self.assertEqual(registration.handle_type, "cuda_ipc_device")
         self.assertEqual(registration.metadata["cuda_ipc_handle"], (b"c" * 64).hex())
+        self.assertEqual(registration.metadata["device_offset_bytes"], 16)
         self.assertEqual(registration.address, 1234)
         self.assertTrue(response.ok)
         self.assertEqual(
             daemon_client.register_buffer_calls[0]["metadata"]["cuda_ipc_handle"],
             (b"c" * 64).hex(),
+        )
+        self.assertEqual(
+            daemon_client.register_buffer_calls[0]["metadata"]["device_offset_bytes"],
+            16,
         )
 
     def test_allocator_rejects_empty_buffers(self) -> None:

@@ -69,6 +69,7 @@ class FakeCudaBackend:
         self.open_ipc_device_calls: list[int | None] = []
         self.close_ipc_calls: list[int] = []
         self.close_ipc_device_calls: list[int | None] = []
+        self.open_device_ipc_base_ptr = 4321
 
     def set_device(self, device_index: int) -> None:
         device = int(device_index)
@@ -91,7 +92,7 @@ class FakeCudaBackend:
         )
         self.open_ipc_calls.append(handle)
         self.open_ipc_device_calls.append(self.current_device)
-        return 4321
+        return self.open_device_ipc_base_ptr
 
     def close_device_ipc_handle(self, device_ptr: int) -> None:
         self.close_ipc_calls.append(int(device_ptr))
@@ -121,7 +122,10 @@ def authorization_payload() -> dict:
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "device_offset_bytes": 32,
+            },
         ),
         direction="h2d",
         ranges=ranges,
@@ -141,7 +145,10 @@ def authorization_payload_for_shared_cpu(
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "device_offset_bytes": 32,
+            },
         ),
         direction="h2d",
         ranges=ranges,
@@ -160,7 +167,10 @@ def d2h_authorization_payload_for_shared_cpu(
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "device_offset_bytes": 32,
+            },
         ),
         dst_buffer=destination_buffer.buffer_registration(),
         direction="d2h",
@@ -1500,7 +1510,7 @@ class WorkerHelperTest(unittest.TestCase):
                     raise AssertionError("CUDA host registration did not run first")
                 if self.backend.open_ipc_calls != [b"t" * 64]:
                     raise AssertionError("CUDA IPC target was not opened")
-                if resources.target_device_ptr != 4321:
+                if resources.target_device_ptr != 4353:
                     raise AssertionError("bound target pointer was not passed through")
                 if self.backend.unregister_calls:
                     raise AssertionError("CUDA host memory was unregistered too early")
@@ -1551,7 +1561,7 @@ class WorkerHelperTest(unittest.TestCase):
                 self.resources.append(resources)
                 if resources.cpu_buffer.buffer_id != "cpu-buffer":
                     raise AssertionError("shared CPU destination was not bound")
-                if resources.device_ptr != 4321:
+                if resources.device_ptr != 4353:
                     raise AssertionError("CUDA IPC source pointer was not passed through")
                 if resources.as_dict()["direction"] != "d2h":
                     raise AssertionError("resource direction was not preserved")

@@ -5,15 +5,15 @@ appending history.
 
 ## Current Main Target
 
-Close one full runtime-session-facing adapter expansion for the model-loading
-workload family through `ModelWeightLoader`.
+Close one full runtime-session-facing adapter expansion for the training-state
+workload family through `TrainingOffloadManager`.
 
 ## Exit Criteria
 
-- Model-loading adapter entry stays on `TurboBusRuntimeSession` and does not
+- Training-state adapter entry stays on `TurboBusRuntimeSession` and does not
   bypass daemon-issued transfer intent, receipt consumption, or runtime-owned
   buffer registration.
-- `ModelWeightLoader` and its store/context path use the same production
+- `TrainingOffloadManager` and its store/context path use the same production
   runtime-session submit, wait, cleanup, and state model as the closed core
   transfer path.
 - The closure stays in production adapter/runtime code and does not add
@@ -22,9 +22,10 @@ workload family through `ModelWeightLoader`.
 ## Current Code Work
 
 - `turbobus/runtime_session.py`
-- `turbobus/adapters/model_loading.py`
+- `turbobus/adapters/training_offload.py`
 - `turbobus/offload/store.py`
 - `turbobus/offload/context.py`
+- `turbobus/offload/blocks.py`
 
 Round rules:
 
@@ -40,9 +41,10 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py`, then follow `make_model_weight_loader()` through
-`adapters/model_loading.py`, `offload/store.py`, and `offload/context.py` to
-close one real runtime-session-facing model-loading path.
+Start at `runtime_session.py`, then follow
+`make_training_offload_manager()` through `adapters/training_offload.py`,
+`offload/store.py`, `offload/context.py`, and `offload/blocks.py` to close one
+real runtime-session-facing training-state path.
 
 After the current target closes, the next round should finish exactly one of
 these:

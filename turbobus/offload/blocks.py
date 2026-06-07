@@ -93,7 +93,7 @@ class OffloadBlock:
     def bytes(self) -> int:
         if self.byte_count is not None:
             return int(self.byte_count)
-        return int(self.cpu_tensor.numel() * self.cpu_tensor.element_size())
+        return _backing_nbytes(self.cpu_tensor)
 
     @property
     def last_stats(self):
@@ -158,6 +158,22 @@ def _optional_str(value: object | None) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _backing_nbytes(backing: object) -> int:
+    numel = getattr(backing, "numel", None)
+    element_size = getattr(backing, "element_size", None)
+    if callable(numel) and callable(element_size):
+        return int(numel() * element_size())
+    size_bytes = getattr(backing, "size_bytes", None)
+    if size_bytes is not None:
+        return int(size_bytes)
+    nbytes = getattr(backing, "nbytes", None)
+    if nbytes is not None:
+        return int(nbytes)
+    raise TypeError(
+        "offload block backing must expose numel/element_size, size_bytes, or nbytes"
+    )
 
 
 __all__ = [

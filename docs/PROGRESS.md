@@ -16,6 +16,10 @@
 - Worker authorization failure now carries a daemon-issued cleanup contract, so
   relay lease cleanup stays inside the authorized reservation scope instead of
   falling back to timeout-only retirement when execution never starts.
+- `ModelWeightLoader` now binds one runtime-session-owned CPU/GPU buffer pair
+  and registers model-weight buckets by offset/bytes against that bound
+  transfer context, instead of acting like a generic store that resupplies
+  backings per bucket.
 
 ## Remaining Risk
 
@@ -26,9 +30,9 @@
 
 ## Next Main Target
 
-Finish one full runtime-session-facing adapter expansion for the model-loading
-workload family through `ModelWeightLoader`. After that, choose exactly one of
-these per round:
+Finish one full runtime-session-facing adapter expansion for the training-state
+workload family through `TrainingOffloadManager`. After that, choose exactly
+one of these per round:
 
 - one complete runtime-session-facing adapter expansion closure for another
   workload family.

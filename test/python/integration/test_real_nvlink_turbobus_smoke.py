@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
+import socket
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
 import uuid
 
 from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-from turbobus.daemon.startup import DaemonStartupConfig
 from turbobus.runtime_options import RuntimeOptions
 from turbobus.runtime_session import TurboBusRuntimeSession
 from turbobus.schema import WorkloadKind
@@ -47,6 +49,58 @@ def _path_chunks(receipt, kind: str) -> int:
     return total
 
 
+def _start_service(command: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _wait_for_socket(
+    socket_path: str,
+    process: subprocess.Popen,
+    *,
+    timeout_seconds: float = 20.0,
+) -> None:
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            stdout, stderr = process.communicate(timeout=1.0)
+            raise RuntimeError(
+                f"service exited before socket became ready: rc={returncode} "
+                f"stdout={stdout!r} stderr={stderr!r}"
+            )
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            client.connect(socket_path)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05)
+        finally:
+            client.close()
+    raise TimeoutError(
+        f"socket did not become ready: {socket_path}; last_error={last_error}"
+    )
+
+
+def _stop_service(process: subprocess.Popen | None) -> tuple[str, str]:
+    if process is None:
+        return "", ""
+    if process.poll() is None:
+        process.terminate()
+        try:
+            return process.communicate(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.communicate(timeout=5.0)
+    return process.communicate(timeout=1.0)
+
+
 @unittest.skipUnless(
     _real_smoke_enabled(),
     "set TURBOBUS_REAL_NVLINK_SMOKE=1 to run real GPU/NVLink smoke",
@@ -76,6 +130,8 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
             name_prefix="turbobus-real-smoke",
         )
         session: TurboBusRuntimeSession | None = None
+        daemon_process: subprocess.Popen | None = None
+        worker_process: subprocess.Popen | None = None
         try:
             source = torch.empty(size_bytes, dtype=torch.uint8, pin_memory=True)
             source.random_(0, 256)
@@ -98,20 +154,48 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
             with tempfile.TemporaryDirectory(prefix="turbobus-real-smoke-") as tmpdir:
                 daemon_socket = os.path.join(tmpdir, "daemon.sock")
                 worker_socket = os.path.join(tmpdir, "worker.sock")
-                session = TurboBusRuntimeSession.open_managed_production_socket(
+                daemon_process = _start_service(
+                    [
+                        sys.executable,
+                        "-m",
+                        "turbobus.daemon",
+                        "--socket-path",
+                        daemon_socket,
+                        "--target-gpu",
+                        str(target_gpu),
+                        "--min-relays",
+                        "1",
+                        "--max-sessions-per-relay",
+                        "1",
+                        "--max-inflight-chunks-per-relay",
+                        "128",
+                        "--profile-max-age-seconds",
+                        "3600.0",
+                    ]
+                )
+                _wait_for_socket(daemon_socket, daemon_process)
+
+                worker_process = _start_service(
+                    [
+                        sys.executable,
+                        "-m",
+                        "turbobus.worker",
+                        "--daemon-socket-path",
+                        daemon_socket,
+                        "--socket-path",
+                        worker_socket,
+                        "--chunk-bytes",
+                        str(chunk_bytes),
+                        "--profile-bytes",
+                        str(min(size_bytes, 256 * 1024 * 1024)),
+                    ]
+                )
+                _wait_for_socket(worker_socket, worker_process)
+
+                session = TurboBusRuntimeSession.open_production_socket(
                     job_id=job_id,
                     daemon_socket_path=daemon_socket,
                     worker_socket_path=worker_socket,
-                    daemon_startup_config=DaemonStartupConfig(
-                        target_gpu=target_gpu,
-                        min_relay_count=1,
-                        require_fabric=True,
-                        require_pcie=True,
-                        require_peer_credentials=False,
-                        max_sessions_per_relay=1,
-                        max_inflight_chunks_per_relay=128,
-                        profile_max_age_seconds=3600.0,
-                    ),
                     runtime_options=RuntimeOptions(
                         chunk_bytes=chunk_bytes,
                         profile_bytes=min(size_bytes, 256 * 1024 * 1024),
@@ -182,6 +266,20 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
         finally:
             if session is not None:
                 session.close()
+            worker_stdout, worker_stderr = _stop_service(worker_process)
+            daemon_stdout, daemon_stderr = _stop_service(daemon_process)
+            if worker_stdout.strip() or worker_stderr.strip():
+                print(
+                    "\nworker_service_output "
+                    f"stdout={worker_stdout.strip()!r} "
+                    f"stderr={worker_stderr.strip()!r}"
+                )
+            if daemon_stdout.strip() or daemon_stderr.strip():
+                print(
+                    "\ndaemon_service_output "
+                    f"stdout={daemon_stdout.strip()!r} "
+                    f"stderr={daemon_stderr.strip()!r}"
+                )
             cpu_buffer.release()
 
 

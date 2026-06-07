@@ -383,11 +383,32 @@ class TurboBusDaemon:
                             "buffer_id is already bound to a different production registration"
                         ),
                     )
-                return DaemonResponse(ok=True, payload={"buffer": asdict(existing_buffer)})
-            if self._active_buffer_lease_ids_locked(buffer.buffer_id):
-                return DaemonResponse(ok=False, error="buffer has active lease")
+                return DaemonResponse(
+                    ok=True,
+                    payload={
+                        "buffer": asdict(existing_buffer),
+                        "buffer_ownership": self._buffer_ownership_record_locked(
+                            existing_buffer.buffer_id
+                        ),
+                    },
+                )
+            protection = self._active_buffer_protection_record_locked(buffer.buffer_id)
+            if bool(protection.get("protected", False)):
+                return DaemonResponse(
+                    ok=False,
+                    error="buffer has active daemon-issued execution",
+                    payload={"buffer_protection": protection},
+                )
             self._buffers[buffer.buffer_id] = buffer
-            return DaemonResponse(ok=True, payload={"buffer": asdict(buffer)})
+            return DaemonResponse(
+                ok=True,
+                payload={
+                    "buffer": asdict(buffer),
+                    "buffer_ownership": self._buffer_ownership_record_locked(
+                        buffer.buffer_id
+                    ),
+                },
+            )
 
     def cleanup(
         self,
@@ -511,6 +532,21 @@ class TurboBusDaemon:
                     return DaemonResponse(ok=False, error=str(exc))
                 buffer = self._buffers.get(cleanup.target_id)
                 if buffer is not None:
+                    protection = self._active_buffer_protection_record_locked(
+                        cleanup.target_id
+                    )
+                    if bool(protection.get("protected", False)):
+                        return DaemonResponse(
+                            ok=False,
+                            error="buffer has active daemon-issued execution",
+                            payload={
+                                "cleanup": asdict(cleanup),
+                                "buffer_ownership": self._buffer_ownership_record_locked(
+                                    cleanup.target_id
+                                ),
+                                "buffer_protection": protection,
+                            },
+                        )
                     self._archive_cleanup_target_locked(
                         target_kind=cleanup.target_kind,
                         target_id=cleanup.target_id,
@@ -520,7 +556,13 @@ class TurboBusDaemon:
                             cleanup.target_id
                         ),
                         buffer_snapshot=_buffer_snapshot_record(buffer),
-                        retention_evidence=cleanup.retention_evidence,
+                        retention_evidence=_merge_retention_evidence(
+                            self._buffer_cleanup_ownership_evidence_locked(
+                                cleanup.target_id,
+                                reason=cleanup.reason,
+                            ),
+                            cleanup.retention_evidence,
+                        ),
                     )
                 transfer_ids = self._transfer_ids_for_buffer_locked(cleanup.target_id)
                 for lease_id in self._active_buffer_lease_ids_locked(cleanup.target_id):
@@ -548,11 +590,18 @@ class TurboBusDaemon:
                         )
                         removed["transfers"] = int(removed["transfers"]) + 1
                     self._retire_transfer_runtime_state_locked(transfer_id)
-                if isinstance(cleanup.retention_evidence, Mapping):
+                cleanup_retention = _merge_retention_evidence(
+                    self._buffer_cleanup_ownership_evidence_for_removed_locked(
+                        cleanup.target_id,
+                        reason=cleanup.reason,
+                    ),
+                    cleanup.retention_evidence,
+                )
+                if isinstance(cleanup_retention, Mapping):
                     retention_recorded = self._record_cleanup_retention_evidence_locked(
                         target_kind=cleanup.target_kind,
                         target_id=cleanup.target_id,
-                        retention_evidence=cleanup.retention_evidence,
+                        retention_evidence=cleanup_retention,
                     )
             elif cleanup.target_kind == "session":
                 archived_target = self._retired_cleanup_target_record_locked(
@@ -2561,10 +2610,16 @@ class TurboBusDaemon:
             source = self._buffers.get(normalized[0])
             if isinstance(source, BufferRegistration):
                 snapshots["source"] = _buffer_snapshot_record(source)
+                snapshots["source"]["daemon_buffer_ownership"] = (
+                    self._buffer_ownership_record_locked(normalized[0])
+                )
         if len(normalized) >= 2:
             destination = self._buffers.get(normalized[1])
             if isinstance(destination, BufferRegistration):
                 snapshots["destination"] = _buffer_snapshot_record(destination)
+                snapshots["destination"]["daemon_buffer_ownership"] = (
+                    self._buffer_ownership_record_locked(normalized[1])
+                )
         return snapshots
 
     def _validate_transfer_admission_locked(
@@ -3774,6 +3829,127 @@ class TurboBusDaemon:
             reservations=self._reservations,
             buffer_id=buffer_id,
         )
+
+    def _buffer_ownership_record_locked(self, buffer_id: str) -> dict[str, object]:
+        normalized = str(buffer_id)
+        buffer = self._buffers.get(normalized)
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind="buffer",
+            target_id=normalized,
+        )
+        if buffer is None and archived_target is not None:
+            snapshot = archived_target.get("buffer_snapshot")
+            owner_job_id = (
+                snapshot.get("job_id")
+                if isinstance(snapshot, Mapping)
+                else None
+            )
+            transfer_ids = tuple(
+                str(item) for item in archived_target.get("transfer_ids", ()) or ()
+            )
+            return {
+                "buffer_id": normalized,
+                "state": "retired",
+                "job_id": None if owner_job_id is None else str(owner_job_id),
+                "transfer_ids": transfer_ids,
+                "active_lease_ids": (),
+                "active_ticket_ids": (),
+                "protected": False,
+                "retired_target": _jsonable_cleanup_target_record(archived_target),
+            }
+        active_lease_ids = self._active_buffer_lease_ids_locked(normalized)
+        active_ticket_ids = self._active_buffer_ticket_ids_locked(normalized)
+        transfer_ids = self._transfer_ids_for_buffer_locked(normalized)
+        job_id = None if buffer is None else buffer.job_id
+        job = None if job_id is None else self._jobs.get(str(job_id))
+        session_id = None if job is None else job.session_id
+        peer_identity = (
+            None
+            if job_id is None
+            else self._job_peer_identities.get(str(job_id))
+        )
+        return {
+            "buffer_id": normalized,
+            "state": "registered" if buffer is not None else "unknown",
+            "job_id": None if job_id is None else str(job_id),
+            "session_id": None if session_id is None else str(session_id),
+            "active_lease_ids": active_lease_ids,
+            "active_ticket_ids": active_ticket_ids,
+            "transfer_ids": transfer_ids,
+            "protected": bool(active_lease_ids or active_ticket_ids),
+            "peer_identity": (
+                None if peer_identity is None else asdict(peer_identity)
+            ),
+        }
+
+    def _active_buffer_ticket_ids_locked(self, buffer_id: str) -> tuple[str, ...]:
+        normalized = str(buffer_id)
+        return tuple(
+            ticket_id
+            for ticket_id, ticket in sorted(self._execution_tickets.items())
+            if normalized in {ticket.source_buffer_id, ticket.destination_buffer_id}
+            and self._ticket_transfer_is_active_locked(ticket)
+        )
+
+    def _ticket_transfer_is_active_locked(self, ticket: ExecutionTicket) -> bool:
+        transfer_id = ticket.metadata.get("transfer_id")
+        if transfer_id is None:
+            return True
+        status = self._transfer_statuses.get(str(transfer_id))
+        return status is None or status.state not in _TERMINAL_TRANSFER_STATES
+
+    def _active_buffer_protection_record_locked(
+        self,
+        buffer_id: str,
+    ) -> dict[str, object]:
+        ownership = self._buffer_ownership_record_locked(buffer_id)
+        return {
+            "buffer_id": str(buffer_id),
+            "protected": bool(ownership.get("protected", False)),
+            "active_lease_ids": tuple(
+                str(item) for item in ownership.get("active_lease_ids", ()) or ()
+            ),
+            "active_ticket_ids": tuple(
+                str(item) for item in ownership.get("active_ticket_ids", ()) or ()
+            ),
+            "transfer_ids": tuple(
+                str(item) for item in ownership.get("transfer_ids", ()) or ()
+            ),
+        }
+
+    def _buffer_cleanup_ownership_evidence_locked(
+        self,
+        buffer_id: str,
+        *,
+        reason: str,
+    ) -> dict[str, object]:
+        return {
+            "daemon_buffer_ownership": self._buffer_ownership_record_locked(buffer_id),
+            "cleanup_reason": str(reason),
+            "cleanup_recorded_at": time.time(),
+        }
+
+    def _buffer_cleanup_ownership_evidence_for_removed_locked(
+        self,
+        buffer_id: str,
+        *,
+        reason: str,
+    ) -> dict[str, object]:
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind="buffer",
+            target_id=str(buffer_id),
+        )
+        ownership = self._buffer_ownership_record_locked(buffer_id)
+        return {
+            "daemon_buffer_ownership": ownership,
+            "cleanup_reason": str(reason),
+            "cleanup_recorded_at": time.time(),
+            "retired_target": (
+                None
+                if archived_target is None
+                else _jsonable_cleanup_target_record(archived_target)
+            ),
+        }
 
     def _register_staging_record_locked(
         self,
@@ -5352,6 +5528,10 @@ class TurboBusDaemon:
                         for key, value in self._job_peer_identities.items()
                     },
                     "buffers": {key: asdict(value) for key, value in self._buffers.items()},
+                    "buffer_ownership": {
+                        key: self._buffer_ownership_record_locked(key)
+                        for key in sorted(self._buffers)
+                    },
                     "sessions": {key: asdict(value) for key, value in self._sessions.items()},
                     "session_peer_identities": {
                         key: asdict(value)
@@ -7003,6 +7183,25 @@ def _merge_retention_evidence(
         else:
             merged[key] = value
     return merged
+
+
+def _jsonable_cleanup_target_record(record: Mapping[str, object]) -> dict[str, object]:
+    result = dict(record)
+    peer_identity = result.get("peer_identity")
+    if isinstance(peer_identity, PeerIdentity):
+        result["peer_identity"] = asdict(peer_identity)
+    elif isinstance(peer_identity, Mapping):
+        result["peer_identity"] = dict(peer_identity)
+    buffer_snapshot = result.get("buffer_snapshot")
+    if isinstance(buffer_snapshot, Mapping):
+        result["buffer_snapshot"] = dict(buffer_snapshot)
+    retention_evidence = result.get("retention_evidence")
+    if isinstance(retention_evidence, Mapping):
+        result["retention_evidence"] = dict(retention_evidence)
+    transfer_ids = result.get("transfer_ids")
+    if transfer_ids is not None:
+        result["transfer_ids"] = tuple(str(item) for item in transfer_ids)
+    return result
 
 
 def _buffer_snapshot_with_retention_evidence(

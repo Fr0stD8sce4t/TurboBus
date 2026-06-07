@@ -5,23 +5,19 @@ appending history.
 
 ## Current Main Target
 
-G8 buffer ownership lifecycle closure.
+G9 CUDA IPC metadata and span validation.
 
-The daemon must own a production-visible buffer ownership ledger that binds
-registered buffers to job/session ownership and active transfer leases. Active
-daemon-issued tickets must prevent premature buffer cleanup, and terminal
-cleanup must leave receipt-visible ownership evidence.
+CUDA IPC GPU buffer registrations must carry enough production metadata for the
+worker to validate the opened allocation span before execution. The worker must
+reject out-of-range device views before submitting daemon-issued plans.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: buffer registration, transfer planning, lease
-  ownership, cleanup rejection/retention, receipt archive.
-- `turbobus/schema.py`: shared ownership evidence fields only if the existing
-  schema cannot carry the ledger through metadata.
-- `turbobus/runtime_session.py`: runtime buffer registration and cleanup
-  consumption without adding application-side route or relay control.
-- `turbobus/worker/resources.py`: worker-side resource evidence only if needed
-  to close the daemon ownership ledger.
+- `turbobus/client.py`: CUDA IPC device buffer registration metadata.
+- `turbobus/backends/cuda.py`: CUDA IPC mapping export/open details.
+- `turbobus/worker/resources.py`: worker-side CUDA IPC open and span checks.
+- `turbobus/daemon/server.py`: daemon buffer snapshot and ownership evidence if
+  needed to carry CUDA IPC metadata through tickets and receipts.
 
 Round rules:
 
@@ -42,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G8 is complete, advance to G9 CUDA IPC metadata and span validation.
+After G9 is complete, advance to G10 worker asynchronous execution pool.
 
 ## Auto-Advance Policy
 
@@ -51,7 +47,6 @@ G6.
 
 Remaining auto-advance target queue:
 
-- G8 buffer ownership lifecycle closure.
 - G9 CUDA IPC metadata and span validation.
 - G10 worker asynchronous execution pool.
 - G11 scheduler cost-model upgrade.

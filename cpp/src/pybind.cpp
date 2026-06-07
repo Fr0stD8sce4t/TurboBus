@@ -154,6 +154,25 @@ PYBIND11_MODULE(_turbobus, m) {
                     "cudaHostUnregister failed");
         },
         py::arg("host_ptr"), py::call_guard<py::gil_scoped_release>());
+  m.def("allocate_device_memory",
+        [](std::size_t bytes) {
+          if (bytes == 0) {
+            throw std::invalid_argument("bytes must be positive");
+          }
+          void* device_ptr = nullptr;
+          CheckCuda(cudaMalloc(&device_ptr, bytes), "cudaMalloc failed");
+          return reinterpret_cast<std::uintptr_t>(device_ptr);
+        },
+        py::arg("bytes"), py::call_guard<py::gil_scoped_release>());
+  m.def("free_device_memory",
+        [](std::uintptr_t device_ptr) {
+          if (device_ptr == 0) {
+            throw std::invalid_argument("device_ptr must not be null");
+          }
+          CheckCuda(cudaFree(reinterpret_cast<void*>(device_ptr)),
+                    "cudaFree failed");
+        },
+        py::arg("device_ptr"), py::call_guard<py::gil_scoped_release>());
   m.def("export_device_ipc_handle",
         [](std::uintptr_t device_ptr) {
           if (device_ptr == 0) {

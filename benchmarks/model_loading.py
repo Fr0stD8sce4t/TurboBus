@@ -324,15 +324,32 @@ class RuntimeBenchmarkState:
 
 
 class RuntimeBuffers:
-    def __init__(self, *, cpu_buffer, gpu_buffer, target_tensor=None) -> None:
+    def __init__(self, *, cpu_buffer, gpu_buffer, target_allocation=None) -> None:
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
-        self.target_tensor = target_tensor
+        self.target_allocation = target_allocation
 
     def release(self) -> None:
+        target_releaser = getattr(self.target_allocation, "release", None)
+        if callable(target_releaser):
+            target_releaser()
         releaser = getattr(self.cpu_buffer, "release", None)
         if callable(releaser):
             releaser()
+
+
+class NativeCudaDeviceAllocation:
+    def __init__(self, *, ptr: int, size_bytes: int, backend) -> None:
+        self.ptr = int(ptr)
+        self.size_bytes = int(size_bytes)
+        self._backend = backend
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._backend.free_device_memory(self.ptr)
+        self._released = True
 
 
 class TorchRuntimeBufferFactory:
@@ -345,9 +362,11 @@ class TorchRuntimeBufferFactory:
         cpu_buffer_id = args.source_buffer_id or f"model-load-cpu-{run_id}"
         gpu_buffer_id = args.destination_buffer_id or f"model-load-gpu-{run_id}"
 
+        from turbobus.backends.cuda import default_cuda_backend
         from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 
         cpu_buffer = None
+        target_allocation = None
         try:
             trace_event("torch_buffers_shared_cpu_allocate_start", bytes=byte_count)
             cpu_buffer = SharedPinnedCpuBuffer.allocate(
@@ -370,29 +389,33 @@ class TorchRuntimeBufferFactory:
 
             trace_event("torch_buffers_set_device_start", target_gpu=args.target_gpu)
             torch.cuda.set_device(int(args.target_gpu))
+            default_cuda_backend.set_device(int(args.target_gpu))
             trace_event("torch_buffers_set_device_done", target_gpu=args.target_gpu)
-            trace_event("torch_buffers_target_tensor_start", bytes=byte_count)
-            target = torch.empty(
-                byte_count,
-                dtype=torch.uint8,
-                device=f"cuda:{int(args.target_gpu)}",
+            trace_event("torch_buffers_target_allocation_start", bytes=byte_count)
+            target_allocation = NativeCudaDeviceAllocation(
+                ptr=default_cuda_backend.allocate_device_memory(byte_count),
+                size_bytes=byte_count,
+                backend=default_cuda_backend,
             )
-            trace_event("torch_buffers_target_tensor_done", ptr=target.data_ptr())
+            trace_event("torch_buffers_target_allocation_done", ptr=target_allocation.ptr)
             trace_event("torch_buffers_cuda_ipc_export_start")
             gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
                 buffer_id=gpu_buffer_id,
                 job_id=args.job_id,
                 device_index=int(args.target_gpu),
                 size_bytes=byte_count,
-                device_ptr=target.data_ptr(),
+                device_ptr=target_allocation.ptr,
+                backend=default_cuda_backend,
             )
             trace_event("torch_buffers_cuda_ipc_export_done")
             return RuntimeBuffers(
                 cpu_buffer=cpu_buffer,
                 gpu_buffer=gpu_buffer,
-                target_tensor=target,
+                target_allocation=target_allocation,
             )
         except Exception:
+            if target_allocation is not None:
+                target_allocation.release()
             if cpu_buffer is not None:
                 cpu_buffer.release()
             raise

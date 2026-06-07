@@ -86,6 +86,9 @@ class CudaNativeBackend:
     def make_transfer_plan(self, plan: Any) -> Any:
         return self._native_plan.native_transfer_plan(plan)
 
+    def transfer_mode_value(self, mode: Any) -> Any:
+        return self._native_runtime.runtime_transfer_mode_value(mode)
+
     def register_host_memory(self, host_ptr: int, bytes_: int) -> None:
         ptr = int(host_ptr)
         size_bytes = int(bytes_)
@@ -116,6 +119,37 @@ class CudaNativeBackend:
         if not callable(unregister):
             raise RuntimeError("native runtime does not support host memory registration")
         unregister(ptr)
+
+    def allocate_device_memory(self, bytes_: int) -> int:
+        size_bytes = int(bytes_)
+        if size_bytes <= 0:
+            raise ValueError("bytes must be positive")
+        self.require_available()
+        allocator = getattr(
+            self._native_runtime.native_module(),
+            "allocate_device_memory",
+            None,
+        )
+        if not callable(allocator):
+            raise RuntimeError("native runtime does not support device memory allocation")
+        ptr = int(allocator(size_bytes))
+        if ptr <= 0:
+            raise RuntimeError("native runtime returned an invalid device pointer")
+        return ptr
+
+    def free_device_memory(self, device_ptr: int) -> None:
+        ptr = int(device_ptr)
+        if ptr <= 0:
+            raise ValueError("device_ptr must be positive")
+        self.require_available()
+        freer = getattr(
+            self._native_runtime.native_module(),
+            "free_device_memory",
+            None,
+        )
+        if not callable(freer):
+            raise RuntimeError("native runtime does not support device memory allocation")
+        freer(ptr)
 
     def export_device_ipc_handle(self, device_ptr: int) -> bytes:
         ptr = int(device_ptr)

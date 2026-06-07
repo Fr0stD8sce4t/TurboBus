@@ -35,6 +35,15 @@ class TransferBackend(Protocol):
     def make_transfer_plan(self, plan: Any) -> Any:
         ...
 
+    def transfer_mode_value(self, mode: Any) -> Any:
+        ...
+
+    def allocate_device_memory(self, bytes_: int) -> int:
+        ...
+
+    def free_device_memory(self, device_ptr: int) -> None:
+        ...
+
     def verify_transfer(
         self,
         *,

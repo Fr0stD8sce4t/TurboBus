@@ -372,15 +372,32 @@ class RuntimeBenchmarkState:
 
 
 class RuntimeBuffers:
-    def __init__(self, *, cpu_buffer, gpu_buffer, target_tensor=None) -> None:
+    def __init__(self, *, cpu_buffer, gpu_buffer, target_allocation=None) -> None:
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
-        self.target_tensor = target_tensor
+        self.target_allocation = target_allocation
 
     def release(self) -> None:
+        target_releaser = getattr(self.target_allocation, "release", None)
+        if callable(target_releaser):
+            target_releaser()
         releaser = getattr(self.cpu_buffer, "release", None)
         if callable(releaser):
             releaser()
+
+
+class NativeCudaDeviceAllocation:
+    def __init__(self, *, ptr: int, size_bytes: int, backend) -> None:
+        self.ptr = int(ptr)
+        self.size_bytes = int(size_bytes)
+        self._backend = backend
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._backend.free_device_memory(self.ptr)
+        self._released = True
 
 
 class TorchRuntimeBufferFactory:
@@ -391,36 +408,48 @@ class TorchRuntimeBufferFactory:
         cpu_buffer_id = args.cpu_buffer_id or f"training-offload-cpu-{run_id}"
         gpu_buffer_id = args.gpu_buffer_id or f"training-offload-gpu-{run_id}"
 
+        from turbobus.backends.cuda import default_cuda_backend
         from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 
-        cpu_buffer = SharedPinnedCpuBuffer.allocate(
-            buffer_id=cpu_buffer_id,
-            job_id=args.job_id,
-            size_bytes=byte_count,
-            name_prefix="turbobus-training-offload",
-        )
-        source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
-        source.random_(0, 256)
-        cpu_buffer.write(source.numpy().tobytes())
+        cpu_buffer = None
+        target_allocation = None
+        try:
+            cpu_buffer = SharedPinnedCpuBuffer.allocate(
+                buffer_id=cpu_buffer_id,
+                job_id=args.job_id,
+                size_bytes=byte_count,
+                name_prefix="turbobus-training-offload",
+            )
+            source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
+            source.random_(0, 256)
+            cpu_buffer.write(source.numpy().tobytes())
 
-        torch.cuda.set_device(int(args.target_gpu))
-        target = torch.empty(
-            byte_count,
-            dtype=torch.uint8,
-            device=f"cuda:{int(args.target_gpu)}",
-        )
-        gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
-            buffer_id=gpu_buffer_id,
-            job_id=args.job_id,
-            device_index=int(args.target_gpu),
-            size_bytes=byte_count,
-            device_ptr=target.data_ptr(),
-        )
-        return RuntimeBuffers(
-            cpu_buffer=cpu_buffer,
-            gpu_buffer=gpu_buffer,
-            target_tensor=target,
-        )
+            torch.cuda.set_device(int(args.target_gpu))
+            default_cuda_backend.set_device(int(args.target_gpu))
+            target_allocation = NativeCudaDeviceAllocation(
+                ptr=default_cuda_backend.allocate_device_memory(byte_count),
+                size_bytes=byte_count,
+                backend=default_cuda_backend,
+            )
+            gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
+                buffer_id=gpu_buffer_id,
+                job_id=args.job_id,
+                device_index=int(args.target_gpu),
+                size_bytes=byte_count,
+                device_ptr=target_allocation.ptr,
+                backend=default_cuda_backend,
+            )
+            return RuntimeBuffers(
+                cpu_buffer=cpu_buffer,
+                gpu_buffer=gpu_buffer,
+                target_allocation=target_allocation,
+            )
+        except Exception:
+            if target_allocation is not None:
+                target_allocation.release()
+            if cpu_buffer is not None:
+                cpu_buffer.release()
+            raise
 
 
 class ProductionRuntimeSessionFactory:

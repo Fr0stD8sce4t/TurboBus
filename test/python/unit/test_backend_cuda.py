@@ -20,6 +20,8 @@ class FakeHostRegisterNativeModule:
         self.set_device_calls = []
         self.register_host_memory_calls = []
         self.unregister_host_memory_calls = []
+        self.allocate_device_memory_calls = []
+        self.free_device_memory_calls = []
         self.export_device_ipc_handle_calls = []
         self.open_device_ipc_handle_calls = []
         self.close_device_ipc_handle_calls = []
@@ -33,6 +35,13 @@ class FakeHostRegisterNativeModule:
 
     def unregister_host_memory(self, host_ptr):
         self.unregister_host_memory_calls.append(host_ptr)
+
+    def allocate_device_memory(self, bytes_):
+        self.allocate_device_memory_calls.append(bytes_)
+        return 300
+
+    def free_device_memory(self, device_ptr):
+        self.free_device_memory_calls.append(device_ptr)
 
     def export_device_ipc_handle(self, device_ptr):
         self.export_device_ipc_handle_calls.append(device_ptr)
@@ -288,6 +297,28 @@ class CudaNativeBackendTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "host memory registration"):
             backend.register_host_memory(100, 4096)
+
+    def test_backend_allocates_and_frees_device_memory(self) -> None:
+        native_runtime = FakeNativeRuntimeModule()
+        native = FakeHostRegisterNativeModule()
+        native_runtime._turbobus = native
+        backend = make_backend(native_runtime_module=native_runtime)
+
+        ptr = backend.allocate_device_memory(4096)
+        backend.free_device_memory(ptr)
+
+        self.assertEqual(ptr, 300)
+        self.assertEqual(native.allocate_device_memory_calls, [4096])
+        self.assertEqual(native.free_device_memory_calls, [300])
+        self.assertEqual(native_runtime.require_extension_calls, 2)
+
+    def test_backend_rejects_missing_device_memory_allocation(self) -> None:
+        native_runtime = FakeNativeRuntimeModule()
+        native_runtime._turbobus = object()
+        backend = make_backend(native_runtime_module=native_runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "device memory allocation"):
+            backend.allocate_device_memory(4096)
 
     def test_backend_exports_and_opens_cuda_ipc_handles(self) -> None:
         native_runtime = FakeNativeRuntimeModule()

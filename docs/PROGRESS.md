@@ -20,6 +20,10 @@
   and registers model-weight buckets by offset/bytes against that bound
   transfer context, instead of acting like a generic store that resupplies
   backings per bucket.
+- `TrainingOffloadManager` now binds one runtime-session-owned CPU/GPU buffer
+  pair and registers training-state buckets by offset/bytes against that bound
+  transfer context, instead of acting like a generic store that resupplies
+  backings per bucket.
 
 ## Remaining Risk
 
@@ -30,8 +34,8 @@
 
 ## Next Main Target
 
-Finish one full runtime-session-facing adapter expansion for the training-state
-workload family through `TrainingOffloadManager`. After that, choose exactly
+Finish one full runtime-session-facing adapter expansion for the inference KV
+workload family through `InferenceKVSlotAdapter`. After that, choose exactly
 one of these per round:
 
 - one complete runtime-session-facing adapter expansion closure for another

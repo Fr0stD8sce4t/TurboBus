@@ -174,15 +174,17 @@ class TurboBusRuntimeSession:
         normalize_runtime_session_config(self)
         resolve_runtime_role_clients(
             self,
+            daemon_client_factory=TurboBusDaemonClient,
             runtime_client_factory=TurboBusDaemonRuntimeClient,
             execution_client_factory=TurboBusDaemonExecutionClient,
             profile_client_factory=TurboBusDaemonProfileClient,
+            worker_client_factory=WorkerServiceSocketClient,
         )
 
     @classmethod
     def open(
         cls,
-        daemon_client,
+        daemon_client=None,
         *,
         job_id: str,
         user_id: str | None = None,
@@ -223,31 +225,32 @@ class TurboBusRuntimeSession:
     ) -> "TurboBusRuntimeSession":
         if not str(daemon_socket_path).strip():
             raise ValueError("daemon_socket_path must be non-empty")
-        worker_client = None
-        if worker_socket_path is not None:
-            if not str(worker_socket_path).strip():
-                raise ValueError("worker_socket_path must be non-empty")
-            worker_client = WorkerServiceSocketClient(str(worker_socket_path))
-        daemon_client = TurboBusDaemonClient(str(daemon_socket_path))
+        if worker_socket_path is not None and not str(worker_socket_path).strip():
+            raise ValueError("worker_socket_path must be non-empty")
+        resolved_options = runtime_options or RuntimeOptions()
+        resolved_options = _runtime_options_with_optional_socket_paths(
+            resolved_options,
+            daemon_socket_path=str(daemon_socket_path),
+            worker_socket_path=(
+                None if worker_socket_path is None else str(worker_socket_path)
+            ),
+        )
         runtime_client_factory = (
             TurboBusPersistentDaemonRuntimeClient
             if persistent_runtime_control
             else TurboBusDaemonRuntimeClient
         )
-        return cls.open(
-            daemon_client,
+        session = cls.open(
+            None,
             job_id=job_id,
             user_id=user_id,
             runtime_daemon_client=runtime_client_factory(str(daemon_socket_path)),
-            execution_daemon_client=TurboBusDaemonExecutionClient(
-                str(daemon_socket_path)
-            ),
-            profile_daemon_client=TurboBusDaemonProfileClient(str(daemon_socket_path)),
-            worker_client=worker_client,
             max_inflight_chunks=max_inflight_chunks,
             backend=backend,
-            runtime_options=runtime_options,
+            runtime_options=resolved_options,
         )
+        session._runtime_control_connection_owned = bool(persistent_runtime_control)
+        return session
 
     @classmethod
     def open_production_socket(
@@ -357,17 +360,15 @@ class TurboBusRuntimeSession:
                 startup_records,
                 startup_lock,
             )
-            session = cls.open(
-                TurboBusDaemonClient(daemon_path),
+            session = cls.open_socket(
+                daemon_socket_path=daemon_path,
+                worker_socket_path=worker_path,
                 job_id=job_id,
                 user_id=user_id,
-                runtime_daemon_client=TurboBusPersistentDaemonRuntimeClient(daemon_path),
-                execution_daemon_client=TurboBusDaemonExecutionClient(daemon_path),
-                profile_daemon_client=TurboBusDaemonProfileClient(daemon_path),
-                worker_client=WorkerServiceSocketClient(worker_path),
                 max_inflight_chunks=max_inflight_chunks,
                 backend=backend,
                 runtime_options=options,
+                persistent_runtime_control=True,
             )
         except Exception as exc:
             shutdown_evidence = _shutdown_managed_service_threads(
@@ -387,17 +388,23 @@ class TurboBusRuntimeSession:
                 startup_evidence=startup_snapshot,
                 shutdown_evidence=shutdown_evidence,
             ) from exc
-        session._managed_service_startup_evidence = startup_evidence
-        session._managed_service_records = startup_records
-        session._managed_service_lock = startup_lock
-        if worker_stop_event is not None and worker_thread is not None:
-            session._owned_worker_stop_event = worker_stop_event
-            session._owned_worker_thread = worker_thread
-            session._owned_worker_socket_path = worker_path
-        session._owned_daemon_socket_path = None
-        session._owned_daemon_stop_event = None
-        session._owned_daemon_thread = None
-        session._runtime_control_connection_owned = True
+        _attach_runtime_managed_service_state(
+            session,
+            startup_records=startup_records,
+            startup_lock=startup_lock,
+            startup_evidence=startup_evidence,
+            daemon_socket_path=None,
+            daemon_stop_event=None,
+            daemon_thread=None,
+            worker_socket_path=(
+                worker_path
+                if worker_stop_event is not None and worker_thread is not None
+                else None
+            ),
+            worker_stop_event=worker_stop_event,
+            worker_thread=worker_thread,
+            runtime_control_owned=True,
+        )
         return session
 
     @classmethod
@@ -515,16 +522,19 @@ class TurboBusRuntimeSession:
                 startup_evidence=startup_snapshot,
                 shutdown_evidence=shutdown_evidence,
             ) from exc
-        session._owned_daemon_stop_event = daemon_stop_event
-        session._owned_daemon_thread = daemon_thread
-        session._owned_worker_stop_event = worker_stop_event
-        session._owned_worker_thread = worker_thread
-        session._owned_daemon_socket_path = daemon_path
-        session._owned_worker_socket_path = worker_path
-        session._runtime_control_connection_owned = True
-        session._managed_service_startup_evidence = startup_evidence
-        session._managed_service_records = startup_records
-        session._managed_service_lock = startup_lock
+        _attach_runtime_managed_service_state(
+            session,
+            startup_records=startup_records,
+            startup_lock=startup_lock,
+            startup_evidence=startup_evidence,
+            daemon_socket_path=daemon_path,
+            daemon_stop_event=daemon_stop_event,
+            daemon_thread=daemon_thread,
+            worker_socket_path=worker_path,
+            worker_stop_event=worker_stop_event,
+            worker_thread=worker_thread,
+            runtime_control_owned=True,
+        )
         return session
 
     @property
@@ -2070,6 +2080,34 @@ def _owned_cpu_release_records(
     ]
 
 
+def _attach_runtime_managed_service_state(
+    session: TurboBusRuntimeSession,
+    *,
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+    startup_evidence: Mapping[str, object] | None,
+    daemon_socket_path: str | None,
+    daemon_stop_event: threading.Event | None,
+    daemon_thread: threading.Thread | None,
+    worker_socket_path: str | None,
+    worker_stop_event: threading.Event | None,
+    worker_thread: threading.Thread | None,
+    runtime_control_owned: bool,
+) -> None:
+    session._managed_service_startup_evidence = (
+        None if startup_evidence is None else dict(startup_evidence)
+    )
+    session._managed_service_records = startup_records
+    session._managed_service_lock = startup_lock
+    session._owned_daemon_socket_path = daemon_socket_path
+    session._owned_daemon_stop_event = daemon_stop_event
+    session._owned_daemon_thread = daemon_thread
+    session._owned_worker_socket_path = worker_socket_path
+    session._owned_worker_stop_event = worker_stop_event
+    session._owned_worker_thread = worker_thread
+    session._runtime_control_connection_owned = bool(runtime_control_owned)
+
+
 def _wait_for_managed_services_ready(
     *,
     daemon_socket_path: str,
@@ -2225,6 +2263,23 @@ def _runtime_options_with_socket_paths(
     }
     values["daemon_socket_path"] = str(daemon_socket_path)
     values["worker_socket_path"] = str(worker_socket_path)
+    return RuntimeOptions(**values)
+
+
+def _runtime_options_with_optional_socket_paths(
+    options: RuntimeOptions,
+    *,
+    daemon_socket_path: str,
+    worker_socket_path: str | None,
+) -> RuntimeOptions:
+    values = {
+        field.name: getattr(options, field.name)
+        for field in fields(RuntimeOptions)
+    }
+    values["daemon_socket_path"] = str(daemon_socket_path)
+    values["worker_socket_path"] = (
+        None if worker_socket_path is None else str(worker_socket_path)
+    )
     return RuntimeOptions(**values)
 
 

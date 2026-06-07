@@ -22,11 +22,22 @@ def normalize_runtime_session_config(session) -> None:
 def resolve_runtime_role_clients(
     session,
     *,
+    daemon_client_factory,
     runtime_client_factory,
     execution_client_factory,
     profile_client_factory,
+    worker_client_factory,
 ) -> None:
-    socket_path = getattr(session.daemon_client, "socket_path", None)
+    daemon_client = getattr(session, "daemon_client", None)
+    socket_path = getattr(daemon_client, "socket_path", None)
+    runtime_options = getattr(session, "runtime_options", None)
+    if socket_path is None and runtime_options is not None:
+        socket_path = getattr(runtime_options, "daemon_socket_path", None)
+    if session.daemon_client is None:
+        if socket_path is None:
+            raise ValueError("daemon_client is required without daemon_socket_path")
+        session.daemon_client = daemon_client_factory(str(socket_path))
+        socket_path = getattr(session.daemon_client, "socket_path", socket_path)
     if session.runtime_daemon_client is None:
         if socket_path is None:
             raise ValueError("runtime_daemon_client is required without socket_path")
@@ -39,6 +50,13 @@ def resolve_runtime_role_clients(
         if socket_path is None:
             raise ValueError("profile_daemon_client is required without socket_path")
         session.profile_daemon_client = profile_client_factory(str(socket_path))
+    worker_socket_path = (
+        None
+        if runtime_options is None
+        else getattr(runtime_options, "worker_socket_path", None)
+    )
+    if session.worker_client is None and worker_socket_path is not None:
+        session.worker_client = worker_client_factory(str(worker_socket_path))
 
 
 def clear_runtime_session_state(session) -> None:

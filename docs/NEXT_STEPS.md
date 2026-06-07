@@ -5,30 +5,27 @@ appending history.
 
 ## Current Main Target
 
-Close the remaining runtime-session production startup path so
-`TurboBusRuntimeSession` is the single production authority for daemon/worker
-socket startup, session registration, buffer registration, intent submission,
-receipt consumption, and shutdown on the real execution path.
+Close the remaining scheduler/runtime feedback production path so scheduler
+load accounting uses real queued/running/active transfer state, terminal
+completion source, and runtime feedback from the daemon-issued execution path.
 
 ## Exit Criteria
 
-- `TurboBusRuntimeSession` must own one end-to-end production startup and
-  shutdown path for daemon socket, worker socket, session/job registration,
-  buffer registration, transfer submission, receipt wait, and service teardown.
-- No production-looking caller should need to preassemble daemon/worker control
-  flow outside `TurboBusRuntimeSession`.
-- The closure stays in runtime/daemon/worker production code and does not add
-  benchmark-owned, example-owned, or dry-run wrapper paths.
+- Scheduler-facing load and runtime feedback state must come from real
+  daemon-issued queued/running/terminal transfer records, not partial local
+  bookkeeping.
+- Direct-only, relay-only, and mixed execution terminal feedback must feed one
+  scheduler-visible runtime accounting contract.
+- The closure stays in daemon/runtime/scheduler production code and does not
+  add benchmark-owned, example-owned, or dry-run wrapper paths.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
-- `turbobus/runtime/session_state.py`
-- `turbobus/runtime/daemon_view.py`
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/client.py`
-- `turbobus/worker/process.py`
-- `turbobus/worker/socket_client.py`
+- `turbobus/scheduler.py`
+- `turbobus/runtime/daemon_view.py`
+- `turbobus/runtime_session.py`
+- `turbobus/intent_executor.py`
 
 Round rules:
 
@@ -44,11 +41,10 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py` around production open/close, attached vs owned
-service paths, and session registration responsibilities, then move through
-`runtime/session_state.py`, `runtime/daemon_view.py`, `daemon/client.py`,
-`worker/process.py`, and `worker/socket_client.py` to close one real runtime
-authority path.
+Start at `daemon/server.py` around queued/running/terminal transfer records and
+runtime feedback, then move through `scheduler.py`, `runtime/daemon_view.py`,
+`runtime_session.py`, and `intent_executor.py` to close one real scheduler
+accounting path.
 
 After the current target closes, the next round should finish exactly one of
 these:

@@ -7,23 +7,23 @@
 - `TurboBusRuntimeSession` stays the intended production entry, and
   daemon-issued execution, receipt formation, cleanup, and runtime feedback
   remain on the real production path.
-- Registered shared pinned CPU buffers now carry one runtime-session cleanup
-  contract across local close/release, daemon retention archive, and final
-  receipt buffer lifetime evidence, for both runtime-owned and borrowed CPU
-  buffers on the production path.
+- Socket-based production runtime startup now assembles daemon/runtime/
+  execution/profile/worker clients inside `TurboBusRuntimeSession`, and both
+  attached and managed production socket paths reuse one runtime-owned client
+  assembly path instead of hand-building per-role clients outside the session.
 
 ## Remaining Risk
 
-- `TurboBusRuntimeSession` still needs one full production startup authority
-  closure so daemon/worker socket bring-up, session registration, transfer
-  submission, receipt wait, and shutdown all stay under one production owner.
+- Scheduler/runtime feedback accounting still needs one full closure so daemon
+  queued/running/terminal transfer state drives scheduler-visible load and
+  terminal completion accounting.
 - Server, CUDA, benchmark, and adapter validation remain later-stage risks and
   do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full `TurboBusRuntimeSession` production startup and shutdown
-authority closure across daemon/worker services and the real execution path.
+Finish one full scheduler/runtime feedback accounting closure across daemon
+transfer state, runtime feedback, and scheduler-visible load.
 
 Progress-file rule:
 

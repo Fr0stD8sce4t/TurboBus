@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 from dataclasses import dataclass
 
@@ -50,12 +51,25 @@ class WorkerServiceSocketClient:
 def _send_worker_socket_message(socket_path: str, message: str) -> str:
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
+        timeout = _worker_socket_timeout()
+        if timeout is not None:
+            client.settimeout(timeout)
         client.connect(socket_path)
         client.sendall(message.encode("utf-8") + b"\n")
         data = read_worker_socket_message(client)
     finally:
         client.close()
     return data.decode("utf-8")
+
+
+def _worker_socket_timeout() -> float | None:
+    raw = os.environ.get("TURBOBUS_WORKER_SOCKET_TIMEOUT_SECONDS")
+    if raw is None or not raw.strip():
+        return None
+    timeout = float(raw)
+    if timeout <= 0:
+        raise ValueError("TURBOBUS_WORKER_SOCKET_TIMEOUT_SECONDS must be positive")
+    return timeout
 
 
 __all__ = ["WorkerServiceSocketClient"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict
+import os
 import time
 
 from ..schema import (
@@ -583,6 +584,11 @@ class WorkerTransferClient:
         cleanup_target_kind: str = "reservation",
         report_terminal_status: bool = True,
     ) -> WorkerTransferLifecycleRecord:
+        _trace_worker_stage(
+            "worker_lifecycle_start",
+            transfer_id=request.transfer_id,
+            relay_gpu=request.relay_gpu,
+        )
         try:
             worker_request = self._authorize(request)
         except WorkerAuthorizationError as exc:
@@ -612,13 +618,30 @@ class WorkerTransferClient:
                 final_state="authorization_failed",
                 error=str(exc),
             )
+        _trace_worker_stage(
+            "worker_lifecycle_authorized",
+            transfer_id=worker_request.transfer_id,
+        )
         staging_slot = self._staging_pool.allocate(worker_request.data_plane)
+        _trace_worker_stage(
+            "worker_lifecycle_staging_allocated",
+            transfer_id=worker_request.transfer_id,
+            slot_id=staging_slot.slot_id,
+        )
         running_update: dict[str, object] | None = None
         running_response: DaemonResponse | None = None
         try:
+            _trace_worker_stage(
+                "worker_lifecycle_report_running_start",
+                transfer_id=worker_request.transfer_id,
+            )
             running_update, running_response = self._status_reporter.report_running(
                 worker_request,
                 staging_slot,
+            )
+            _trace_worker_stage(
+                "worker_lifecycle_report_running_done",
+                transfer_id=worker_request.transfer_id,
             )
         except WorkerStatusReportError as exc:
             staging_release = self._staging_pool.release(
@@ -663,15 +686,30 @@ class WorkerTransferClient:
                 error=str(exc),
             )
         try:
+            _trace_worker_stage(
+                "worker_lifecycle_execute_start",
+                transfer_id=worker_request.transfer_id,
+            )
             result = validate_worker_completion_bytes(
                 worker_request,
                 self._execute(worker_request, staging_slot),
+            )
+            _trace_worker_stage(
+                "worker_lifecycle_execute_done",
+                transfer_id=worker_request.transfer_id,
+                state=result.state.value,
+                bytes=result.bytes_completed,
             )
         except Exception as exc:
             result = failed_worker_result_from_exception(
                 worker_request,
                 staging_slot,
                 exc,
+            )
+            _trace_worker_stage(
+                "worker_lifecycle_execute_failed",
+                transfer_id=worker_request.transfer_id,
+                error=str(exc),
             )
         status_update = daemon_status_update_for_result(result)
         status_response: DaemonResponse | None = None
@@ -877,18 +915,35 @@ class WorkerTransferClient:
                 self._worker_startup_evidence,
             )
         binding = self._resource_binder.bind(worker_request)
+        _trace_worker_stage(
+            "worker_resource_bind_start",
+            transfer_id=worker_request.transfer_id,
+        )
         resources = None
         result: WorkerTransferResult | None = None
         execution_error: Exception | None = None
         try:
             with binding as bound_resources:
                 resources = bound_resources
+                _trace_worker_stage(
+                    "worker_resource_bind_done",
+                    transfer_id=worker_request.transfer_id,
+                )
                 try:
+                    _trace_worker_stage(
+                        "worker_executor_call_start",
+                        transfer_id=worker_request.transfer_id,
+                    )
                     result = execute_worker_transfer(
                         self._executor,
                         worker_request,
                         staging_slot,
                         resources,
+                    )
+                    _trace_worker_stage(
+                        "worker_executor_call_done",
+                        transfer_id=worker_request.transfer_id,
+                        state=result.state.value,
                     )
                 except Exception as exc:
                     execution_error = exc
@@ -1402,6 +1457,13 @@ def _resource_binding_failure_metadata(binding) -> dict[str, object] | None:
         resolved = failure_evidence()
         return None if resolved is None else dict(resolved)
     return None
+
+
+def _trace_worker_stage(name: str, **fields) -> None:
+    if os.environ.get("TURBOBUS_BENCHMARK_TRACE") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    print(f"turbobus_worker_stage name={name} {details}".rstrip(), flush=True)
 
 
 __all__ = [

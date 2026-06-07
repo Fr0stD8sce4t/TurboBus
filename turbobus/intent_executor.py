@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+import os
 import time
 
 from .backends.cuda import default_cuda_backend
@@ -74,8 +75,15 @@ class WorkerIntentTransferExecutor:
     ) -> TransferReceipt:
         if not isinstance(intent, TransferIntent):
             raise TypeError("intent must be a TransferIntent")
+        _trace_runtime_stage(
+            "intent_executor_start",
+            intent_id=intent.intent_id,
+            bytes=intent.total_bytes,
+            direction=intent.direction,
+        )
         require_ok(response, "daemon transfer intent submission failed")
         source, target = _intent_buffers(self.buffers, intent)
+        _trace_runtime_stage("intent_executor_admission_start", intent_id=intent.intent_id)
         payload = _admitted_intent_execution_payload(
             daemon_client=daemon_client,
             intent=intent,
@@ -83,10 +91,16 @@ class WorkerIntentTransferExecutor:
             timeout_seconds=self.runtime_options.admission_retry_timeout_seconds,
             interval_seconds=self.runtime_options.admission_retry_interval_seconds,
         )
+        _trace_runtime_stage(
+            "intent_executor_admission_done",
+            intent_id=intent.intent_id,
+            transfer_id=payload.get("transfer_id"),
+        )
         admission_error = _intent_execution_admission_error(payload)
         if admission_error is not None:
             raise RuntimeError(admission_error)
         if is_direct_only_worker_plan(payload):
+            _trace_runtime_stage("intent_executor_direct_only_start", intent_id=intent.intent_id)
             execute_direct_fallback_transfer(
                 daemon_client=daemon_client,
                 backend=self.backend,
@@ -97,6 +111,7 @@ class WorkerIntentTransferExecutor:
                 target=target,
                 result_factory=WorkerIntentTransferResult,
             )
+            _trace_runtime_stage("intent_executor_direct_only_done", intent_id=intent.intent_id)
             return _receipt_from_status_query(daemon_client, intent.intent_id)
         direct_plan_bytes = _plan_assignment_bytes(payload, "direct")
         relay_plan_bytes = _plan_assignment_bytes(payload, "relay")
@@ -104,6 +119,11 @@ class WorkerIntentTransferExecutor:
         mixed_mode = int(direct_plan_bytes) > 0 and int(relay_plan_bytes) > 0
         relay_only_mode = int(direct_plan_bytes) == 0 and int(relay_plan_bytes) > 0
         if mixed_mode:
+            _trace_runtime_stage(
+                "intent_executor_mixed_direct_start",
+                intent_id=intent.intent_id,
+                bytes=direct_plan_bytes,
+            )
             direct_bytes_completed, direct_completion_evidence = (
                 execute_direct_ticket_plan(
                     backend=self.backend,
@@ -113,6 +133,11 @@ class WorkerIntentTransferExecutor:
                     source=source,
                     target=target,
                 )
+            )
+            _trace_runtime_stage(
+                "intent_executor_mixed_direct_done",
+                intent_id=intent.intent_id,
+                bytes=direct_bytes_completed,
             )
             if int(direct_bytes_completed) != int(direct_plan_bytes):
                 raise RuntimeError(
@@ -167,6 +192,12 @@ class WorkerIntentTransferExecutor:
                 ranges=(),
                 relay_gpu=int(primary_lease_token["relay_gpu"]),
             )
+            _trace_runtime_stage(
+                "intent_executor_worker_submit_start",
+                intent_id=intent.intent_id,
+                transfer_id=payload["transfer_id"],
+                relay_gpu=primary_lease_token["relay_gpu"],
+            )
             worker_execution = submit_worker_execution(
                 self.worker_client,
                 authorization_request,
@@ -174,6 +205,11 @@ class WorkerIntentTransferExecutor:
                     int(relay_plan_bytes) if mixed_mode else int(intent.total_bytes)
                 ),
                 report_terminal_status=not (mixed_mode or relay_only_mode),
+            )
+            _trace_runtime_stage(
+                "intent_executor_worker_submit_done",
+                intent_id=intent.intent_id,
+                final_state=worker_execution.final_state,
             )
         except WorkerCompletionEnvelopeError:
             cleanup_evidence = cleanup_planned_relay_leases(
@@ -1180,6 +1216,13 @@ def _receipt_from_status_query(
     if not isinstance(receipt_payload, Mapping):
         raise ValueError("daemon response missing receipt")
     return TransferReceipt(**dict(receipt_payload))
+
+
+def _trace_runtime_stage(name: str, **fields) -> None:
+    if os.environ.get("TURBOBUS_BENCHMARK_TRACE") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    print(f"turbobus_runtime_stage name={name} {details}".rstrip(), flush=True)
 
 
 __all__ = ["WorkerIntentTransferExecutor"]

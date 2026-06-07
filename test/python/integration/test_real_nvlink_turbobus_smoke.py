@@ -20,6 +20,14 @@ def env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
 
+def _decode_output(output) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return str(output)
+
+
 @unittest.skipUnless(
     real_smoke_enabled(),
     "set TURBOBUS_REAL_NVLINK_SMOKE=1 to run real GPU/NVLink smoke",
@@ -31,10 +39,13 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
         chunk_mib = env_int("TURBOBUS_CHUNK_MIB", 16)
         bucket_mib = env_int("TURBOBUS_BUCKET_MIB", chunk_mib)
         bucket_count = max(1, mib // bucket_mib)
+        timeout_seconds = env_int("TURBOBUS_SMOKE_TIMEOUT_SECONDS", 120)
 
         with tempfile.TemporaryDirectory(prefix="turbobus-real-nvlink-") as tmpdir:
             json_output = Path(tmpdir) / "model_loading.json"
             summary_output = Path(tmpdir) / "model_loading.txt"
+            stdout_output = Path(tmpdir) / "model_loading.stdout"
+            stderr_output = Path(tmpdir) / "model_loading.stderr"
             command = [
                 sys.executable,
                 "benchmarks/model_loading.py",
@@ -60,15 +71,38 @@ class RealNvlinkTurboBusSmokeTest(unittest.TestCase):
                 "128",
                 "--profile-bytes",
                 str(min(mib * 1024 * 1024, 256 * 1024 * 1024)),
+                "--wait-timeout-seconds",
+                str(max(10, timeout_seconds - 20)),
             ]
-            completed = subprocess.run(
-                command,
-                cwd=REPO_ROOT,
-                env={**os.environ, "TURBOBUS_BENCHMARK_TRACE": "1"},
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=REPO_ROOT,
+                    env={
+                        **os.environ,
+                        "TURBOBUS_BENCHMARK_TRACE": "1",
+                        "TURBOBUS_WORKER_SOCKET_TIMEOUT_SECONDS": str(
+                            max(10, timeout_seconds - 20)
+                        ),
+                    },
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout_text = _decode_output(exc.stdout)
+                stderr_text = _decode_output(exc.stderr)
+                stdout_output.write_text(stdout_text, encoding="utf-8")
+                stderr_output.write_text(stderr_text, encoding="utf-8")
+                self.fail(
+                    "model_loading benchmark timed out after "
+                    f"{timeout_seconds}s\n"
+                    f"stdout_log={stdout_output}\n"
+                    f"stderr_log={stderr_output}\n"
+                    f"stdout:\n{stdout_text}\n"
+                    f"stderr:\n{stderr_text}"
+                )
 
             self.assertEqual(
                 completed.returncode,

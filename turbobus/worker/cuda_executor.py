@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import replace
 from typing import Any
@@ -66,15 +67,37 @@ class CudaWorkerExecutor:
 
         try:
             plan_payload = _worker_plan_payload(request, int(target_device))
+            _trace_cuda_worker_stage(
+                "cuda_executor_plan_ready",
+                transfer_id=request.transfer_id,
+                target_device=target_device,
+            )
             native_plan = self.backend.make_transfer_plan(plan_payload)
+            _trace_cuda_worker_stage(
+                "cuda_executor_runtime_create_start",
+                transfer_id=request.transfer_id,
+            )
             runtime = self.backend.create_runtime(_runtime_options_for_request(
                 self.options,
                 request,
             ))
+            _trace_cuda_worker_stage(
+                "cuda_executor_runtime_create_done",
+                transfer_id=request.transfer_id,
+            )
+            _trace_cuda_worker_stage(
+                "cuda_executor_runtime_init_start",
+                transfer_id=request.transfer_id,
+                relay_gpus=_relay_gpus_for_request(request),
+            )
             self.backend.initialize_runtime(
                 runtime,
                 int(target_device),
                 _relay_gpus_for_request(request),
+            )
+            _trace_cuda_worker_stage(
+                "cuda_executor_runtime_init_done",
+                transfer_id=request.transfer_id,
             )
             _install_daemon_profile_if_available(
                 backend=self.backend,
@@ -83,6 +106,12 @@ class CudaWorkerExecutor:
                 target_device=int(target_device),
             )
             if request.data_plane.direction == "h2d":
+                _trace_cuda_worker_stage(
+                    "cuda_executor_fetch_start",
+                    transfer_id=request.transfer_id,
+                    host_bytes=resources.host_bytes,
+                    device_bytes=resources.device_bytes,
+                )
                 handle = self.backend.fetch_plan_to_gpu(
                     runtime,
                     resources.host_ptr,
@@ -92,6 +121,12 @@ class CudaWorkerExecutor:
                     native_plan,
                 )
             else:
+                _trace_cuda_worker_stage(
+                    "cuda_executor_offload_start",
+                    transfer_id=request.transfer_id,
+                    host_bytes=resources.host_bytes,
+                    device_bytes=resources.device_bytes,
+                )
                 handle = self.backend.offload_plan_to_cpu(
                     runtime,
                     resources.device_ptr,
@@ -100,8 +135,24 @@ class CudaWorkerExecutor:
                     resources.host_bytes,
                     native_plan,
                 )
+            _trace_cuda_worker_stage(
+                "cuda_executor_submit_done",
+                transfer_id=request.transfer_id,
+            )
+            _trace_cuda_worker_stage(
+                "cuda_executor_wait_start",
+                transfer_id=request.transfer_id,
+            )
             self.backend.wait(runtime, handle)
+            _trace_cuda_worker_stage(
+                "cuda_executor_wait_done",
+                transfer_id=request.transfer_id,
+            )
             stats = self.backend.stats(runtime, handle)
+            _trace_cuda_worker_stage(
+                "cuda_executor_stats_done",
+                transfer_id=request.transfer_id,
+            )
         except Exception as exc:
             return _failed_result(
                 request,
@@ -114,6 +165,10 @@ class CudaWorkerExecutor:
         planned_direct_bytes = _assignment_byte_count(plan_payload, "direct")
         planned_relay_bytes = _assignment_byte_count(plan_payload, "relay")
         try:
+            _trace_cuda_worker_stage(
+                "cuda_executor_verify_start",
+                transfer_id=request.transfer_id,
+            )
             completion_evidence = _worker_completion_evidence(
                 backend=self.backend,
                 request=request,
@@ -122,6 +177,10 @@ class CudaWorkerExecutor:
                 ranges=_plan_transfer_ranges(plan_payload),
             )
             completion_evidence.setdefault("resource_evidence", resource_evidence)
+            _trace_cuda_worker_stage(
+                "cuda_executor_verify_done",
+                transfer_id=request.transfer_id,
+            )
         except Exception as exc:
             return _failed_result(
                 request,
@@ -518,6 +577,13 @@ def _plan_transfer_ranges(plan_payload: dict[str, object]) -> tuple[dict[str, in
                 }
             )
     return tuple(ranges)
+
+
+def _trace_cuda_worker_stage(name: str, **fields) -> None:
+    if os.environ.get("TURBOBUS_BENCHMARK_TRACE") != "1":
+        return
+    details = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+    print(f"turbobus_cuda_worker_stage name={name} {details}".rstrip(), flush=True)
 
 
 __all__ = ["CudaWorkerExecutor"]

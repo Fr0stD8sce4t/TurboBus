@@ -529,6 +529,11 @@ class TurboBusDaemon:
                     target_kind=cleanup.target_kind,
                     target_id=cleanup.target_id,
                 )
+                owned_cleanup_targets = (
+                    None
+                    if cleanup.target_id not in self._sessions
+                    else self._session_owned_cleanup_targets_locked(cleanup.target_id)
+                )
                 try:
                     if cleanup.target_id in self._sessions:
                         self._validate_peer_owns_session_locked(
@@ -565,9 +570,11 @@ class TurboBusDaemon:
                     cleanup.target_id,
                     reason=cleanup.reason,
                     removed=removed,
+                    owned_cleanup_targets=owned_cleanup_targets,
                 )
                 if session is None and not cleanup.force:
                     return DaemonResponse(ok=False, error="unknown session")
+                cleanup_result = _session_cleanup_target_payload(owned_cleanup_targets)
             elif cleanup.target_kind == "reservation":
                 archived_target = self._retired_cleanup_target_record_locked(
                     target_kind=cleanup.target_kind,
@@ -711,6 +718,11 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         with self._lock:
             self._reap_stale_sessions_locked(time.time())
+            owned_cleanup_targets = (
+                None
+                if str(session_id) not in self._sessions
+                else self._session_owned_cleanup_targets_locked(str(session_id))
+            )
             archived_target = self._retired_cleanup_target_record_locked(
                 target_kind="session",
                 target_id=str(session_id),
@@ -734,18 +746,18 @@ class TurboBusDaemon:
                 session_id,
                 reason="session_closed",
                 removed=removed,
+                owned_cleanup_targets=owned_cleanup_targets,
             )
+            payload = {
+                "session_id": session_id,
+                "removed": removed,
+                **_session_cleanup_target_payload(owned_cleanup_targets),
+            }
             if session is None:
                 if archived_target is None:
                     return DaemonResponse(ok=False, error="unknown session")
-                return DaemonResponse(
-                    ok=True,
-                    payload={"session_id": session_id, "removed": removed},
-                )
-            return DaemonResponse(
-                ok=True,
-                payload={"session_id": session_id, "removed": removed},
-            )
+                return DaemonResponse(ok=True, payload=payload)
+            return DaemonResponse(ok=True, payload=payload)
 
     def transfer_status(
         self,
@@ -3787,6 +3799,53 @@ class TurboBusDaemon:
                     transfer_ids.add(transfer_id)
         return tuple(sorted(transfer_ids))
 
+    def _session_owned_cleanup_targets_locked(
+        self,
+        session_id: str,
+    ) -> dict[str, tuple[dict[str, object], ...]]:
+        normalized_session_id = str(session_id)
+        session_peer = self._session_peer_identities.get(normalized_session_id)
+        job_ids = tuple(
+            sorted(
+                job_id
+                for job_id, job in self._jobs.items()
+                if job.session_id == normalized_session_id
+            )
+        )
+        job_id_set = set(job_ids)
+        job_targets: list[dict[str, object]] = []
+        for job_id in job_ids:
+            job_targets.append(
+                {
+                    "target_kind": "job",
+                    "target_id": job_id,
+                    "peer_identity": self._job_peer_identities.get(job_id) or session_peer,
+                    "transfer_ids": self._transfer_ids_for_job_locked(job_id),
+                }
+            )
+        buffer_targets: list[dict[str, object]] = []
+        for buffer_id, buffer in sorted(self._buffers.items()):
+            if buffer.job_id not in job_id_set:
+                continue
+            transfer_ids = set(self._transfer_ids_for_buffer_locked(buffer_id))
+            for lease_id in self._active_buffer_lease_ids_locked(buffer_id):
+                transfer_id = self._reservation_transfers.get(lease_id)
+                if transfer_id is not None:
+                    transfer_ids.add(str(transfer_id))
+            buffer_targets.append(
+                {
+                    "target_kind": "buffer",
+                    "target_id": buffer_id,
+                    "peer_identity": self._job_peer_identities.get(buffer.job_id)
+                    or session_peer,
+                    "transfer_ids": tuple(sorted(transfer_ids)),
+                }
+            )
+        return {
+            "jobs": tuple(job_targets),
+            "buffers": tuple(buffer_targets),
+        }
+
     def _transfer_peer_identity_for_owner_locked(
         self,
         *,
@@ -4390,10 +4449,13 @@ class TurboBusDaemon:
         session_id: str,
         reason: str = "session_closed",
         removed: dict[str, object] | None = None,
+        owned_cleanup_targets: Mapping[str, object] | None = None,
     ) -> Session | None:
         session = self._sessions.pop(session_id, None)
         if session is None:
             return None
+        if owned_cleanup_targets is None:
+            owned_cleanup_targets = self._session_owned_cleanup_targets_locked(session_id)
         session_peer = self._session_peer_identities.get(session_id)
         transfer_ids = self._transfer_ids_for_session_locked(session_id)
         self._archive_cleanup_target_locked(
@@ -4450,7 +4512,11 @@ class TurboBusDaemon:
                 quota.sessions.discard(session_id)
         self._connection_scoped_sessions.discard(session_id)
         self._connection_scoped_session_connections.pop(session_id, None)
-        removed_jobs = self._remove_session_jobs_and_buffers_locked(session_id)
+        removed_jobs = self._remove_session_jobs_and_buffers_locked(
+            session_id,
+            reason=reason,
+            owned_cleanup_targets=owned_cleanup_targets,
+        )
         if removed is not None:
             removed["sessions"] = int(removed["sessions"]) + 1
             removed["jobs"] = int(removed["jobs"]) + removed_jobs["jobs"]
@@ -4458,20 +4524,65 @@ class TurboBusDaemon:
         self._runtime_state_version += 1
         return session
 
-    def _remove_session_jobs_and_buffers_locked(self, session_id: str) -> dict[str, int]:
+    def _remove_session_jobs_and_buffers_locked(
+        self,
+        session_id: str,
+        *,
+        reason: str,
+        owned_cleanup_targets: Mapping[str, object] | None = None,
+    ) -> dict[str, int]:
+        cleanup_targets = (
+            {
+                "jobs": (),
+                "buffers": (),
+            }
+            if owned_cleanup_targets is None
+            else {
+                "jobs": tuple(owned_cleanup_targets.get("jobs", ()) or ()),
+                "buffers": tuple(owned_cleanup_targets.get("buffers", ()) or ()),
+            }
+        )
+        for target in cleanup_targets["jobs"]:
+            self._archive_cleanup_target_locked(
+                target_kind=str(target.get("target_kind", "job")),
+                target_id=str(target["target_id"]),
+                peer_identity=target.get("peer_identity"),
+                reason=reason,
+                transfer_ids=tuple(str(item) for item in target.get("transfer_ids", ())),
+            )
+        for target in cleanup_targets["buffers"]:
+            self._archive_cleanup_target_locked(
+                target_kind=str(target.get("target_kind", "buffer")),
+                target_id=str(target["target_id"]),
+                peer_identity=target.get("peer_identity"),
+                reason=reason,
+                transfer_ids=tuple(str(item) for item in target.get("transfer_ids", ())),
+            )
         job_ids = {
-            job_id
-            for job_id, job in self._jobs.items()
-            if job.session_id == session_id
+            str(target["target_id"]) for target in cleanup_targets["jobs"]
         }
+        if not job_ids:
+            job_ids = {
+                job_id
+                for job_id, job in self._jobs.items()
+                if job.session_id == session_id
+            }
         removed = {"jobs": 0, "buffers": 0}
-        for job_id in job_ids:
+        for job_id in sorted(job_ids):
             if self._jobs.pop(job_id, None) is not None:
                 removed["jobs"] += 1
             self._job_peer_identities.pop(job_id, None)
-        for buffer_id, buffer in list(self._buffers.items()):
-            if buffer.job_id in job_ids:
-                self._buffers.pop(buffer_id, None)
+        buffer_ids = {
+            str(target["target_id"]) for target in cleanup_targets["buffers"]
+        }
+        if not buffer_ids:
+            buffer_ids = {
+                buffer_id
+                for buffer_id, buffer in self._buffers.items()
+                if buffer.job_id in job_ids
+            }
+        for buffer_id in sorted(buffer_ids):
+            if self._buffers.pop(buffer_id, None) is not None:
                 removed["buffers"] += 1
         self._session_peer_identities.pop(session_id, None)
         return removed
@@ -6055,3 +6166,28 @@ def _merge_removed(
     for key, value in source.items():
         target[key] = int(target.get(key, 0)) + int(value)
     return target
+
+
+def _session_cleanup_target_payload(
+    cleanup_targets: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if cleanup_targets is None:
+        return {}
+    job_ids = tuple(
+        str(item["target_id"])
+        for item in cleanup_targets.get("jobs", ()) or ()
+        if isinstance(item, Mapping) and "target_id" in item
+    )
+    buffer_ids = tuple(
+        str(item["target_id"])
+        for item in cleanup_targets.get("buffers", ()) or ()
+        if isinstance(item, Mapping) and "target_id" in item
+    )
+    if not job_ids and not buffer_ids:
+        return {}
+    return {
+        "retired_cleanup_targets": {
+            "job_ids": job_ids,
+            "buffer_ids": buffer_ids,
+        }
+    }

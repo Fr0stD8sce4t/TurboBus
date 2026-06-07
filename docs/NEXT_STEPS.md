@@ -5,15 +5,15 @@ appending history.
 
 ## Current Main Target
 
-Close the remaining cross-job isolation and ownership lifecycle across relay
-leases, retired cleanup targets, and runtime-session-driven teardown.
+Close the remaining relay-lease ownership lifecycle across daemon lease
+validation, worker cleanup scope, and retired reservation cleanup.
 
 ## Exit Criteria
 
 - Relay lease validation and release stay bound to the owning session/job/buffer
   identities on the production path.
-- Cleanup of active or retired targets rejects cross-peer reuse and preserves
-  daemon-owned ownership evidence after runtime teardown.
+- Worker-issued reservation cleanup stays inside the daemon-issued lease scope,
+  including retired reservation or staging cleanup after lease teardown.
 - The closure stays in daemon/worker/control-plane ownership code and does not
   add compatibility shims or benchmark-owned policy.
 
@@ -21,7 +21,6 @@ leases, retired cleanup targets, and runtime-session-driven teardown.
 
 - `turbobus/daemon/server.py`
 - `turbobus/daemon/dispatch.py`
-- `turbobus/runtime_session.py`
 - `turbobus/worker/lifecycle.py`
 - `turbobus/worker/validation.py`
 
@@ -39,10 +38,9 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, then follow relay lease ownership, missing-target
-cleanup authorization, and runtime-session teardown through
-`daemon/dispatch.py`, `runtime_session.py`, `worker/lifecycle.py`, and
-`worker/validation.py`.
+Start at `daemon/server.py`, then follow relay lease ownership, reservation
+cleanup authorization, and retired reservation validation through
+`daemon/dispatch.py`, `worker/lifecycle.py`, and `worker/validation.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:

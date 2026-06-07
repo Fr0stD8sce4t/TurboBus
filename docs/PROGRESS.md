@@ -24,6 +24,10 @@
   pair and registers training-state buckets by offset/bytes against that bound
   transfer context, instead of acting like a generic store that resupplies
   backings per bucket.
+- `InferenceKVSlotAdapter` now manages a full runtime-session-bound slot
+  lifecycle, including slot registry, contiguous slot registration, restore/save
+  all helpers, and explicit KV slot state marking on top of the closed core
+  transfer path.
 
 ## Remaining Risk
 
@@ -34,9 +38,9 @@
 
 ## Next Main Target
 
-Finish one full runtime-session-facing adapter expansion for the inference KV
-workload family through `InferenceKVSlotAdapter`. After that, choose exactly
-one of these per round:
+Finish one full runtime-session-facing adapter expansion for the vLLM KV
+workload family through `VllmKVSlotAdapter`. After that, choose exactly one of
+these per round:
 
 - one complete runtime-session-facing adapter expansion closure for another
   workload family.

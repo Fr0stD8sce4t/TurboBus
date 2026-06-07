@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
+from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
@@ -85,25 +86,74 @@ class InferenceKVSlotAdapter(OffloadStore):
         self.cpu_backing = cpu_backing
         self.gpu_kv_backing = gpu_kv_backing
 
-    def register_slots(self, slots: Iterable[InferenceKVSlot]) -> None:
+    def register_slot(self, slot: InferenceKVSlot) -> OffloadBlock:
+        if not isinstance(slot, InferenceKVSlot):
+            raise TypeError("slot must be an InferenceKVSlot")
+        return self.add(
+            slot.name,
+            self.cpu_backing,
+            self.gpu_kv_backing,
+            block_id=slot.block_id,
+            cpu_slot=slot.cpu_slot,
+            gpu_slot=slot.gpu_slot,
+            cpu_offset=slot.cpu_offset,
+            gpu_offset=slot.gpu_offset,
+            byte_count=slot.byte_count,
+        )
+
+    def register_slots(self, slots: Iterable[InferenceKVSlot]) -> list[OffloadBlock]:
+        registered: list[OffloadBlock] = []
         for slot in slots:
-            self.add(
-                slot.name,
-                self.cpu_backing,
-                self.gpu_kv_backing,
-                block_id=slot.block_id,
-                cpu_slot=slot.cpu_slot,
-                gpu_slot=slot.gpu_slot,
-                cpu_offset=slot.cpu_offset,
-                gpu_offset=slot.gpu_offset,
-                byte_count=slot.byte_count,
+            registered.append(self.register_slot(slot))
+        return registered
+
+    def register_contiguous_slots(
+        self,
+        prefix: str,
+        count: int,
+        block_bytes: int,
+        *,
+        start_cpu_offset: int = 0,
+        start_gpu_offset: int = 0,
+        start_slot: int = 0,
+    ) -> list[OffloadBlock]:
+        return self.register_slots(
+            make_contiguous_kv_slots(
+                prefix,
+                count,
+                block_bytes,
+                start_cpu_offset=start_cpu_offset,
+                start_gpu_offset=start_gpu_offset,
+                start_slot=start_slot,
             )
+        )
+
+    def slot(self, name: str) -> OffloadBlock:
+        return self.block(name)
+
+    def slot_info(self, name: str) -> OffloadBlockInfo:
+        return self.block_info(name)
+
+    def slot_infos(self, names: Iterable[str] | None = None) -> list[OffloadBlockInfo]:
+        return self.block_infos(names)
+
+    def restore_slot(self, name: str):
+        return self.prefetch(name)
 
     def restore_prefix(self, names: Iterable[str]) -> list:
         return self._run_prefix_transfer(names, self.submit_restore_prefix)
 
+    def restore_all(self) -> list:
+        return self.restore_prefix(self.names())
+
+    def save_slot(self, name: str):
+        return self.evict(name)
+
     def save_prefix(self, names: Iterable[str]) -> list:
         return self._run_prefix_transfer(names, self.submit_save_prefix)
+
+    def save_all(self) -> list:
+        return self.save_prefix(self.names())
 
     def submit_restore_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
@@ -137,6 +187,16 @@ class InferenceKVSlotAdapter(OffloadStore):
     def transfer_stats(self, names: Iterable[str]) -> TransferStats:
         return self.transfer_stats_many(names)
 
+    def mark_on_cpu(self, names: Iterable[str] | None = None) -> None:
+        selected = self.names() if names is None else list(names)
+        for name in selected:
+            self.set_block_state(name, BlockState.CPU, clear_transfer_state=True)
+
+    def mark_on_gpu(self, names: Iterable[str] | None = None) -> None:
+        selected = self.names() if names is None else list(names)
+        for name in selected:
+            self.set_block_state(name, BlockState.GPU, clear_transfer_state=True)
+
     def _run_prefix_transfer(self, names: Iterable[str], submit) -> list:
         names, handles = submit(names)
         self.wait_prefix(names)
@@ -147,16 +207,27 @@ def make_contiguous_kv_slots(
     prefix: str,
     count: int,
     block_bytes: int,
+    *,
+    start_cpu_offset: int = 0,
+    start_gpu_offset: int = 0,
+    start_slot: int = 0,
 ) -> list[InferenceKVSlot]:
     return [
         InferenceKVSlot(
             name=f"{prefix}{index}",
-            block_id=index,
-            cpu_slot=index,
-            gpu_slot=index,
-            cpu_offset=index * block_bytes,
-            gpu_offset=index * block_bytes,
+            block_id=start_slot + index,
+            cpu_slot=start_slot + index,
+            gpu_slot=start_slot + index,
+            cpu_offset=start_cpu_offset + index * block_bytes,
+            gpu_offset=start_gpu_offset + index * block_bytes,
             byte_count=block_bytes,
         )
         for index in range(count)
     ]
+
+
+__all__ = [
+    "InferenceKVSlot",
+    "InferenceKVSlotAdapter",
+    "make_contiguous_kv_slots",
+]

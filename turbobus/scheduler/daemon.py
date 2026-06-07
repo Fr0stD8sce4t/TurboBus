@@ -462,7 +462,15 @@ class DaemonScheduler:
             bytes_limit = sum(chunk.bytes for chunk in assignment.chunks)
             if chunks <= 0:
                 continue
-            lease_specs.append((relay_device, chunks, bytes_limit))
+            quota = relay_quotas.get(relay_device)
+            lease_chunks = _relay_reservation_chunks(
+                chunks,
+                session=session,
+                quota=quota,
+            )
+            if lease_chunks <= 0:
+                return (), "relay chunk quota is unavailable"
+            lease_specs.append((relay_device, lease_chunks, bytes_limit))
 
         if not lease_specs:
             return (), None
@@ -691,6 +699,28 @@ def _relay_unavailable_reason(
     if runtime_blocked is not None:
         return runtime_blocked
     return None
+
+
+def _relay_reservation_chunks(
+    requested_chunks: int,
+    *,
+    session: Session,
+    quota: RelayQuota | None,
+) -> int:
+    if quota is None:
+        return 0
+    requested = max(0, int(requested_chunks))
+    if requested <= 0:
+        return 0
+    session_available = max(
+        0,
+        int(session.max_inflight_chunks) - int(session.active_chunks),
+    )
+    relay_available = max(
+        0,
+        int(quota.max_inflight_chunks) - int(quota.active_chunks),
+    )
+    return min(requested, session_available, relay_available)
 
 
 def _direct_bandwidth_with_load_feedback(

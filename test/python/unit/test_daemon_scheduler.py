@@ -60,6 +60,7 @@ class DaemonSchedulerTest(unittest.TestCase):
             target_gpu=0,
             relay_gpus=[1],
             max_inflight_chunks=8,
+            worker_relay_capable=True,
             active_chunks=0,
         )
 
@@ -104,7 +105,7 @@ class DaemonSchedulerTest(unittest.TestCase):
     def test_quota_denial_returns_direct_fallback(self) -> None:
         scheduler = self.make_scheduler()
         session = self.make_session()
-        quotas = {1: RelayQuota(relay_gpu=1, max_inflight_chunks=1)}
+        quotas = {1: RelayQuota(relay_gpu=1, max_inflight_chunks=1, active_chunks=1)}
 
         decision = scheduler.plan_transfer(
             session=session,
@@ -119,7 +120,9 @@ class DaemonSchedulerTest(unittest.TestCase):
         self.assertEqual(decision.state, SchedulingDecisionState.FALLBACK)
         self.assertEqual(decision.metadata["stats"]["resolved_mode"], "direct")
         self.assertEqual(decision.metadata["leases"], [])
-        self.assertIn("quota", decision.fallback_reason)
+        self.assertIn("no daemon-approved relay path", decision.fallback_reason)
+        filtered = decision.metadata["relay_policy"]["filtered_relays"]
+        self.assertEqual(filtered[0]["reason"], "relay chunk quota is unavailable")
         self.assertEqual(
             {
                 item["path"]["kind"]
@@ -127,6 +130,29 @@ class DaemonSchedulerTest(unittest.TestCase):
             },
             {"direct"},
         )
+
+    def test_large_pool_plan_reserves_concurrency_chunks_not_total_chunks(self) -> None:
+        scheduler = self.make_scheduler()
+        session = self.make_session()
+        quotas = {1: RelayQuota(relay_gpu=1, max_inflight_chunks=8)}
+
+        decision = scheduler.plan_transfer(
+            session=session,
+            profile_entry=profile_entry(),
+            relay_quotas=quotas,
+            total_bytes=1024,
+            chunk_bytes=16,
+            mode=TransferMode.POOL,
+            direction="h2d",
+        )
+
+        self.assertEqual(decision.state, SchedulingDecisionState.PLANNED)
+        self.assertEqual(decision.metadata["stats"]["resolved_mode"], "pool")
+        self.assertEqual(decision.metadata["stats"]["relay_chunks"], 32)
+        self.assertEqual(len(decision.metadata["leases"]), 1)
+        lease = decision.metadata["leases"][0]
+        self.assertEqual(lease["chunk_limit"], 8)
+        self.assertEqual(lease["bytes_limit"], 512)
 
     def test_busy_relay_from_runtime_state_returns_direct_fallback(self) -> None:
         scheduler = self.make_scheduler()

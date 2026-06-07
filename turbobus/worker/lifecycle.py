@@ -176,7 +176,7 @@ class _WorkerTransferCleanupCoordinator:
         if not isinstance(request, WorkerTransferAuthorizationRequest):
             raise TypeError("request must be a WorkerTransferAuthorizationRequest")
         try:
-            lease_ids, session_id = self._authorized_cleanup_targets(
+            cleanup_contract = self._authorized_cleanup_contract(
                 request,
                 authorization_payload,
             )
@@ -193,37 +193,20 @@ class _WorkerTransferCleanupCoordinator:
                     "skip_reason": str(exc),
                 },
             )
-        if target_kind == "session":
-            return self._cleanup(
-                target_kind=target_kind,
-                target_id=session_id,
-                reason=reason,
-                force=force,
-            )
-        if len(lease_ids) == 1:
-            target_id = cleanup_target_id(
-                target_kind,
-                lease_id=lease_ids[0],
-                session_id=session_id,
-            )
-            return self._cleanup(
-                target_kind=target_kind,
-                target_id=target_id,
-                reason=reason,
-                force=force,
-            )
-        return self._cleanup_lease_ids(
-            lease_ids=lease_ids,
+        return self._cleanup_authorized_scope(
             target_kind=target_kind,
+            session_id=str(cleanup_contract["session_id"]),
+            lease_ids=tuple(str(item) for item in cleanup_contract["lease_ids"]),
             reason=reason,
             force=force,
+            owner_binding=cleanup_contract["owner_binding"],
         )
 
-    def _authorized_cleanup_targets(
+    def _authorized_cleanup_contract(
         self,
         request: WorkerTransferAuthorizationRequest,
         authorization_payload: Mapping[str, object] | None,
-    ) -> tuple[tuple[str, ...], str]:
+    ) -> dict[str, object]:
         if authorization_payload is None:
             raise WorkerCleanupError(
                 "authorization failure cleanup requires daemon-issued ticket payload"
@@ -241,23 +224,29 @@ class _WorkerTransferCleanupCoordinator:
                 ticket,
                 plan_generation=authorization_payload.get("plan_generation"),
             )
-            worker_validation.transfer_id_for_ticket(ticket, request.transfer_id)
-            if ticket.job_id != request.job_id:
-                raise ValueError("ticket job does not match authorization request")
-            if ticket.session_id != request.session_id:
-                raise ValueError("ticket session does not match authorization request")
-            lease_ids = worker_validation.cleanup_scope_lease_ids_for_ticket(
+            owner_binding = worker_validation.owner_binding_for_ticket(
                 ticket,
+                transfer_id=request.transfer_id,
+                job_id=request.job_id,
+                session_id=request.session_id,
                 lease_id=authorization_payload.get("lease_id"),
                 lease_ids=authorization_payload.get("lease_ids"),
+                relay_gpu=authorization_payload.get("relay_gpu"),
+                relay_gpus=authorization_payload.get("relay_gpus"),
             )
         except (TypeError, ValueError) as exc:
             raise WorkerCleanupError(
                 f"invalid daemon authorization cleanup payload: {exc}"
             ) from exc
+        cleanup_scope = owner_binding["cleanup_scope"]
+        lease_ids = tuple(str(item) for item in cleanup_scope["target_ids"])
         if not lease_ids:
             raise WorkerCleanupError("daemon authorization cleanup has no lease ids")
-        return lease_ids, ticket.session_id
+        return {
+            "session_id": str(owner_binding["session_id"]),
+            "lease_ids": lease_ids,
+            "owner_binding": owner_binding,
+        }
 
     def cleanup_execution_failure(
         self,
@@ -271,52 +260,21 @@ class _WorkerTransferCleanupCoordinator:
             raise TypeError("request must be a WorkerTransferRequest")
         if not isinstance(result, WorkerTransferResult):
             raise TypeError("result must be a WorkerTransferResult")
-        lease_ids = worker_request_lease_ids(request)
-        if target_kind == "session":
-            return self._cleanup(
-                target_kind=target_kind,
-                target_id=cleanup_target_id(
-                    target_kind,
-                    lease_id=request.authorization.lease_id,
-                    session_id=request.authorization.session_id,
-                ),
-                reason=reason or f"worker_{result.state.value}",
-                force=force,
-            )
-        if result.state == WorkerTransferState.COMPLETE:
-            if len(lease_ids) == 1:
-                return self._cleanup(
-                    target_kind=target_kind,
-                    target_id=cleanup_target_id(
-                        target_kind,
-                        lease_id=request.authorization.lease_id,
-                        session_id=request.authorization.session_id,
-                    ),
-                    reason=reason or "worker_complete",
-                    force=force,
-                )
-            return self._cleanup_worker_leases(
-                lease_ids=lease_ids,
-                target_kind=target_kind,
-                reason=reason or "worker_complete",
-                force=force,
-            )
-        if len(lease_ids) == 1:
-            return self._cleanup(
-                target_kind=target_kind,
-                target_id=cleanup_target_id(
-                    target_kind,
-                    lease_id=request.authorization.lease_id,
-                    session_id=request.authorization.session_id,
-                ),
-                reason=reason or f"worker_{result.state.value}",
-                force=force,
-            )
-        return self._cleanup_worker_leases(
-            lease_ids=lease_ids,
+        cleanup_contract = self._cleanup_contract_for_worker_request(request)
+        return self._cleanup_authorized_scope(
             target_kind=target_kind,
-            reason=reason or f"worker_{result.state.value}",
+            session_id=str(cleanup_contract["session_id"]),
+            lease_ids=tuple(str(item) for item in cleanup_contract["lease_ids"]),
+            reason=(
+                reason
+                or (
+                    "worker_complete"
+                    if result.state == WorkerTransferState.COMPLETE
+                    else f"worker_{result.state.value}"
+                )
+            ),
             force=force,
+            owner_binding=cleanup_contract["owner_binding"],
         )
 
     def cleanup_status_report_failure(
@@ -328,14 +286,54 @@ class _WorkerTransferCleanupCoordinator:
     ) -> DaemonResponse:
         if not isinstance(request, WorkerTransferRequest):
             raise TypeError("request must be a WorkerTransferRequest")
-        lease_ids = worker_request_lease_ids(request)
+        cleanup_contract = self._cleanup_contract_for_worker_request(request)
+        return self._cleanup_authorized_scope(
+            target_kind=target_kind,
+            session_id=str(cleanup_contract["session_id"]),
+            lease_ids=tuple(str(item) for item in cleanup_contract["lease_ids"]),
+            reason=reason,
+            force=force,
+            owner_binding=cleanup_contract["owner_binding"],
+        )
+
+    def _cleanup_contract_for_worker_request(
+        self,
+        request: WorkerTransferRequest,
+    ) -> dict[str, object]:
+        owner_binding = worker_validation.owner_binding_for_ticket(
+            request.ticket,
+            transfer_id=request.authorization.transfer_id,
+            job_id=request.authorization.job_id,
+            session_id=request.authorization.session_id,
+            lease_id=request.authorization.lease_id,
+            lease_ids=worker_request_lease_ids(request),
+            relay_gpu=request.authorization.relay_gpu,
+            relay_gpus=request.data_plane.metadata.get("relay_gpus"),
+        )
+        cleanup_scope = owner_binding["cleanup_scope"]
+        return {
+            "session_id": str(owner_binding["session_id"]),
+            "lease_ids": tuple(str(item) for item in cleanup_scope["target_ids"]),
+            "owner_binding": owner_binding,
+        }
+
+    def _cleanup_authorized_scope(
+        self,
+        *,
+        target_kind: str,
+        session_id: str,
+        lease_ids: tuple[str, ...],
+        reason: str,
+        force: bool,
+        owner_binding: Mapping[str, object],
+    ) -> DaemonResponse:
         if target_kind == "session":
             return self._cleanup(
                 target_kind=target_kind,
                 target_id=cleanup_target_id(
                     target_kind,
-                    lease_id=request.authorization.lease_id,
-                    session_id=request.authorization.session_id,
+                    lease_id=lease_ids[0],
+                    session_id=session_id,
                 ),
                 reason=reason,
                 force=force,
@@ -345,17 +343,20 @@ class _WorkerTransferCleanupCoordinator:
                 target_kind=target_kind,
                 target_id=cleanup_target_id(
                     target_kind,
-                    lease_id=request.authorization.lease_id,
-                    session_id=request.authorization.session_id,
+                    lease_id=lease_ids[0],
+                    session_id=session_id,
                 ),
                 reason=reason,
                 force=force,
+                authorized_target_ids=lease_ids,
+                owner_binding=owner_binding,
             )
         return self._cleanup_worker_leases(
             lease_ids=lease_ids,
             target_kind=target_kind,
             reason=reason,
             force=force,
+            owner_binding=owner_binding,
         )
 
     def _cleanup(
@@ -364,6 +365,8 @@ class _WorkerTransferCleanupCoordinator:
         target_id: str,
         reason: str,
         force: bool,
+        authorized_target_ids: tuple[str, ...] | None = None,
+        owner_binding: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         response: DaemonResponse = self.daemon_client.cleanup(
             target_kind=target_kind,
@@ -373,7 +376,15 @@ class _WorkerTransferCleanupCoordinator:
         )
         if not response.ok:
             raise WorkerCleanupError(response.error or "worker cleanup failed")
-        return response
+        if target_kind != "reservation" or authorized_target_ids is None:
+            return response
+        return self._validated_cleanup_response(
+            response,
+            expected_target_id=str(target_id),
+            authorized_target_ids=authorized_target_ids,
+            target_kind=target_kind,
+            owner_binding=owner_binding,
+        )
 
     def _cleanup_worker_leases(
         self,
@@ -382,12 +393,14 @@ class _WorkerTransferCleanupCoordinator:
         target_kind: str,
         reason: str,
         force: bool,
+        owner_binding: Mapping[str, object],
     ) -> DaemonResponse:
         return self._cleanup_lease_ids(
             lease_ids=lease_ids,
             target_kind=target_kind,
             reason=reason,
             force=force,
+            owner_binding=owner_binding,
         )
 
     def _cleanup_lease_ids(
@@ -397,6 +410,7 @@ class _WorkerTransferCleanupCoordinator:
         target_kind: str,
         reason: str,
         force: bool,
+        owner_binding: Mapping[str, object],
     ) -> DaemonResponse:
         cleanup = getattr(self.daemon_client, "cleanup", None)
         if not callable(cleanup):
@@ -404,6 +418,7 @@ class _WorkerTransferCleanupCoordinator:
         responses: list[dict[str, object]] = []
         cleaned_ids: list[str] = []
         errors: list[str] = []
+        cleanup_modes: list[str] = []
         for lease_id in lease_ids:
             response = cleanup(
                 target_kind=target_kind,
@@ -411,14 +426,27 @@ class _WorkerTransferCleanupCoordinator:
                 reason=reason,
                 force=force,
             )
-            responses.append(asdict(response))
             if response.ok:
-                payload = response.payload if isinstance(response.payload, Mapping) else {}
-                reservation_id = payload.get("reservation_id")
-                cleaned_ids.append(
-                    str(reservation_id) if reservation_id is not None else str(lease_id)
+                normalized_response = self._validated_cleanup_response(
+                    response,
+                    expected_target_id=str(lease_id),
+                    authorized_target_ids=lease_ids,
+                    target_kind=target_kind,
+                    owner_binding=owner_binding,
+                )
+                responses.append(asdict(normalized_response))
+                payload = (
+                    normalized_response.payload
+                    if isinstance(normalized_response.payload, Mapping)
+                    else {}
+                )
+                cleanup_modes.append(str(payload.get("cleanup_mode", "cleanup")))
+                cleaned_ids.extend(
+                    str(item)
+                    for item in payload.get("cleaned_reservation_ids", ()) or ()
                 )
                 continue
+            responses.append(asdict(response))
             errors.append(f"{lease_id}: {response.error or 'worker cleanup failed'}")
         if errors:
             raise WorkerCleanupError("; ".join(errors))
@@ -426,12 +454,76 @@ class _WorkerTransferCleanupCoordinator:
             "reservation_id": lease_ids[0],
             "lease_ids": lease_ids,
             "cleaned_reservation_ids": tuple(cleaned_ids),
+            "cleanup_scope_target_ids": lease_ids,
             "lease_responses": tuple(responses),
             "cleanup_kind": target_kind,
             "reason": reason,
-            "cleanup_mode": "cleanup",
+            "cleanup_mode": (
+                "noop"
+                if cleanup_modes and all(mode == "noop" for mode in cleanup_modes)
+                else "cleanup"
+            ),
+            "owner_binding": dict(owner_binding),
         }
         return DaemonResponse(ok=True, payload=payload)
+
+    def _validated_cleanup_response(
+        self,
+        response: DaemonResponse,
+        *,
+        expected_target_id: str,
+        authorized_target_ids: tuple[str, ...],
+        target_kind: str,
+        owner_binding: Mapping[str, object] | None,
+    ) -> DaemonResponse:
+        payload = response.payload if isinstance(response.payload, Mapping) else {}
+        normalized_payload = dict(payload)
+        cleanup_kind = str(
+            normalized_payload.get(
+                "cleanup_kind",
+                normalized_payload.get("target_kind", target_kind),
+            )
+        )
+        if cleanup_kind != str(target_kind):
+            raise WorkerCleanupError(
+                "daemon cleanup response target kind does not match request"
+            )
+        normalized_reservation_id = str(
+            normalized_payload.get("reservation_id", expected_target_id)
+        )
+        if normalized_reservation_id != str(expected_target_id):
+            raise WorkerCleanupError(
+                "daemon cleanup response reservation_id does not match request"
+            )
+        cleaned_reservation_ids = tuple(
+            str(item)
+            for item in normalized_payload.get("cleaned_reservation_ids", ()) or ()
+        )
+        unauthorized_cleaned_ids = sorted(
+            set(cleaned_reservation_ids) - {str(expected_target_id)}
+        )
+        if unauthorized_cleaned_ids:
+            raise WorkerCleanupError(
+                "daemon cleanup response cleaned reservation ids escaped requested target"
+            )
+        unauthorized_scope_ids = sorted(
+            set((normalized_reservation_id, *cleaned_reservation_ids))
+            - set(str(item) for item in authorized_target_ids)
+        )
+        if unauthorized_scope_ids:
+            raise WorkerCleanupError(
+                "daemon cleanup response reservation ids escaped authorized cleanup scope"
+            )
+        normalized_payload["reservation_id"] = normalized_reservation_id
+        normalized_payload["cleaned_reservation_ids"] = cleaned_reservation_ids
+        normalized_payload["lease_ids"] = tuple(str(item) for item in authorized_target_ids)
+        normalized_payload["cleanup_kind"] = str(target_kind)
+        normalized_payload["cleanup_scope_target_ids"] = tuple(
+            str(item) for item in authorized_target_ids
+        )
+        if owner_binding is not None:
+            normalized_payload["owner_binding"] = dict(owner_binding)
+        return DaemonResponse(ok=response.ok, payload=normalized_payload, error=response.error)
 
 
 class WorkerTransferClient:
@@ -1037,23 +1129,44 @@ def _cleanup_completion_evidence(
     plan_generation = request.ticket.metadata.get("plan_generation")
     if plan_generation is not None:
         evidence.setdefault("plan_generation", int(plan_generation))
-    payload = cleanup_response.payload if isinstance(cleanup_response.payload, Mapping) else {}
+    owner_binding = request.data_plane.metadata.get("owner_binding")
+    if not isinstance(owner_binding, Mapping):
+        owner_binding = request.ticket.metadata.get("owner_binding")
+    normalized_owner_binding = (
+        dict(owner_binding) if isinstance(owner_binding, Mapping) else None
+    )
+    payload = (
+        cleanup_response.payload
+        if isinstance(cleanup_response.payload, Mapping)
+        else {}
+    )
     cleanup_payload = dict(payload)
+    cleanup_scope_target_ids = tuple(
+        str(item)
+        for item in cleanup_payload.get("cleanup_scope_target_ids", ()) or ()
+    )
+    lease_ids = tuple(
+        str(item) for item in cleanup_payload.get("lease_ids", ()) or ()
+    )
+    if not cleanup_scope_target_ids:
+        cleanup_scope_target_ids = lease_ids
+    if not lease_ids:
+        lease_ids = cleanup_scope_target_ids
     evidence["cleanup"] = {
         "ok": bool(cleanup_response.ok),
         "target_kind": cleanup_payload.get("cleanup_kind"),
         "target_id": cleanup_payload.get("reservation_id"),
         "mode": cleanup_payload.get("cleanup_mode"),
         "reason": cleanup_payload.get("reason"),
-        "lease_ids": tuple(str(item) for item in cleanup_payload.get("lease_ids", ()) or ()),
+        "lease_ids": lease_ids,
+        "cleanup_scope_target_ids": cleanup_scope_target_ids,
         "cleaned_reservation_ids": tuple(
             str(item)
             for item in cleanup_payload.get("cleaned_reservation_ids", ()) or ()
         ),
     }
-    owner_binding = request.ticket.metadata.get("owner_binding")
-    if isinstance(owner_binding, Mapping):
-        evidence["cleanup"]["owner_binding"] = dict(owner_binding)
+    if normalized_owner_binding is not None:
+        evidence["cleanup"]["owner_binding"] = normalized_owner_binding
     return evidence
 
 

@@ -180,26 +180,122 @@ def cleanup_scope_lease_ids_for_ticket(
     lease_id: str | None = None,
     lease_ids: Iterable[str] | None = None,
 ) -> tuple[str, ...]:
-    ticket_lease_ids = lease_ids_for_ticket(ticket, lease_id=lease_id, lease_ids=lease_ids)
+    owner_binding = owner_binding_for_ticket(
+        ticket,
+        lease_id=lease_id,
+        lease_ids=lease_ids,
+    )
+    cleanup_scope = owner_binding["cleanup_scope"]
+    if str(cleanup_scope["target_kind"]).lower() != "reservation":
+        return tuple(owner_binding["lease_ids"])
+    return tuple(str(item) for item in cleanup_scope["target_ids"])
+
+
+def owner_binding_for_ticket(
+    ticket: ExecutionTicket,
+    *,
+    transfer_id: str | None = None,
+    job_id: str | None = None,
+    session_id: str | None = None,
+    lease_id: str | None = None,
+    lease_ids: Iterable[str] | None = None,
+    relay_gpu: int | None = None,
+    relay_gpus: Iterable[int] | None = None,
+) -> dict[str, object]:
     metadata = dict(ticket.metadata)
     owner_binding = metadata.get("owner_binding")
     if not isinstance(owner_binding, Mapping):
-        return ticket_lease_ids
+        raise ValueError("execution ticket missing owner_binding")
+
+    resolved_transfer_id = transfer_id_for_ticket(ticket, transfer_id)
+    resolved_job_id = str(ticket.job_id)
+    if job_id is not None and str(job_id) != resolved_job_id:
+        raise ValueError("ticket job does not match worker owner binding request")
+    binding_job_id = owner_binding.get("job_id")
+    if binding_job_id is None or str(binding_job_id) != resolved_job_id:
+        raise ValueError("worker owner binding job does not match ticket")
+
+    resolved_session_id = str(ticket.session_id)
+    if session_id is not None and str(session_id) != resolved_session_id:
+        raise ValueError("ticket session does not match worker owner binding request")
+    binding_session_id = owner_binding.get("session_id")
+    if binding_session_id is None or str(binding_session_id) != resolved_session_id:
+        raise ValueError("worker owner binding session does not match ticket")
+
+    binding_transfer_id = owner_binding.get("transfer_id")
+    if binding_transfer_id is None or str(binding_transfer_id) != resolved_transfer_id:
+        raise ValueError("worker owner binding transfer does not match ticket")
+
+    resolved_lease_ids = lease_ids_for_ticket(
+        ticket,
+        lease_id=lease_id,
+        lease_ids=lease_ids,
+    )
+    binding_lease_ids = owner_binding.get("lease_ids")
+    if not isinstance(binding_lease_ids, Iterable) or isinstance(
+        binding_lease_ids,
+        (str, bytes),
+    ):
+        raise ValueError("worker owner binding lease_ids must be iterable")
+    normalized_binding_lease_ids = tuple(str(item) for item in binding_lease_ids)
+    if (
+        not normalized_binding_lease_ids
+        or any(not item.strip() for item in normalized_binding_lease_ids)
+    ):
+        raise ValueError("worker owner binding lease_ids must be non-empty")
+    if normalized_binding_lease_ids != resolved_lease_ids:
+        raise ValueError("worker owner binding lease_ids do not match ticket")
+
+    resolved_relays = relay_gpus_for_ticket(
+        ticket,
+        relay_gpu=relay_gpu,
+        relay_gpus=relay_gpus,
+    )
+    binding_relays = owner_binding.get("relay_gpus")
+    if not isinstance(binding_relays, Iterable) or isinstance(binding_relays, (str, bytes)):
+        raise ValueError("worker owner binding relay_gpus must be iterable")
+    normalized_binding_relays = tuple(sorted({int(item) for item in binding_relays}))
+    if not normalized_binding_relays:
+        raise ValueError("worker owner binding relay_gpus must not be empty")
+    if normalized_binding_relays != resolved_relays:
+        raise ValueError("worker owner binding relay_gpus do not match ticket")
+
     cleanup_scope = owner_binding.get("cleanup_scope")
     if not isinstance(cleanup_scope, Mapping):
-        return ticket_lease_ids
-    if str(cleanup_scope.get("target_kind", "")).lower() != "reservation":
-        return ticket_lease_ids
-    target_ids = cleanup_scope.get("target_ids")
-    if not isinstance(target_ids, Iterable) or isinstance(target_ids, (str, bytes)):
-        return ticket_lease_ids
-    scoped_ids = tuple(str(item) for item in target_ids)
-    if not scoped_ids or any(not item.strip() for item in scoped_ids):
-        raise ValueError("worker cleanup scope has invalid lease ids")
-    unknown_ids = sorted(set(scoped_ids) - set(ticket_lease_ids))
-    if unknown_ids:
-        raise ValueError("worker cleanup scope does not match ticket")
-    return scoped_ids
+        raise ValueError("worker owner binding missing cleanup_scope")
+    cleanup_target_kind = str(cleanup_scope.get("target_kind", "")).lower()
+    if cleanup_target_kind != "reservation":
+        raise ValueError("worker owner binding cleanup_scope must target reservations")
+    cleanup_target_ids = cleanup_scope.get("target_ids")
+    if not isinstance(cleanup_target_ids, Iterable) or isinstance(
+        cleanup_target_ids,
+        (str, bytes),
+    ):
+        raise ValueError("worker owner binding cleanup_scope target_ids must be iterable")
+    normalized_cleanup_target_ids = tuple(str(item) for item in cleanup_target_ids)
+    if (
+        not normalized_cleanup_target_ids
+        or any(not item.strip() for item in normalized_cleanup_target_ids)
+    ):
+        raise ValueError("worker owner binding cleanup_scope target_ids must be non-empty")
+    if normalized_cleanup_target_ids != normalized_binding_lease_ids:
+        raise ValueError("worker owner binding cleanup_scope does not match lease_ids")
+
+    result = {
+        "job_id": resolved_job_id,
+        "session_id": resolved_session_id,
+        "transfer_id": resolved_transfer_id,
+        "lease_ids": normalized_binding_lease_ids,
+        "relay_gpus": normalized_binding_relays,
+        "cleanup_scope": {
+            "target_kind": cleanup_target_kind,
+            "target_ids": normalized_cleanup_target_ids,
+        },
+    }
+    peer_identity = owner_binding.get("peer_identity")
+    if isinstance(peer_identity, Mapping):
+        result["peer_identity"] = dict(peer_identity)
+    return result
 
 
 def transfer_id_for_ticket(ticket: ExecutionTicket, transfer_id: str | None) -> str:
@@ -278,6 +374,7 @@ __all__ = [
     "authorized_relay_gpus_for_request",
     "cleanup_scope_lease_ids_for_ticket",
     "lease_ids_for_ticket",
+    "owner_binding_for_ticket",
     "relay_gpus_for_ticket",
     "relay_ranges_by_gpu_for_ticket",
     "relay_ranges_from_ticket_plan",

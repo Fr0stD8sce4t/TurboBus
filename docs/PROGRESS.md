@@ -14,25 +14,27 @@
 - A second production-facing workload family now uses explicit
   runtime-session-owned submit, wait, and receipt consumption on the vLLM KV
   path instead of hiding terminal behavior behind synchronous adapter calls.
+- Shared relay ownership is now bound end to end across daemon-issued
+  `owner_binding`, worker request construction, cleanup authorization, cleanup
+  response validation, and receipt-facing completion evidence.
 
 ## Remaining Risk
 
-- Cross-job relay sharing still needs one full ownership and isolation closure
-  across daemon, worker, lease, and cleanup boundaries.
-- Shared relay delayed admission and terminal cleanup still depend on later
-  ownership hardening to rule out cross-job leakage under failure ordering.
-- Server, CUDA, benchmark, and adapter validation remain later-stage risks and
-  do not block current implementation rounds.
+- Daemon-issued mixed direct + relay plans still need one full execution
+  closure that runs all direct and relay chunks and returns one valid receipt.
+- Buffer lifetime, server, CUDA, benchmark, and adapter validation remain
+  later-stage risks and do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full cross-job isolation and ownership hardening closure on shared
-relay use. After that, choose exactly one of these per round:
+Finish one full daemon-issued mixed direct + relay execution closure into one
+valid `TransferReceipt`. After that, choose exactly one of these per round:
 
-- one complete adapter expansion closure for another workload family only if
-- ownership no longer blocks the main system path.
-- one complete native direct/relay/mixed data-path hardening closure only if
-  ownership no longer blocks the main system path.
+- one complete buffer registration to execution to cleanup to receipt closure
+  only if mixed execution no longer blocks the main system path.
+- one complete runtime-session-facing adapter expansion closure for another
+  workload family only if mixed execution no longer blocks the main system
+  path.
 
 Progress-file rule:
 

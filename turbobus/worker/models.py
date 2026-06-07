@@ -150,6 +150,16 @@ class WorkerTransferRequest:
             ticket,
             transfer_id,
         )
+        resolved_owner_binding = worker_validation.owner_binding_for_ticket(
+            ticket,
+            transfer_id=resolved_transfer_id,
+            job_id=ticket.job_id,
+            session_id=ticket.session_id,
+            lease_id=resolved_lease_id,
+            lease_ids=resolved_lease_ids,
+            relay_gpu=relay,
+            relay_gpus=resolved_relays,
+        )
         authorization = WorkerTransferAuthorization(
             transfer_id=resolved_transfer_id,
             lease_id=resolved_lease_id,
@@ -167,6 +177,7 @@ class WorkerTransferRequest:
             "lease_ids": resolved_lease_ids,
             "primary_relay_gpu": relay,
             "primary_lease_id": resolved_lease_id,
+            "owner_binding": resolved_owner_binding,
             "relay_ranges_by_gpu": worker_validation.relay_ranges_by_gpu_for_ticket(
                 ticket,
                 relay_gpus=resolved_relays,
@@ -221,6 +232,16 @@ class WorkerTransferRequest:
             self.ticket,
             self.authorization,
             data_plane,
+        )
+        worker_validation.owner_binding_for_ticket(
+            self.ticket,
+            transfer_id=self.authorization.transfer_id,
+            job_id=self.authorization.job_id,
+            session_id=self.authorization.session_id,
+            lease_id=self.authorization.lease_id,
+            lease_ids=worker_request_lease_ids(self),
+            relay_gpu=self.authorization.relay_gpu,
+            relay_gpus=data_plane.metadata.get("relay_gpus"),
         )
         object.__setattr__(self, "data_plane", data_plane)
 

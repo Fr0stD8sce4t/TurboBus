@@ -5,26 +5,26 @@ appending history.
 
 ## Current Main Target
 
-Close one full cross-job isolation and ownership hardening path on shared
-relay use.
+Close one full daemon-issued mixed direct + relay execution path into one valid
+`TransferReceipt`.
 
 ## Exit Criteria
 
-- Job, session, buffer, lease, and cleanup ownership stay bound to the correct
-  peer or daemon-owned identity during shared relay use.
-- Shared relay execution and cleanup cannot drift into cross-job leakage when
-  delayed admission, promotion, or terminal cleanup happen out of order.
-- The closure stays on daemon/runtime/worker ownership boundaries and does not
-  push isolation policy into adapters, benchmarks, or examples.
+- One scheduler-issued mixed plan executes all direct chunks and relay chunks
+  instead of collapsing to one path family.
+- Worker and backend terminal completion merges into one receipt path with
+  direct/relay split evidence or explicit failure evidence.
+- The closure stays on daemon/runtime/worker/backend production boundaries and
+  does not move route choice into adapters, benchmarks, or examples.
 
 ## Current Code Work
 
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/peer_auth.py`
+- `turbobus/worker/cuda_executor.py`
 - `turbobus/worker/lifecycle.py`
-- `turbobus/worker/validation.py`
-- `turbobus/schema.py`
-- `turbobus/runtime/daemon_view.py`
+- `turbobus/backends/cuda.py`
+- `turbobus/native_runtime.py`
+- `cpp/src/executor_cuda.cu`
 
 Round rules:
 
@@ -40,17 +40,18 @@ Round rules:
 
 ## Next Entry
 
-Start at `daemon/server.py`, then follow ownership and cleanup flow through
-`daemon/peer_auth.py`, `worker/lifecycle.py`, `worker/validation.py`,
-`schema.py`, and `runtime/daemon_view.py`.
+Start at `daemon/server.py`, then follow mixed-plan execution through
+`worker/cuda_executor.py`, `worker/lifecycle.py`, `backends/cuda.py`,
+`native_runtime.py`, and `cpp/src/executor_cuda.cu`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full adapter expansion closure for another workload family only if the
-  ownership path no longer blocks the main system body.
-- one full native direct/relay/mixed data-path hardening closure only if
-  ownership no longer blocks the main system body.
+- one full buffer registration to execution to cleanup to receipt lifecycle
+  closure only if mixed execution no longer blocks the main system body.
+- one full runtime-session-facing adapter expansion closure for another real
+  workload family only if mixed execution no longer blocks the main system
+  body.
 
 Plan-file rule:
 

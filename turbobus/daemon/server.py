@@ -5580,6 +5580,7 @@ def _normalize_completion_evidence(
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
+    worker_startup = evidence.get("worker_startup")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -5628,6 +5629,11 @@ def _normalize_completion_evidence(
             {}
             if not isinstance(cleanup_evidence, Mapping)
             else {"cleanup": dict(cleanup_evidence)}
+        ),
+        **(
+            {}
+            if not isinstance(worker_startup, Mapping)
+            else {"worker_startup": dict(worker_startup)}
         ),
         **ticket_binding,
     }
@@ -5737,6 +5743,9 @@ def _normalize_status_ticket_evidence(
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     if isinstance(relay_completion_evidence, Mapping):
         ticket_binding["relay_completion_evidence"] = dict(relay_completion_evidence)
+    worker_startup = evidence.get("worker_startup")
+    if isinstance(worker_startup, Mapping):
+        ticket_binding["worker_startup"] = dict(worker_startup)
     for field_name in (
         "executor",
         "path",

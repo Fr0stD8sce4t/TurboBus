@@ -50,6 +50,17 @@ from .worker.process import run_worker_service_process
 from .worker.socket_client import WorkerServiceSocketClient
 
 
+class ManagedProductionStartupError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        evidence: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.evidence = None if evidence is None else dict(evidence)
+
+
 @dataclass
 class TurboBusRuntimeSession:
     daemon_client: object
@@ -137,6 +148,11 @@ class TurboBusRuntimeSession:
     )
     _runtime_control_connection_owned: bool = field(
         default=False,
+        init=False,
+        repr=False,
+    )
+    _managed_service_startup_evidence: dict[str, object] | None = field(
+        default=None,
         init=False,
         repr=False,
     )
@@ -285,34 +301,64 @@ class TurboBusRuntimeSession:
         daemon = create_production_daemon(
             daemon_startup_config or DaemonStartupConfig()
         )
+        startup_lock = threading.Lock()
+        startup_records: dict[str, dict[str, object]] = {}
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "daemon",
+            service="daemon",
+            state="starting",
+            socket_path=daemon_path,
+            require_authenticated_peers=bool(
+                getattr(daemon, "_require_authenticated_peers", False)
+            ),
+        )
         daemon_stop_event = threading.Event()
         daemon_thread = threading.Thread(
-            target=daemon.serve_forever,
+            target=_run_managed_daemon_service,
             kwargs={
+                "daemon": daemon,
                 "socket_path": daemon_path,
                 "stop_event": daemon_stop_event,
+                "startup_records": startup_records,
+                "startup_lock": startup_lock,
             },
             name="turbobus-daemon-service",
             daemon=True,
         )
         daemon_thread.start()
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "worker",
+            service="worker",
+            state="starting",
+            daemon_socket_path=daemon_path,
+            socket_path=worker_path,
+        )
         worker_stop_event = threading.Event()
         worker_thread = threading.Thread(
-            target=run_worker_service_process,
-            args=(daemon_path, worker_path),
+            target=_run_managed_worker_service,
             kwargs={
+                "daemon_socket_path": daemon_path,
+                "worker_socket_path": worker_path,
                 "stop_event": worker_stop_event,
                 "backend": backend,
                 "runtime_options": options,
+                "startup_records": startup_records,
+                "startup_lock": startup_lock,
             },
             name="turbobus-worker-service",
             daemon=True,
         )
         worker_thread.start()
         try:
-            _wait_for_managed_services_ready(
+            startup_evidence = _wait_for_managed_services_ready(
                 daemon_socket_path=daemon_path,
                 worker_socket_path=worker_path,
+                startup_records=startup_records,
+                startup_lock=startup_lock,
             )
             session = cls.open_socket(
                 daemon_socket_path=daemon_path,
@@ -324,12 +370,24 @@ class TurboBusRuntimeSession:
                 runtime_options=options,
                 persistent_runtime_control=True,
             )
-        except Exception:
-            worker_stop_event.set()
-            daemon_stop_event.set()
-            worker_thread.join(timeout=1.0)
-            daemon_thread.join(timeout=1.0)
-            raise
+        except Exception as exc:
+            shutdown_evidence = _shutdown_managed_service_threads(
+                daemon_stop_event=daemon_stop_event,
+                daemon_thread=daemon_thread,
+                daemon_socket_path=daemon_path,
+                worker_stop_event=worker_stop_event,
+                worker_thread=worker_thread,
+                worker_socket_path=worker_path,
+            )
+            startup_snapshot = _managed_service_startup_snapshot(
+                startup_records,
+                startup_lock,
+            )
+            raise _managed_startup_error(
+                exc,
+                startup_evidence=startup_snapshot,
+                shutdown_evidence=shutdown_evidence,
+            ) from exc
         session._owned_daemon_stop_event = daemon_stop_event
         session._owned_daemon_thread = daemon_thread
         session._owned_worker_stop_event = worker_stop_event
@@ -337,6 +395,7 @@ class TurboBusRuntimeSession:
         session._owned_daemon_socket_path = daemon_path
         session._owned_worker_socket_path = worker_path
         session._runtime_control_connection_owned = True
+        session._managed_service_startup_evidence = startup_evidence
         return session
 
     @property
@@ -598,6 +657,10 @@ class TurboBusRuntimeSession:
                 "owned_cpu_buffer_release": release_evidence,
                 "managed_service_shutdown": managed_service_evidence,
             }
+            if self._managed_service_startup_evidence is not None:
+                payload["managed_service_startup"] = dict(
+                    self._managed_service_startup_evidence
+                )
             if runtime_control_evidence is not None:
                 payload["runtime_control_shutdown"] = runtime_control_evidence
             return DaemonResponse(
@@ -652,6 +715,10 @@ class TurboBusRuntimeSession:
             payload["buffer_cleanup_evidence"] = cleanup_evidence
         if release_evidence:
             payload["owned_cpu_buffer_release"] = release_evidence
+        if self._managed_service_startup_evidence is not None:
+            payload["managed_service_startup"] = dict(
+                self._managed_service_startup_evidence
+            )
         if runtime_control_evidence is not None:
             payload["runtime_control_shutdown"] = runtime_control_evidence
         if managed_service_evidence:
@@ -1412,6 +1479,197 @@ class TurboBusRuntimeSession:
         return evidence
 
 
+def _run_managed_daemon_service(
+    *,
+    daemon,
+    socket_path: str,
+    stop_event: threading.Event,
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+) -> None:
+    try:
+        daemon.serve_forever(
+            socket_path=str(socket_path),
+            stop_event=stop_event,
+        )
+    except Exception as exc:
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "daemon",
+            state="failed",
+            error=str(exc) or exc.__class__.__name__,
+            error_type=exc.__class__.__name__,
+        )
+        raise
+    if not stop_event.is_set():
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "daemon",
+            state="stopped",
+            error="managed daemon service exited before runtime shutdown",
+            error_type="UnexpectedExit",
+        )
+
+
+def _run_managed_worker_service(
+    *,
+    daemon_socket_path: str,
+    worker_socket_path: str,
+    stop_event: threading.Event,
+    backend,
+    runtime_options: RuntimeOptions,
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+) -> None:
+    def report_startup(record: dict[str, object]) -> None:
+        payload = dict(record)
+        payload.pop("service", None)
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "worker",
+            **payload,
+        )
+
+    try:
+        run_worker_service_process(
+            daemon_socket_path,
+            worker_socket_path,
+            stop_event=stop_event,
+            backend=backend,
+            runtime_options=runtime_options,
+            startup_reporter=report_startup,
+        )
+    except Exception:
+        raise
+    if not stop_event.is_set():
+        _update_managed_service_startup_record(
+            startup_records,
+            startup_lock,
+            "worker",
+            state="stopped",
+            error="managed worker service exited before runtime shutdown",
+            error_type="UnexpectedExit",
+        )
+
+
+def _update_managed_service_startup_record(
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+    service: str,
+    **updates,
+) -> None:
+    with startup_lock:
+        existing = dict(startup_records.get(service, {}))
+        startup_evidence = updates.get("startup_evidence")
+        if isinstance(existing.get("startup_evidence"), Mapping) and not isinstance(
+            startup_evidence, Mapping
+        ):
+            updates["startup_evidence"] = dict(existing["startup_evidence"])
+        record = {
+            **existing,
+            **updates,
+            "service": str(service),
+        }
+        startup_records[str(service)] = record
+
+
+def _managed_service_startup_snapshot(
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+) -> dict[str, object]:
+    with startup_lock:
+        services = {
+            name: dict(record)
+            for name, record in startup_records.items()
+        }
+    return {
+        "services": services,
+    }
+
+
+def _managed_service_failure_record(
+    startup_records: dict[str, dict[str, object]],
+    startup_lock: threading.Lock,
+    service: str,
+) -> dict[str, object] | None:
+    with startup_lock:
+        record = startup_records.get(str(service))
+        if not isinstance(record, Mapping):
+            return None
+        state = str(record.get("state", "")).lower()
+        if state not in {"failed", "stopped"}:
+            return None
+        return dict(record)
+
+
+def _shutdown_managed_service_threads(
+    *,
+    daemon_stop_event: threading.Event | None,
+    daemon_thread: threading.Thread | None,
+    daemon_socket_path: str | None,
+    worker_stop_event: threading.Event | None,
+    worker_thread: threading.Thread | None,
+    worker_socket_path: str | None,
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    if worker_stop_event is not None:
+        worker_stop_event.set()
+    if daemon_stop_event is not None:
+        daemon_stop_event.set()
+    if worker_thread is not None:
+        worker_thread.join(timeout=1.0)
+        evidence.append(
+            {
+                "service": "worker",
+                "socket_path": worker_socket_path,
+                "alive_after_join": worker_thread.is_alive(),
+            }
+        )
+    if daemon_thread is not None:
+        daemon_thread.join(timeout=1.0)
+        evidence.append(
+            {
+                "service": "daemon",
+                "socket_path": daemon_socket_path,
+                "alive_after_join": daemon_thread.is_alive(),
+            }
+        )
+    return evidence
+
+
+def _managed_startup_error(
+    exc: Exception,
+    *,
+    startup_evidence: Mapping[str, object],
+    shutdown_evidence: Sequence[Mapping[str, object]],
+) -> ManagedProductionStartupError:
+    message = str(exc) or exc.__class__.__name__
+    existing_evidence = (
+        dict(exc.evidence)
+        if isinstance(exc, ManagedProductionStartupError)
+        and isinstance(exc.evidence, Mapping)
+        else {}
+    )
+    startup_payload = dict(existing_evidence.get("startup", {}))
+    startup_payload.update(dict(startup_evidence))
+    shutdown_payload = [
+        dict(item)
+        for item in existing_evidence.get("shutdown", ())
+        if isinstance(item, Mapping)
+    ]
+    shutdown_payload.extend(dict(item) for item in shutdown_evidence)
+    return ManagedProductionStartupError(
+        message,
+        evidence={
+            "startup": startup_payload,
+            "shutdown": shutdown_payload,
+        },
+    )
+
+
 def _receipt_from_daemon_response(
     response: DaemonResponse,
     *,
@@ -1442,16 +1700,37 @@ def _wait_for_managed_services_ready(
     *,
     daemon_socket_path: str,
     worker_socket_path: str,
+    startup_records: dict[str, dict[str, object]] | None = None,
+    startup_lock: threading.Lock | None = None,
     timeout_seconds: float = 5.0,
     poll_interval_seconds: float = 0.05,
-) -> None:
+) -> dict[str, object]:
     deadline = time.time() + max(0.1, float(timeout_seconds))
     daemon_error: Exception | None = None
     while time.time() < deadline:
+        daemon_failure = _managed_service_failure_record_or_none(
+            startup_records,
+            startup_lock,
+            "daemon",
+        )
+        if daemon_failure is not None:
+            raise ManagedProductionStartupError(
+                "managed daemon service failed before startup completed",
+                evidence={"startup": {"services": {"daemon": daemon_failure}}},
+            )
         try:
             daemon_ready = TurboBusDaemonProfileClient(str(daemon_socket_path))
             require_ok(daemon_ready.discover_relays(), "daemon startup probe failed")
             daemon_error = None
+            _update_managed_service_startup_record_if_available(
+                startup_records,
+                startup_lock,
+                "daemon",
+                state="ready",
+                ready_at=time.time(),
+                ready_probe="discover_relays",
+                socket_path=str(daemon_socket_path),
+            )
             break
         except Exception as exc:
             daemon_error = exc
@@ -1462,9 +1741,28 @@ def _wait_for_managed_services_ready(
         ) from daemon_error
     worker_error: Exception | None = None
     while time.time() < deadline:
+        worker_failure = _managed_service_failure_record_or_none(
+            startup_records,
+            startup_lock,
+            "worker",
+        )
+        if worker_failure is not None:
+            raise ManagedProductionStartupError(
+                "managed worker service failed before startup completed",
+                evidence={"startup": {"services": {"worker": worker_failure}}},
+            )
         try:
             _probe_worker_socket_ready(str(worker_socket_path))
             worker_error = None
+            _update_managed_service_startup_record_if_available(
+                startup_records,
+                startup_lock,
+                "worker",
+                state="ready",
+                ready_at=time.time(),
+                ready_probe="worker_socket_connect",
+                socket_path=str(worker_socket_path),
+            )
             break
         except Exception as exc:
             worker_error = exc
@@ -1473,6 +1771,9 @@ def _wait_for_managed_services_ready(
         raise RuntimeError(
             f"managed worker socket did not become ready: {worker_error}"
         ) from worker_error
+    if startup_records is None or startup_lock is None:
+        return {}
+    return _managed_service_startup_snapshot(startup_records, startup_lock)
 
 
 def _probe_worker_socket_ready(socket_path: str) -> None:
@@ -1483,4 +1784,30 @@ def _probe_worker_socket_ready(socket_path: str) -> None:
         client.close()
 
 
-__all__ = ["TurboBusRuntimeSession"]
+def _managed_service_failure_record_or_none(
+    startup_records: dict[str, dict[str, object]] | None,
+    startup_lock: threading.Lock | None,
+    service: str,
+) -> dict[str, object] | None:
+    if startup_records is None or startup_lock is None:
+        return None
+    return _managed_service_failure_record(startup_records, startup_lock, service)
+
+
+def _update_managed_service_startup_record_if_available(
+    startup_records: dict[str, dict[str, object]] | None,
+    startup_lock: threading.Lock | None,
+    service: str,
+    **updates,
+) -> None:
+    if startup_records is None or startup_lock is None:
+        return
+    _update_managed_service_startup_record(
+        startup_records,
+        startup_lock,
+        service,
+        **updates,
+    )
+
+
+__all__ = ["ManagedProductionStartupError", "TurboBusRuntimeSession"]

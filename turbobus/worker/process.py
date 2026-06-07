@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from threading import Event
 from typing import Mapping, Sequence
 
@@ -19,6 +20,9 @@ class WorkerStartupError(RuntimeError):
     pass
 
 
+WorkerStartupReporter = Callable[[dict[str, object]], None]
+
+
 def build_worker_service_transport(
     daemon_socket_path: str,
     socket_path: str,
@@ -26,6 +30,22 @@ def build_worker_service_transport(
     backend=default_cuda_backend,
     runtime_options: RuntimeOptions | None = None,
 ) -> WorkerServiceUnixSocketTransport:
+    transport, _startup_evidence = _build_worker_service_runtime(
+        daemon_socket_path,
+        socket_path,
+        backend=backend,
+        runtime_options=runtime_options,
+    )
+    return transport
+
+
+def _build_worker_service_runtime(
+    daemon_socket_path: str,
+    socket_path: str,
+    *,
+    backend=default_cuda_backend,
+    runtime_options: RuntimeOptions | None = None,
+) -> tuple[WorkerServiceUnixSocketTransport, dict[str, object]]:
     options = runtime_options or RuntimeOptions()
     startup_evidence = worker_startup_evidence_from_daemon(daemon_socket_path)
     daemon_client = TurboBusDaemonExecutionClient(str(daemon_socket_path))
@@ -44,9 +64,12 @@ def build_worker_service_transport(
             transfer_client=transfer_client,
         ),
     )
-    return WorkerServiceUnixSocketTransport(
-        endpoint=endpoint,
-        socket_path=str(socket_path),
+    return (
+        WorkerServiceUnixSocketTransport(
+            endpoint=endpoint,
+            socket_path=str(socket_path),
+        ),
+        startup_evidence,
     )
 
 
@@ -145,17 +168,58 @@ def run_worker_service_process(
     *,
     backend=default_cuda_backend,
     runtime_options: RuntimeOptions | None = None,
+    startup_reporter: WorkerStartupReporter | None = None,
 ) -> None:
-    if backend is default_cuda_backend and runtime_options is None:
-        transport = build_worker_service_transport(daemon_socket_path, socket_path)
-    else:
-        transport = build_worker_service_transport(
-            daemon_socket_path,
-            socket_path,
-            backend=backend,
-            runtime_options=runtime_options,
+    startup_evidence: dict[str, object] | None = None
+    try:
+        if backend is default_cuda_backend and runtime_options is None:
+            transport, startup_evidence = _build_worker_service_runtime(
+                daemon_socket_path,
+                socket_path,
+            )
+        else:
+            transport, startup_evidence = _build_worker_service_runtime(
+                daemon_socket_path,
+                socket_path,
+                backend=backend,
+                runtime_options=runtime_options,
+            )
+        _report_worker_service_startup(
+            startup_reporter,
+            {
+                "service": "worker",
+                "state": "initialized",
+                "daemon_socket_path": str(daemon_socket_path),
+                "socket_path": str(socket_path),
+                "startup_evidence": dict(startup_evidence),
+            },
         )
-    transport.serve_forever(stop_event=stop_event)
+        transport.serve_forever(stop_event=stop_event)
+    except Exception as exc:
+        _report_worker_service_startup(
+            startup_reporter,
+            {
+                "service": "worker",
+                "state": "failed",
+                "daemon_socket_path": str(daemon_socket_path),
+                "socket_path": str(socket_path),
+                "startup_evidence": (
+                    None if startup_evidence is None else dict(startup_evidence)
+                ),
+                "error": str(exc) or exc.__class__.__name__,
+                "error_type": exc.__class__.__name__,
+            },
+        )
+        raise
+
+
+def _report_worker_service_startup(
+    startup_reporter: WorkerStartupReporter | None,
+    record: dict[str, object],
+) -> None:
+    if startup_reporter is None:
+        return
+    startup_reporter(dict(record))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

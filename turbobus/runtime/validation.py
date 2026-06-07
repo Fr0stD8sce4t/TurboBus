@@ -61,6 +61,7 @@ def validate_runtime_receipt(
         source_buffer_id=source_buffer_id,
         destination_buffer_id=destination_buffer_id,
     )
+    require_worker_startup_evidence(metadata)
 
 
 def require_receipt_ticket_binding(
@@ -142,6 +143,30 @@ def require_runtime_buffer_lifetime_evidence(
         expected_buffer_id=destination_buffer_id,
         label="destination",
     )
+
+
+def require_worker_startup_evidence(metadata: Mapping[str, object]) -> None:
+    completion_source = str(metadata.get("completion_source", "")).lower()
+    if completion_source != "worker":
+        return
+    worker_startup = metadata.get("worker_startup")
+    if not isinstance(worker_startup, Mapping):
+        raise ValueError("runtime receipt missing worker_startup evidence")
+    startup_source = worker_startup.get("startup_source")
+    if startup_source is None or not str(startup_source).strip():
+        raise ValueError("runtime receipt worker_startup missing startup_source")
+    if worker_startup.get("topology_snapshot_id") is None:
+        raise ValueError("runtime receipt worker_startup missing topology_snapshot_id")
+    if worker_startup.get("require_authenticated_peers") is None:
+        raise ValueError(
+            "runtime receipt worker_startup missing authenticated peer requirement"
+        )
+    if bool(worker_startup.get("require_authenticated_peers", False)) and not bool(
+        worker_startup.get("daemon_peer_authenticated", False)
+    ):
+        raise ValueError(
+            "runtime receipt worker_startup missing authenticated daemon peer evidence"
+        )
 
 
 def _require_runtime_buffer_record(
@@ -231,6 +256,7 @@ __all__ = [
     "require_failed_receipt_evidence",
     "require_receipt_ticket_binding",
     "require_runtime_buffer_lifetime_evidence",
+    "require_worker_startup_evidence",
     "validate_intent_ranges_fit_buffers",
     "validate_runtime_receipt",
 ]

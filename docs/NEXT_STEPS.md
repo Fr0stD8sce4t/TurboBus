@@ -5,26 +5,25 @@ appending history.
 
 ## Current Main Target
 
-Close one full daemon/worker production startup lifecycle from
-runtime-session-owned startup through authenticated execution and cleanup.
+Close one full scheduler/runtime feedback lifecycle from real execution state
+through daemon relay admission and path selection.
 
 ## Exit Criteria
 
-- `TurboBusRuntimeSession` remains the only production startup entry for daemon
-  and worker connectivity.
-- Production startup binds daemon-issued authorization to real worker execution
-  without synthetic topology or local substitute startup paths.
-- Startup, authorization, execution, and cleanup failures return explicit
-  daemon/worker evidence instead of hidden local fallback behavior.
+- Scheduler decisions consume real queued, running, active, and terminal
+  transfer state instead of stale or synthetic summaries.
+- Relay admission, delayed promotion, and path selection react to worker/backend
+  runtime feedback on the production path.
+- The closure stays in daemon/runtime scheduling code and does not use
+  benchmark-only or local substitute control loops.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`
 - `turbobus/daemon/server.py`
-- `turbobus/daemon/dispatch.py`
-- `turbobus/worker/server.py`
-- `turbobus/worker/lifecycle.py`
-- `turbobus/native_runtime.py`
+- `turbobus/scheduler/`
+- `turbobus/intent_executor.py`
+- `turbobus/runtime/daemon_view.py`
+- `turbobus/schema.py`
 
 Round rules:
 
@@ -40,17 +39,16 @@ Round rules:
 
 ## Next Entry
 
-Start at `runtime_session.py`, then follow startup/bootstrap and worker routing
-through `daemon/server.py`, `daemon/dispatch.py`, `worker/server.py`,
-`worker/lifecycle.py`, and `native_runtime.py`.
+Start at `daemon/server.py`, then follow runtime-state aggregation and
+relay-admission inputs through `scheduler/`, `intent_executor.py`, and
+`runtime/daemon_view.py`.
 
 After the current target closes, the next round should finish exactly one of
 these:
 
-- one full runtime-session-facing adapter expansion closure for another real
-  workload family.
-- one full scheduler/topology feedback closure only if startup no longer blocks
-  the main system body.
+- one full cross-job isolation and ownership hardening closure.
+- one full runtime-session-facing adapter expansion closure only if scheduler
+  feedback no longer blocks the main system body.
 
 Plan-file rule:
 

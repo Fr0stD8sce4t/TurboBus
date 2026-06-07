@@ -190,6 +190,7 @@ def receipt_for_transfer(
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
+    worker_startup = evidence.get("worker_startup")
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
@@ -276,6 +277,11 @@ def receipt_for_transfer(
             "cleanup_evidence": (
                 dict(cleanup_evidence)
                 if isinstance(cleanup_evidence, Mapping)
+                else None
+            ),
+            "worker_startup": (
+                dict(worker_startup)
+                if isinstance(worker_startup, Mapping)
                 else None
             ),
             "completion_contract": completion_contract,
@@ -376,6 +382,11 @@ def _completion_contract_view(
         "expected_bytes": evidence.get("expected_bytes"),
         "content_match": evidence.get("content_match"),
         "failure_source": evidence.get("failure_source"),
+        "worker_startup": (
+            dict(evidence.get("worker_startup"))
+            if isinstance(evidence.get("worker_startup"), Mapping)
+            else None
+        ),
         "execution_path": (
             dict(execution_path_evidence)
             if isinstance(execution_path_evidence, Mapping)
@@ -482,6 +493,7 @@ def _single_mode_completion_view(
         "direct_chunks",
         "relay_bytes",
         "relay_chunks",
+        "worker_startup",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]

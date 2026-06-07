@@ -306,6 +306,22 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
+            existing_job = self._jobs.get(job.job_id)
+            if existing_job is not None:
+                try:
+                    self._validate_peer_owns_job_locked(
+                        job_id=job.job_id,
+                        peer_identity=peer_identity,
+                    )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
+                if _job_identity_conflicts(existing_job, job):
+                    return DaemonResponse(
+                        ok=False,
+                        error=(
+                            "job_id is already bound to a different production identity"
+                        ),
+                    )
             self._jobs[job.job_id] = job
             if peer_identity is not None:
                 self._job_peer_identities[job.job_id] = peer_identity
@@ -351,6 +367,23 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
+            existing_buffer = self._buffers.get(buffer.buffer_id)
+            if existing_buffer is not None:
+                try:
+                    self._validate_peer_owns_buffer_locked(
+                        buffer_id=buffer.buffer_id,
+                        peer_identity=peer_identity,
+                    )
+                except ValueError as exc:
+                    return DaemonResponse(ok=False, error=str(exc))
+                if _buffer_registration_conflicts(existing_buffer, buffer):
+                    return DaemonResponse(
+                        ok=False,
+                        error=(
+                            "buffer_id is already bound to a different production registration"
+                        ),
+                    )
+                return DaemonResponse(ok=True, payload={"buffer": asdict(existing_buffer)})
             if self._active_buffer_lease_ids_locked(buffer.buffer_id):
                 return DaemonResponse(ok=False, error="buffer has active lease")
             self._buffers[buffer.buffer_id] = buffer
@@ -5150,6 +5183,42 @@ def _decision_is_direct_only(decision: SchedulingDecision) -> bool:
         if str(path.get("kind", "")).lower() != "direct":
             return False
     return True
+
+
+def _job_identity_conflicts(
+    existing: JobIdentity,
+    incoming: JobIdentity,
+) -> bool:
+    return any(
+        getattr(existing, field_name) != getattr(incoming, field_name)
+        for field_name in (
+            "job_id",
+            "user_id",
+            "session_id",
+            "container_id",
+            "process_id",
+        )
+    )
+
+
+def _buffer_registration_conflicts(
+    existing: BufferRegistration,
+    incoming: BufferRegistration,
+) -> bool:
+    return any(
+        getattr(existing, field_name) != getattr(incoming, field_name)
+        for field_name in (
+            "buffer_id",
+            "job_id",
+            "kind",
+            "size_bytes",
+            "device_index",
+            "address",
+            "pinned",
+            "handle_type",
+            "metadata",
+        )
+    )
 
 
 def _runtime_active_path_records_for_transfer(

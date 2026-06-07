@@ -221,7 +221,7 @@ PYBIND11_MODULE(_turbobus, m) {
           result["device_offset_bytes"] = py::int_(device_ptr - base_ptr);
           return result;
         },
-        py::arg("device_ptr"), py::call_guard<py::gil_scoped_release>());
+        py::arg("device_ptr"));
   m.def("open_device_ipc_handle",
         [](py::bytes cuda_ipc_handle) {
           std::string raw = cuda_ipc_handle;
@@ -236,7 +236,7 @@ PYBIND11_MODULE(_turbobus, m) {
                     "cudaIpcOpenMemHandle failed");
           return reinterpret_cast<std::uintptr_t>(device_ptr);
         },
-        py::arg("cuda_ipc_handle"), py::call_guard<py::gil_scoped_release>());
+        py::arg("cuda_ipc_handle"));
   m.def("close_device_ipc_handle",
         [](std::uintptr_t device_ptr) {
           if (device_ptr == 0) {

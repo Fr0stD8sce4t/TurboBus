@@ -1117,9 +1117,11 @@ class TurboBusRuntimeSession:
         gpu_buffer,
         *,
         priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
         metadata: Mapping[str, object] | None = None,
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
+        manifest=None,
     ):
         from .adapters.model_loading import ModelWeightLoader
 
@@ -1128,6 +1130,7 @@ class TurboBusRuntimeSession:
             gpu_buffer,
             workload_kind=WorkloadKind.MODEL_WEIGHTS,
             priority=priority,
+            policy_hints=policy_hints,
             metadata=metadata,
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
@@ -1137,6 +1140,7 @@ class TurboBusRuntimeSession:
             context,
             cpu_buffer,
             gpu_buffer,
+            manifest=manifest,
         )
 
     def make_inference_kv_slot_adapter(

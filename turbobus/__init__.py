@@ -6,6 +6,7 @@ from .client import (
     SharedPinnedCpuBuffer,
     SharedPinnedCpuBufferAllocator,
 )
+from .model_manifest import ModelWeightManifest, ModelWeightTensor
 from .runtime_session import TurboBusRuntimeSession
 from .runtime_options import RuntimeOptions
 from .schema import (
@@ -28,6 +29,8 @@ __all__ = [
     "CudaIpcDeviceBuffer",
     "ExecutionTicket",
     "JobIdentity",
+    "ModelWeightManifest",
+    "ModelWeightTensor",
     "SchedulingDecision",
     "SchedulingDecisionState",
     "SharedPinnedCpuBuffer",

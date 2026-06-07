@@ -1,6 +1,11 @@
 from .base import FrameworkAdapter
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter, make_contiguous_kv_slots
-from .model_loading import ModelWeightBucket, ModelWeightLoader
+from .model_loading import (
+    ModelWeightBucket,
+    ModelWeightLoader,
+    ModelWeightManifest,
+    ModelWeightTensor,
+)
 from .training_offload import TrainingOffloadBucket, TrainingOffloadManager
 from .vllm import (
     VllmKVBlockRef,
@@ -37,6 +42,8 @@ __all__ = [
     "InferenceKVSlotAdapter",
     "ModelWeightBucket",
     "ModelWeightLoader",
+    "ModelWeightManifest",
+    "ModelWeightTensor",
     "TrainingOffloadBucket",
     "TrainingOffloadManager",
     "VllmKVBlockRef",

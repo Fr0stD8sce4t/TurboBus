@@ -546,8 +546,17 @@ def _worker_cleanup_evidence_from_completion(
         "mode": payload.get("cleanup_mode"),
         "reason": payload.get("reason"),
         "lease_ids": tuple(str(item) for item in payload.get("lease_ids", ()) or ()),
+        "cleanup_scope_target_ids": tuple(
+            str(item)
+            for item in payload.get("cleanup_scope_target_ids", ()) or ()
+        ),
         "cleaned_reservation_ids": tuple(
             str(item) for item in payload.get("cleaned_reservation_ids", ()) or ()
+        ),
+        **(
+            {}
+            if not isinstance(payload.get("owner_binding"), Mapping)
+            else {"owner_binding": dict(payload["owner_binding"])}
         ),
     }
 
@@ -575,6 +584,14 @@ def _relay_only_completion_evidence(
     evidence.setdefault("relay_bytes", int(expected_bytes))
     evidence.setdefault("direct_bytes", 0)
     evidence.setdefault("direct_chunks", 0)
+    cleanup = _cleanup_evidence_from_mapping(worker_evidence)
+    if cleanup is not None:
+        evidence["cleanup"] = cleanup
+    evidence["relay_completion_evidence"] = dict(worker_evidence)
+    evidence["execution_path_evidence"] = _execution_path_evidence(
+        evidence,
+        expected_bytes=int(expected_bytes),
+    )
     return evidence
 
 
@@ -633,6 +650,13 @@ def _merge_mixed_completion_evidence(
             evidence[key] = worker_evidence[key]
         elif key in direct_evidence:
             evidence[key] = direct_evidence[key]
+    cleanup = _cleanup_evidence_from_mapping(worker_evidence)
+    if cleanup is not None:
+        evidence["cleanup"] = cleanup
+    evidence["execution_path_evidence"] = _execution_path_evidence(
+        evidence,
+        expected_bytes=expected,
+    )
     return evidence
 
 
@@ -694,6 +718,14 @@ def _relay_only_failure_evidence(
     evidence.setdefault("direct_bytes", 0)
     evidence.setdefault("direct_chunks", 0)
     evidence.setdefault("failure_source", "relay_worker")
+    cleanup = _cleanup_evidence_from_mapping(worker_evidence)
+    if cleanup is not None:
+        evidence["cleanup"] = cleanup
+    evidence["relay_completion_evidence"] = dict(worker_evidence)
+    evidence["execution_path_evidence"] = _execution_path_evidence(
+        evidence,
+        expected_bytes=int(expected_bytes),
+    )
     return evidence
 
 
@@ -748,6 +780,56 @@ def _mark_transfer_failed(
         completion_source="backend" if failure_evidence is not None else None,
         completion_evidence=failure_evidence,
     )
+
+
+def _cleanup_evidence_from_mapping(
+    evidence: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(evidence, Mapping):
+        return None
+    cleanup = evidence.get("cleanup")
+    if not isinstance(cleanup, Mapping):
+        return None
+    return dict(cleanup)
+
+
+def _execution_path_evidence(
+    evidence: Mapping[str, object],
+    *,
+    expected_bytes: int,
+) -> dict[str, object]:
+    path_evidence = {
+        "direct_bytes": int(evidence.get("direct_bytes", 0) or 0),
+        "direct_chunks": int(evidence.get("direct_chunks", 0) or 0),
+        "relay_bytes": int(evidence.get("relay_bytes", 0) or 0),
+        "relay_chunks": int(evidence.get("relay_chunks", 0) or 0),
+    }
+    for key in (
+        "executor",
+        "path",
+        "plan_source",
+        "staging_slot_id",
+        "src_buffer_id",
+        "dst_buffer_id",
+    ):
+        value = evidence.get(key)
+        if value is not None:
+            path_evidence[key] = str(value)
+    for key in ("target_device", "relay_gpu"):
+        value = evidence.get(key)
+        if value is not None:
+            path_evidence[key] = int(value)
+    relay_gpus = evidence.get("relay_gpus")
+    if relay_gpus is not None:
+        path_evidence["relay_gpus"] = tuple(int(item) for item in relay_gpus)
+    if (
+        int(path_evidence["direct_bytes"]) + int(path_evidence["relay_bytes"])
+        != int(expected_bytes)
+    ):
+        raise RuntimeError(
+            "completion path evidence did not match daemon-planned byte total"
+        )
+    return path_evidence
 
 
 def _fail_transfer_without_worker_client(

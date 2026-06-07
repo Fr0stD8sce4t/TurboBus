@@ -5548,12 +5548,38 @@ def _normalize_completion_evidence(
         expected_ticket=expected_ticket,
     )
     resource_evidence = evidence.get("resource_evidence")
-    path_evidence = _normalize_execution_path_evidence(
-        evidence,
-        expected_bytes=expected,
-    )
+    path_evidence_source = evidence.get("execution_path_evidence")
+    if isinstance(path_evidence_source, Mapping):
+        explicit_path_evidence = dict(path_evidence_source)
+        for field_name in (
+            "executor",
+            "path",
+            "plan_source",
+            "target_device",
+            "relay_gpu",
+            "relay_gpus",
+            "src_buffer_id",
+            "dst_buffer_id",
+            "staging_slot_id",
+            "direct_bytes",
+            "direct_chunks",
+            "relay_bytes",
+            "relay_chunks",
+        ):
+            if field_name in evidence and field_name not in explicit_path_evidence:
+                explicit_path_evidence[field_name] = evidence[field_name]
+        path_evidence = _normalize_execution_path_evidence(
+            explicit_path_evidence,
+            expected_bytes=expected,
+        )
+    else:
+        path_evidence = _normalize_execution_path_evidence(
+            evidence,
+            expected_bytes=expected,
+        )
     direct_completion_evidence = evidence.get("direct_completion_evidence")
     relay_completion_evidence = evidence.get("relay_completion_evidence")
+    cleanup_evidence = evidence.get("cleanup")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -5597,6 +5623,11 @@ def _normalize_completion_evidence(
             {}
             if not isinstance(relay_completion_evidence, Mapping)
             else {"relay_completion_evidence": dict(relay_completion_evidence)}
+        ),
+        **(
+            {}
+            if not isinstance(cleanup_evidence, Mapping)
+            else {"cleanup": dict(cleanup_evidence)}
         ),
         **ticket_binding,
     }

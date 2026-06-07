@@ -17,23 +17,28 @@
 - Shared relay ownership is now bound end to end across daemon-issued
   `owner_binding`, worker request construction, cleanup authorization, cleanup
   response validation, and receipt-facing completion evidence.
+- Daemon-issued mixed direct + relay execution now closes through one
+  production path: direct chunks run on the backend, relay chunks run on the
+  worker, and daemon completion evidence keeps unified path split plus cleanup
+  evidence for one valid receipt.
 
 ## Remaining Risk
 
-- Daemon-issued mixed direct + relay plans still need one full execution
-  closure that runs all direct and relay chunks and returns one valid receipt.
+- Registered buffer lifetime still needs one full closure from runtime
+  registration through execution, cleanup, and receipt evidence.
 - Buffer lifetime, server, CUDA, benchmark, and adapter validation remain
   later-stage risks and do not block current implementation rounds.
 
 ## Next Main Target
 
-Finish one full daemon-issued mixed direct + relay execution closure into one
-valid `TransferReceipt`. After that, choose exactly one of these per round:
+Finish one full registered buffer lifecycle closure from production
+registration through execution, cleanup, and receipt. After that, choose
+exactly one of these per round:
 
-- one complete buffer registration to execution to cleanup to receipt closure
-  only if mixed execution no longer blocks the main system path.
+- one complete daemon/worker production startup hardening closure only if
+  buffer lifetime no longer blocks the main system path.
 - one complete runtime-session-facing adapter expansion closure for another
-  workload family only if mixed execution no longer blocks the main system
+  workload family only if buffer lifetime no longer blocks the main system
   path.
 
 Progress-file rule:

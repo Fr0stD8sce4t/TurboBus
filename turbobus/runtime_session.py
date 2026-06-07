@@ -400,7 +400,7 @@ class TurboBusRuntimeSession:
             ),
             worker_stop_event=worker_stop_event,
             worker_thread=worker_thread,
-            runtime_control_owned=True,
+            runtime_control_owned=False,
         )
         return session
 
@@ -528,7 +528,7 @@ class TurboBusRuntimeSession:
             worker_socket_path=worker_path,
             worker_stop_event=worker_stop_event,
             worker_thread=worker_thread,
-            runtime_control_owned=True,
+            runtime_control_owned=False,
         )
         return session
 

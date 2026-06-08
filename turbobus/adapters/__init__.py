@@ -7,7 +7,11 @@ from .model_loading import (
     ModelWeightManifest,
     ModelWeightTensor,
 )
-from .training_offload import TrainingOffloadBucket, TrainingOffloadManager
+from .training_offload import (
+    TrainingOffloadBucket,
+    TrainingOffloadLifecycle,
+    TrainingOffloadManager,
+)
 from .vllm import (
     VllmKVBlockRef,
     VllmKVGroup,
@@ -47,6 +51,7 @@ __all__ = [
     "ModelWeightManifest",
     "ModelWeightTensor",
     "TrainingOffloadBucket",
+    "TrainingOffloadLifecycle",
     "TrainingOffloadManager",
     "VllmKVBlockRef",
     "VllmKVGroup",

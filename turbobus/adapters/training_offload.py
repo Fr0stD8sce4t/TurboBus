@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
-from ..schema import WorkloadKind
+from ..schema import TransferReceipt, WorkloadKind
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,13 @@ class TrainingOffloadBucket:
     byte_count: int | None = None
     cpu_slot: object | None = None
     gpu_slot: object | None = None
+
+
+@dataclass(frozen=True)
+class TrainingOffloadLifecycle:
+    operation: str
+    names: tuple[str, ...]
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class TrainingOffloadManager(OffloadStore):
@@ -80,6 +87,16 @@ class TrainingOffloadManager(OffloadStore):
         super().__init__(runtime_session, transfer_context)
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
+        self._transfer_lifecycle_history: list[TrainingOffloadLifecycle] = []
+        self._last_transfer_lifecycle: TrainingOffloadLifecycle | None = None
+
+    @property
+    def last_transfer_lifecycle(self) -> TrainingOffloadLifecycle | None:
+        return self._last_transfer_lifecycle
+
+    @property
+    def transfer_lifecycle_history(self) -> tuple[TrainingOffloadLifecycle, ...]:
+        return tuple(self._transfer_lifecycle_history)
 
     def register_buckets(
         self,
@@ -162,10 +179,19 @@ class TrainingOffloadManager(OffloadStore):
         return self.block_infos(names)
 
     def prefetch_bucket(self, name: str):
-        return self.prefetch(name)
+        handles = self._run_selected(
+            [name],
+            operation="prefetch_bucket",
+            submitter=self.submit_prefetch_buckets,
+        )
+        return handles[0]
 
     def prefetch_buckets(self, names: Iterable[str]) -> list:
-        return self.prefetch_many(names)
+        return self._run_selected(
+            names,
+            operation="prefetch_buckets",
+            submitter=self.submit_prefetch_buckets,
+        )
 
     def submit_prefetch_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_prefetch_many(names)
@@ -174,19 +200,33 @@ class TrainingOffloadManager(OffloadStore):
         return self.submit_prefetch_buckets(names)
 
     def prefetch_prefix(self, names: Iterable[str]) -> list:
-        names = list(names)
-        batch = self.submit_prefetch_buckets(names)
-        self.wait_many(names)
-        return list(batch.handles)
+        return self._run_selected(
+            names,
+            operation="prefetch_prefix",
+            submitter=self.submit_prefetch_buckets,
+        )
 
     def prefetch_all(self) -> list:
-        return self.prefetch_buckets(self.names())
+        return self._run_selected(
+            self.names(),
+            operation="prefetch_all",
+            submitter=self.submit_prefetch_buckets,
+        )
 
     def offload_bucket(self, name: str):
-        return self.evict(name)
+        handles = self._run_selected(
+            [name],
+            operation="offload_bucket",
+            submitter=self.submit_offload_buckets,
+        )
+        return handles[0]
 
     def offload_buckets(self, names: Iterable[str]) -> list:
-        return self.evict_many(names)
+        return self._run_selected(
+            names,
+            operation="offload_buckets",
+            submitter=self.submit_offload_buckets,
+        )
 
     def submit_offload_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_evict_many(names)
@@ -195,16 +235,30 @@ class TrainingOffloadManager(OffloadStore):
         return self.submit_offload_buckets(names)
 
     def offload_prefix(self, names: Iterable[str]) -> list:
-        names = list(names)
-        batch = self.submit_offload_buckets(names)
-        self.wait_many(names)
-        return list(batch.handles)
+        return self._run_selected(
+            names,
+            operation="offload_prefix",
+            submitter=self.submit_offload_buckets,
+        )
 
     def offload_all(self) -> list:
-        return self.evict_many(self.names())
+        return self._run_selected(
+            self.names(),
+            operation="offload_all",
+            submitter=self.submit_offload_buckets,
+        )
 
     def wait_all(self) -> None:
         self.wait_many(self.names())
+
+    def wait_many(self, names: Iterable[str]) -> None:
+        names = self._normalize_names(names)
+        super().wait_many(names)
+        self._record_transfer_lifecycle(
+            operation="wait_many",
+            names=names,
+            handles=self._handles_for_names(names),
+        )
 
     def transfer_stats(self, names: Iterable[str]) -> TransferStats:
         return self.transfer_stats_many(names)
@@ -219,8 +273,148 @@ class TrainingOffloadManager(OffloadStore):
         for name in selected:
             self.set_block_state(name, BlockState.GPU, clear_transfer_state=True)
 
+    def _run_selected(
+        self,
+        names: Iterable[str],
+        *,
+        operation: str,
+        submitter,
+    ) -> list:
+        names = self._normalize_names(names)
+        if not names:
+            return []
+        batch = submitter(names)
+        super().wait_many(names)
+        self._record_transfer_lifecycle(
+            operation=operation,
+            names=names,
+            handles=batch.handles,
+        )
+        return list(batch.handles)
+
+    def _record_transfer_lifecycle(
+        self,
+        *,
+        operation: str,
+        names: list[str],
+        handles: Iterable[object],
+    ) -> None:
+        handles = list(handles)
+        if not handles:
+            return
+        lifecycle = TrainingOffloadLifecycle(
+            operation=str(operation),
+            names=tuple(names),
+            evidence=self._transfer_lifecycle_evidence(
+                operation=operation,
+                names=names,
+                handles=handles,
+            ),
+        )
+        self._last_transfer_lifecycle = lifecycle
+        self._transfer_lifecycle_history.append(lifecycle)
+
+    def _transfer_lifecycle_evidence(
+        self,
+        *,
+        operation: str,
+        names: list[str],
+        handles: Iterable[object],
+    ) -> dict[str, Any]:
+        receipts = _unique_receipts_from_handles(handles)
+        if names and not receipts:
+            raise RuntimeError(
+                "training-state transfer completed without TransferReceipt evidence"
+            )
+        transfer_stats = self.transfer_stats_many(names).as_dict()
+        return {
+            "evidence_id": (
+                f"training-state-{self.transfer_context.session_id}-"
+                f"{self.transfer_context.intent_prefix}-"
+                f"{len(self._transfer_lifecycle_history) + 1}"
+            ),
+            "operation": str(operation),
+            "job_id": self.transfer_context.job_id,
+            "session_id": self.transfer_context.session_id,
+            "workload_kind": str(self.transfer_context.workload_kind.value),
+            "buffer_registration_source": "TurboBusRuntimeSession",
+            "intent_source": "TransferIntent",
+            "receipt_source": "TransferReceipt",
+            "policy_source": "daemon_scheduler",
+            "cpu_buffer_id": self.transfer_context.cpu_buffer_id,
+            "gpu_buffer_id": self.transfer_context.gpu_buffer_id,
+            "bucket_names": tuple(names),
+            "bucket_count": len(names),
+            "receipt_count": len(receipts),
+            "intent_ids": _join_unique(
+                getattr(getattr(handle, "intent", None), "intent_id", None)
+                for handle in handles
+            ),
+            "receipt_ids": _join_unique(receipt.receipt_id for receipt in receipts),
+            "ticket_ids": _join_unique(receipt.ticket_id for receipt in receipts),
+            "decision_ids": _join_unique(receipt.decision_id for receipt in receipts),
+            "topology_snapshot_ids": _join_unique(
+                receipt.topology_snapshot_id for receipt in receipts
+            ),
+            "transfer_ids": _join_unique(
+                receipt.metadata.get("transfer_id") for receipt in receipts
+            ),
+            "receipt_states": _join_unique(
+                getattr(receipt.state, "value", str(receipt.state))
+                for receipt in receipts
+            ),
+            "completion_sources": _join_unique(
+                receipt.metadata.get("completion_source") for receipt in receipts
+            ),
+            **transfer_stats,
+        }
+
+    def _handles_for_names(self, names: Iterable[str]) -> list[object]:
+        handles = []
+        seen = set()
+        for name in names:
+            handle = self.block(name).last_handle
+            if handle is None or id(handle) in seen:
+                continue
+            seen.add(id(handle))
+            handles.append(handle)
+        return handles
+
+    @staticmethod
+    def _normalize_names(names: Iterable[str]) -> list[str]:
+        return [str(name) for name in names]
+
+
+def _unique_receipts_from_handles(handles: Iterable[object]) -> list[TransferReceipt]:
+    receipts: list[TransferReceipt] = []
+    seen = set()
+    for handle in handles:
+        receipt = getattr(handle, "receipt", None)
+        if not isinstance(receipt, TransferReceipt):
+            continue
+        if receipt.receipt_id in seen:
+            continue
+        seen.add(receipt.receipt_id)
+        receipts.append(receipt)
+    return receipts
+
+
+def _join_unique(values: Iterable[object]) -> str:
+    seen = set()
+    ordered = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ",".join(ordered)
+
 
 __all__ = [
     "TrainingOffloadBucket",
+    "TrainingOffloadLifecycle",
     "TrainingOffloadManager",
 ]

@@ -5,21 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G17 training-state offload closure.
+G18 unified auditable receipt closure.
 
-Training-state offload paths must register real CPU/GPU buffers through
-`TurboBusRuntimeSession`, submit training-state `TransferIntent` work, and
-consume daemon `TransferReceipt` objects without exposing direct, relay, pool,
-target-GPU, or relay-GPU policy to adapter or application code.
+All framework-facing production adapters must expose auditable lifecycle state
+that is derived from daemon `TransferReceipt` objects. The final closure must
+make receipt evidence consistent across offload, model loading, training state,
+and vLLM KV paths without adding benchmark, example, dry-run, fake receipt, or
+synthetic validation entry points.
 
 ## Current Code Work
 
-- `turbobus/adapters/training_offload.py`: optimizer/checkpoint/state bucket
-  registration, offload/restore submission, wait, and receipt lifecycle state.
-- `turbobus/runtime_session.py`: production adapter construction and receipt
-  consumption entry points for training-state workloads.
-- `turbobus/offload/store.py`: shared named-block transfer path used by
-  framework adapters.
+- `turbobus/offload/handles.py`: shared receipt handle validation and wait
+  semantics.
+- `turbobus/offload/store.py`: shared named-block TransferIntent submission,
+  wait, block state, and receipt consumption path.
+- `turbobus/adapters/model_loading.py`: model-weight lifecycle evidence.
+- `turbobus/adapters/training_offload.py`: training-state lifecycle evidence.
+- `turbobus/adapters/vllm_kv_connector.py`: vLLM KV lifecycle evidence.
 
 Round rules:
 
@@ -38,7 +40,8 @@ Round rules:
 
 ## Next Entry
 
-After G17 is complete, advance to G18 unified auditable receipt closure.
+After G18 is complete, stop auto-advance for the system-body queue and leave
+benchmark, example, paper validation, server validation, and new tests deferred.
 
 ## Auto-Advance Policy
 
@@ -46,7 +49,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G17 training-state offload closure.
 - G18 unified auditable receipt closure.
 
 In auto-advance mode:

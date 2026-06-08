@@ -3,17 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-from daemon_support import add_daemon_options
-
-
-BENCHMARKS = REPO_ROOT / "benchmarks"
 
 WORKLOADS = ("model-loading", "training-offload", "optimizer-offload")
 STATE_OFFLOAD_WORKLOAD_KINDS = {
@@ -77,155 +71,11 @@ def output_paths(output_dir: Path, workload: str) -> dict[str, Path]:
     }
 
 
-def clear_workload_outputs(paths: dict[str, Path]) -> None:
-    for path in paths.values():
-        if path.is_file():
-            path.unlink()
-
-
-def daemon_command_args(args) -> list[str]:
-    command = [
-        "--daemon-max-inflight-chunks",
-        str(args.daemon_max_inflight_chunks),
-        "--daemon-profile-max-age-seconds",
-        str(args.daemon_profile_max_age_seconds),
-    ]
-    if args.daemon_socket_path:
-        command.extend(["--daemon-socket-path", args.daemon_socket_path])
-    return command
-
-
-def runtime_service_command_args(args) -> list[str]:
-    command = [
-        "--profile-bytes",
-        str(args.profile_bytes),
-    ]
-    if args.worker_socket_path:
-        command.extend(["--worker-socket-path", args.worker_socket_path])
-    if args.start_services:
-        command.append("--start-services")
-        command.extend(["--min-relays", str(args.min_relays)])
-        command.extend(["--max-sessions-per-relay", str(args.max_sessions_per_relay)])
-    if args.allow_missing_fabric:
-        command.append("--allow-missing-fabric")
-    if args.allow_missing_pcie:
-        command.append("--allow-missing-pcie")
-    return command
-
-
-def build_model_loading_command(args, paths: dict[str, Path]) -> list[str]:
-    command = [
-        sys.executable,
-        str(BENCHMARKS / "model_loading.py"),
-        "--job-id",
-        args.job_id,
-        "--target-gpu",
-        str(args.target_gpu),
-        "--bucket-count",
-        str(args.bucket_count),
-        "--bucket-bytes",
-        str(args.bucket_bytes),
-        "--storage-layout",
-        args.storage_layout,
-        "--chunk-bytes",
-        str(args.chunk_bytes),
-        "--warmup",
-        str(args.warmup),
-        "--iterations",
-        str(args.iterations),
-        "--policy",
-        args.policy,
-        "--run-id",
-        args.run_id,
-        "--json-output",
-        str(paths["json"]),
-        "--summary-output",
-        str(paths["summary"]),
-        "--no-copy-summary",
-    ]
-    command.extend(runtime_service_command_args(args))
-    command.extend(daemon_command_args(args))
-    return command
-
-
 def state_offload_workload_kind(workload: str) -> str:
     try:
         return STATE_OFFLOAD_WORKLOAD_KINDS[workload]
     except KeyError as exc:
         raise ValueError(f"unsupported state offload workload: {workload}") from exc
-
-
-def build_training_offload_command(
-    args,
-    paths: dict[str, Path],
-    *,
-    workload: str = "training-offload",
-) -> list[str]:
-    workload_kind = state_offload_workload_kind(workload)
-    command = [
-        sys.executable,
-        str(BENCHMARKS / "training_offload.py"),
-        "--job-id",
-        args.job_id,
-        "--target-gpu",
-        str(args.target_gpu),
-        "--workload-kind",
-        workload_kind,
-        "--bucket-count",
-        str(args.bucket_count),
-        "--bucket-bytes",
-        str(args.bucket_bytes),
-        "--storage-layout",
-        args.storage_layout,
-        "--chunk-bytes",
-        str(args.chunk_bytes),
-        "--warmup",
-        str(args.warmup),
-        "--iterations",
-        str(args.iterations),
-        "--compute-delay-ms",
-        str(args.compute_delay_ms),
-        "--policy",
-        args.policy,
-        "--run-id",
-        args.run_id,
-        "--intent-prefix",
-        workload,
-        "--json-output",
-        str(paths["json"]),
-        "--summary-output",
-        str(paths["summary"]),
-        "--no-copy-summary",
-    ]
-    if args.active_buckets is not None:
-        command.extend(["--active-buckets", str(args.active_buckets)])
-    command.extend(runtime_service_command_args(args))
-    command.extend(daemon_command_args(args))
-    return command
-
-
-def build_optimizer_offload_command(args, paths: dict[str, Path]) -> list[str]:
-    return build_training_offload_command(args, paths, workload="optimizer-offload")
-
-
-def build_workload_command(args, workload: str, paths: dict[str, Path]) -> list[str]:
-    if workload == "model-loading":
-        return build_model_loading_command(args, paths)
-    if workload == "training-offload":
-        return build_training_offload_command(args, paths, workload=workload)
-    if workload == "optimizer-offload":
-        return build_optimizer_offload_command(args, paths)
-    raise ValueError(f"unsupported workload: {workload}")
-
-
-def run_command(command: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        command,
-        cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
 
 
 def read_json(path: Path, default):
@@ -622,9 +472,9 @@ def compact_summary(result: dict) -> str:
         (
             "paper_validation_config "
             f"job_id={config['job_id']} "
-            f"target_gpu={config['target_gpu']} "
             f"workloads={','.join(config['workloads'])} "
             f"policy={config['policy']} "
+            f"report_source={config['report_source']} "
             f"output_dir={config['output_dir']}"
         ),
     ]
@@ -656,34 +506,28 @@ def run_validation(args) -> dict:
     output_dir = Path(args.output_dir)
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     workloads = selected_workloads(args.workloads)
     result = {
         "config": {
             "job_id": args.job_id,
-            "target_gpu": args.target_gpu,
             "workloads": workloads,
             "policy": args.policy,
             "run_id": args.run_id,
             "output_dir": str(output_dir),
-            "daemon_socket_path": args.daemon_socket_path,
-            "worker_socket_path": args.worker_socket_path,
-            "start_services": args.start_services,
-            "daemon_max_inflight_chunks": args.daemon_max_inflight_chunks,
-            "daemon_profile_max_age_seconds": args.daemon_profile_max_age_seconds,
+            "report_source": "existing_production_benchmark_json",
+            "runs_benchmarks": False,
+            "fake_receipt": False,
+            "synthetic_evidence": False,
+            "dry_run": False,
         },
         "workloads": [],
     }
 
     for workload in workloads:
         paths = output_paths(output_dir, workload)
-        command = build_workload_command(args, workload, paths)
         data_path = paths["json"]
         validation_errors = []
-        clear_workload_outputs(paths)
-        print("paper_validation_run", f"workload={workload}", " ".join(command), flush=True)
-        completed = run_command(command)
         try:
             data, metrics = collect_workload_metrics(workload, paths)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -692,15 +536,15 @@ def run_validation(args) -> dict:
             validation_errors.append("invalid_output")
             validation_errors.append(type(exc).__name__)
         validation_errors.extend(phase6_workload_validation_errors(workload, data_path, metrics))
-        status = workload_status(completed.returncode, validation_errors)
+        status = workload_status(0, validation_errors)
         result["workloads"].append(
             {
                 "workload": workload,
                 "status": status,
-                "returncode": completed.returncode,
-                "command": command,
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
+                "returncode": 0,
+                "command": None,
+                "stdout": "",
+                "stderr": "",
                 "summary_path": str(paths["summary"]),
                 "data_path": str(data_path),
                 "validation_errors": validation_errors,
@@ -714,37 +558,25 @@ def run_validation(args) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run TurboBus daemon-first paper validation")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build a TurboBus paper report from existing production benchmark "
+            "evidence without running benchmarks"
+        )
+    )
     parser.add_argument(
         "--workloads",
         default="all",
         help="Comma-separated: all, model-loading, training-offload, optimizer-offload",
     )
     parser.add_argument("--job-id", default="paper-validation")
-    parser.add_argument("--target-gpu", type=int, required=True)
-    parser.add_argument("--worker-socket-path")
-    parser.add_argument("--start-services", action="store_true")
-    parser.add_argument("--allow-missing-fabric", action="store_true", default=True)
-    parser.add_argument("--allow-missing-pcie", action="store_true")
-    parser.add_argument("--min-relays", type=int, default=1)
-    parser.add_argument("--max-sessions-per-relay", type=int, default=1)
-    parser.add_argument("--profile-bytes", type=int, default=256 * 1024 * 1024)
     parser.add_argument("--policy", default="daemon-default")
     parser.add_argument("--run-id", default="paper-validation")
-    parser.add_argument("--chunk-bytes", type=int, default=4 * 1024 * 1024)
-    parser.add_argument("--warmup", type=int, default=0)
-    parser.add_argument("--iterations", type=int, default=3)
-    parser.add_argument("--bucket-count", type=int, default=8)
-    parser.add_argument("--active-buckets", type=int)
-    parser.add_argument("--bucket-bytes", type=int, default=32 * 1024 * 1024)
-    parser.add_argument("--storage-layout", choices=["packed", "separate"], default="packed")
-    parser.add_argument("--compute-delay-ms", type=float, default=0.0)
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--output-dir", default="benchmarks/results/paper_validation")
     parser.add_argument("--json-output")
     parser.add_argument("--summary-output")
     parser.add_argument("--no-copy-summary", action="store_true")
-    add_daemon_options(parser)
     return parser
 
 

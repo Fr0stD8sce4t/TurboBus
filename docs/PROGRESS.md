@@ -6,25 +6,26 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G41 are complete.
-- G41 benchmark code recovery is present: benchmark-facing code now consumes
-  production `TransferReceipt` objects through runtime evidence validation,
-  formats receipt traces without reconstructing receipts from JSON-like traces,
-  and avoids synthetic evidence, fake receipts, and dry-run deliverables.
-- Auto-advance continues with G42 as the only active target.
+- G1 through G42 are complete.
+- G42 paper report code recovery is present: report-facing code now aggregates
+  existing production benchmark JSON only, consumes daemon/worker receipt
+  evidence already present in those summaries, and no longer starts benchmark
+  subprocesses, deletes outputs, creates synthetic evidence, manufactures
+  receipts, or emits dry-run deliverables.
+- Auto-advance has stopped because the G31-G42 code-function queue is complete.
 
 ## Remaining Risk
 
-- G42 paper report code recovery is not complete: report-facing code entries
-  still need to consume only production benchmark summaries and runtime
-  evidence without creating synthetic evidence, fake receipts, dry-run
-  deliverables, or running paper validation.
+- Functional validation, server validation, benchmark execution, paper
+  validation, and multi-GPU execution remain deferred and were not run in this
+  code-function queue.
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred.
 
 ## Next Main Target
 
-G42 paper report code recovery.
+No active G31-G42 target remains. The next main target requires a new explicit
+plan.
 
 Progress-file rule:
 

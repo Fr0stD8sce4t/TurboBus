@@ -5,23 +5,18 @@ appending history.
 
 ## Current Main Target
 
-G42 paper report code recovery.
+G31-G42 code-function queue complete.
 
-Paper report code entries must be restored only as production evidence
-consumers. They may consume benchmark summaries, real `TransferReceipt`
-validation summaries, adapter lifecycle evidence, and daemon or worker
-completion evidence, but must not run paper validation, create synthetic
-evidence, add dry-run deliverables, manufacture receipts, or define core
-architecture.
+The auto-advance code-function queue has completed through G42. Keep future
+work scoped to the next explicit target. Do not start functional validation,
+benchmark execution, paper validation, server validation, multi-GPU execution,
+new tests, mock gates, fake receipts, synthetic evidence, or dry-run
+deliverables unless a new active plan explicitly allows that stage.
 
 ## Current Code Work
 
-- paper-report-facing code entries under `benchmarks/`: production evidence
-  consumers only.
-- `turbobus/runtime/evidence.py`: shared validation entry for real receipts
-  and adapter lifecycle evidence.
-- `benchmarks/paper_validation.py`: report aggregation must consume existing
-  production evidence only.
+- No active code target in the G31-G42 queue.
+- `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
 
@@ -41,12 +36,10 @@ Round rules:
 
 ## Next Entry
 
-After G42 is complete, stop auto-advance.
+Auto-advance has stopped because G42 is complete.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue:
-
-- G42 paper report code recovery.
+Remaining auto-advance target queue: none.

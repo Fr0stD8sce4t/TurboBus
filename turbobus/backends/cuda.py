@@ -174,8 +174,8 @@ class CudaNativeBackend:
         device_offset_bytes = int(exported["device_offset_bytes"])
         if allocation_base_ptr <= 0:
             raise ValueError("allocation_base_ptr must be positive")
-        if allocation_size_bytes < 0:
-            raise ValueError("allocation_size_bytes must be non-negative")
+        if allocation_size_bytes <= 0:
+            raise ValueError("allocation_size_bytes must be positive")
         if device_offset_bytes < 0:
             raise ValueError("device_offset_bytes must be non-negative")
         return {

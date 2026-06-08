@@ -284,7 +284,38 @@ class CudaIpcDeviceBuffer:
     size_bytes: int
     cuda_ipc_handle: bytes
     device_offset_bytes: int = 0
+    allocation_base_ptr: int | None = None
+    allocation_size_bytes: int | None = None
     device_ptr: int | None = None
+
+    def __post_init__(self) -> None:
+        size_bytes = int(self.size_bytes)
+        offset = int(self.device_offset_bytes)
+        if size_bytes <= 0:
+            raise ValueError("size_bytes must be positive")
+        if offset < 0:
+            raise ValueError("device_offset_bytes must be non-negative")
+        if self.allocation_base_ptr is not None and int(self.allocation_base_ptr) <= 0:
+            raise ValueError("allocation_base_ptr must be positive")
+        if self.allocation_size_bytes is not None:
+            allocation_size = int(self.allocation_size_bytes)
+            if allocation_size <= 0:
+                raise ValueError("allocation_size_bytes must be positive")
+            if offset + size_bytes > allocation_size:
+                raise ValueError("cuda IPC device view exceeds allocation span")
+            object.__setattr__(self, "allocation_size_bytes", allocation_size)
+        object.__setattr__(self, "size_bytes", size_bytes)
+        object.__setattr__(self, "device_offset_bytes", offset)
+        object.__setattr__(self, "device_index", int(self.device_index))
+        object.__setattr__(self, "cuda_ipc_handle", bytes(self.cuda_ipc_handle))
+        if self.allocation_base_ptr is not None:
+            object.__setattr__(
+                self,
+                "allocation_base_ptr",
+                int(self.allocation_base_ptr),
+            )
+        if self.device_ptr is not None:
+            object.__setattr__(self, "device_ptr", int(self.device_ptr))
 
     @classmethod
     def from_device_pointer(
@@ -312,6 +343,8 @@ class CudaIpcDeviceBuffer:
             size_bytes=size_bytes,
             cuda_ipc_handle=bytes(ipc_mapping["cuda_ipc_handle"]),
             device_offset_bytes=int(ipc_mapping.get("device_offset_bytes", 0)),
+            allocation_base_ptr=int(ipc_mapping["allocation_base_ptr"]),
+            allocation_size_bytes=int(ipc_mapping["allocation_size_bytes"]),
             device_ptr=ptr,
         )
 
@@ -320,6 +353,8 @@ class CudaIpcDeviceBuffer:
         return {
             "cuda_ipc_handle": self.cuda_ipc_handle.hex(),
             "device_offset_bytes": self.device_offset_bytes,
+            "allocation_base_ptr": self.allocation_base_ptr,
+            "allocation_size_bytes": self.allocation_size_bytes,
         }
 
     def buffer_registration(self) -> BufferRegistration:

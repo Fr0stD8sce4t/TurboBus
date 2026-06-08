@@ -269,6 +269,13 @@ class WorkerDataPlaneResourceBinding:
             open_evidence["device_ipc_opened"] = True
             open_evidence["device_ipc_base_ptr"] = int(self._device_ipc_base_ptr)
             open_evidence["device_ptr"] = int(self._device_ptr)
+            span_evidence = _validate_cuda_ipc_device_span(
+                self.request,
+                device_handle=device_handle,
+                device_ipc_base_ptr=self._device_ipc_base_ptr,
+                device_ptr=self._device_ptr,
+            )
+            open_evidence["cuda_ipc_span_validation"] = span_evidence
             self._resources = WorkerDataPlaneResources(
                 request=self.request,
                 cpu_buffer=cpu_buffer,
@@ -413,6 +420,64 @@ def _open_cuda_ipc_device_handle(
             "worker device binding requires non-negative device_offset_bytes"
         )
     return int(base_ptr), int(base_ptr) + offset_bytes
+
+
+def _validate_cuda_ipc_device_span(
+    request: WorkerDataPlaneRequest,
+    *,
+    device_handle: WorkerBufferHandle,
+    device_ipc_base_ptr: int,
+    device_ptr: int,
+) -> dict[str, object]:
+    if device_handle.handle_type != "cuda_ipc_device":
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC span validation requires a cuda_ipc_device handle"
+        )
+    metadata = dict(device_handle.metadata)
+    allocation_size = int(metadata["allocation_size_bytes"])
+    offset_bytes = int(metadata.get("device_offset_bytes", 0))
+    device_bytes = int(device_handle.size_bytes)
+    if allocation_size <= 0:
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC span validation requires positive allocation_size_bytes"
+        )
+    if offset_bytes < 0:
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC span validation requires non-negative device_offset_bytes"
+        )
+    if device_bytes <= 0:
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC span validation requires positive device buffer size"
+        )
+    if int(device_ptr) != int(device_ipc_base_ptr) + offset_bytes:
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC opened pointer does not match declared device offset"
+        )
+    view_end = offset_bytes + device_bytes
+    if view_end > allocation_size:
+        raise WorkerDataPlaneResourceError(
+            "worker CUDA IPC device view exceeds exported allocation span"
+        )
+    role = "destination" if request.direction == "h2d" else "source"
+    for item in request.ranges:
+        range_offset = int(item["dst_offset"] if request.direction == "h2d" else item["src_offset"])
+        range_end = range_offset + int(item["bytes"])
+        if range_offset < 0 or range_end > device_bytes:
+            raise WorkerDataPlaneResourceError(
+                "worker CUDA IPC range exceeds validated device view"
+            )
+    return {
+        "validated": True,
+        "device_buffer_id": device_handle.buffer_id,
+        "device_buffer_role": role,
+        "allocation_size_bytes": allocation_size,
+        "device_offset_bytes": offset_bytes,
+        "device_view_bytes": device_bytes,
+        "device_view_end_bytes": view_end,
+        "device_ipc_base_ptr": int(device_ipc_base_ptr),
+        "device_ptr": int(device_ptr),
+        "range_count": len(request.ranges),
+    }
 
 
 def _set_cuda_device_for_handle(backend, handle: WorkerBufferHandle) -> None:

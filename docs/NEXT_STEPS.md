@@ -5,19 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G9 CUDA IPC metadata and span validation.
+G10 worker asynchronous execution pool.
 
-CUDA IPC GPU buffer registrations must carry enough production metadata for the
-worker to validate the opened allocation span before execution. The worker must
-reject out-of-range device views before submitting daemon-issued plans.
+Worker execution must keep daemon-issued transfers in a long-lived asynchronous
+pool instead of collapsing worker execution into one synchronous submit/wait
+path. The pool must preserve ticket authority, resource cleanup, status
+reporting, and receipt evidence for queued, running, completed, and failed
+worker transfers.
 
 ## Current Code Work
 
-- `turbobus/client.py`: CUDA IPC device buffer registration metadata.
-- `turbobus/backends/cuda.py`: CUDA IPC mapping export/open details.
-- `turbobus/worker/resources.py`: worker-side CUDA IPC open and span checks.
-- `turbobus/daemon/server.py`: daemon buffer snapshot and ownership evidence if
-  needed to carry CUDA IPC metadata through tickets and receipts.
+- `turbobus/worker/lifecycle.py`: worker submit, running status, wait, cleanup,
+  and daemon status reporting.
+- `turbobus/worker/cuda_executor.py`: asynchronous CUDA worker handles and
+  inflight/terminal transfer ownership.
+- `turbobus/worker/models.py`: worker result and lifecycle state envelopes.
+- `turbobus/daemon/server.py`: daemon transfer status and runtime feedback
+  evidence for async worker state if needed.
 
 Round rules:
 
@@ -38,7 +42,7 @@ Round rules:
 
 ## Next Entry
 
-After G9 is complete, advance to G10 worker asynchronous execution pool.
+After G10 is complete, advance to G11 scheduler cost-model upgrade.
 
 ## Auto-Advance Policy
 
@@ -47,7 +51,6 @@ G6.
 
 Remaining auto-advance target queue:
 
-- G9 CUDA IPC metadata and span validation.
 - G10 worker asynchronous execution pool.
 - G11 scheduler cost-model upgrade.
 - G12 admission priority queue.

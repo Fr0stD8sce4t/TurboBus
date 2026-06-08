@@ -256,10 +256,23 @@ def _require_runtime_buffer_resource_evidence(
             )
         if not any(
             key in resource_evidence
-            for key in ("device_ipc_opened", "device_ptr", "device_index", "close_evidence")
+            for key in (
+                "cuda_ipc_span_validation",
+                "device_ipc_opened",
+                "device_ptr",
+                "device_index",
+                "close_evidence",
+            )
         ):
             raise ValueError(
                 f"runtime receipt {label} CUDA buffer resource evidence is missing lifecycle markers"
+            )
+        span_validation = resource_evidence.get("cuda_ipc_span_validation")
+        if isinstance(span_validation, Mapping) and not bool(
+            span_validation.get("validated", False)
+        ):
+            raise ValueError(
+                f"runtime receipt {label} CUDA buffer span validation did not complete"
             )
 
 

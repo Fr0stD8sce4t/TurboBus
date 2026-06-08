@@ -1310,6 +1310,17 @@ def _normalize_buffer_handle_metadata(
         metadata["device_offset_bytes"] = int(metadata.get("device_offset_bytes", 0))
         if metadata["device_offset_bytes"] < 0:
             raise ValueError("cuda_ipc_device device_offset_bytes must be non-negative")
+        if "allocation_size_bytes" not in metadata:
+            raise ValueError("cuda_ipc_device metadata requires allocation_size_bytes")
+        metadata["allocation_size_bytes"] = int(metadata["allocation_size_bytes"])
+        if metadata["allocation_size_bytes"] <= 0:
+            raise ValueError("cuda_ipc_device allocation_size_bytes must be positive")
+        if metadata["device_offset_bytes"] + int(size_bytes) > metadata["allocation_size_bytes"]:
+            raise ValueError("cuda_ipc_device buffer span exceeds allocation_size_bytes")
+        if "allocation_base_ptr" in metadata and metadata["allocation_base_ptr"] is not None:
+            metadata["allocation_base_ptr"] = int(metadata["allocation_base_ptr"])
+            if metadata["allocation_base_ptr"] <= 0:
+                raise ValueError("cuda_ipc_device allocation_base_ptr must be positive")
     elif not isinstance(metadata, dict):
         raise TypeError("metadata must be a dict")
     return dict(metadata)

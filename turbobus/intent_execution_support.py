@@ -882,18 +882,6 @@ def state_text(state: object) -> str:
     return str(getattr(state, "value", state)).lower()
 
 
-def wait_for_intent_receipt(daemon_client, intent_id: str) -> TransferReceipt:
-    waiter = getattr(daemon_client, "wait_transfer_receipt", None)
-    if not callable(waiter):
-        raise TypeError("daemon client must support wait_transfer_receipt")
-    response = waiter(str(intent_id), timeout_seconds=0.0)
-    require_ok(response, "daemon receipt wait failed")
-    return receipt_from_daemon_payload(
-        response.payload,
-        expected_intent_id=str(intent_id),
-    )
-
-
 def receipt_from_daemon_payload(
     payload: Mapping[str, object],
     *,
@@ -919,5 +907,4 @@ __all__ = [
     "require_worker_plan_matches_leases",
     "state_text",
     "submit_worker_execution",
-    "wait_for_intent_receipt",
 ]

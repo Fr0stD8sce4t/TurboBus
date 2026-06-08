@@ -749,24 +749,10 @@ class TurboBusRuntimeSession:
             response,
             expected_intent_id=normalized_intent_id,
         )
-        buffer_ids = self._submitted_intent_buffers.get(normalized_intent_id)
-        validate_runtime_receipt(
+        return self._finalize_runtime_receipt(
             receipt,
             intent_id=normalized_intent_id,
-            job_id=self.job_id,
-            session_id=self.session_id,
-            source_buffer_id=(
-                None if buffer_ids is None else buffer_ids[0]
-            ),
-            destination_buffer_id=(
-                None if buffer_ids is None else buffer_ids[1]
-            ),
         )
-        terminal_states = {"complete", "failed", "canceled"}
-        state_text = str(getattr(receipt.state, "value", receipt.state)).lower()
-        if state_text in terminal_states:
-            self._active_intent_ids.discard(normalized_intent_id)
-        return receipt
 
     def bootstrap_profile(self, *, force: bool = False):
         self._require_open()
@@ -1284,7 +1270,10 @@ class TurboBusRuntimeSession:
                     intent.intent_id,
                     timeout_seconds=timeout_seconds,
                 )
-            return receipt
+            return self._finalize_runtime_receipt(
+                receipt,
+                intent_id=intent.intent_id,
+            )
         except Exception:
             self._active_intent_ids.discard(intent.intent_id)
             raise
@@ -1313,13 +1302,13 @@ class TurboBusRuntimeSession:
             intent_daemon=self.daemon_client,
             execution_daemon=self._execution_daemon_client(),
         )
-        return self.make_worker_intent_transfer_executor().execute_transfer_intent(
+        return self._make_worker_intent_transfer_executor().execute_transfer_intent(
             intent,
             response,
             execution_view,
         )
 
-    def make_worker_intent_transfer_executor(self) -> WorkerIntentTransferExecutor:
+    def _make_worker_intent_transfer_executor(self) -> WorkerIntentTransferExecutor:
         """Return the session-owned worker intent executor."""
         self._require_open()
         if self._transfer_executor is not None:
@@ -1331,8 +1320,6 @@ class TurboBusRuntimeSession:
             runtime_options=self.runtime_options,
         )
         return self._transfer_executor
-
-    _runtime_transfer_executor = make_worker_intent_transfer_executor
 
     def _register_pending_buffers(self) -> None:
         self._require_open()
@@ -1852,6 +1839,32 @@ class TurboBusRuntimeSession:
             str(intent.destination_buffer_id),
         )
         self._active_intent_ids.add(normalized_intent_id)
+
+    def _finalize_runtime_receipt(
+        self,
+        receipt: TransferReceipt,
+        *,
+        intent_id: str,
+    ) -> TransferReceipt:
+        normalized_intent_id = str(intent_id)
+        buffer_ids = self._submitted_intent_buffers.get(normalized_intent_id)
+        validate_runtime_receipt(
+            receipt,
+            intent_id=normalized_intent_id,
+            job_id=self.job_id,
+            session_id=self.session_id,
+            source_buffer_id=(
+                None if buffer_ids is None else buffer_ids[0]
+            ),
+            destination_buffer_id=(
+                None if buffer_ids is None else buffer_ids[1]
+            ),
+        )
+        terminal_states = {"complete", "failed", "canceled"}
+        state_text = str(getattr(receipt.state, "value", receipt.state)).lower()
+        if state_text in terminal_states:
+            self._active_intent_ids.discard(normalized_intent_id)
+        return receipt
 
     def _close_active_intent_receipts(self) -> list[dict[str, object]]:
         evidence: list[dict[str, object]] = []

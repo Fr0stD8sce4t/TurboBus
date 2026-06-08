@@ -2,27 +2,30 @@
 
 ## Current State
 
-- The project is still in system-body implementation; benchmarks, examples,
-  paper validation, server validation, new tests, fake evidence, synthetic
-  evidence, and dry-run deliverables remain deferred.
-- G1 through G30 are complete.
-- G30 real-execution validation and evaluation entry recovery is present:
-  validation-facing code now accepts only terminal `TransferReceipt` objects,
-  validates daemon/worker/backend `reproduction_evidence`, rejects fake,
-  synthetic, JSON-only, and dry-run proof, and exposes a normalized
-  `turbobus.real_execution_validation.v1` view for later evaluation.
-- The G19-G30 auto-advance queue has no remaining active target.
+- The project is in code-function implementation. Functional validation,
+  benchmark runs, examples, paper validation, server validation, new tests, mock
+  gates, fake evidence, synthetic evidence, and dry-run deliverables remain
+  deferred.
+- G1 through G31 are complete.
+- G31 production execution entry convergence is present: production transfer
+  submission, worker/backend execution, terminal receipt wait, active-intent
+  cleanup, and real-execution validation now return through
+  `TurboBusRuntimeSession` finalization, while standalone helper receipt waits
+  and public worker executor factories no longer expose production-looking
+  bypasses.
+- Auto-advance continues with G32 as the only active target.
 
 ## Remaining Risk
 
-- End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
-  evidence remains deferred to a future user-provided target queue. Future
-  validation and evaluation must consume real executed daemon/worker/backend
-  receipt evidence through the recovered validation entry.
+- G32 CUDA mixed pooled strengthening is not complete: direct-only, relay-only,
+  mixed direct+relay, H2D, D2H, multi-chunk, and multi-relay execution code
+  still needs stronger exact-plan accounting and completion evidence cohesion.
+- Functional validation, server validation, benchmark execution, paper
+  validation, and multi-GPU execution remain deferred.
 
 ## Next Main Target
 
-None for the current G19-G30 queue.
+G32 CUDA mixed pooled strengthening.
 
 Progress-file rule:
 

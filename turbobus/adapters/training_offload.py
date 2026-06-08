@@ -336,7 +336,110 @@ class TrainingOffloadManager(OffloadStore):
             item_names=names,
             handles=handles,
             transfer_stats=transfer_stats,
+            extra={
+                "adapter": "training_offload_manager",
+                "operation_direction": self._operation_direction(operation, names),
+                "policy_source": "daemon_scheduler",
+                "route_policy_visible_to_adapter": False,
+                "physical_route_source": "daemon_scheduler",
+                "runtime_buffer_binding": self._runtime_buffer_binding_evidence(),
+                "bucket_bindings": self._bucket_binding_evidence(names),
+                "bucket_ranges": self._bucket_range_evidence(names),
+            },
         )
+
+    def _runtime_buffer_binding_evidence(self) -> dict[str, Any]:
+        return {
+            "job_id": self.transfer_context.job_id,
+            "session_id": self.transfer_context.session_id,
+            "workload_kind": str(self.transfer_context.workload_kind.value),
+            "cpu_buffer_id": self.transfer_context.cpu_buffer_id,
+            "gpu_buffer_id": self.transfer_context.gpu_buffer_id,
+            "intent_prefix": self.transfer_context.intent_prefix,
+            "policy_hints": dict(self.transfer_context.policy_hints),
+            "metadata": dict(self.transfer_context.metadata),
+        }
+
+    def _bucket_binding_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
+        bindings: list[dict[str, Any]] = []
+        for name in names:
+            block = self.block(name)
+            bindings.append(
+                {
+                    "name": str(name),
+                    "bucket_id": block.block_id,
+                    "cpu_slot": block.cpu_slot,
+                    "gpu_slot": block.gpu_slot,
+                    "cpu_offset": int(block.cpu_offset),
+                    "gpu_offset": int(block.gpu_offset),
+                    "byte_count": int(block.bytes),
+                    "last_operation": block.last_operation,
+                    "last_direction": self._block_direction(block.last_operation),
+                }
+            )
+        return bindings
+
+    def _bucket_range_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
+        ranges: list[dict[str, Any]] = []
+        for name in names:
+            info = self.block_info(name)
+            direction = self._block_direction(info.last_operation)
+            if direction == "d2h":
+                src_offset = int(info.gpu_offset)
+                dst_offset = int(info.cpu_offset)
+            else:
+                src_offset = int(info.cpu_offset)
+                dst_offset = int(info.gpu_offset)
+            ranges.append(
+                {
+                    "name": info.name,
+                    "block_id": info.block_id,
+                    "cpu_slot": info.cpu_slot,
+                    "gpu_slot": info.gpu_slot,
+                    "direction": direction,
+                    "src_offset": src_offset,
+                    "dst_offset": dst_offset,
+                    "cpu_offset": int(info.cpu_offset),
+                    "gpu_offset": int(info.gpu_offset),
+                    "bytes": int(info.bytes),
+                    "state": info.state.value,
+                    "last_operation": info.last_operation,
+                    "last_intent_id": info.last_intent_id,
+                    "last_receipt_id": info.last_receipt_id,
+                    "last_ticket_id": info.last_ticket_id,
+                    "last_decision_id": info.last_decision_id,
+                    "last_topology_snapshot_id": info.last_topology_snapshot_id,
+                    "last_receipt_state": info.last_receipt_state,
+                    "last_transfer_error": info.last_transfer_error,
+                }
+            )
+        return ranges
+
+    def _operation_direction(self, operation: str, names: Iterable[str]) -> str:
+        normalized = str(operation)
+        if normalized.startswith("prefetch"):
+            return "h2d"
+        if normalized.startswith("offload"):
+            return "d2h"
+        directions = {
+            self._block_direction(self.block(name).last_operation)
+            for name in names
+            if self.block(name).last_operation is not None
+        }
+        directions.discard("unknown")
+        if len(directions) == 1:
+            return next(iter(directions))
+        if len(directions) > 1:
+            return "mixed"
+        return "unknown"
+
+    @staticmethod
+    def _block_direction(operation: str | None) -> str:
+        if operation == "prefetch":
+            return "h2d"
+        if operation == "evict":
+            return "d2h"
+        return "unknown"
 
     def _handles_for_names(self, names: Iterable[str]) -> list[object]:
         handles = []

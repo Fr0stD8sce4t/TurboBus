@@ -5,26 +5,27 @@ appending history.
 
 ## Current Main Target
 
-G28 training offload real integration closure.
+G29 unified reproduction evidence model.
 
-Training-state prefetch and offload must register real runtime-session CPU/GPU
-buffers, map training buckets to H2D/D2H byte ranges, submit only
-`TransferIntent`, consume only `TransferReceipt`, and record a stable
-training-offload lifecycle that binds bucket ranges, runtime buffers, receipt
-ids, ticket ids, byte counts, direction, and path split evidence without
-exposing direct, relay, pool, target GPU, or relay GPU choice to the adapter.
+The production receipt model must expose one stable evidence view for direct,
+relay, mixed pooled execution, failure cleanup, buffer lifetime, CUDA IPC
+lifecycle, and framework adapter lifecycles. Evidence must come from real
+daemon/worker/backend `TransferReceipt` completion or explicit failure, not
+from fake receipts, synthetic topology, JSON artifacts, or dry-run output.
 
 ## Current Code Work
 
-- `turbobus/adapters/training_offload.py`: training bucket registration,
-  prefetch/offload lifecycle evidence, and receipt aggregation.
-- `turbobus/offload/store.py`: bucket batch conversion into daemon-submitted
-  H2D/D2H `TransferIntent`.
-- `turbobus/offload/blocks.py`: block state and receipt identity tracking.
+- `turbobus/daemon/receipts.py`: unified `TransferReceipt` metadata,
+  completion contract, buffer lifetime evidence, CUDA IPC lifecycle, and
+  path-level evidence view.
+- `turbobus/daemon/server.py`: completion evidence normalization, merge, archive,
+  cleanup retention, and runtime feedback preservation.
+- `turbobus/intent_executor.py`: worker/backend completion evidence propagation
+  into receipts.
 - `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from real
-  `TransferReceipt` objects.
-- `turbobus/runtime_session.py`: training-offload adapter construction through
-  the single production runtime-session entry.
+  receipts and runtime buffer bindings.
+- `turbobus/runtime/validation.py`: runtime receipt contract validation around
+  real completion evidence.
 
 Round rules:
 
@@ -43,7 +44,7 @@ Round rules:
 
 ## Next Entry
 
-After G28 is complete, continue automatically to G29 as the only current target.
+After G29 is complete, continue automatically to G30 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -51,6 +52,5 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G28 training offload real integration closure.
 - G29 unified reproduction evidence model.
 - G30 real-execution validation and evaluation entry recovery.

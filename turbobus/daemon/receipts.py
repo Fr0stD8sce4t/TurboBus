@@ -236,6 +236,16 @@ def receipt_for_transfer(
             "fallback_reason": decision.fallback_reason,
             "admission_state": admission.get("state", admitted_state),
             "admission_reason": admission.get("reason"),
+            "admission_fairness": (
+                dict(admission["fairness"])
+                if isinstance(admission.get("fairness"), Mapping)
+                else None
+            ),
+            "admission_priority_order": (
+                dict(admission["priority_order"])
+                if isinstance(admission.get("priority_order"), Mapping)
+                else None
+            ),
             "plan_generation": int(plan_generation),
             "plan_expires_at": plan_expires_at,
             "completion_source": completion_source,

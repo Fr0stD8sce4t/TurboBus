@@ -489,6 +489,19 @@ def fairness_fallback_for_plan(
     return "weighted fairness limit prefers direct fallback"
 
 
+def relay_fairness_admission_blocked_reason(
+    runtime_view: RuntimeLoadView,
+) -> str | None:
+    if runtime_view.total_active_bytes <= 0:
+        return None
+    effective_threshold = runtime_view.fairness_threshold_bytes / (
+        1.0 + runtime_view.resource_pressure
+    )
+    if runtime_view.projected_weighted_active_bytes <= effective_threshold:
+        return None
+    return "weighted fairness limit delays relay admission"
+
+
 def relay_admission_blocked_reason(
     runtime_view: RuntimeLoadView,
     relay_device: int,
@@ -709,6 +722,7 @@ __all__ = [
     "completion_source_pressure_from_runtime_state",
     "fairness_fallback_for_plan",
     "relay_admission_blocked_reason",
+    "relay_fairness_admission_blocked_reason",
     "relay_load_from_runtime_state",
     "runtime_state_metadata",
     "runtime_view",

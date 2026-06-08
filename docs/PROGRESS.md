@@ -5,19 +5,20 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G22 are complete.
-- G22 mixed pooled execution hardening is present: worker/backend execution now
-  exports native path-level direct and relay stats, relay-device stats, and a
-  unified path-level completion contract through daemon normalization and
-  `TransferReceipt` metadata.
-- Auto-advance continues with G23 as the only active target.
+- G1 through G23 are complete.
+- G23 cross-job admission and fairness closure is present: daemon relay
+  admission now evaluates live weighted job pressure, delays new relay plans
+  when a job exceeds the fairness threshold, records fairness evidence in queue
+  and receipt metadata, and lets delayed transfers re-enter through the daemon
+  priority queue once resource checks pass.
+- Auto-advance continues with G24 as the only active target.
 
 ## Remaining Risk
 
-- G23 cross-job admission and fairness closure is not complete: daemon admission
-  and scheduler decisions still need a tighter shared model of live queued,
-  running, active, lease, relay, and job pressure so pooled PCIe sharing is fair
-  across jobs and bound to job/session ownership.
+- G24 failure recovery and cleanup closure is not complete: worker/backend
+  failure paths still need a single cleanup contract that releases relay
+  reservations, staging records, execution tickets, and runtime feedback while
+  preserving partial completion evidence in receipts.
 - End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
   evidence remains deferred. Future validation work must use real executed
   daemon/worker/backend evidence, not fake receipts, synthetic evidence, JSON
@@ -25,7 +26,7 @@
 
 ## Next Main Target
 
-G23 cross-job admission and fairness closure.
+G24 failure recovery and cleanup closure.
 
 Progress-file rule:
 

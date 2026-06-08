@@ -5,22 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G23 cross-job admission and fairness closure.
+G24 failure recovery and cleanup closure.
 
-Daemon admission and scheduling must account for live cross-job queued,
-running, active, lease, and relay pressure so pooled PCIe sharing remains
-daemon-owned, fair across jobs, and isolated by job/session ownership.
+Worker/backend failures must converge through daemon-owned cleanup, release
+relay leases and staging records, preserve failure evidence, and leave receipts
+with explicit cleanup and partial-completion state.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: transfer admission, relay reservation, live
-  transfer accounting, and runtime feedback.
-- `turbobus/scheduler/daemon.py`: measured cost, runtime pressure, job policy,
-  and relay fairness weighting.
-- `turbobus/scheduler/load_feedback.py`: queued/running/active load model.
-- `turbobus/daemon/leases.py`: relay quota, reservation, lease ownership, and
-  cleanup records.
-- `turbobus/worker/validation.py`: ticket, lease, and owner binding checks.
+- `turbobus/daemon/server.py`: failure status, reservation release, transfer
+  retirement, receipt archive, and runtime feedback cleanup.
+- `turbobus/worker/lifecycle.py`: worker execution failure, cleanup response,
+  terminal status report, and async pool evidence.
+- `turbobus/intent_executor.py`: worker failure reporting and planned relay
+  cleanup evidence.
+- `turbobus/daemon/receipts.py`: failed receipt cleanup, partial completion,
+  and completion-contract evidence.
+- `turbobus/worker/cuda_executor.py`: backend exception result evidence.
 
 Round rules:
 
@@ -39,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G23 is complete, continue automatically to G24 as the only current target.
+After G24 is complete, continue automatically to G25 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -47,7 +48,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G23 cross-job admission and fairness closure.
 - G24 failure recovery and cleanup closure.
 - G25 CUDA IPC lifecycle hardening.
 - G26 vLLM real lifecycle closure.

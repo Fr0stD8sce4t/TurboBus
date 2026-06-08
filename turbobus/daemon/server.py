@@ -44,6 +44,7 @@ from ..scheduler import (
 from ..scheduler.load_feedback import (
     busy_relays_from_runtime_state,
     relay_admission_blocked_reason,
+    relay_fairness_admission_blocked_reason,
     relay_load_from_runtime_state,
     runtime_view,
 )
@@ -1849,6 +1850,10 @@ class TurboBusDaemon:
             admission = self._admission_for_decision_locked(
                 decision,
                 session=session,
+                job_id=plan_job_id,
+                total_bytes=int(total_bytes),
+                workload_kind=str(workload_kind),
+                priority=int(priority),
                 allow_delayed=allow_delayed_admission,
                 now=now,
             )
@@ -2366,7 +2371,12 @@ class TurboBusDaemon:
         decision: SchedulingDecision,
         *,
         session: Session,
+        job_id: str | None,
+        total_bytes: int,
+        workload_kind: str,
+        priority: int,
         allow_delayed: bool,
+        enforce_fairness: bool = True,
         now: float,
     ) -> dict[str, object]:
         leases = scheduling_decision_leases(decision)
@@ -2386,6 +2396,19 @@ class TurboBusDaemon:
         reason = self._relay_admission_blocked_reason_locked(
             session=session,
             leases=leases,
+            job_id=job_id,
+            total_bytes=int(total_bytes),
+            workload_kind=str(workload_kind),
+            priority=int(priority),
+            enforce_fairness=bool(enforce_fairness),
+            now=now,
+        )
+        fairness = self._relay_admission_fairness_record_locked(
+            job_id=job_id,
+            total_bytes=int(total_bytes),
+            workload_kind=str(workload_kind),
+            priority=int(priority),
+            enforce_fairness=bool(enforce_fairness),
             now=now,
         )
         if reason is None:
@@ -2398,6 +2421,7 @@ class TurboBusDaemon:
                 "requested_chunks": requested_chunks,
                 "lease_ids": (),
                 "admitted_at": float(now),
+                "fairness": fairness,
             }
         if allow_delayed:
             return {
@@ -2409,6 +2433,7 @@ class TurboBusDaemon:
                 "requested_chunks": requested_chunks,
                 "lease_ids": (),
                 "delayed_at": float(now),
+                "fairness": fairness,
             }
         return {
             "state": _ADMISSION_ADMITTED,
@@ -2419,6 +2444,7 @@ class TurboBusDaemon:
             "requested_chunks": 0,
             "lease_ids": (),
             "admitted_at": float(now),
+            "fairness": fairness,
         }
 
     def _relay_admission_blocked_reason_locked(
@@ -2426,6 +2452,11 @@ class TurboBusDaemon:
         *,
         session: Session,
         leases,
+        job_id: str | None,
+        total_bytes: int,
+        workload_kind: str,
+        priority: int,
+        enforce_fairness: bool,
         now: float,
     ) -> str | None:
         total_chunks = sum(lease.chunk_limit for lease in leases)
@@ -2434,11 +2465,18 @@ class TurboBusDaemon:
         runtime_state = self._runtime_resource_state_locked(now=float(now))
         load_view = runtime_view(
             runtime_state=runtime_state,
-            job_id=None,
-            total_bytes=sum(int(lease.bytes_limit) for lease in leases),
-            workload_kind="generic",
-            priority=0,
+            job_id=None if job_id is None else str(job_id),
+            total_bytes=max(
+                int(total_bytes),
+                sum(int(lease.bytes_limit) for lease in leases),
+            ),
+            workload_kind=str(workload_kind),
+            priority=int(priority),
         )
+        if enforce_fairness:
+            fairness_blocked = relay_fairness_admission_blocked_reason(load_view)
+            if fairness_blocked is not None:
+                return fairness_blocked
         for lease in leases:
             if lease.relay_device not in session.relay_gpus:
                 return "relay admission is delayed by session relay ownership"
@@ -2454,6 +2492,56 @@ class TurboBusDaemon:
             if runtime_blocked is not None:
                 return f"relay admission is delayed by {runtime_blocked}"
         return None
+
+    def _relay_admission_fairness_record_locked(
+        self,
+        *,
+        job_id: str | None,
+        total_bytes: int,
+        workload_kind: str,
+        priority: int,
+        enforce_fairness: bool,
+        now: float,
+    ) -> dict[str, object]:
+        load_view = runtime_view(
+            runtime_state=self._runtime_resource_state_locked(now=float(now)),
+            job_id=None if job_id is None else str(job_id),
+            total_bytes=int(total_bytes),
+            workload_kind=str(workload_kind),
+            priority=int(priority),
+        )
+        blocked_reason = (
+            relay_fairness_admission_blocked_reason(load_view)
+            if enforce_fairness
+            else None
+        )
+        return {
+            "source": "daemon_relay_fairness_admission",
+            "job_id": None if job_id is None else str(job_id),
+            "enforced": bool(enforce_fairness),
+            "blocked_reason": blocked_reason,
+            "job_weight": float(load_view.job_weight),
+            "total_weight": float(load_view.total_weight),
+            "request_charge_bytes": float(load_view.request_charge_bytes),
+            "current_job_active_bytes": int(load_view.current_job_active_bytes),
+            "total_active_bytes": int(load_view.total_active_bytes),
+            "current_weighted_active_bytes": float(
+                load_view.current_weighted_active_bytes
+            ),
+            "projected_weighted_active_bytes": float(
+                load_view.projected_weighted_active_bytes
+            ),
+            "average_weighted_active_bytes": float(
+                load_view.average_weighted_active_bytes
+            ),
+            "fairness_threshold_bytes": float(load_view.fairness_threshold_bytes),
+            "resource_pressure": float(load_view.resource_pressure),
+            "queued_transfer_count": int(load_view.queued_transfer_count),
+            "admitted_transfer_count": int(load_view.admitted_transfer_count),
+            "running_transfer_count": int(load_view.running_transfer_count),
+            "active_transfer_count": int(load_view.active_transfer_count),
+            "delayed_transfer_count": int(load_view.delayed_transfer_count),
+        }
 
     def _plan_expires_at_for_decision(
         self,
@@ -2804,7 +2892,12 @@ class TurboBusDaemon:
             admission = self._admission_for_decision_locked(
                 decision,
                 session=session,
+                job_id=request.get("job_id"),
+                total_bytes=int(request["total_bytes"]),
+                workload_kind=str(request.get("workload_kind", "generic")),
+                priority=int(request.get("priority", 0) or 0),
                 allow_delayed=True,
+                enforce_fairness=False,
                 now=now,
             )
             if admission["state"] != _ADMISSION_ADMITTED:
@@ -3048,6 +3141,11 @@ class TurboBusDaemon:
             "planned_at": decision.issued_at,
             "admission_state": admission.get("state", _ADMISSION_ADMITTED),
             "admission_reason": admission.get("reason"),
+            "admission_fairness": (
+                dict(admission["fairness"])
+                if isinstance(admission.get("fairness"), Mapping)
+                else None
+            ),
             "plan_generation": self._transfer_plan_generations.get(str(transfer_id), 0),
             "plan_expires_at": self._transfer_plan_expirations.get(str(transfer_id)),
             "started_at": None,
@@ -3079,6 +3177,7 @@ class TurboBusDaemon:
             record.get("workload_kind"),
             int(record.get("priority", 0) or 0),
             record.get("admission_state"),
+            record.get("admission_fairness"),
             record.get("admission_priority_order"),
             int(record.get("plan_generation", 0) or 0),
             record.get("plan_expires_at"),
@@ -3092,6 +3191,9 @@ class TurboBusDaemon:
         if admission:
             record["admission_state"] = admission.get("state", record.get("admission_state"))
             record["admission_reason"] = admission.get("reason")
+            fairness = admission.get("fairness")
+            if isinstance(fairness, Mapping):
+                record["admission_fairness"] = dict(fairness)
             priority_order = admission.get("priority_order")
             if isinstance(priority_order, Mapping):
                 record["admission_priority_order"] = dict(priority_order)
@@ -3143,6 +3245,7 @@ class TurboBusDaemon:
             record.get("workload_kind"),
             int(record.get("priority", 0) or 0),
             record.get("admission_state"),
+            record.get("admission_fairness"),
             record.get("admission_priority_order"),
             int(record.get("plan_generation", 0) or 0),
             record.get("plan_expires_at"),
@@ -7058,11 +7161,13 @@ def _admission_priority_record(
         admission=admission_map,
         runtime_state=runtime_state,
     )
+    fairness_penalty = _admission_fairness_penalty(admission_map)
     score = 0.0
     score += max(0, priority) * 1000.0
     score += min(wait_seconds, 3600.0) * 0.20
     score += min(bytes_total / (64.0 * 1024 * 1024), 64.0) * 1.5
     score += readiness_bonus
+    score -= fairness_penalty
     score -= min(max(requested_chunks, 0), 1024) * 0.35
     score -= min(job_active_bytes / (64.0 * 1024 * 1024), 64.0) * 2.0
     score -= min(max(job_running_count, 0), 32) * 3.0
@@ -7078,6 +7183,7 @@ def _admission_priority_record(
         "job_active_bytes": job_active_bytes,
         "job_running_count": job_running_count,
         "runtime_readiness_bonus": readiness_bonus,
+        "fairness_penalty": fairness_penalty,
         "source": "daemon_admission_priority_queue",
     }
 
@@ -7112,6 +7218,21 @@ def _admission_runtime_readiness_bonus(
     bonus -= min(delayed_count, 32) * 0.3
     bonus -= min(max(requested_chunks, 0), 1024) * 0.05
     return bonus
+
+
+def _admission_fairness_penalty(
+    admission: Mapping[str, object],
+) -> float:
+    fairness = admission.get("fairness")
+    if not isinstance(fairness, Mapping):
+        return 0.0
+    threshold = max(1.0, float(fairness.get("fairness_threshold_bytes", 0.0) or 0.0))
+    projected = float(fairness.get("projected_weighted_active_bytes", 0.0) or 0.0)
+    overage = max(0.0, projected - threshold)
+    penalty = min(overage / threshold, 4.0) * 20.0
+    if fairness.get("blocked_reason") is not None:
+        penalty += 10.0
+    return penalty
 
 
 def _runtime_mapping_records(value: object) -> tuple[Mapping[str, object], ...]:

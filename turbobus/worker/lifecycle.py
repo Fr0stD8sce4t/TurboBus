@@ -136,7 +136,12 @@ def _status_evidence_for_result(
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
-        for key in ("ticket_id", "transfer_id", "plan_generation"):
+        for key in (
+            "ticket_id",
+            "transfer_id",
+            "plan_generation",
+            "worker_runtime_feedback",
+        ):
             if key in metadata:
                 completion_evidence.setdefault(key, metadata[key])
         return completion_evidence

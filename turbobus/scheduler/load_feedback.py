@@ -702,6 +702,21 @@ def completion_source_pressure_from_runtime_state(
             int(runtime_metrics.get("cleanup_failed_count", 0) or 0),
             16,
         ) * 0.20
+        worker_runtime = runtime_metrics.get("worker_executor_runtime", {})
+        if isinstance(worker_runtime, Mapping):
+            weighted_worker += min(
+                int(worker_runtime.get("max_inflight_count", 0) or 0),
+                16,
+            ) * 0.20
+            weighted_worker += min(
+                int(worker_runtime.get("max_runtime_cache_size", 0) or 0),
+                16,
+            ) * 0.04
+            weighted_worker += min(
+                float(worker_runtime.get("max_submit_to_complete_ms", 0.0) or 0.0)
+                / 1000.0,
+                16.0,
+            ) * 0.05
     total = max(1.0, weighted_worker + weighted_backend)
     return {
         "worker": min(weighted_worker / total, 1.0),

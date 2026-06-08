@@ -299,6 +299,10 @@ class CudaWorkerExecutor:
                 **canonical_evidence,
                 **_ticket_binding_metadata(request),
                 "async_data_plane": handle.execution_evidence(),
+                "worker_runtime_feedback": _worker_runtime_feedback_for_handle(
+                    handle,
+                    executor=self,
+                ),
             },
         )
         self._terminal[handle.transfer_id] = handle
@@ -457,6 +461,30 @@ class CudaWorkerTransferHandle:
             "error": self.error,
             "staging_slot_id": self.staging_slot.slot_id,
         }
+
+
+def _worker_runtime_feedback_for_handle(
+    handle: CudaWorkerTransferHandle,
+    *,
+    executor: CudaWorkerExecutor,
+) -> dict[str, object]:
+    return {
+        "source": "cuda_worker_executor_runtime_feedback",
+        "transfer_id": handle.transfer_id,
+        "state": handle.state.value,
+        "runtime_reused": bool(handle.runtime_reused),
+        "runtime_cache_key": tuple(handle.runtime_cache_key),
+        "runtime_cache_size": len(executor._runtime_cache),
+        "inflight_count": len(executor._inflight),
+        "terminal_count": len(executor._terminal),
+        "submit_to_complete_ms": (
+            None
+            if handle.completed_at is None
+            else max(0.0, (handle.completed_at - handle.submitted_at) * 1000.0)
+        ),
+        "target_device": int(handle.target_device),
+        "relay_gpus": _relay_gpus_for_request(handle.request),
+    }
 
 
 def _runtime_options_for_request(

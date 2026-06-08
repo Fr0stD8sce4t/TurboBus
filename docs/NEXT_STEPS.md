@@ -5,22 +5,20 @@ appending history.
 
 ## Current Main Target
 
-G35 runtime feedback strengthening.
+G36 multi-tenant isolation strengthening.
 
-Runtime feedback must carry queued, admitted, running, active, completion, and
-cleanup state from daemon and worker/backend execution back into scheduling so
-future transfer plans react to real in-flight system pressure.
+Multi-tenant isolation must keep job, session, buffer, lease, relay staging,
+execution ticket, cleanup, and worker authorization ownership bound to daemon
+state while shared relay use remains cross-job safe.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: runtime resource state, status updates,
-  terminal feedback, admission refresh, and scheduling inputs.
-- `turbobus/scheduler/load_feedback.py`: runtime feedback normalization and
-  scheduler pressure summaries.
-- `turbobus/worker/lifecycle.py`: worker execution status and completion
-  evidence surfaced to daemon.
-- `turbobus/worker/cuda_executor.py`: backend/worker runtime metrics carried
-  into completion metadata.
+- `turbobus/daemon/server.py`: peer ownership, transfer ownership, cleanup
+  ownership, lease ownership, and cross-job relay authorization.
+- `turbobus/daemon/peer_auth.py`: authenticated peer identity matching.
+- `turbobus/worker/validation.py`: daemon-issued ticket and lease validation.
+- `turbobus/worker/lifecycle.py`: worker cleanup and status reporting
+  ownership evidence.
 
 Round rules:
 
@@ -40,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G35 is complete, continue automatically to G36 as the only current
+After G36 is complete, continue automatically to G37 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -49,7 +47,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G35 runtime feedback strengthening.
 - G36 multi-tenant isolation strengthening.
 - G37 vLLM KV code integration strengthening.
 - G38 model loading code integration strengthening.

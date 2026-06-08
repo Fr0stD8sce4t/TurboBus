@@ -6937,6 +6937,17 @@ def _runtime_feedback_metrics_from_records(
             "canceled": 0,
             "unknown": 0,
         },
+        "worker_executor_runtime": {
+            "samples": 0,
+            "runtime_reused": 0,
+            "runtime_created": 0,
+            "max_runtime_cache_size": 0,
+            "max_inflight_count": 0,
+            "max_terminal_count": 0,
+            "max_submit_to_complete_ms": 0.0,
+            "relay_gpu_count": 0,
+            "target_devices": (),
+        },
         "cuda_ipc_span_validation": {
             "validated": 0,
             "failed": 0,
@@ -6973,11 +6984,62 @@ def _runtime_feedback_metrics_from_records(
                 state = "unknown"
             pool_metrics[state] = int(pool_metrics.get(state, 0)) + 1
             metrics["worker_async_pool"] = pool_metrics
+        worker_runtime_feedback = evidence.get("worker_runtime_feedback")
+        if isinstance(worker_runtime_feedback, Mapping):
+            metrics["worker_executor_runtime"] = _merge_worker_runtime_feedback_metrics(
+                metrics["worker_executor_runtime"],
+                worker_runtime_feedback,
+            )
         span_state = _cuda_ipc_span_validation_state(evidence)
         if span_state is not None:
             span_metrics = dict(metrics["cuda_ipc_span_validation"])
             span_metrics[span_state] = int(span_metrics.get(span_state, 0)) + 1
             metrics["cuda_ipc_span_validation"] = span_metrics
+    return metrics
+
+
+def _merge_worker_runtime_feedback_metrics(
+    existing: object,
+    feedback: Mapping[str, object],
+) -> dict[str, object]:
+    metrics = dict(existing) if isinstance(existing, Mapping) else {}
+    samples = int(metrics.get("samples", 0) or 0) + 1
+    metrics["samples"] = samples
+    if bool(feedback.get("runtime_reused", False)):
+        metrics["runtime_reused"] = int(metrics.get("runtime_reused", 0) or 0) + 1
+    else:
+        metrics["runtime_created"] = int(metrics.get("runtime_created", 0) or 0) + 1
+    metrics["max_runtime_cache_size"] = max(
+        int(metrics.get("max_runtime_cache_size", 0) or 0),
+        int(feedback.get("runtime_cache_size", 0) or 0),
+    )
+    metrics["max_inflight_count"] = max(
+        int(metrics.get("max_inflight_count", 0) or 0),
+        int(feedback.get("inflight_count", 0) or 0),
+    )
+    metrics["max_terminal_count"] = max(
+        int(metrics.get("max_terminal_count", 0) or 0),
+        int(feedback.get("terminal_count", 0) or 0),
+    )
+    submit_to_complete = feedback.get("submit_to_complete_ms")
+    if submit_to_complete is not None:
+        metrics["max_submit_to_complete_ms"] = max(
+            float(metrics.get("max_submit_to_complete_ms", 0.0) or 0.0),
+            float(submit_to_complete),
+        )
+    relay_gpus = feedback.get("relay_gpus", ()) or ()
+    if isinstance(relay_gpus, list | tuple):
+        metrics["relay_gpu_count"] = max(
+            int(metrics.get("relay_gpu_count", 0) or 0),
+            len(relay_gpus),
+        )
+    target_devices = {
+        int(item)
+        for item in metrics.get("target_devices", ()) or ()
+    }
+    if feedback.get("target_device") is not None:
+        target_devices.add(int(feedback["target_device"]))
+    metrics["target_devices"] = tuple(sorted(target_devices))
     return metrics
 
 

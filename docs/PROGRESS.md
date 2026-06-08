@@ -6,24 +6,24 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G35 are complete.
-- G35 runtime feedback strengthening is present: CUDA worker completion now
-  carries executor runtime feedback into completion evidence, daemon runtime
-  metrics aggregate worker executor cache/inflight/timing state, and scheduler
-  load feedback folds those metrics into worker pressure for future planning.
-- Auto-advance continues with G36 as the only active target.
+- G1 through G36 are complete.
+- G36 multi-tenant isolation strengthening is present: worker status and
+  completion evidence now carries daemon-issued owner binding, and daemon
+  ticket evidence normalization rejects owner-binding mismatches before storing
+  runtime status or completion evidence.
+- Auto-advance continues with G37 as the only active target.
 
 ## Remaining Risk
 
-- G36 multi-tenant isolation strengthening is not complete: shared relay
-  execution still needs tighter ownership binding across worker authorization,
-  tickets, leases, cleanup, and peer identity.
+- G37 vLLM KV code integration strengthening is not complete: vLLM KV adapter
+  paths still need tighter runtime-session-only transfer submission and receipt
+  consumption without physical route exposure.
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred.
 
 ## Next Main Target
 
-G36 multi-tenant isolation strengthening.
+G37 vLLM KV code integration strengthening.
 
 Progress-file rule:
 

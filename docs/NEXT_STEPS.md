@@ -5,20 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G36 multi-tenant isolation strengthening.
+G37 vLLM KV code integration strengthening.
 
-Multi-tenant isolation must keep job, session, buffer, lease, relay staging,
-execution ticket, cleanup, and worker authorization ownership bound to daemon
-state while shared relay use remains cross-job safe.
+vLLM KV integration code must submit KV-cache H2D/D2H work through
+`TurboBusRuntimeSession` using registered buffers, `TransferIntent`, and
+`TransferReceipt` consumption without exposing direct, relay, target-GPU, or
+relay-GPU route selection to adapter callers.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: peer ownership, transfer ownership, cleanup
-  ownership, lease ownership, and cross-job relay authorization.
-- `turbobus/daemon/peer_auth.py`: authenticated peer identity matching.
-- `turbobus/worker/validation.py`: daemon-issued ticket and lease validation.
-- `turbobus/worker/lifecycle.py`: worker cleanup and status reporting
-  ownership evidence.
+- `turbobus/adapters/vllm.py`: vLLM-facing KV adapter entry points.
+- `turbobus/adapters/vllm_kv_connector.py`: KV connector transfer submission
+  through runtime session.
+- `turbobus/adapters/vllm_integration.py`: vLLM integration helpers and
+  runtime-session binding.
+- `turbobus/offload/context.py` and `turbobus/offload/store.py`: shared adapter
+  context, registered buffer use, and receipt consumption.
 
 Round rules:
 
@@ -38,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G36 is complete, continue automatically to G37 as the only current
+After G37 is complete, continue automatically to G38 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -47,7 +49,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G36 multi-tenant isolation strengthening.
 - G37 vLLM KV code integration strengthening.
 - G38 model loading code integration strengthening.
 - G39 training offload code integration strengthening.

@@ -140,6 +140,7 @@ def _status_evidence_for_result(
             "ticket_id",
             "transfer_id",
             "plan_generation",
+            "owner_binding",
             "worker_runtime_feedback",
         ):
             if key in metadata:
@@ -1305,10 +1306,13 @@ def _worker_result_with_ticket_binding(
     plan_generation = request.ticket.metadata.get("plan_generation")
     if plan_generation is not None:
         metadata.setdefault("plan_generation", int(plan_generation))
+    owner_binding = request.data_plane.metadata.get("owner_binding")
+    if isinstance(owner_binding, Mapping):
+        metadata.setdefault("owner_binding", dict(owner_binding))
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
-        for key in ("ticket_id", "transfer_id", "plan_generation"):
+        for key in ("ticket_id", "transfer_id", "plan_generation", "owner_binding"):
             if key in metadata:
                 completion_evidence.setdefault(key, metadata[key])
         metadata["completion_evidence"] = completion_evidence
@@ -1518,6 +1522,9 @@ def _failed_worker_result_from_async_pool_exception(
         else {}
     )
     completion_evidence["worker_async_pool"] = dict(evidence)
+    owner_binding = metadata.get("owner_binding")
+    if isinstance(owner_binding, Mapping):
+        completion_evidence.setdefault("owner_binding", dict(owner_binding))
     metadata["completion_evidence"] = completion_evidence
     return WorkerTransferResult(
         transfer_id=result.transfer_id,

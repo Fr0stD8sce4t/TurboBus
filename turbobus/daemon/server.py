@@ -7899,7 +7899,7 @@ def _normalize_ticket_binding(
         )
     ):
         raise ValueError(f"{evidence_name} plan_generation does not match daemon ticket")
-    return {
+    ticket_binding = {
         "ticket_id": expected_ticket.ticket_id,
         **(
             {}
@@ -7912,6 +7912,54 @@ def _normalize_ticket_binding(
             else {"plan_generation": int(expected_generation)}
         ),
     }
+    owner_binding = _normalize_evidence_owner_binding(
+        evidence,
+        expected_ticket=expected_ticket,
+        evidence_name=evidence_name,
+    )
+    if owner_binding is not None:
+        ticket_binding["owner_binding"] = owner_binding
+    return ticket_binding
+
+
+def _normalize_evidence_owner_binding(
+    evidence: Mapping[str, object],
+    *,
+    expected_ticket: ExecutionTicket,
+    evidence_name: str,
+) -> dict[str, object] | None:
+    expected_owner = expected_ticket.metadata.get("owner_binding")
+    evidence_owner = evidence.get("owner_binding")
+    if not isinstance(expected_owner, Mapping):
+        return None
+    if not isinstance(evidence_owner, Mapping):
+        raise ValueError(f"{evidence_name} owner_binding is required")
+    normalized_expected = _canonical_owner_binding(expected_owner)
+    normalized_evidence = _canonical_owner_binding(evidence_owner)
+    if normalized_expected != normalized_evidence:
+        raise ValueError(f"{evidence_name} owner_binding does not match daemon ticket")
+    return normalized_expected
+
+
+def _canonical_owner_binding(owner_binding: Mapping[str, object]) -> dict[str, object]:
+    cleanup_scope = owner_binding.get("cleanup_scope")
+    if not isinstance(cleanup_scope, Mapping):
+        raise ValueError("owner_binding cleanup_scope is required")
+    peer_identity = owner_binding.get("peer_identity")
+    canonical = {
+        "job_id": str(owner_binding["job_id"]),
+        "session_id": str(owner_binding["session_id"]),
+        "transfer_id": str(owner_binding["transfer_id"]),
+        "lease_ids": tuple(str(item) for item in owner_binding.get("lease_ids", ()) or ()),
+        "relay_gpus": tuple(sorted({int(item) for item in owner_binding.get("relay_gpus", ()) or ()})),
+        "cleanup_scope": {
+            "target_kind": str(cleanup_scope.get("target_kind", "")).lower(),
+            "target_ids": tuple(str(item) for item in cleanup_scope.get("target_ids", ()) or ()),
+        },
+    }
+    if isinstance(peer_identity, Mapping):
+        canonical["peer_identity"] = dict(peer_identity)
+    return canonical
 
 
 def _empty_removed_summary() -> dict[str, int]:

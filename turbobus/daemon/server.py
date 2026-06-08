@@ -2706,12 +2706,19 @@ class TurboBusDaemon:
             elif state in {_ADMISSION_CANCELED, _ADMISSION_FAILED, _ADMISSION_EXPIRED}:
                 terminal_transfer_ids.append(str(transfer_id))
             self._refresh_transfer_queue_record_locked(str(transfer_id), now=float(now))
+        delayed_priority_queue = _ordered_delayed_admission_records(
+            transfer_admissions=self._transfer_admissions,
+            transfer_queue_records=self._transfer_queue_records,
+            runtime_state=self._runtime_resource_state_locked(now=float(now)),
+            now=float(now),
+        )
         return {
             "refreshed_at": float(now),
             "expired_leases": expired_leases,
             "promoted_transfers": promoted,
             "admitted_transfer_ids": tuple(admitted_transfer_ids),
             "delayed_transfer_ids": tuple(delayed_transfer_ids),
+            "delayed_priority_queue": delayed_priority_queue,
             "terminal_transfer_ids": tuple(terminal_transfer_ids),
         }
 
@@ -2721,10 +2728,15 @@ class TurboBusDaemon:
         now: float,
     ) -> tuple[dict[str, object], ...]:
         promoted: list[dict[str, object]] = []
+        runtime_state = self._runtime_resource_state_locked(now=float(now))
         delayed_transfer_ids = tuple(
-            transfer_id
-            for transfer_id, admission in sorted(self._transfer_admissions.items())
-            if admission.get("state") == _ADMISSION_DELAYED
+            item["transfer_id"]
+            for item in _ordered_delayed_admission_records(
+                transfer_admissions=self._transfer_admissions,
+                transfer_queue_records=self._transfer_queue_records,
+                runtime_state=runtime_state,
+                now=float(now),
+            )
         )
         for transfer_id in delayed_transfer_ids:
             status = self._transfer_statuses.get(transfer_id)
@@ -2733,6 +2745,13 @@ class TurboBusDaemon:
             request = self._transfer_plan_requests.get(transfer_id)
             if request is None:
                 continue
+            admission_order = _admission_priority_record(
+                transfer_id=transfer_id,
+                admission=self._transfer_admissions.get(transfer_id, {}),
+                queue_record=self._transfer_queue_records.get(transfer_id, {}),
+                runtime_state=runtime_state,
+                now=float(now),
+            )
             try:
                 (
                     session,
@@ -2771,6 +2790,7 @@ class TurboBusDaemon:
                         "state": _ADMISSION_DELAYED,
                         "reason": str(exc),
                         "promotion_failed_at": float(now),
+                        "priority_order": admission_order,
                     }
                 )
                 self._transfer_admissions[transfer_id] = admission
@@ -2791,6 +2811,7 @@ class TurboBusDaemon:
                     ),
                     "plan_expires_at": self._transfer_plan_expirations.get(transfer_id),
                     "promotion_checked_at": float(now),
+                    "priority_order": admission_order,
                 }
                 self._transfer_admissions[transfer_id] = admission
                 self._refresh_transfer_queue_record_locked(transfer_id, now=now)
@@ -2818,6 +2839,7 @@ class TurboBusDaemon:
                 "plan_generation": generation,
                 "plan_expires_at": self._transfer_plan_expirations[transfer_id],
                 "promoted_at": float(now),
+                "priority_order": admission_order,
             }
             self._transfer_admissions[transfer_id] = admission
             intent_id = request.get("intent_id")
@@ -2847,6 +2869,7 @@ class TurboBusDaemon:
             )
             self._refresh_transfer_queue_record_locked(transfer_id, now=now)
             self._touch_session_locked(session.session_id, now)
+            runtime_state = self._runtime_resource_state_locked(now=float(now))
             promoted.append(
                 {
                     "transfer_id": transfer_id,
@@ -2855,6 +2878,7 @@ class TurboBusDaemon:
                         reservation.reservation_id for reservation in reservations
                     ),
                     "ticket_id": None if ticket is None else ticket.ticket_id,
+                    "priority_order": admission_order,
                 }
             )
         return tuple(promoted)
@@ -3050,6 +3074,7 @@ class TurboBusDaemon:
             record.get("workload_kind"),
             int(record.get("priority", 0) or 0),
             record.get("admission_state"),
+            record.get("admission_priority_order"),
             int(record.get("plan_generation", 0) or 0),
             record.get("plan_expires_at"),
             record.get("started_at"),
@@ -3062,6 +3087,9 @@ class TurboBusDaemon:
         if admission:
             record["admission_state"] = admission.get("state", record.get("admission_state"))
             record["admission_reason"] = admission.get("reason")
+            priority_order = admission.get("priority_order")
+            if isinstance(priority_order, Mapping):
+                record["admission_priority_order"] = dict(priority_order)
         record["plan_generation"] = self._transfer_plan_generations.get(
             str(transfer_id),
             int(record.get("plan_generation", 0) or 0),
@@ -3110,6 +3138,7 @@ class TurboBusDaemon:
             record.get("workload_kind"),
             int(record.get("priority", 0) or 0),
             record.get("admission_state"),
+            record.get("admission_priority_order"),
             int(record.get("plan_generation", 0) or 0),
             record.get("plan_expires_at"),
             record.get("started_at"),
@@ -6679,6 +6708,129 @@ def _job_runtime_state_from_records(
                 bytes_total - bytes_completed,
             )
     return dict(sorted(filtered_jobs.items()))
+
+
+def _ordered_delayed_admission_records(
+    *,
+    transfer_admissions: Mapping[str, Mapping[str, object]],
+    transfer_queue_records: Mapping[str, Mapping[str, object]],
+    runtime_state: Mapping[str, object],
+    now: float,
+) -> tuple[dict[str, object], ...]:
+    records = [
+        _admission_priority_record(
+            transfer_id=str(transfer_id),
+            admission=admission,
+            queue_record=transfer_queue_records.get(str(transfer_id), {}),
+            runtime_state=runtime_state,
+            now=now,
+        )
+        for transfer_id, admission in transfer_admissions.items()
+        if isinstance(admission, Mapping)
+        and admission.get("state") == _ADMISSION_DELAYED
+    ]
+    return tuple(
+        sorted(
+            records,
+            key=lambda item: (
+                -float(item["priority_score"]),
+                -int(item["priority"]),
+                float(item["delayed_at"]),
+                str(item["transfer_id"]),
+            ),
+        )
+    )
+
+
+def _admission_priority_record(
+    *,
+    transfer_id: str,
+    admission: Mapping[str, object] | None,
+    queue_record: Mapping[str, object] | None,
+    runtime_state: Mapping[str, object],
+    now: float,
+) -> dict[str, object]:
+    admission_map = admission if isinstance(admission, Mapping) else {}
+    record = queue_record if isinstance(queue_record, Mapping) else {}
+    transfer_id = str(transfer_id)
+    job_id = record.get("job_id")
+    priority = int(record.get("priority", 0) or 0)
+    requested_chunks = int(admission_map.get("requested_chunks", 0) or 0)
+    bytes_total = int(record.get("bytes_total", 0) or 0)
+    delayed_at = float(
+        admission_map.get(
+            "delayed_at",
+            record.get("queued_at", now),
+        )
+        or now
+    )
+    wait_seconds = max(0.0, float(now) - delayed_at)
+    runtime_jobs = runtime_state.get("job_runtime_state", {})
+    job_active_bytes = 0
+    job_running_count = 0
+    if job_id is not None and isinstance(runtime_jobs, Mapping):
+        job_record = runtime_jobs.get(str(job_id), {})
+        if isinstance(job_record, Mapping):
+            job_active_bytes = int(job_record.get("active_bytes_remaining", 0) or 0)
+            job_running_count = int(job_record.get("running_transfer_count", 0) or 0)
+    readiness_bonus = _admission_runtime_readiness_bonus(
+        admission=admission_map,
+        runtime_state=runtime_state,
+    )
+    score = 0.0
+    score += max(0, priority) * 1000.0
+    score += min(wait_seconds, 3600.0) * 0.20
+    score += min(bytes_total / (64.0 * 1024 * 1024), 64.0) * 1.5
+    score += readiness_bonus
+    score -= min(max(requested_chunks, 0), 1024) * 0.35
+    score -= min(job_active_bytes / (64.0 * 1024 * 1024), 64.0) * 2.0
+    score -= min(max(job_running_count, 0), 32) * 3.0
+    return {
+        "transfer_id": transfer_id,
+        "job_id": None if job_id is None else str(job_id),
+        "priority": priority,
+        "priority_score": score,
+        "delayed_at": delayed_at,
+        "wait_seconds": wait_seconds,
+        "requested_chunks": requested_chunks,
+        "bytes_total": bytes_total,
+        "job_active_bytes": job_active_bytes,
+        "job_running_count": job_running_count,
+        "runtime_readiness_bonus": readiness_bonus,
+        "source": "daemon_admission_priority_queue",
+    }
+
+
+def _admission_runtime_readiness_bonus(
+    *,
+    admission: Mapping[str, object],
+    runtime_state: Mapping[str, object],
+) -> float:
+    requested_chunks = int(admission.get("requested_chunks", 0) or 0)
+    active_leases = int(
+        dict(runtime_state.get("summary", {}) or {}).get("active_lease_count", 0)
+        if isinstance(runtime_state.get("summary", {}), Mapping)
+        else 0
+    )
+    active_reservations = int(
+        dict(runtime_state.get("summary", {}) or {}).get(
+            "active_reservation_count",
+            0,
+        )
+        if isinstance(runtime_state.get("summary", {}), Mapping)
+        else 0
+    )
+    delayed_count = int(
+        dict(runtime_state.get("summary", {}) or {}).get("delayed_transfer_count", 0)
+        if isinstance(runtime_state.get("summary", {}), Mapping)
+        else 0
+    )
+    bonus = 25.0
+    bonus -= min(active_leases, 32) * 0.8
+    bonus -= min(active_reservations, 32) * 0.8
+    bonus -= min(delayed_count, 32) * 0.3
+    bonus -= min(max(requested_chunks, 0), 1024) * 0.05
+    return bonus
 
 
 def _runtime_mapping_records(value: object) -> tuple[Mapping[str, object], ...]:

@@ -5,21 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G12 admission priority queue.
+G13 runtime feedback metrics closure.
 
-Daemon admission must promote delayed relay transfers by production priority,
-job pressure, runtime readiness, and lease availability instead of scanning
-delayed transfers only by map order. Admission state must remain daemon-owned
-and must not let applications choose routes, relays, or execution mode.
+Daemon runtime feedback must preserve worker/backend completion metrics,
+execution-path evidence, cleanup evidence, async worker pool state, CUDA IPC
+span validation, and recent terminal feedback in one scheduler-consumable view.
+The feedback path must remain derived from real worker/backend status updates
+and daemon receipts, not synthetic evidence or dry-run artifacts.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: delayed admission ordering, promotion,
-  admission refresh state, transfer queue records, and promotion evidence.
-- `turbobus/scheduler/load_feedback.py`: runtime pressure inputs used by
-  admission ordering if needed.
-- `turbobus/scheduler/daemon.py`: scheduling metadata consumed by admission
-  decisions if needed.
+- `turbobus/daemon/server.py`: runtime resource state, terminal feedback
+  records, completion evidence aggregation, and scheduler feedback summaries.
+- `turbobus/runtime/validation.py`: receipt validation expectations for
+  runtime feedback evidence.
+- `turbobus/scheduler/load_feedback.py`: scheduler-consumable feedback fields
+  and runtime pressure inputs.
 
 Round rules:
 
@@ -38,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G12 is complete, advance to G13 runtime feedback metrics closure.
+After G13 is complete, advance to G14 vLLM KV lifecycle closure.
 
 ## Auto-Advance Policy
 
@@ -46,7 +47,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G12 admission priority queue.
 - G13 runtime feedback metrics closure.
 - G14 vLLM KV lifecycle closure.
 - G15 prefix store productionization.

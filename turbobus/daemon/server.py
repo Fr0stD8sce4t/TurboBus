@@ -6843,6 +6843,7 @@ def _normalize_completion_evidence(
     worker_completion_evidence = evidence.get("worker_completion_evidence")
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
+    worker_async_pool = evidence.get("worker_async_pool")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -6902,6 +6903,11 @@ def _normalize_completion_evidence(
             if not isinstance(worker_startup, Mapping)
             else {"worker_startup": dict(worker_startup)}
         ),
+        **(
+            {}
+            if not isinstance(worker_async_pool, Mapping)
+            else {"worker_async_pool": dict(worker_async_pool)}
+        ),
         **ticket_binding,
     }
 
@@ -6921,6 +6927,7 @@ def _merge_completion_evidence(
         "relay_completion_evidence",
         "worker_completion_evidence",
         "cleanup",
+        "worker_async_pool",
     ):
         previous = existing.get(field_name)
         current = incoming.get(field_name)
@@ -7017,6 +7024,9 @@ def _normalize_status_ticket_evidence(
     worker_startup = evidence.get("worker_startup")
     if isinstance(worker_startup, Mapping):
         ticket_binding["worker_startup"] = dict(worker_startup)
+    worker_async_pool = evidence.get("worker_async_pool")
+    if isinstance(worker_async_pool, Mapping):
+        ticket_binding["worker_async_pool"] = dict(worker_async_pool)
     for field_name in (
         "executor",
         "path",

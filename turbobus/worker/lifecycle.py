@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 import os
+from threading import Lock
 import time
 
 from ..schema import (
@@ -46,6 +48,10 @@ class WorkerStatusReportError(RuntimeError):
 
 
 class WorkerCleanupError(RuntimeError):
+    pass
+
+
+class WorkerAsyncExecutionPoolError(RuntimeError):
     pass
 
 
@@ -541,6 +547,195 @@ class _WorkerTransferCleanupCoordinator:
         return DaemonResponse(ok=response.ok, payload=normalized_payload, error=response.error)
 
 
+class WorkerAsyncExecutionPool:
+    def __init__(
+        self,
+        executor,
+        *,
+        resource_binder: WorkerDataPlaneResourceBinder | None,
+        worker_startup_evidence: Mapping[str, object] | None = None,
+        max_workers: int | None = None,
+    ) -> None:
+        if executor is None:
+            raise ValueError("worker async execution pool requires an executor")
+        worker_count = 1 if max_workers is None else int(max_workers)
+        if worker_count <= 0:
+            raise ValueError("worker async execution pool max_workers must be positive")
+        self._executor = executor
+        self._resource_binder = resource_binder
+        self._worker_startup_evidence = (
+            None
+            if worker_startup_evidence is None
+            else dict(worker_startup_evidence)
+        )
+        self._executor_pool = ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="turbobus-worker-transfer",
+        )
+        self._lock = Lock()
+        self._next_pool_sequence = 1
+        self._queued: dict[str, dict[str, object]] = {}
+        self._running: dict[str, dict[str, object]] = {}
+        self._terminal: dict[str, dict[str, object]] = {}
+
+    def submit(
+        self,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+    ) -> "WorkerAsyncExecution":
+        if not isinstance(worker_request, WorkerTransferRequest):
+            raise TypeError("worker_request must be a WorkerTransferRequest")
+        if not isinstance(staging_slot, WorkerStagingSlot):
+            raise TypeError("staging_slot must be a WorkerStagingSlot")
+        worker_validation.validate_daemon_issued_ticket(worker_request.ticket)
+        worker_validation.validate_ticket_matches_worker_request(
+            worker_request.ticket,
+            worker_request.authorization,
+            worker_request.data_plane,
+        )
+        pool_ticket = self._next_pool_ticket(worker_request)
+        queued_at = time.time()
+        queued_record = _worker_pool_record(
+            pool_ticket=pool_ticket,
+            state="queued",
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            queued_at=queued_at,
+        )
+        with self._lock:
+            if worker_request.transfer_id in self._queued or worker_request.transfer_id in self._running:
+                raise WorkerAsyncExecutionPoolError(
+                    "worker transfer is already queued or running"
+                )
+            self._queued[worker_request.transfer_id] = queued_record
+        future = self._executor_pool.submit(
+            self._run_transfer,
+            worker_request,
+            staging_slot,
+            pool_ticket,
+            queued_at,
+        )
+        return WorkerAsyncExecution(
+            pool=self,
+            pool_ticket=pool_ticket,
+            transfer_id=worker_request.transfer_id,
+            future=future,
+        )
+
+    def wait(self, execution: "WorkerAsyncExecution") -> WorkerTransferResult:
+        if not isinstance(execution, WorkerAsyncExecution):
+            raise TypeError("execution must be WorkerAsyncExecution")
+        if execution.pool is not self:
+            raise WorkerAsyncExecutionPoolError(
+                "worker async execution belongs to another pool"
+            )
+        result = execution.future.result()
+        if not isinstance(result, WorkerTransferResult):
+            raise TypeError("worker async execution returned an invalid result")
+        return result
+
+    def describe(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "queued": {
+                    key: dict(value) for key, value in sorted(self._queued.items())
+                },
+                "running": {
+                    key: dict(value) for key, value in sorted(self._running.items())
+                },
+                "terminal": {
+                    key: dict(value) for key, value in sorted(self._terminal.items())
+                },
+            }
+
+    def close(self) -> None:
+        self._executor_pool.shutdown(wait=True)
+
+    def _next_pool_ticket(self, worker_request: WorkerTransferRequest) -> str:
+        with self._lock:
+            sequence = self._next_pool_sequence
+            self._next_pool_sequence += 1
+        return f"worker-pool-{sequence}-{worker_request.transfer_id}"
+
+    def _run_transfer(
+        self,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        pool_ticket: str,
+        queued_at: float,
+    ) -> WorkerTransferResult:
+        started_at = time.time()
+        running_record = _worker_pool_record(
+            pool_ticket=pool_ticket,
+            state="running",
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            queued_at=queued_at,
+            started_at=started_at,
+        )
+        with self._lock:
+            self._queued.pop(worker_request.transfer_id, None)
+            self._running[worker_request.transfer_id] = running_record
+        result: WorkerTransferResult | None = None
+        try:
+            result = _execute_worker_transfer_once(
+                executor=self._executor,
+                resource_binder=self._resource_binder,
+                worker_startup_evidence=self._worker_startup_evidence,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+            )
+            return _worker_result_with_async_pool_evidence(
+                result,
+                pool_ticket=pool_ticket,
+                queued_at=queued_at,
+                started_at=started_at,
+                completed_at=time.time(),
+            )
+        finally:
+            completed_at = time.time()
+            state = (
+                result.state.value
+                if isinstance(result, WorkerTransferResult)
+                else "failed"
+            )
+            terminal_record = _worker_pool_record(
+                pool_ticket=pool_ticket,
+                state=state,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                queued_at=queued_at,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+            with self._lock:
+                self._running.pop(worker_request.transfer_id, None)
+                self._terminal[worker_request.transfer_id] = terminal_record
+
+
+class WorkerAsyncExecution:
+    def __init__(
+        self,
+        *,
+        pool: WorkerAsyncExecutionPool,
+        pool_ticket: str,
+        transfer_id: str,
+        future: Future,
+    ) -> None:
+        self.pool = pool
+        self.pool_ticket = str(pool_ticket)
+        self.transfer_id = str(transfer_id)
+        self.future = future
+
+    def evidence(self, *, state: str = "failed") -> dict[str, object]:
+        return {
+            "pool": "worker_async_execution_pool",
+            "pool_ticket": self.pool_ticket,
+            "transfer_id": self.transfer_id,
+            "state": str(state),
+        }
+
+
 class WorkerTransferClient:
     def __init__(
         self,
@@ -550,6 +745,8 @@ class WorkerTransferClient:
         cleanup_coordinator: _WorkerTransferCleanupCoordinator | None = None,
         staging_pool: WorkerStagingPool | None = None,
         resource_binder: WorkerDataPlaneResourceBinder | None = None,
+        execution_pool: WorkerAsyncExecutionPool | None = None,
+        execution_pool_workers: int | None = None,
         worker_startup_evidence: Mapping[str, object] | None = None,
     ) -> None:
         if executor is None:
@@ -570,6 +767,12 @@ class WorkerTransferClient:
             None
             if worker_startup_evidence is None
             else dict(worker_startup_evidence)
+        )
+        self._execution_pool = execution_pool or WorkerAsyncExecutionPool(
+            self._executor,
+            resource_binder=self._resource_binder,
+            worker_startup_evidence=self._worker_startup_evidence,
+            max_workers=execution_pool_workers,
         )
 
     def _authorize(
@@ -909,75 +1112,32 @@ class WorkerTransferClient:
                 worker_request.ticket,
                 now=time.time(),
             )
-        if self._resource_binder is None:
-            return _worker_result_with_startup_evidence(
-                self._executor.execute(worker_request, staging_slot),
-                self._worker_startup_evidence,
-            )
-        binding = self._resource_binder.bind(worker_request)
         _trace_worker_stage(
-            "worker_resource_bind_start",
+            "worker_async_pool_submit_start",
             transfer_id=worker_request.transfer_id,
         )
-        resources = None
-        result: WorkerTransferResult | None = None
-        execution_error: Exception | None = None
-        try:
-            with binding as bound_resources:
-                resources = bound_resources
-                _trace_worker_stage(
-                    "worker_resource_bind_done",
-                    transfer_id=worker_request.transfer_id,
-                )
-                try:
-                    _trace_worker_stage(
-                        "worker_executor_submit_start",
-                        transfer_id=worker_request.transfer_id,
-                    )
-                    submitted = submit_worker_transfer(
-                        self._executor,
-                        worker_request,
-                        staging_slot,
-                        resources,
-                    )
-                    _trace_worker_stage(
-                        "worker_executor_submit_done",
-                        transfer_id=worker_request.transfer_id,
-                        state=_submitted_worker_transfer_state(submitted),
-                    )
-                    _trace_worker_stage(
-                        "worker_executor_wait_start",
-                        transfer_id=worker_request.transfer_id,
-                    )
-                    result = wait_worker_transfer(self._executor, submitted)
-                    _trace_worker_stage(
-                        "worker_executor_wait_done",
-                        transfer_id=worker_request.transfer_id,
-                        state=result.state.value,
-                    )
-                except Exception as exc:
-                    execution_error = exc
-        except Exception as exc:
-            failure_metadata = _resource_binding_failure_metadata(binding)
-            result = failed_worker_result_from_exception(
-                worker_request,
-                staging_slot,
-                exc,
-                metadata=failure_metadata,
-            )
-        if result is None:
-            if execution_error is None:
-                raise RuntimeError("worker execution did not produce a result")
-            result = failed_worker_result_from_exception(
-                worker_request,
-                staging_slot,
-                execution_error,
-            )
-        result = _worker_result_with_resource_close_evidence(result, resources)
-        return _worker_result_with_startup_evidence(
-            result,
-            self._worker_startup_evidence,
+        execution = self._execution_pool.submit(worker_request, staging_slot)
+        _trace_worker_stage(
+            "worker_async_pool_submit_done",
+            transfer_id=worker_request.transfer_id,
+            pool_ticket=execution.pool_ticket,
         )
+        try:
+            result = self._execution_pool.wait(execution)
+        except Exception as exc:
+            result = _failed_worker_result_from_async_pool_exception(
+                worker_request,
+                staging_slot,
+                execution,
+                exc,
+            )
+        _trace_worker_stage(
+            "worker_async_pool_wait_done",
+            transfer_id=worker_request.transfer_id,
+            pool_ticket=execution.pool_ticket,
+            state=result.state.value,
+        )
+        return result
 
 
 class WorkerTransferService:
@@ -1204,6 +1364,186 @@ def _worker_result_with_startup_evidence(
     )
 
 
+def _execute_worker_transfer_once(
+    *,
+    executor,
+    resource_binder: WorkerDataPlaneResourceBinder | None,
+    worker_startup_evidence: Mapping[str, object] | None,
+    worker_request: WorkerTransferRequest,
+    staging_slot: WorkerStagingSlot,
+) -> WorkerTransferResult:
+    if resource_binder is None:
+        return _worker_result_with_startup_evidence(
+            executor.execute(worker_request, staging_slot),
+            worker_startup_evidence,
+        )
+    binding = resource_binder.bind(worker_request)
+    _trace_worker_stage(
+        "worker_resource_bind_start",
+        transfer_id=worker_request.transfer_id,
+    )
+    resources = None
+    result: WorkerTransferResult | None = None
+    execution_error: Exception | None = None
+    try:
+        with binding as bound_resources:
+            resources = bound_resources
+            _trace_worker_stage(
+                "worker_resource_bind_done",
+                transfer_id=worker_request.transfer_id,
+            )
+            try:
+                _trace_worker_stage(
+                    "worker_executor_submit_start",
+                    transfer_id=worker_request.transfer_id,
+                )
+                submitted = submit_worker_transfer(
+                    executor,
+                    worker_request,
+                    staging_slot,
+                    resources,
+                )
+                _trace_worker_stage(
+                    "worker_executor_submit_done",
+                    transfer_id=worker_request.transfer_id,
+                    state=_submitted_worker_transfer_state(submitted),
+                )
+                _trace_worker_stage(
+                    "worker_executor_wait_start",
+                    transfer_id=worker_request.transfer_id,
+                )
+                result = wait_worker_transfer(executor, submitted)
+                _trace_worker_stage(
+                    "worker_executor_wait_done",
+                    transfer_id=worker_request.transfer_id,
+                    state=result.state.value,
+                )
+            except Exception as exc:
+                execution_error = exc
+    except Exception as exc:
+        failure_metadata = _resource_binding_failure_metadata(binding)
+        result = failed_worker_result_from_exception(
+            worker_request,
+            staging_slot,
+            exc,
+            metadata=failure_metadata,
+        )
+    if result is None:
+        if execution_error is None:
+            raise RuntimeError("worker execution did not produce a result")
+        result = failed_worker_result_from_exception(
+            worker_request,
+            staging_slot,
+            execution_error,
+        )
+    result = _worker_result_with_resource_close_evidence(result, resources)
+    return _worker_result_with_startup_evidence(
+        result,
+        worker_startup_evidence,
+    )
+
+
+def _worker_result_with_async_pool_evidence(
+    result: WorkerTransferResult,
+    *,
+    pool_ticket: str,
+    queued_at: float,
+    started_at: float,
+    completed_at: float,
+) -> WorkerTransferResult:
+    metadata = dict(result.metadata)
+    evidence = {
+        "pool": "worker_async_execution_pool",
+        "pool_ticket": str(pool_ticket),
+        "state": result.state.value,
+        "queued_at": float(queued_at),
+        "started_at": float(started_at),
+        "completed_at": float(completed_at),
+        "queue_wait_ms": max(0.0, (float(started_at) - float(queued_at)) * 1000.0),
+        "execution_ms": max(0.0, (float(completed_at) - float(started_at)) * 1000.0),
+    }
+    metadata["worker_async_pool"] = evidence
+    completion_evidence = (
+        dict(metadata["completion_evidence"])
+        if isinstance(metadata.get("completion_evidence"), Mapping)
+        else None
+    )
+    if completion_evidence is not None:
+        completion_evidence["worker_async_pool"] = dict(evidence)
+        metadata["completion_evidence"] = completion_evidence
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
+    )
+
+
+def _failed_worker_result_from_async_pool_exception(
+    worker_request: WorkerTransferRequest,
+    staging_slot: WorkerStagingSlot,
+    execution: WorkerAsyncExecution,
+    exc: Exception,
+) -> WorkerTransferResult:
+    evidence = execution.evidence(state="failed")
+    result = failed_worker_result_from_exception(
+        worker_request,
+        staging_slot,
+        exc,
+        metadata={
+            "failure_source": "worker_async_execution_pool",
+            "worker_async_pool": evidence,
+        },
+    )
+    metadata = dict(result.metadata)
+    metadata["worker_async_pool"] = evidence
+    completion_evidence = (
+        dict(metadata["completion_evidence"])
+        if isinstance(metadata.get("completion_evidence"), Mapping)
+        else {}
+    )
+    completion_evidence["worker_async_pool"] = dict(evidence)
+    metadata["completion_evidence"] = completion_evidence
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
+    )
+
+
+def _worker_pool_record(
+    *,
+    pool_ticket: str,
+    state: str,
+    worker_request: WorkerTransferRequest,
+    staging_slot: WorkerStagingSlot,
+    queued_at: float,
+    started_at: float | None = None,
+    completed_at: float | None = None,
+) -> dict[str, object]:
+    return {
+        "pool": "worker_async_execution_pool",
+        "pool_ticket": str(pool_ticket),
+        "state": str(state),
+        "transfer_id": worker_request.transfer_id,
+        "ticket_id": worker_request.ticket.ticket_id,
+        "plan_generation": int(worker_request.ticket.metadata["plan_generation"]),
+        "session_id": worker_request.authorization.session_id,
+        "job_id": worker_request.authorization.job_id,
+        "lease_id": worker_request.authorization.lease_id,
+        "relay_gpus": worker_validation.authorized_relay_gpus_for_request(
+            worker_request
+        ),
+        "staging_slot_id": staging_slot.slot_id,
+        "queued_at": float(queued_at),
+        "started_at": None if started_at is None else float(started_at),
+        "completed_at": None if completed_at is None else float(completed_at),
+    }
+
+
 def _cleanup_completion_evidence(
     request: WorkerTransferRequest,
     result: WorkerTransferResult,
@@ -1289,6 +1629,7 @@ def _execution_contract_evidence_from_metadata(
         "staging_slot_id",
         "resource_evidence",
         "worker_startup",
+        "worker_async_pool",
         "ticket_id",
         "transfer_id",
         "plan_generation",
@@ -1519,6 +1860,8 @@ def _trace_worker_stage(name: str, **fields) -> None:
 
 __all__ = [
     "WorkerAuthorizationError",
+    "WorkerAsyncExecutionPool",
+    "WorkerAsyncExecutionPoolError",
     "WorkerCleanupError",
     "WorkerStatusReportError",
     "WorkerTransferClient",

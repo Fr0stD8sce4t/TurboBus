@@ -5,23 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G10 worker asynchronous execution pool.
+G11 scheduler cost-model upgrade.
 
-Worker execution must keep daemon-issued transfers in a long-lived asynchronous
-pool instead of collapsing worker execution into one synchronous submit/wait
-path. The pool must preserve ticket authority, resource cleanup, status
-reporting, and receipt evidence for queued, running, completed, and failed
-worker transfers.
+Scheduler decisions must use live queued, admitted, running, active path, relay
+lease, staging, completion-source, and worker/backend evidence instead of only
+static topology or profile capacity. The cost model must keep daemon/scheduler
+as the only production plan authority while making direct, relay, and mixed pool
+choices reflect current runtime load.
 
 ## Current Code Work
 
-- `turbobus/worker/lifecycle.py`: worker submit, running status, wait, cleanup,
-  and daemon status reporting.
-- `turbobus/worker/cuda_executor.py`: asynchronous CUDA worker handles and
-  inflight/terminal transfer ownership.
-- `turbobus/worker/models.py`: worker result and lifecycle state envelopes.
-- `turbobus/daemon/server.py`: daemon transfer status and runtime feedback
-  evidence for async worker state if needed.
+- `turbobus/scheduler/daemon.py`: scheduling cost model, path scoring,
+  fallback metadata, and decision policy.
+- `turbobus/scheduler/load_feedback.py`: runtime load view, relay pressure,
+  direct pressure, fairness pressure, and policy metadata.
+- `turbobus/daemon/server.py`: runtime resource state passed into scheduler and
+  scheduling decision evidence.
 
 Round rules:
 
@@ -35,23 +34,19 @@ Round rules:
 - Do not advance benchmark, example, paper-validation, server-validation, new
   test, dry-run, fake receipt, synthetic evidence, or replacement verification
   entry work during the current system-body pass.
-- State assumptions when they matter, prefer the simplest correct change, and
-  keep edits surgical to the active target.
 - Update this file and `docs/PROGRESS.md` after each completed closure.
 - Keep only active and next work here. Do not append completed history.
 
 ## Next Entry
 
-After G10 is complete, advance to G11 scheduler cost-model upgrade.
+After G11 is complete, advance to G12 admission priority queue.
 
 ## Auto-Advance Policy
 
-Auto-advance is active for the new system-body queue approved after G1 through
-G6.
+Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G10 worker asynchronous execution pool.
 - G11 scheduler cost-model upgrade.
 - G12 admission priority queue.
 - G13 runtime feedback metrics closure.
@@ -66,10 +61,8 @@ In auto-advance mode:
 - keep exactly one current active target at a time;
 - after each completed target, rewrite this file and `docs/PROGRESS.md` so the
   next queued target becomes the only current active target;
-- for each queued target, carry forward the same system contracts from
-  `AGENTS.md` and the same no-benchmark/no-test/no-fake-evidence constraints
-  from this file;
+- carry forward the no-benchmark, no-example, no-test, no-fake-evidence, and
+  daemon-issued-plan constraints;
 - stop when the queue is complete, external environment blocks the target, a
-  real architecture choice needs user review, or continuing would require
-  benchmark, example, paper-validation, server-validation, new test, fake
-  receipt, synthetic evidence, dry-run, or replacement verification work.
+  real architecture choice needs user review, or continuing would leave the
+  system-body scope.

@@ -5,29 +5,28 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G9 are complete.
-- G9 CUDA IPC metadata and span validation is present: CUDA IPC buffer
-  registrations carry exported allocation span metadata, schema normalization
-  rejects invalid device views, workers validate opened IPC spans and request
-  ranges before executor submit, and runtime receipt validation recognizes span
-  validation evidence.
-- Auto-advance continues with G10 as the only active target.
+- G1 through G10 are complete.
+- G10 worker asynchronous execution pool is present: worker transfers enter a
+  long-lived pool after daemon ticket validation, keep queued/running/terminal
+  records, execute exact daemon-issued requests through the worker resource
+  binder and backend executor, preserve cleanup on failure, and attach async
+  pool evidence to worker results and daemon completion evidence.
+- Auto-advance continues with G11 as the only active target.
 
 ## Remaining Risk
 
-- G10 worker asynchronous execution pool is not complete: worker execution still
-  needs a production pool lifecycle that preserves daemon-issued ticket
-  authority, cleanup, status reporting, and receipt evidence across queued,
-  running, completed, and failed transfers.
-- Scheduler cost model, admission priority queue, runtime feedback metrics,
-  framework adapters, and final server validation remain later-stage work.
+- G11 scheduler cost-model upgrade is not complete: scheduling still needs a
+  stronger runtime-load cost model for queued, admitted, running, relay, direct,
+  worker/backend evidence, and job pressure.
+- Admission priority queue, runtime feedback metrics, framework adapters, and
+  final auditable receipt closure remain later-stage work.
 - Alternative verification paths, fake receipts, synthetic evidence, benchmark
   work, and dry-run deliverables remain out of scope for the current
   system-body pass.
 
 ## Next Main Target
 
-G10 worker asynchronous execution pool.
+G11 scheduler cost-model upgrade.
 
 Progress-file rule:
 

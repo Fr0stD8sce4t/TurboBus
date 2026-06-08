@@ -10,7 +10,11 @@ from ..daemon.client import TurboBusDaemonAdminClient, TurboBusDaemonExecutionCl
 from ..intent_execution_support import require_ok
 from ..runtime_options import RuntimeOptions
 from .endpoint import WorkerServiceEndpoint
-from .lifecycle import WorkerTransferClient, WorkerTransferService
+from .lifecycle import (
+    WorkerAsyncExecutionPool,
+    WorkerTransferClient,
+    WorkerTransferService,
+)
 from .cuda_executor import CudaWorkerExecutor
 from .resources import WorkerDataPlaneResourceBinder
 from .transport import WorkerServiceUnixSocketTransport
@@ -49,13 +53,22 @@ def _build_worker_service_runtime(
     options = runtime_options or RuntimeOptions()
     startup_evidence = worker_startup_evidence_from_daemon(daemon_socket_path)
     daemon_client = TurboBusDaemonExecutionClient(str(daemon_socket_path))
+    executor = CudaWorkerExecutor(
+        backend=backend,
+        options=options,
+    )
+    resource_binder = WorkerDataPlaneResourceBinder(backend=backend)
+    execution_pool = WorkerAsyncExecutionPool(
+        executor,
+        resource_binder=resource_binder,
+        worker_startup_evidence=startup_evidence,
+        max_workers=max(1, int(options.staging_slots)),
+    )
     transfer_client = WorkerTransferClient(
         daemon_client,
-        executor=CudaWorkerExecutor(
-            backend=backend,
-            options=options,
-        ),
-        resource_binder=WorkerDataPlaneResourceBinder(backend=backend),
+        executor=executor,
+        resource_binder=resource_binder,
+        execution_pool=execution_pool,
         worker_startup_evidence=startup_evidence,
     )
     endpoint = WorkerServiceEndpoint(

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Any, Mapping
 
+from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats
 from ..offload.lifecycle import receipt_trace_from_receipts
 from ..runtime.validation import validate_runtime_receipt
@@ -1202,14 +1203,25 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
 def _request_params(request) -> dict[str, Any]:
     params = getattr(request, "kv_transfer_params", None)
     if isinstance(params, dict):
-        return params
+        return _validate_vllm_kv_request_params(params)
     sampling_params = getattr(request, "sampling_params", None)
     extra_args = getattr(sampling_params, "extra_args", None)
     if isinstance(extra_args, dict):
         params = extra_args.get("kv_transfer_params")
         if isinstance(params, dict):
-            return params
+            return _validate_vllm_kv_request_params(params)
     return {}
+
+
+def _validate_vllm_kv_request_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(params)
+    invalid_keys = forbidden_physical_policy_keys(normalized)
+    if invalid_keys:
+        raise ValueError(
+            "vLLM TurboBus kv_transfer_params must not choose physical paths: "
+            + ", ".join(str(key) for key in invalid_keys)
+        )
+    return normalized
 
 def _wait_transfer_handles(handles) -> list[object]:
     resolved = list(handles)
@@ -1299,6 +1311,8 @@ def _vllm_kv_lifecycle_evidence(
         "buffer_registration_source": "TurboBusRuntimeSession",
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
+        "adapter_submit_source": "TurboBusRuntimeSession",
+        "adapter_handle_source": "ReceiptTransferHandle",
         "policy_source": "daemon_scheduler",
         "route_policy_visible_to_adapter": False,
         "physical_route_source": "daemon_scheduler",

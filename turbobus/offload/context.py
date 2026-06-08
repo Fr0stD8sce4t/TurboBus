@@ -70,6 +70,16 @@ def require_runtime_session_open(runtime_session) -> None:
 
 def validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str, object]:
     policy_hints = dict(value)
+    invalid_keys = forbidden_physical_policy_keys(policy_hints)
+    if invalid_keys:
+        raise ValueError(
+            "policy_hints must not choose physical paths: "
+            + ", ".join(str(key) for key in invalid_keys)
+        )
+    return policy_hints
+
+
+def forbidden_physical_policy_keys(value: Mapping[str, object]) -> list[str]:
     forbidden_keys = {
         "mode",
         "path",
@@ -83,15 +93,25 @@ def validate_policy_hints_no_physical(value: Mapping[str, object]) -> dict[str, 
         "target_device",
         "target_gpu",
     }
-    invalid_keys = sorted(
-        key for key in policy_hints if str(key).lower() in forbidden_keys
-    )
-    if invalid_keys:
-        raise ValueError(
-            "policy_hints must not choose physical paths: "
-            + ", ".join(str(key) for key in invalid_keys)
-        )
-    return policy_hints
+    invalid_keys: list[str] = []
+    for key, item in value.items():
+        key_text = str(key)
+        normalized_key = _physical_policy_key_name(key_text)
+        if normalized_key in forbidden_keys:
+            invalid_keys.append(key_text)
+        if isinstance(item, Mapping):
+            invalid_keys.extend(
+                f"{key_text}.{child_key}"
+                for child_key in forbidden_physical_policy_keys(item)
+            )
+    return sorted(invalid_keys)
+
+
+def _physical_policy_key_name(key: str) -> str:
+    normalized = str(key).lower()
+    if normalized.startswith("turbobus."):
+        return normalized.removeprefix("turbobus.")
+    return normalized
 
 
 def _require_non_empty(value: object, field_name: str) -> str:
@@ -103,6 +123,7 @@ def _require_non_empty(value: object, field_name: str) -> str:
 
 __all__ = [
     "AdapterTransferContext",
+    "forbidden_physical_policy_keys",
     "require_runtime_session_open",
     "validate_policy_hints_no_physical",
 ]

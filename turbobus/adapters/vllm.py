@@ -5,6 +5,7 @@ import math
 from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
+from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
@@ -366,6 +367,12 @@ def _group_metadata(
     group_id: int,
 ) -> dict[str, object]:
     metadata = {} if metadata is None else dict(metadata)
+    invalid_keys = forbidden_physical_policy_keys(metadata)
+    if invalid_keys:
+        raise ValueError(
+            "vLLM adapter metadata must not choose physical paths: "
+            + ", ".join(str(key) for key in invalid_keys)
+        )
     metadata["group_id"] = int(group_id)
     return metadata
 

@@ -5,22 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G11 scheduler cost-model upgrade.
+G12 admission priority queue.
 
-Scheduler decisions must use live queued, admitted, running, active path, relay
-lease, staging, completion-source, and worker/backend evidence instead of only
-static topology or profile capacity. The cost model must keep daemon/scheduler
-as the only production plan authority while making direct, relay, and mixed pool
-choices reflect current runtime load.
+Daemon admission must promote delayed relay transfers by production priority,
+job pressure, runtime readiness, and lease availability instead of scanning
+delayed transfers only by map order. Admission state must remain daemon-owned
+and must not let applications choose routes, relays, or execution mode.
 
 ## Current Code Work
 
-- `turbobus/scheduler/daemon.py`: scheduling cost model, path scoring,
-  fallback metadata, and decision policy.
-- `turbobus/scheduler/load_feedback.py`: runtime load view, relay pressure,
-  direct pressure, fairness pressure, and policy metadata.
-- `turbobus/daemon/server.py`: runtime resource state passed into scheduler and
-  scheduling decision evidence.
+- `turbobus/daemon/server.py`: delayed admission ordering, promotion,
+  admission refresh state, transfer queue records, and promotion evidence.
+- `turbobus/scheduler/load_feedback.py`: runtime pressure inputs used by
+  admission ordering if needed.
+- `turbobus/scheduler/daemon.py`: scheduling metadata consumed by admission
+  decisions if needed.
 
 Round rules:
 
@@ -39,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G11 is complete, advance to G12 admission priority queue.
+After G12 is complete, advance to G13 runtime feedback metrics closure.
 
 ## Auto-Advance Policy
 
@@ -47,7 +46,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G11 scheduler cost-model upgrade.
 - G12 admission priority queue.
 - G13 runtime feedback metrics closure.
 - G14 vLLM KV lifecycle closure.

@@ -203,6 +203,13 @@ class DaemonScheduler:
             metadata={
                 "leases": [lease.as_dict() for lease in leases],
                 "stats": stats.as_dict(),
+                "cost_model": _scheduler_cost_model_metadata(
+                    plan=plan,
+                    profile=profile,
+                    runtime_view=runtime_load,
+                    direction=direction,
+                    total_bytes=total_bytes,
+                ),
                 "runtime_state": runtime_state_metadata(runtime_state),
                 "topology": _topology_metadata(
                     topology_snapshot_id=topology_snapshot_id,
@@ -541,6 +548,130 @@ def _stats_for_plan(
     )
 
 
+def _scheduler_cost_model_metadata(
+    *,
+    plan: PlannerTransferPlan,
+    profile: _Profile,
+    runtime_view: RuntimeLoadView,
+    direction: str,
+    total_bytes: int,
+) -> dict[str, object]:
+    normalized_direction = str(direction).lower()
+    direct_bw = _profile_direct_bandwidth(profile, normalized_direction)
+    path_costs: list[dict[str, object]] = []
+    total_estimated_seconds = 0.0
+    direct_bytes = 0
+    relay_bytes = 0
+    for assignment in plan.assignments:
+        path = assignment.path
+        bytes_count = sum(chunk.bytes for chunk in assignment.chunks)
+        bandwidth = max(float(path.effective_bw_gbps), 1e-12)
+        estimated_seconds = _estimated_transfer_seconds(bytes_count, bandwidth)
+        total_estimated_seconds += estimated_seconds
+        if path.kind == "relay":
+            relay_bytes += bytes_count
+            relay_pressure = runtime_view.relay_cost_pressure(
+                int(path.relay_device),
+                normalized_direction,
+            )
+            pressure_summary = runtime_view.scheduler_pressure_summary(
+                normalized_direction,
+            )
+        else:
+            direct_bytes += bytes_count
+            relay_pressure = runtime_view.direct_cost_pressure(normalized_direction)
+            pressure_summary = runtime_view.scheduler_pressure_summary(
+                normalized_direction,
+            )
+        path_costs.append(
+            {
+                "kind": str(path.kind),
+                "target_device": int(path.target_device),
+                "relay_device": None if path.kind != "relay" else int(path.relay_device),
+                "bytes": int(bytes_count),
+                "chunk_count": len(assignment.chunks),
+                "effective_bw_gbps": float(path.effective_bw_gbps),
+                "estimated_seconds": estimated_seconds,
+                "runtime_pressure": relay_pressure,
+                "pressure_summary": dict(pressure_summary),
+            }
+        )
+    relay_profiles = {
+        int(relay.relay_device): relay
+        for relay in profile.relays
+    }
+    candidate_paths: list[dict[str, object]] = [
+        {
+            "kind": "direct",
+            "target_device": int(profile.target_device),
+            "relay_device": None,
+            "effective_bw_gbps": direct_bw,
+            "runtime_pressure": runtime_view.direct_cost_pressure(normalized_direction),
+            "estimated_full_transfer_seconds": _estimated_transfer_seconds(
+                total_bytes,
+                max(direct_bw, 1e-12),
+            ),
+        }
+    ]
+    for relay_device, relay in sorted(relay_profiles.items()):
+        relay_bw = _profile_relay_bandwidth(relay, normalized_direction)
+        candidate_paths.append(
+            {
+                "kind": "relay",
+                "target_device": int(relay.target_device),
+                "relay_device": int(relay_device),
+                "effective_bw_gbps": relay_bw,
+                "runtime_pressure": runtime_view.relay_cost_pressure(
+                    relay_device,
+                    normalized_direction,
+                ),
+                "estimated_full_transfer_seconds": _estimated_transfer_seconds(
+                    total_bytes,
+                    max(relay_bw, 1e-12),
+                ),
+                "relay_load": dict(runtime_view.relay_load.get(relay_device, {})),
+            }
+        )
+    resolved_mode = _resolved_mode_for_plan(plan).value
+    return {
+        "source": "daemon_scheduler_runtime_cost_model",
+        "direction": normalized_direction,
+        "resolved_mode": resolved_mode,
+        "total_bytes": int(total_bytes),
+        "direct_bytes": int(direct_bytes),
+        "relay_bytes": int(relay_bytes),
+        "estimated_seconds": total_estimated_seconds,
+        "path_costs": tuple(path_costs),
+        "candidate_paths": tuple(candidate_paths),
+        "runtime_pressure_summary": runtime_view.scheduler_pressure_summary(
+            normalized_direction,
+        ),
+    }
+
+
+def _estimated_transfer_seconds(bytes_count: int, bandwidth_gbps: float) -> float:
+    bandwidth_bytes_per_second = max(float(bandwidth_gbps), 1e-12) * 1_000_000_000.0
+    return float(max(0, int(bytes_count))) / bandwidth_bytes_per_second
+
+
+def _profile_direct_bandwidth(profile: _Profile, direction: str) -> float:
+    if str(direction).lower() == "d2h":
+        return max(
+            0.0,
+            float(profile.direct_d2h_bw_gbps or profile.direct_h2d_bw_gbps or 0.0),
+        )
+    return max(0.0, float(profile.direct_h2d_bw_gbps or 0.0))
+
+
+def _profile_relay_bandwidth(relay: _RelayProfile, direction: str) -> float:
+    if str(direction).lower() == "d2h":
+        return max(
+            0.0,
+            float(relay.effective_d2h_bw_gbps or relay.effective_bw_gbps or 0.0),
+        )
+    return max(0.0, float(relay.effective_bw_gbps or 0.0))
+
+
 def scheduling_decision_leases(
     decision: SchedulingDecision,
 ) -> tuple[PlannerLease, ...]:
@@ -729,8 +860,8 @@ def _direct_bandwidth_with_load_feedback(
     *,
     runtime_view: RuntimeLoadView,
 ) -> tuple[float, float, dict[str, object]]:
-    h2d_pressure = runtime_view.direct_pressure("h2d")
-    d2h_pressure = runtime_view.direct_pressure("d2h")
+    h2d_pressure = runtime_view.direct_cost_pressure("h2d")
+    d2h_pressure = runtime_view.direct_cost_pressure("d2h")
     adjusted_h2d = _bandwidth_after_pressure(direct_h2d, h2d_pressure)
     adjusted_d2h = _bandwidth_after_pressure(direct_d2h, d2h_pressure)
     return (
@@ -745,7 +876,9 @@ def _direct_bandwidth_with_load_feedback(
             "adjusted_d2h_bw_gbps": adjusted_d2h,
             "h2d_pressure": h2d_pressure,
             "d2h_pressure": d2h_pressure,
-            "source": "runtime_load_feedback",
+            "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
+            "d2h_pressure_summary": runtime_view.scheduler_pressure_summary("d2h"),
+            "source": "runtime_cost_model",
         },
     )
 
@@ -755,7 +888,15 @@ def _relay_profile_with_load_feedback(
     *,
     runtime_view: RuntimeLoadView,
 ) -> tuple[_RelayProfile, dict[str, object]]:
-    pressure = runtime_view.relay_pressure(relay_profile.relay_device)
+    h2d_pressure = runtime_view.relay_cost_pressure(
+        relay_profile.relay_device,
+        "h2d",
+    )
+    d2h_pressure = runtime_view.relay_cost_pressure(
+        relay_profile.relay_device,
+        "d2h",
+    )
+    directionless_pressure = max(h2d_pressure, d2h_pressure)
     adjusted = _RelayProfile(
         relay_device=relay_profile.relay_device,
         target_device=relay_profile.target_device,
@@ -764,11 +905,11 @@ def _relay_profile_with_load_feedback(
         p2p_bw_gbps=relay_profile.p2p_bw_gbps,
         effective_bw_gbps=_bandwidth_after_pressure(
             relay_profile.effective_bw_gbps,
-            pressure,
+            h2d_pressure,
         ),
         effective_d2h_bw_gbps=_bandwidth_after_pressure(
             relay_profile.effective_d2h_bw_gbps,
-            pressure,
+            d2h_pressure,
         ),
         p2p_enabled=relay_profile.p2p_enabled,
     )
@@ -786,9 +927,13 @@ def _relay_profile_with_load_feedback(
             "adjusted_effective_d2h_bw_gbps": float(
                 adjusted.effective_d2h_bw_gbps
             ),
-            "pressure": pressure,
+            "pressure": directionless_pressure,
+            "h2d_pressure": h2d_pressure,
+            "d2h_pressure": d2h_pressure,
+            "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
+            "d2h_pressure_summary": runtime_view.scheduler_pressure_summary("d2h"),
             "relay_load": dict(runtime_view.relay_load.get(relay, {})),
-            "source": "runtime_load_feedback",
+            "source": "runtime_cost_model",
         },
     )
 

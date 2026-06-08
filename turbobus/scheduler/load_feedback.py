@@ -139,6 +139,88 @@ class RuntimeLoadView:
                 pressure += min(direct_bytes / max(self.total_active_bytes, 1), 1.0) * 0.10
         return max(0.0, pressure)
 
+    def scheduler_pressure_summary(self, direction: str) -> dict[str, object]:
+        normalized_direction = str(direction).lower()
+        runtime_state = dict(self.runtime_state)
+        active_resource_usage = runtime_state.get("active_resource_usage", {})
+        active_direction = {}
+        if isinstance(active_resource_usage, Mapping):
+            active_direction = active_resource_usage.get(normalized_direction, {})
+        active_direction_bytes = 0
+        if isinstance(active_direction, Mapping):
+            active_direction_bytes = int(
+                active_direction.get("bytes_remaining", 0) or 0
+            )
+        queued_direction_bytes = 0
+        queued_by_direction = runtime_state.get("queued_bytes_by_direction", {})
+        if isinstance(queued_by_direction, Mapping):
+            queued_direction = queued_by_direction.get(normalized_direction, {})
+            if isinstance(queued_direction, Mapping):
+                queued_direction_bytes = int(
+                    queued_direction.get("bytes_total", 0) or 0
+                )
+        active_total = max(int(self.total_active_bytes), 1)
+        queue_pressure = 0.0
+        queue_pressure += min(self.queued_transfer_count, 16) * 0.012
+        queue_pressure += min(self.admitted_transfer_count, 16) * 0.018
+        queue_pressure += min(self.delayed_transfer_count, 16) * 0.030
+        running_pressure = 0.0
+        running_pressure += min(self.running_transfer_count, 16) * 0.030
+        running_pressure += min(self.active_transfer_count, 16) * 0.018
+        direction_pressure = 0.0
+        direction_pressure += min(active_direction_bytes / active_total, 2.0) * 0.08
+        direction_pressure += min(queued_direction_bytes / active_total, 2.0) * 0.05
+        fairness_denominator = max(self.fairness_threshold_bytes, 1.0)
+        fairness_overage = max(
+            0.0,
+            self.projected_weighted_active_bytes - self.fairness_threshold_bytes,
+        )
+        fairness_pressure = min(fairness_overage / fairness_denominator, 2.0) * 0.25
+        worker_pressure = self.completion_source_pressure.get("worker", 0.0) * 0.12
+        backend_pressure = self.completion_source_pressure.get("backend", 0.0) * 0.10
+        worker_active_bytes = _execution_evidence_total_bytes(
+            self.active_execution_evidence_by_source.get("worker")
+        )
+        backend_active_bytes = _execution_evidence_total_bytes(
+            self.active_execution_evidence_by_source.get("backend")
+        )
+        worker_pressure += min(worker_active_bytes / active_total, 2.0) * 0.08
+        backend_pressure += min(backend_active_bytes / active_total, 2.0) * 0.08
+        return {
+            "direction": normalized_direction,
+            "queue_pressure": max(0.0, queue_pressure),
+            "running_pressure": max(0.0, running_pressure),
+            "direction_pressure": max(0.0, direction_pressure),
+            "fairness_pressure": max(0.0, fairness_pressure),
+            "worker_pressure": max(0.0, worker_pressure),
+            "backend_pressure": max(0.0, backend_pressure),
+            "active_direction_bytes": active_direction_bytes,
+            "queued_direction_bytes": queued_direction_bytes,
+        }
+
+    def direct_cost_pressure(self, direction: str) -> float:
+        summary = self.scheduler_pressure_summary(direction)
+        return max(
+            0.0,
+            self.direct_pressure(direction)
+            + float(summary["queue_pressure"])
+            + float(summary["running_pressure"])
+            + float(summary["direction_pressure"])
+            + float(summary["fairness_pressure"])
+            + float(summary["backend_pressure"]),
+        )
+
+    def relay_cost_pressure(self, relay_device: int, direction: str) -> float:
+        summary = self.scheduler_pressure_summary(direction)
+        return max(
+            0.0,
+            self.relay_pressure(relay_device)
+            + float(summary["queue_pressure"])
+            + float(summary["running_pressure"])
+            + float(summary["fairness_pressure"])
+            + float(summary["worker_pressure"]),
+        )
+
 
 def runtime_state_metadata(
     runtime_state: Mapping[str, object] | None,

@@ -252,6 +252,12 @@ class CudaWorkerExecutor:
             "relay_chunks",
             _assignment_chunk_count(plan_payload, "relay"),
         )
+        path_level_evidence = _path_level_execution_evidence(
+            stats,
+            plan_payload=plan_payload,
+            expected_direct_bytes=planned_direct_bytes,
+            expected_relay_bytes=planned_relay_bytes,
+        )
         result = WorkerTransferResult(
             transfer_id=request.transfer_id,
             state=WorkerTransferState.COMPLETE,
@@ -283,6 +289,7 @@ class CudaWorkerExecutor:
                     planned_relay_bytes,
                 ),
                 "relay_chunks": relay_chunks,
+                **path_level_evidence,
                 **completion_evidence,
                 **_ticket_binding_metadata(request),
             },
@@ -810,6 +817,136 @@ def _stats_value(stats: Any, field_name: str, default: Any) -> Any:
     if isinstance(stats, dict):
         value = stats.get(field_name, value)
     return value
+
+
+def _path_level_execution_evidence(
+    stats: Any,
+    *,
+    plan_payload: dict[str, object],
+    expected_direct_bytes: int,
+    expected_relay_bytes: int,
+) -> dict[str, object]:
+    native_path_stats = _native_path_stats(stats)
+    if not native_path_stats:
+        return {
+            "path_level_evidence": {
+                "source": "daemon_plan_without_native_path_stats",
+                "path_stats": _planned_path_stats(plan_payload),
+                "direct_bytes": int(expected_direct_bytes),
+                "relay_bytes": int(expected_relay_bytes),
+            }
+        }
+    direct_bytes = sum(
+        int(path["bytes"])
+        for path in native_path_stats
+        if str(path.get("kind", "")).startswith("direct")
+    )
+    relay_bytes = sum(
+        int(path["bytes"])
+        for path in native_path_stats
+        if str(path.get("kind", "")).startswith("relay")
+    )
+    if direct_bytes != int(expected_direct_bytes):
+        raise RuntimeError("native direct path stats do not match daemon plan")
+    if relay_bytes != int(expected_relay_bytes):
+        raise RuntimeError("native relay path stats do not match daemon plan")
+    return {
+        "native_path_stats": native_path_stats,
+        "relay_device_stats": _relay_device_stats(stats),
+        "path_level_evidence": {
+            "source": "native_cuda_transfer_stats",
+            "path_stats": native_path_stats,
+            "relay_device_stats": _relay_device_stats(stats),
+            "direct_bytes": direct_bytes,
+            "relay_bytes": relay_bytes,
+            "direct_chunks": sum(
+                int(path["chunks"])
+                for path in native_path_stats
+                if str(path.get("kind", "")).startswith("direct")
+            ),
+            "relay_chunks": sum(
+                int(path["chunks"])
+                for path in native_path_stats
+                if str(path.get("kind", "")).startswith("relay")
+            ),
+        },
+    }
+
+
+def _native_path_stats(stats: Any) -> tuple[dict[str, object], ...]:
+    raw_path_stats = _stats_value(stats, "path_stats", ()) or ()
+    normalized: list[dict[str, object]] = []
+    for item in raw_path_stats:
+        kind = _path_stat_value(item, "kind", "")
+        direction = _path_stat_value(item, "direction", "")
+        normalized.append(
+            {
+                "kind": str(kind),
+                "direction": str(direction),
+                "target_device": int(_path_stat_value(item, "target_device", -1)),
+                "relay_device": int(_path_stat_value(item, "relay_device", -1)),
+                "bytes": int(_path_stat_value(item, "bytes", 0)),
+                "chunks": int(_path_stat_value(item, "chunks", 0)),
+                "cuda_elapsed_ms": float(
+                    _path_stat_value(item, "cuda_elapsed_ms", 0.0)
+                ),
+                "gib_per_second": float(
+                    _path_stat_value(item, "gib_per_second", 0.0)
+                ),
+            }
+        )
+    return tuple(normalized)
+
+
+def _relay_device_stats(stats: Any) -> tuple[dict[str, int], ...]:
+    relay_devices = tuple(int(item) for item in _stats_value(stats, "relay_devices", ()) or ())
+    relay_bytes = tuple(
+        int(item) for item in _stats_value(stats, "relay_device_bytes", ()) or ()
+    )
+    relay_chunks = tuple(
+        int(item) for item in _stats_value(stats, "relay_device_chunks", ()) or ()
+    )
+    records: list[dict[str, int]] = []
+    for index, relay_device in enumerate(relay_devices):
+        records.append(
+            {
+                "relay_device": relay_device,
+                "bytes": relay_bytes[index] if index < len(relay_bytes) else 0,
+                "chunks": relay_chunks[index] if index < len(relay_chunks) else 0,
+            }
+        )
+    return tuple(records)
+
+
+def _path_stat_value(item: Any, field_name: str, default: Any) -> Any:
+    if isinstance(item, dict):
+        return item.get(field_name, default)
+    return getattr(item, field_name, default)
+
+
+def _planned_path_stats(
+    plan_payload: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    records: list[dict[str, object]] = []
+    for assignment in plan_payload.get("assignments", ()) or ():
+        if not isinstance(assignment, dict):
+            continue
+        path = assignment.get("path")
+        if not isinstance(path, dict):
+            continue
+        records.append(
+            {
+                "kind": str(path.get("kind", "")),
+                "direction": str(path.get("direction", "")),
+                "target_device": int(path.get("target_device", -1)),
+                "relay_device": int(path.get("relay_device", -1)),
+                "bytes": int(assignment.get("bytes", 0) or 0),
+                "chunks": int(assignment.get("chunk_count", 0) or 0),
+                "cuda_elapsed_ms": 0.0,
+                "gib_per_second": 0.0,
+            }
+        )
+    return tuple(records)
 
 
 def _worker_completion_evidence(

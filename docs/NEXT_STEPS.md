@@ -5,21 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G22 mixed pooled execution hardening.
+G23 cross-job admission and fairness closure.
 
-Mixed direct plus relay plans must execute as exact daemon-issued plans through
-worker/backend code, preserve path-level timing and bytes, and expose unified
-completion evidence for direct and relay chunks without application-side route
-selection.
+Daemon admission and scheduling must account for live cross-job queued,
+running, active, lease, and relay pressure so pooled PCIe sharing remains
+daemon-owned, fair across jobs, and isolated by job/session ownership.
 
 ## Current Code Work
 
-- `turbobus/worker/cuda_executor.py`: mixed worker/backend execution evidence.
-- `turbobus/worker/lifecycle.py`: worker request, async execution, status
-  report, cleanup, and completion aggregation.
-- `turbobus/direct_fallback.py`: direct-only backend execution evidence.
-- `turbobus/intent_executor.py`: daemon-issued mixed plan execution bridge.
-- `cpp/src/executor_cuda.cu`: native mixed direct and relay path execution.
+- `turbobus/daemon/server.py`: transfer admission, relay reservation, live
+  transfer accounting, and runtime feedback.
+- `turbobus/scheduler/daemon.py`: measured cost, runtime pressure, job policy,
+  and relay fairness weighting.
+- `turbobus/scheduler/load_feedback.py`: queued/running/active load model.
+- `turbobus/daemon/leases.py`: relay quota, reservation, lease ownership, and
+  cleanup records.
+- `turbobus/worker/validation.py`: ticket, lease, and owner binding checks.
 
 Round rules:
 
@@ -38,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G22 is complete, continue automatically to G23 as the only current target.
+After G23 is complete, continue automatically to G24 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -46,7 +47,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G22 mixed pooled execution hardening.
 - G23 cross-job admission and fairness closure.
 - G24 failure recovery and cleanup closure.
 - G25 CUDA IPC lifecycle hardening.

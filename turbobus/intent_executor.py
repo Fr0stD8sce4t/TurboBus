@@ -602,6 +602,7 @@ def _relay_only_completion_evidence(
     worker_startup = worker_evidence.get("worker_startup")
     if isinstance(worker_startup, Mapping):
         evidence["worker_startup"] = dict(worker_startup)
+    _copy_path_level_evidence(evidence, worker_evidence)
     evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
@@ -662,6 +663,7 @@ def _merge_mixed_completion_evidence(
         },
         "worker_completion_evidence": dict(worker_evidence),
     }
+    _copy_path_level_evidence(evidence, worker_evidence)
     if isinstance(direct_evidence, Mapping):
         evidence["direct_completion_evidence"] = dict(direct_evidence)
     if worker_evidence.get("relay_gpu") is not None:
@@ -763,6 +765,7 @@ def _relay_only_failure_evidence(
         evidence["worker_startup"] = dict(worker_startup)
     evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
+    _copy_path_level_evidence(evidence, worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
         expected_bytes=int(expected_bytes),
@@ -841,6 +844,7 @@ def _merge_mixed_worker_failure_evidence(
         "worker_completion_evidence": dict(worker_evidence),
         "failure_source": "mixed_worker_backend",
     }
+    _copy_path_level_evidence(evidence, worker_evidence)
     if isinstance(direct_evidence, Mapping):
         evidence["direct_completion_evidence"] = dict(direct_evidence)
     if worker_evidence.get("relay_gpu") is not None:
@@ -1125,6 +1129,19 @@ def _execution_path_evidence(
     relay_gpus = evidence.get("relay_gpus")
     if relay_gpus is not None:
         path_evidence["relay_gpus"] = tuple(int(item) for item in relay_gpus)
+    path_level_evidence = evidence.get("path_level_evidence")
+    if isinstance(path_level_evidence, Mapping):
+        path_evidence["path_level_evidence"] = dict(path_level_evidence)
+    native_path_stats = evidence.get("native_path_stats")
+    if isinstance(native_path_stats, (list, tuple)):
+        path_evidence["native_path_stats"] = tuple(
+            dict(item) for item in native_path_stats if isinstance(item, Mapping)
+        )
+    relay_device_stats = evidence.get("relay_device_stats")
+    if isinstance(relay_device_stats, (list, tuple)):
+        path_evidence["relay_device_stats"] = tuple(
+            dict(item) for item in relay_device_stats if isinstance(item, Mapping)
+        )
     if (
         int(path_evidence["direct_bytes"]) + int(path_evidence["relay_bytes"])
         != int(expected_bytes)
@@ -1133,6 +1150,25 @@ def _execution_path_evidence(
             "completion path evidence did not match daemon-planned byte total"
         )
     return path_evidence
+
+
+def _copy_path_level_evidence(
+    evidence: dict[str, object],
+    worker_evidence: Mapping[str, object],
+) -> None:
+    path_level_evidence = worker_evidence.get("path_level_evidence")
+    if isinstance(path_level_evidence, Mapping):
+        evidence["path_level_evidence"] = dict(path_level_evidence)
+    native_path_stats = worker_evidence.get("native_path_stats")
+    if isinstance(native_path_stats, (list, tuple)):
+        evidence["native_path_stats"] = tuple(
+            dict(item) for item in native_path_stats if isinstance(item, Mapping)
+        )
+    relay_device_stats = worker_evidence.get("relay_device_stats")
+    if isinstance(relay_device_stats, (list, tuple)):
+        evidence["relay_device_stats"] = tuple(
+            dict(item) for item in relay_device_stats if isinstance(item, Mapping)
+        )
 
 
 def _fail_transfer_without_worker_client(

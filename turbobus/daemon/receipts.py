@@ -193,6 +193,9 @@ def receipt_for_transfer(
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
     planned_relay_cleanup = evidence.get("planned_relay_cleanup")
+    path_level_evidence = evidence.get("path_level_evidence")
+    native_path_stats = evidence.get("native_path_stats")
+    relay_device_stats = evidence.get("relay_device_stats")
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
@@ -300,6 +303,29 @@ def receipt_for_transfer(
             "worker_startup": (
                 dict(worker_startup)
                 if isinstance(worker_startup, Mapping)
+                else None
+            ),
+            "path_level_evidence": (
+                dict(path_level_evidence)
+                if isinstance(path_level_evidence, Mapping)
+                else None
+            ),
+            "native_path_stats": (
+                [
+                    dict(item)
+                    for item in native_path_stats
+                    if isinstance(item, Mapping)
+                ]
+                if isinstance(native_path_stats, list | tuple)
+                else None
+            ),
+            "relay_device_stats": (
+                [
+                    dict(item)
+                    for item in relay_device_stats
+                    if isinstance(item, Mapping)
+                ]
+                if isinstance(relay_device_stats, list | tuple)
                 else None
             ),
             "completion_contract": completion_contract,
@@ -427,6 +453,29 @@ def _completion_contract_view(
             if isinstance(evidence.get("worker_startup"), Mapping)
             else None
         ),
+        "path_level_evidence": (
+            dict(evidence.get("path_level_evidence"))
+            if isinstance(evidence.get("path_level_evidence"), Mapping)
+            else None
+        ),
+        "native_path_stats": (
+            [
+                dict(item)
+                for item in evidence.get("native_path_stats", ())
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(evidence.get("native_path_stats"), list | tuple)
+            else None
+        ),
+        "relay_device_stats": (
+            [
+                dict(item)
+                for item in evidence.get("relay_device_stats", ())
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(evidence.get("relay_device_stats"), list | tuple)
+            else None
+        ),
         "execution_path": (
             dict(execution_path_evidence)
             if isinstance(execution_path_evidence, Mapping)
@@ -545,6 +594,9 @@ def _single_mode_completion_view(
         "relay_bytes",
         "relay_chunks",
         "worker_startup",
+        "path_level_evidence",
+        "native_path_stats",
+        "relay_device_stats",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]
@@ -594,6 +646,9 @@ def _worker_completion_view(
         "relay_chunks",
         "relay_gpu",
         "relay_gpus",
+        "path_level_evidence",
+        "native_path_stats",
+        "relay_device_stats",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]

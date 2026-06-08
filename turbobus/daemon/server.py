@@ -7262,6 +7262,13 @@ def _normalize_completion_evidence(
         ):
             if field_name in evidence and field_name not in explicit_path_evidence:
                 explicit_path_evidence[field_name] = evidence[field_name]
+        for field_name in (
+            "path_level_evidence",
+            "native_path_stats",
+            "relay_device_stats",
+        ):
+            if field_name in evidence and field_name not in explicit_path_evidence:
+                explicit_path_evidence[field_name] = evidence[field_name]
         path_evidence = _normalize_execution_path_evidence(
             explicit_path_evidence,
             expected_bytes=expected,
@@ -7277,6 +7284,9 @@ def _normalize_completion_evidence(
     cleanup_evidence = evidence.get("cleanup")
     worker_startup = evidence.get("worker_startup")
     worker_async_pool = evidence.get("worker_async_pool")
+    path_level_evidence = evidence.get("path_level_evidence")
+    native_path_stats = evidence.get("native_path_stats")
+    relay_device_stats = evidence.get("relay_device_stats")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -7341,6 +7351,29 @@ def _normalize_completion_evidence(
             if not isinstance(worker_async_pool, Mapping)
             else {"worker_async_pool": dict(worker_async_pool)}
         ),
+        **(
+            {}
+            if not isinstance(path_level_evidence, Mapping)
+            else {"path_level_evidence": dict(path_level_evidence)}
+        ),
+        **(
+            {}
+            if not isinstance(native_path_stats, (list, tuple))
+            else {
+                "native_path_stats": tuple(
+                    dict(item) for item in native_path_stats if isinstance(item, Mapping)
+                )
+            }
+        ),
+        **(
+            {}
+            if not isinstance(relay_device_stats, (list, tuple))
+            else {
+                "relay_device_stats": tuple(
+                    dict(item) for item in relay_device_stats if isinstance(item, Mapping)
+                )
+            }
+        ),
         **ticket_binding,
     }
 
@@ -7361,6 +7394,7 @@ def _merge_completion_evidence(
         "worker_completion_evidence",
         "cleanup",
         "worker_async_pool",
+        "path_level_evidence",
     ):
         previous = existing.get(field_name)
         current = incoming.get(field_name)
@@ -7407,6 +7441,19 @@ def _normalize_execution_path_evidence(
         value = evidence.get(field_name)
         if value is not None:
             result[field_name] = str(value)
+    path_level_evidence = evidence.get("path_level_evidence")
+    if isinstance(path_level_evidence, Mapping):
+        result["path_level_evidence"] = dict(path_level_evidence)
+    native_path_stats = evidence.get("native_path_stats")
+    if isinstance(native_path_stats, (list, tuple)):
+        result["native_path_stats"] = tuple(
+            dict(item) for item in native_path_stats if isinstance(item, Mapping)
+        )
+    relay_device_stats = evidence.get("relay_device_stats")
+    if isinstance(relay_device_stats, (list, tuple)):
+        result["relay_device_stats"] = tuple(
+            dict(item) for item in relay_device_stats if isinstance(item, Mapping)
+        )
     direct_bytes = result.get("direct_bytes")
     relay_bytes = result.get("relay_bytes")
     if require_total_match and direct_bytes is not None and relay_bytes is not None:

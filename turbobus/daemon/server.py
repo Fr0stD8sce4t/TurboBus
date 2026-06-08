@@ -3249,6 +3249,9 @@ class TurboBusDaemon:
                 (*transfer_records, *recent_terminal_feedback)
             )
         )
+        runtime_feedback_metrics = _runtime_feedback_metrics_from_records(
+            (*transfer_records, *recent_terminal_feedback)
+        )
         for key, value in path_summary.items():
             if not key.endswith(":relay"):
                 continue
@@ -3355,6 +3358,7 @@ class TurboBusDaemon:
                 "active_execution_evidence_by_source": active_execution_evidence_by_source,
                 "terminal_execution_evidence": terminal_execution_evidence,
                 "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
+                "runtime_feedback_metrics": runtime_feedback_metrics,
                 "queued_bytes_by_direction": queued_by_direction,
                 "active_bytes_by_direction": active_by_direction,
                 "active_paths": path_summary,
@@ -6429,6 +6433,9 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     terminal_execution_evidence_by_source = _terminal_execution_evidence_by_source_from_records(
         recent_terminal_transfers
     )
+    runtime_feedback_metrics = _runtime_feedback_metrics_from_records(
+        (*_runtime_mapping_records(transfers), *_runtime_mapping_records(recent_terminal_transfers))
+    )
     active_by_direction = _transfer_bytes_by_direction(
         runtime_state.get("active_transfers", ()),
         include_remaining=True,
@@ -6534,6 +6541,7 @@ def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
             "active_execution_evidence_by_source": active_execution_evidence_by_source,
             "terminal_execution_evidence": terminal_execution_evidence,
             "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
+            "runtime_feedback_metrics": runtime_feedback_metrics,
         }
     )
     runtime_state["active_resource_usage"] = active_resource_usage
@@ -6615,6 +6623,101 @@ def _terminal_execution_evidence_by_source_from_records(
         bucket["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
         bucket["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
     return result
+
+
+def _runtime_feedback_metrics_from_records(
+    records: object,
+) -> dict[str, object]:
+    metrics = {
+        "source": "daemon_runtime_feedback_metrics",
+        "worker_completion_count": 0,
+        "backend_completion_count": 0,
+        "cleanup_ok_count": 0,
+        "cleanup_failed_count": 0,
+        "worker_async_pool": {
+            "queued": 0,
+            "running": 0,
+            "complete": 0,
+            "failed": 0,
+            "canceled": 0,
+            "unknown": 0,
+        },
+        "cuda_ipc_span_validation": {
+            "validated": 0,
+            "failed": 0,
+            "missing": 0,
+        },
+        "recent_terminal_count": 0,
+    }
+    for record in _runtime_mapping_records(records):
+        completion_source = str(record.get("completion_source", "")).lower()
+        if completion_source == "worker":
+            metrics["worker_completion_count"] = int(metrics["worker_completion_count"]) + 1
+        elif completion_source == "backend":
+            metrics["backend_completion_count"] = int(metrics["backend_completion_count"]) + 1
+        if str(record.get("state")) in {
+            TransferStatusState.COMPLETE.value,
+            TransferStatusState.FAILED.value,
+            TransferStatusState.CANCELED.value,
+        }:
+            metrics["recent_terminal_count"] = int(metrics["recent_terminal_count"]) + 1
+        evidence = record.get("completion_evidence")
+        if not isinstance(evidence, Mapping):
+            continue
+        cleanup = evidence.get("cleanup")
+        if isinstance(cleanup, Mapping):
+            if bool(cleanup.get("ok", False)):
+                metrics["cleanup_ok_count"] = int(metrics["cleanup_ok_count"]) + 1
+            else:
+                metrics["cleanup_failed_count"] = int(metrics["cleanup_failed_count"]) + 1
+        worker_async_pool = evidence.get("worker_async_pool")
+        if isinstance(worker_async_pool, Mapping):
+            state = str(worker_async_pool.get("state", "unknown")).lower()
+            pool_metrics = dict(metrics["worker_async_pool"])
+            if state not in pool_metrics:
+                state = "unknown"
+            pool_metrics[state] = int(pool_metrics.get(state, 0)) + 1
+            metrics["worker_async_pool"] = pool_metrics
+        span_state = _cuda_ipc_span_validation_state(evidence)
+        if span_state is not None:
+            span_metrics = dict(metrics["cuda_ipc_span_validation"])
+            span_metrics[span_state] = int(span_metrics.get(span_state, 0)) + 1
+            metrics["cuda_ipc_span_validation"] = span_metrics
+    return metrics
+
+
+def _cuda_ipc_span_validation_state(evidence: Mapping[str, object]) -> str | None:
+    resource_evidence = evidence.get("resource_evidence")
+    candidates: list[Mapping[str, object]] = []
+    if isinstance(resource_evidence, Mapping):
+        candidates.append(resource_evidence)
+    for field_name in (
+        "direct_completion_evidence",
+        "relay_completion_evidence",
+        "worker_completion_evidence",
+    ):
+        nested = evidence.get(field_name)
+        if isinstance(nested, Mapping):
+            nested_resource = nested.get("resource_evidence")
+            if isinstance(nested_resource, Mapping):
+                candidates.append(nested_resource)
+            candidates.append(nested)
+    if not candidates:
+        return None
+    found_span = False
+    saw_cuda_ipc = False
+    for candidate in candidates:
+        if str(candidate.get("device_handle_type", "")).lower() == "cuda_ipc_device":
+            saw_cuda_ipc = True
+        span = candidate.get("cuda_ipc_span_validation")
+        if not isinstance(span, Mapping):
+            continue
+        found_span = True
+        if bool(span.get("validated", False)):
+            return "validated"
+    if found_span:
+        return "failed"
+    return "missing" if saw_cuda_ipc else None
 
 
 def _terminal_feedback_record_from_record(

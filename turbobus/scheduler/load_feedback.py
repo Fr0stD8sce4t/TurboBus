@@ -36,6 +36,7 @@ class RuntimeLoadView:
     active_execution_evidence_by_source: dict[str, dict[str, int]]
     terminal_execution_evidence: dict[str, int]
     terminal_execution_evidence_by_source: dict[str, dict[str, int]]
+    runtime_feedback_metrics: dict[str, object]
 
     def policy_metadata(self) -> dict[str, object]:
         runtime_state = dict(self.runtime_state)
@@ -93,6 +94,7 @@ class RuntimeLoadView:
                 str(key): dict(value)
                 for key, value in self.terminal_execution_evidence_by_source.items()
             },
+            "runtime_feedback_metrics": dict(self.runtime_feedback_metrics),
             "relay_load": {
                 int(relay): dict(record)
                 for relay, record in sorted(self.relay_load.items())
@@ -244,6 +246,7 @@ def runtime_state_metadata(
             "active_execution_evidence_by_source": {},
             "terminal_execution_evidence": {},
             "terminal_execution_evidence_by_source": {},
+            "runtime_feedback_metrics": {},
             "busy_relays": (),
             "active_bytes_by_direction": {},
             "queued_bytes_by_direction": {},
@@ -298,6 +301,9 @@ def runtime_state_metadata(
                 summary.get("terminal_execution_evidence_by_source", {}) or {}
             ).items()
         },
+        "runtime_feedback_metrics": dict(
+            summary.get("runtime_feedback_metrics", {}) or {}
+        ),
         "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
         "active_bytes_by_direction": dict(
             summary.get("active_bytes_by_direction", {}) or {}
@@ -364,6 +370,9 @@ def runtime_view(
             runtime_state_snapshot.get("terminal_execution_evidence_by_source", {}) or {}
         ).items()
     }
+    runtime_feedback_metrics = dict(
+        runtime_state_snapshot.get("runtime_feedback_metrics", {}) or {}
+    )
 
     total_weight = 0.0
     total_active_bytes = 0
@@ -448,6 +457,7 @@ def runtime_view(
         active_execution_evidence_by_source=active_execution_evidence_by_source,
         terminal_execution_evidence=terminal_execution_evidence,
         terminal_execution_evidence_by_source=terminal_execution_evidence_by_source,
+        runtime_feedback_metrics=runtime_feedback_metrics,
     )
 
 
@@ -638,6 +648,23 @@ def completion_source_pressure_from_runtime_state(
     weighted_backend += min(backend_active_bytes / (64.0 * 1024 * 1024), 8.0) * 0.20
     weighted_worker += min(worker_recent_bytes / (128.0 * 1024 * 1024), 8.0) * 0.10
     weighted_backend += min(backend_recent_bytes / (128.0 * 1024 * 1024), 8.0) * 0.10
+    runtime_metrics = runtime_state.get("runtime_feedback_metrics", {})
+    if isinstance(runtime_metrics, Mapping):
+        worker_async_pool = runtime_metrics.get("worker_async_pool", {})
+        if isinstance(worker_async_pool, Mapping):
+            weighted_worker += min(
+                int(worker_async_pool.get("queued", 0) or 0)
+                + int(worker_async_pool.get("running", 0) or 0),
+                16,
+            ) * 0.15
+        cuda_span = runtime_metrics.get("cuda_ipc_span_validation", {})
+        if isinstance(cuda_span, Mapping):
+            weighted_worker += min(int(cuda_span.get("failed", 0) or 0), 16) * 0.25
+            weighted_worker += min(int(cuda_span.get("missing", 0) or 0), 16) * 0.08
+        weighted_worker += min(
+            int(runtime_metrics.get("cleanup_failed_count", 0) or 0),
+            16,
+        ) * 0.20
     total = max(1.0, weighted_worker + weighted_backend)
     return {
         "worker": min(weighted_worker / total, 1.0),

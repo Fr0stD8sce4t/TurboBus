@@ -62,6 +62,7 @@ def validate_runtime_receipt(
         destination_buffer_id=destination_buffer_id,
     )
     require_worker_startup_evidence(metadata)
+    require_worker_async_pool_evidence(metadata)
 
 
 def require_receipt_ticket_binding(
@@ -167,6 +168,21 @@ def require_worker_startup_evidence(metadata: Mapping[str, object]) -> None:
         raise ValueError(
             "runtime receipt worker_startup missing authenticated daemon peer evidence"
         )
+
+
+def require_worker_async_pool_evidence(metadata: Mapping[str, object]) -> None:
+    completion_source = str(metadata.get("completion_source", "")).lower()
+    if completion_source != "worker":
+        return
+    worker_async_pool = metadata.get("worker_async_pool")
+    if not isinstance(worker_async_pool, Mapping):
+        raise ValueError("runtime receipt missing worker_async_pool evidence")
+    if str(worker_async_pool.get("pool", "")) != "worker_async_execution_pool":
+        raise ValueError("runtime receipt worker_async_pool has the wrong pool source")
+    if worker_async_pool.get("pool_ticket") is None:
+        raise ValueError("runtime receipt worker_async_pool missing pool_ticket")
+    if worker_async_pool.get("state") is None:
+        raise ValueError("runtime receipt worker_async_pool missing state")
 
 
 def _require_runtime_buffer_record(
@@ -281,6 +297,7 @@ __all__ = [
     "require_failed_receipt_evidence",
     "require_receipt_ticket_binding",
     "require_runtime_buffer_lifetime_evidence",
+    "require_worker_async_pool_evidence",
     "require_worker_startup_evidence",
     "validate_intent_ranges_fit_buffers",
     "validate_runtime_receipt",

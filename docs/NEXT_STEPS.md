@@ -5,22 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G13 runtime feedback metrics closure.
+G14 vLLM KV lifecycle closure.
 
-Daemon runtime feedback must preserve worker/backend completion metrics,
-execution-path evidence, cleanup evidence, async worker pool state, CUDA IPC
-span validation, and recent terminal feedback in one scheduler-consumable view.
-The feedback path must remain derived from real worker/backend status updates
-and daemon receipts, not synthetic evidence or dry-run artifacts.
+vLLM KV save and restore must register real KV CPU/GPU buffers through
+`TurboBusRuntimeSession`, submit KV-cache `TransferIntent` objects, and consume
+daemon `TransferReceipt` objects without exposing route, relay, pool, direct, or
+target-GPU policy to the adapter or application.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: runtime resource state, terminal feedback
-  records, completion evidence aggregation, and scheduler feedback summaries.
-- `turbobus/runtime/validation.py`: receipt validation expectations for
-  runtime feedback evidence.
-- `turbobus/scheduler/load_feedback.py`: scheduler-consumable feedback fields
-  and runtime pressure inputs.
+- `turbobus/adapters/vllm.py`: vLLM KV block and range lifecycle through
+  runtime-session-backed KV slot adapters.
+- `turbobus/adapters/vllm_integration.py`: vLLM runner/cache binding, CPU
+  backing allocation, restore/save lifecycle, and receipt consumption.
+- `turbobus/adapters/vllm_kv_connector.py`: vLLM connector entry point,
+  request lifecycle, prefix save/load flow, and runtime-session ownership.
+- `turbobus/offload/store.py`: shared offload block registration and
+  TransferIntent submission path used by vLLM KV adapters.
 
 Round rules:
 
@@ -39,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G13 is complete, advance to G14 vLLM KV lifecycle closure.
+After G14 is complete, advance to G15 prefix store productionization.
 
 ## Auto-Advance Policy
 
@@ -47,7 +48,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G13 runtime feedback metrics closure.
 - G14 vLLM KV lifecycle closure.
 - G15 prefix store productionization.
 - G16 model loading takeover.

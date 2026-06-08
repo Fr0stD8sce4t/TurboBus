@@ -5,20 +5,23 @@ appending history.
 
 ## Current Main Target
 
-System-body auto-advance queue complete through G18.
+G20 profile measurement closure.
 
-No new implementation target is active in the current queue. Benchmark, example,
-paper validation, server validation, new tests, fake evidence, synthetic
-evidence, and dry-run deliverables remain deferred.
+Direct H2D/D2H, relay H2D/D2H, and GPU-GPU fabric profile measurement must
+produce daemon-ingested profile records that are bound to the trusted topology
+snapshot from G19. The profile path must remain production code and must not add
+benchmark, example, paper-validation, dry-run, fake receipt, or synthetic
+evidence entry points.
 
 ## Current Code Work
 
-- No active code work remains in the G14-G18 auto-advance queue.
-- `turbobus/offload/lifecycle.py` owns shared framework-facing lifecycle
-  evidence derived from daemon `TransferReceipt` objects.
-- Framework adapters should keep using `TurboBusRuntimeSession`,
-  `TransferIntent`, and daemon `TransferReceipt` paths without adapter-side
-  route, relay, pool, target-GPU, or relay-GPU policy.
+- `cpp/src/profiler_cuda.cu`: native CUDA direct, relay, and fabric timing.
+- `turbobus/profiling/bootstrap.py`: runtime-session profile collection and
+  daemon profile install path.
+- `turbobus/profiling/daemon_format.py`: daemon profile schema validation.
+- `turbobus/backends/cuda.py`: native profile bridge.
+- `turbobus/daemon/server.py`: profile cache, topology binding, and scheduler
+  profile lookup.
 
 Round rules:
 
@@ -37,14 +40,22 @@ Round rules:
 
 ## Next Entry
 
-Stop auto-advance for the current system-body queue. A new queue should be
-defined before starting validation, benchmark, example, paper-validation,
-server-validation, or new-test work.
+After G20 is complete, continue automatically to G21 as the only current target.
 
 ## Auto-Advance Policy
 
-Auto-advance queue complete.
+Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- None.
+- G20 profile measurement closure.
+- G21 paper-grade scheduler cost model.
+- G22 mixed pooled execution hardening.
+- G23 cross-job admission and fairness closure.
+- G24 failure recovery and cleanup closure.
+- G25 CUDA IPC lifecycle hardening.
+- G26 vLLM real lifecycle closure.
+- G27 model loading real integration closure.
+- G28 training offload real integration closure.
+- G29 unified reproduction evidence model.
+- G30 real-execution validation and evaluation entry recovery.

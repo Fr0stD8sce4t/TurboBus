@@ -58,6 +58,8 @@ _PCIE_RAW_GT_PER_SECOND = {
     6: 64.0,
 }
 
+_NVLINK_EFFECTIVE_GBPS_PER_LINK = 25.0
+
 
 class CudaTopologyProbe(Protocol):
     def query_gpu_inventory(self) -> Sequence[Mapping[str, object]]:
@@ -155,16 +157,18 @@ class CudaNvmlTopologyProvider(TopologyProvider):
         gpus = tuple(_gpu_record(row) for row in gpu_rows)
         if not gpus:
             raise TopologyDiscoveryError("cuda-nvml topology discovery found no GPUs")
+        pcie_paths = tuple(
+            _pcie_path_for_gpu(gpu, row)
+            for gpu, row in zip(gpus, gpu_rows)
+        )
         self._version += 1
         inventory = DaemonResourceInventory(
             gpus=gpus,
-            pcie_paths=tuple(
-                _pcie_path_for_gpu(gpu, row)
-                for gpu, row in zip(gpus, gpu_rows)
-            ),
+            pcie_paths=pcie_paths,
             fabric_links=tuple(
                 _fabric_links_from_topology_matrix(
                     gpus,
+                    pcie_paths,
                     self._probe.query_topology_matrix(),
                 )
             ),
@@ -386,9 +390,11 @@ def _root_complex_from_pci_bus_id(pci_bus_id: str | None) -> str | None:
 
 def _fabric_links_from_topology_matrix(
     gpus: Sequence[GpuInventoryRecord],
+    pcie_paths: Sequence[PciePathRecord],
     matrix_lines: Sequence[str],
 ) -> tuple[FabricLinkRecord, ...]:
     gpu_ids = {gpu.device_id for gpu in gpus}
+    pcie_by_device = {path.device_id: path for path in pcie_paths}
     rows = [line.split() for line in matrix_lines if str(line).strip()]
     header = next((row for row in rows if row and row[0].startswith("GPU")), None)
     if not header:
@@ -413,17 +419,24 @@ def _fabric_links_from_topology_matrix(
             capability = _fabric_capability(token)
             if capability is None:
                 continue
+            bandwidth = _fabric_bandwidth_gbps(
+                capability,
+                src=src,
+                dst=dst,
+                pcie_by_device=pcie_by_device,
+            )
             links.append(
                 FabricLinkRecord(
                     src_device_id=src,
                     dst_device_id=dst,
                     fabric=str(capability["fabric"]),
-                    bandwidth_gbps=0.0,
+                    bandwidth_gbps=float(bandwidth["bandwidth_gbps"]),
                     bidirectional=True,
                     enabled=True,
                     link_count=capability.get("link_count"),
                     capability=str(capability["capability"]),
                     raw_link_type=str(capability["raw_link_type"]),
+                    bandwidth_source=str(bandwidth["bandwidth_source"]),
                 )
             )
     return tuple(links)
@@ -466,6 +479,40 @@ def _nvlink_count(token: str) -> int | None:
     if not suffix.isdigit():
         return None
     return int(suffix)
+
+
+def _fabric_bandwidth_gbps(
+    capability: Mapping[str, object],
+    *,
+    src: int,
+    dst: int,
+    pcie_by_device: Mapping[int, PciePathRecord],
+) -> dict[str, object]:
+    fabric = str(capability.get("fabric", "")).lower()
+    if fabric in {"nvlink", "nvswitch"}:
+        link_count = capability.get("link_count")
+        links = 1 if link_count is None else max(1, int(link_count))
+        return {
+            "bandwidth_gbps": float(links) * _NVLINK_EFFECTIVE_GBPS_PER_LINK,
+            "bandwidth_source": "estimated_from_nvidia_smi_topology_token",
+        }
+    if fabric == "cuda_p2p":
+        src_pcie = pcie_by_device.get(int(src))
+        dst_pcie = pcie_by_device.get(int(dst))
+        if src_pcie is None or dst_pcie is None:
+            return {
+                "bandwidth_gbps": 0.0,
+                "bandwidth_source": "missing_pcie_endpoint_bandwidth",
+            }
+        endpoint_bandwidth = min(src_pcie.bandwidth_gbps, dst_pcie.bandwidth_gbps)
+        return {
+            "bandwidth_gbps": endpoint_bandwidth,
+            "bandwidth_source": "estimated_from_pcie_endpoint_bandwidth",
+        }
+    return {
+        "bandwidth_gbps": 0.0,
+        "bandwidth_source": "unknown_fabric_capability",
+    }
 
 
 __all__ = [

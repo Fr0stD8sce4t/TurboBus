@@ -114,6 +114,7 @@ class FabricLinkRecord:
     link_count: int | None = None
     capability: str | None = None
     raw_link_type: str | None = None
+    bandwidth_source: str | None = None
 
     def __post_init__(self) -> None:
         src_device_id = int(self.src_device_id)
@@ -147,6 +148,11 @@ class FabricLinkRecord:
             if not raw_link_type:
                 raise ValueError("raw_link_type must be non-empty")
             object.__setattr__(self, "raw_link_type", raw_link_type)
+        if self.bandwidth_source is not None:
+            bandwidth_source = str(self.bandwidth_source).strip()
+            if not bandwidth_source:
+                raise ValueError("bandwidth_source must be non-empty")
+            object.__setattr__(self, "bandwidth_source", bandwidth_source)
 
 
 @dataclass(frozen=True)
@@ -274,22 +280,52 @@ class DaemonResourceInventory:
                 {"relay_gpu": gpu, "reason": "missing pcie path"}
                 for gpu in removed
             )
+            trusted_candidates = []
+            for gpu in candidates:
+                topology = _relay_topology_evidence(self, gpu, target)
+                if topology["pcie_trusted"]:
+                    trusted_candidates.append(gpu)
+                else:
+                    filtered.append(
+                        {
+                            "relay_gpu": gpu,
+                            "reason": "missing trusted pcie bandwidth",
+                            "topology": topology,
+                        }
+                    )
+            candidates = tuple(trusted_candidates)
         if self.fabric_links:
-            eligible = tuple(
-                gpu
-                for gpu in candidates
-                if _has_enabled_fabric_link(self, gpu, target)
-            )
-            filtered.extend(
-                {"relay_gpu": gpu, "reason": "missing enabled fabric link"}
-                for gpu in candidates
-                if gpu not in eligible
-            )
-            candidates = eligible
+            eligible = []
+            for gpu in candidates:
+                topology = _relay_topology_evidence(self, gpu, target)
+                if not topology["has_enabled_fabric_link"]:
+                    filtered.append(
+                        {
+                            "relay_gpu": gpu,
+                            "reason": "missing enabled fabric link",
+                            "topology": topology,
+                        }
+                    )
+                    continue
+                if not topology["fabric_trusted"]:
+                    filtered.append(
+                        {
+                            "relay_gpu": gpu,
+                            "reason": "missing trusted fabric bandwidth",
+                            "topology": topology,
+                        }
+                    )
+                    continue
+                eligible.append(gpu)
+            candidates = tuple(eligible)
         return {
             "requested_relays": list(sorted({int(gpu) for gpu in requested_relays})),
             "eligible_relays": [
-                {"relay_gpu": gpu, "reason": "eligible"}
+                {
+                    "relay_gpu": gpu,
+                    "reason": "eligible",
+                    "topology": _relay_topology_evidence(self, gpu, target),
+                }
                 for gpu in candidates
             ],
             "filtered_relays": filtered,
@@ -325,6 +361,73 @@ def _has_enabled_fabric_link(
         ):
             return True
     return False
+
+
+def _relay_topology_evidence(
+    inventory: DaemonResourceInventory,
+    relay_device: int,
+    target_device: int,
+) -> dict[str, object]:
+    relay = int(relay_device)
+    target = int(target_device)
+    pcie_path = next(
+        (path for path in inventory.pcie_paths if path.device_id == relay),
+        None,
+    )
+    fabric_links = [
+        link
+        for link in inventory.fabric_links
+        if (
+            link.src_device_id == relay
+            and link.dst_device_id == target
+        )
+        or (
+            link.bidirectional
+            and link.src_device_id == target
+            and link.dst_device_id == relay
+        )
+    ]
+    enabled_fabric_links = [link for link in fabric_links if link.enabled]
+    fabric_bandwidth = sum(link.bandwidth_gbps for link in enabled_fabric_links)
+    pcie_bandwidth = 0.0 if pcie_path is None else float(pcie_path.bandwidth_gbps)
+    return {
+        "relay_gpu": relay,
+        "target_gpu": target,
+        "has_pcie_path": pcie_path is not None,
+        "pcie_bandwidth_gbps": pcie_bandwidth,
+        "pcie_bandwidth_source": (
+            None if pcie_path is None else pcie_path.bandwidth_source
+        ),
+        "pcie_root_complex": None if pcie_path is None else pcie_path.root_complex,
+        "pcie_numa_node": None if pcie_path is None else pcie_path.numa_node,
+        "has_enabled_fabric_link": bool(enabled_fabric_links),
+        "fabric_link_count": len(fabric_links),
+        "enabled_fabric_link_count": len(enabled_fabric_links),
+        "fabric_bandwidth_gbps": fabric_bandwidth,
+        "fabric_bandwidth_sources": tuple(
+            sorted(
+                {
+                    str(link.bandwidth_source)
+                    for link in enabled_fabric_links
+                    if link.bandwidth_source is not None
+                }
+            )
+        ),
+        "fabric_kinds": tuple(
+            sorted({str(link.fabric) for link in enabled_fabric_links})
+        ),
+        "fabric_capabilities": tuple(
+            sorted(
+                {
+                    str(link.capability)
+                    for link in enabled_fabric_links
+                    if link.capability is not None
+                }
+            )
+        ),
+        "pcie_trusted": pcie_path is not None and pcie_bandwidth > 0.0,
+        "fabric_trusted": bool(enabled_fabric_links) and fabric_bandwidth > 0.0,
+    }
 
 
 def _partition_candidates(

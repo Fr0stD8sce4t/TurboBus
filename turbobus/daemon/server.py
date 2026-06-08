@@ -5713,10 +5713,14 @@ class TurboBusDaemon:
         for item in relay_eligibility["eligible_relays"]:
             relay_gpu = int(item["relay_gpu"])
             if relay_gpu in self._relay_quotas:
-                eligible_relays.append({"relay_gpu": relay_gpu, "reason": "eligible"})
+                eligible_relays.append(dict(item))
             else:
                 filtered_relays.append(
-                    {"relay_gpu": relay_gpu, "reason": "relay not configured"}
+                    {
+                        **dict(item),
+                        "relay_gpu": relay_gpu,
+                        "reason": "relay not configured",
+                    }
                 )
         return {
             **relay_eligibility,
@@ -5807,6 +5811,36 @@ class TurboBusDaemon:
                     len(item["reservations"]) for item in relay_records
                 ),
                 "active_lease_count": sum(len(item["leases"]) for item in relay_records),
+                "trusted_topology_relay_count": sum(
+                    1
+                    for item in relay_records
+                    if bool(
+                        item["inventory"]["path_capabilities"].get(
+                            "topology_trusted",
+                            False,
+                        )
+                    )
+                ),
+                "trusted_pcie_relay_count": sum(
+                    1
+                    for item in relay_records
+                    if bool(
+                        item["inventory"]["path_capabilities"].get(
+                            "pcie_trusted",
+                            False,
+                        )
+                    )
+                ),
+                "trusted_fabric_relay_count": sum(
+                    1
+                    for item in relay_records
+                    if bool(
+                        item["inventory"]["path_capabilities"].get(
+                            "fabric_trusted",
+                            False,
+                        )
+                    )
+                ),
             },
         }
 
@@ -6055,6 +6089,15 @@ def _relay_path_capabilities(
         float(link.get("bandwidth_gbps", 0.0) or 0.0)
         for link in enabled_fabric_links
     ]
+    fabric_bandwidth_sources = sorted(
+        {
+            str(link.get("bandwidth_source"))
+            for link in enabled_fabric_links
+            if link.get("bandwidth_source") is not None
+        }
+    )
+    pcie_bandwidth = 0.0 if pcie_path is None else pcie_path.bandwidth_gbps
+    fabric_bandwidth = sum(fabric_bandwidths)
     return {
         "relay_gpu": int(relay_gpu),
         "target_gpu": target_gpu,
@@ -6068,9 +6111,7 @@ def _relay_path_capabilities(
         "pcie_negotiated_speed_gtps": (
             None if pcie_path is None else pcie_path.negotiated_speed_gtps
         ),
-        "pcie_bandwidth_gbps": (
-            0.0 if pcie_path is None else pcie_path.bandwidth_gbps
-        ),
+        "pcie_bandwidth_gbps": pcie_bandwidth,
         "pcie_bandwidth_source": (
             None if pcie_path is None else pcie_path.bandwidth_source
         ),
@@ -6089,8 +6130,17 @@ def _relay_path_capabilities(
                 if link.get("capability") is not None
             }
         ),
-        "fabric_bandwidth_gbps": sum(fabric_bandwidths),
+        "fabric_bandwidth_gbps": fabric_bandwidth,
+        "fabric_bandwidth_sources": fabric_bandwidth_sources,
         "p2p_enabled": bool(enabled_fabric_links),
+        "pcie_trusted": pcie_path is not None and pcie_bandwidth > 0.0,
+        "fabric_trusted": bool(enabled_fabric_links) and fabric_bandwidth > 0.0,
+        "topology_trusted": (
+            pcie_path is not None
+            and pcie_bandwidth > 0.0
+            and bool(enabled_fabric_links)
+            and fabric_bandwidth > 0.0
+        ),
     }
 
 

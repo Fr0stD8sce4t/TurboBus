@@ -49,7 +49,15 @@ def validate_daemon_profile_dict(
     profile_target = int(normalized.get("target_device", target))
     if profile_target != target:
         raise ValueError("profile target_device must match runtime target_gpu")
+    direct_h2d = float(normalized.get("direct_h2d_bw_gbps", 0.0) or 0.0)
+    direct_d2h = float(normalized.get("direct_d2h_bw_gbps", 0.0) or 0.0)
+    if direct_h2d <= 0.0:
+        raise ValueError("profile direct_h2d_bw_gbps must be positive")
+    if direct_d2h <= 0.0:
+        raise ValueError("profile direct_d2h_bw_gbps must be positive")
     normalized["target_device"] = target
+    normalized["direct_h2d_bw_gbps"] = direct_h2d
+    normalized["direct_d2h_bw_gbps"] = direct_d2h
     expected_relays = sorted({int(gpu) for gpu in relay_gpus})
     relays = []
     for relay in normalized.get("relays", []) or []:
@@ -61,6 +69,17 @@ def validate_daemon_profile_dict(
             raise ValueError("profile relay target_device must match runtime target_gpu")
         relay_record["relay_device"] = int(relay_record["relay_device"])
         relay_record["target_device"] = target
+        relay_record["h2d_bw_gbps"] = float(relay_record.get("h2d_bw_gbps", 0.0) or 0.0)
+        relay_record["d2h_bw_gbps"] = float(relay_record.get("d2h_bw_gbps", 0.0) or 0.0)
+        relay_record["p2p_bw_gbps"] = float(relay_record.get("p2p_bw_gbps", 0.0) or 0.0)
+        relay_record["effective_bw_gbps"] = float(
+            relay_record.get("effective_bw_gbps", 0.0) or 0.0
+        )
+        relay_record["effective_d2h_bw_gbps"] = float(
+            relay_record.get("effective_d2h_bw_gbps", 0.0) or 0.0
+        )
+        relay_record["p2p_enabled"] = bool(relay_record.get("p2p_enabled", False))
+        _validate_relay_measurement(relay_record)
         relays.append(relay_record)
     profile_relays = [int(relay["relay_device"]) for relay in relays]
     if len(profile_relays) != len(set(profile_relays)):
@@ -82,17 +101,18 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
     if int(profile.get("target_device", target_gpu)) != int(target_gpu):
         raise ValueError("daemon profile target_device does not match target_gpu")
     direct_h2d = float(profile.get("direct_h2d_bw_gbps", 0.0) or 0.0)
+    direct_d2h = float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0)
     if direct_h2d <= 0.0:
         raise ValueError("daemon profile direct_h2d_bw_gbps must be positive")
+    if direct_d2h <= 0.0:
+        raise ValueError("daemon profile direct_d2h_bw_gbps must be positive")
     native = native_runtime.loaded_native_module()
     use_native_profile = native is not None and hasattr(native, "ProfileResult")
     if use_native_profile:
         profile_obj = native.ProfileResult()
         profile_obj.target_device = int(profile.get("target_device", target_gpu))
         profile_obj.direct_h2d_bw_gbps = direct_h2d
-        profile_obj.direct_d2h_bw_gbps = float(
-            profile.get("direct_d2h_bw_gbps", 0.0) or 0.0
-        )
+        profile_obj.direct_d2h_bw_gbps = direct_d2h
         profile_relays = []
     else:
         profile_relays = []
@@ -113,6 +133,7 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
             ),
             "p2p_enabled": bool(relay.get("p2p_enabled", False)),
         }
+        _validate_relay_measurement(relay_obj)
         if use_native_profile:
             native_relay = native.RelayProfile()
             native_relay.relay_device = relay_obj["relay_device"]
@@ -132,7 +153,7 @@ def profile_from_daemon_entry(entry: Mapping, target_gpu: int):
     return SimpleProfileResult(
         target_device=int(profile.get("target_device", target_gpu)),
         direct_h2d_bw_gbps=direct_h2d,
-        direct_d2h_bw_gbps=float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0),
+        direct_d2h_bw_gbps=direct_d2h,
         relays=profile_relays,
     )
 
@@ -144,6 +165,23 @@ def daemon_profile_is_fresh(entry: Mapping, max_age_seconds: float) -> bool:
     if updated_at <= 0.0:
         return False
     return (time.time() - updated_at) <= float(max_age_seconds)
+
+
+def _validate_relay_measurement(relay: Mapping[str, object]) -> None:
+    relay_device = int(relay["relay_device"])
+    if not bool(relay.get("p2p_enabled", False)):
+        raise ValueError(f"profile relay {relay_device} must have p2p_enabled")
+    for field_name in (
+        "h2d_bw_gbps",
+        "d2h_bw_gbps",
+        "p2p_bw_gbps",
+        "effective_bw_gbps",
+        "effective_d2h_bw_gbps",
+    ):
+        if float(relay.get(field_name, 0.0) or 0.0) <= 0.0:
+            raise ValueError(
+                f"profile relay {relay_device} {field_name} must be positive"
+            )
 
 
 __all__ = [

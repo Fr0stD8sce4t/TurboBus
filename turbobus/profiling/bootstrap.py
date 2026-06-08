@@ -197,6 +197,7 @@ def _profile_bootstrap_evidence(
         "force": bool(force),
         "cache_lookup": dict(cache_lookup),
         "daemon_cache_verified": bool(daemon_cache_verified),
+        "topology_binding": _profile_topology_binding_summary(daemon_cache_entry),
         "profile_summary": summary,
     }
 
@@ -217,6 +218,33 @@ def _profile_entry_summary(entry: object | None) -> dict[str, object]:
         "relay_count": len(relay_records),
         "profile_bytes": int(entry.get("profile_bytes", 0) or 0),
         "updated_at": float(entry.get("updated_at", 0.0) or 0.0),
+    }
+
+
+def _profile_topology_binding_summary(entry: object | None) -> dict[str, object]:
+    if not isinstance(entry, Mapping):
+        return {"available": False}
+    binding = entry.get("topology_binding")
+    if not isinstance(binding, Mapping):
+        return {"available": False}
+    relay_topology = tuple(
+        item for item in binding.get("relay_topology", ()) or ()
+        if isinstance(item, Mapping)
+    )
+    return {
+        "available": True,
+        "source": str(binding.get("source", "")),
+        "topology_snapshot_id": binding.get("topology_snapshot_id"),
+        "topology_version": int(binding.get("topology_version", 0) or 0),
+        "inventory_source": binding.get("inventory_source"),
+        "target_gpu": int(binding.get("target_gpu", 0) or 0),
+        "relay_count": len(relay_topology),
+        "trusted_relay_count": sum(
+            1
+            for item in relay_topology
+            if bool(dict(item.get("topology", {}) or {}).get("pcie_trusted", False))
+            and bool(dict(item.get("topology", {}) or {}).get("fabric_trusted", False))
+        ),
     }
 
 

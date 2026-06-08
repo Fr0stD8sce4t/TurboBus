@@ -5,23 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G20 profile measurement closure.
+G21 paper-grade scheduler cost model.
 
-Direct H2D/D2H, relay H2D/D2H, and GPU-GPU fabric profile measurement must
-produce daemon-ingested profile records that are bound to the trusted topology
-snapshot from G19. The profile path must remain production code and must not add
-benchmark, example, paper-validation, dry-run, fake receipt, or synthetic
-evidence entry points.
+Scheduler decisions must use measured daemon profiles, trusted topology
+bindings, live queue/running/admitted state, relay pressure, and job priority to
+produce explainable direct, relay, or mixed pooled path splits. The scheduler
+must remain the only production source of transfer plans.
 
 ## Current Code Work
 
-- `cpp/src/profiler_cuda.cu`: native CUDA direct, relay, and fabric timing.
-- `turbobus/profiling/bootstrap.py`: runtime-session profile collection and
-  daemon profile install path.
-- `turbobus/profiling/daemon_format.py`: daemon profile schema validation.
-- `turbobus/backends/cuda.py`: native profile bridge.
-- `turbobus/daemon/server.py`: profile cache, topology binding, and scheduler
-  profile lookup.
+- `turbobus/scheduler/daemon.py`: scheduler cost model, profile consumption,
+  path cost metadata, relay policy, and fallback behavior.
+- `turbobus/scheduler/load_feedback.py`: runtime pressure, fairness, queue,
+  worker/backend feedback, and relay-load accounting.
+- `turbobus/planner_engine.py`: chunk-to-path allocation using measured path
+  costs.
+- `turbobus/daemon/server.py`: runtime state snapshots and scheduler inputs.
 
 Round rules:
 
@@ -40,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G20 is complete, continue automatically to G21 as the only current target.
+After G21 is complete, continue automatically to G22 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -48,7 +47,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G20 profile measurement closure.
 - G21 paper-grade scheduler cost model.
 - G22 mixed pooled execution hardening.
 - G23 cross-job admission and fairness closure.

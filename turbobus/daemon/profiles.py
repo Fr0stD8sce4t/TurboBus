@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping
 
 
 def normalize_relays(relay_gpus: Iterable[int]) -> list[int]:
@@ -23,6 +23,8 @@ def normalize_profile(profile: dict, target_gpu: int) -> dict:
     direct_d2h = float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0)
     if direct_h2d <= 0.0:
         raise ValueError("profile direct_h2d_bw_gbps must be positive")
+    if direct_d2h <= 0.0:
+        raise ValueError("profile direct_d2h_bw_gbps must be positive")
     relays = []
     for relay in profile.get("relays", []) or []:
         if not isinstance(relay, dict):
@@ -30,20 +32,20 @@ def normalize_profile(profile: dict, target_gpu: int) -> dict:
         relay_target = int(relay.get("target_device", target))
         if relay_target != target:
             raise ValueError("profile relay target_device must match target_gpu")
-        relays.append(
-            {
-                "relay_device": int(relay["relay_device"]),
-                "target_device": relay_target,
-                "h2d_bw_gbps": float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
-                "d2h_bw_gbps": float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
-                "p2p_bw_gbps": float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
-                "effective_bw_gbps": float(relay.get("effective_bw_gbps", 0.0) or 0.0),
-                "effective_d2h_bw_gbps": float(
-                    relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
-                ),
-                "p2p_enabled": bool(relay.get("p2p_enabled", False)),
-            }
-        )
+        relay_record = {
+            "relay_device": int(relay["relay_device"]),
+            "target_device": relay_target,
+            "h2d_bw_gbps": float(relay.get("h2d_bw_gbps", 0.0) or 0.0),
+            "d2h_bw_gbps": float(relay.get("d2h_bw_gbps", 0.0) or 0.0),
+            "p2p_bw_gbps": float(relay.get("p2p_bw_gbps", 0.0) or 0.0),
+            "effective_bw_gbps": float(relay.get("effective_bw_gbps", 0.0) or 0.0),
+            "effective_d2h_bw_gbps": float(
+                relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
+            ),
+            "p2p_enabled": bool(relay.get("p2p_enabled", False)),
+        }
+        _validate_relay_profile_measurement(relay_record)
+        relays.append(relay_record)
     return {
         "target_device": target,
         "direct_h2d_bw_gbps": direct_h2d,
@@ -59,6 +61,7 @@ def profile_entry(
     profile: dict,
     profile_bytes: int,
     updated_at: float,
+    topology_binding: Mapping[str, object] | None = None,
 ) -> dict:
     target = int(target_gpu)
     relays = normalize_relays(relay_gpus)
@@ -70,13 +73,36 @@ def profile_entry(
     unexpected_relays = sorted(set(profile_relays) - set(relays))
     if unexpected_relays:
         raise ValueError("profile relay devices must be listed in relay_gpus")
-    return {
+    missing_relays = sorted(set(relays) - set(profile_relays))
+    if missing_relays:
+        raise ValueError("profile must include every daemon-discovered relay")
+    entry = {
         "target_gpu": target,
         "relay_gpus": relays,
         "profile_bytes": int(profile_bytes),
         "updated_at": float(updated_at),
         "profile": normalized_profile,
     }
+    if isinstance(topology_binding, Mapping):
+        entry["topology_binding"] = dict(topology_binding)
+    return entry
+
+
+def _validate_relay_profile_measurement(relay: Mapping[str, object]) -> None:
+    relay_device = int(relay["relay_device"])
+    if not bool(relay.get("p2p_enabled", False)):
+        raise ValueError(f"profile relay {relay_device} must have p2p_enabled")
+    for field_name in (
+        "h2d_bw_gbps",
+        "d2h_bw_gbps",
+        "p2p_bw_gbps",
+        "effective_bw_gbps",
+        "effective_d2h_bw_gbps",
+    ):
+        if float(relay.get(field_name, 0.0) or 0.0) <= 0.0:
+            raise ValueError(
+                f"profile relay {relay_device} {field_name} must be positive"
+            )
 
 
 def cached_profile(

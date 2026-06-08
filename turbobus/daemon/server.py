@@ -1690,13 +1690,6 @@ class TurboBusDaemon:
             planning_relays = tuple(
                 int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
             )
-            profile_entry = self._profile_cache.get(
-                self._profile_key(session.target_gpu, planning_relays)
-            )
-            if profile_entry is None and planning_relays != tuple(session.relay_gpus):
-                profile_entry = self._profile_cache.get(
-                    self._profile_key(session.target_gpu, session.relay_gpus)
-                )
             try:
                 self._validate_peer_owns_buffer_locked(
                     buffer_id=src_buffer.buffer_id,
@@ -1957,9 +1950,17 @@ class TurboBusDaemon:
         key = self._profile_key(target_gpu, relay_gpus)
         with self._lock:
             self._purge_stale_profiles_locked(time.time())
+            entry = daemon_profiles.cached_profile(self._profile_cache, key)
+            if entry is not None and not self._profile_matches_current_topology_locked(
+                entry,
+                target_gpu=int(target_gpu),
+                relay_gpus=relay_gpus,
+            ):
+                daemon_profiles.invalidate_cached_profile(self._profile_cache, key)
+                entry = None
             return DaemonResponse(
                 ok=True,
-                payload={"profile": daemon_profiles.cached_profile(self._profile_cache, key)},
+                payload={"profile": entry},
             )
 
     def put_profile(
@@ -1972,16 +1973,24 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         target = int(target_gpu)
         relays = self._normalize_relays(relay_gpus)
-        entry = daemon_profiles.profile_entry(
-            target_gpu=target,
-            relay_gpus=relays,
-            profile=profile,
-            profile_bytes=int(profile_bytes),
-            updated_at=float(time.time() if updated_at is None else updated_at),
-        )
         key = self._profile_key(target, relays)
         with self._lock:
             self._purge_stale_profiles_locked(time.time())
+            try:
+                topology_binding = self._profile_topology_binding_locked(
+                    target_gpu=target,
+                    relay_gpus=relays,
+                )
+                entry = daemon_profiles.profile_entry(
+                    target_gpu=target,
+                    relay_gpus=relays,
+                    profile=profile,
+                    profile_bytes=int(profile_bytes),
+                    updated_at=float(time.time() if updated_at is None else updated_at),
+                    topology_binding=topology_binding,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             stored = daemon_profiles.put_cached_profile(self._profile_cache, key, entry)
         return DaemonResponse(ok=True, payload={"profile": stored})
 
@@ -2290,13 +2299,11 @@ class TurboBusDaemon:
         planning_relays = tuple(
             item["relay_gpu"] for item in relay_eligibility["eligible_relays"]
         )
-        profile_entry = self._profile_cache.get(
-            self._profile_key(session.target_gpu, planning_relays)
+        profile_entry = self._trusted_profile_entry_locked(
+            target_gpu=session.target_gpu,
+            planning_relays=planning_relays,
+            fallback_relays=tuple(session.relay_gpus),
         )
-        if profile_entry is None and planning_relays != tuple(session.relay_gpus):
-            profile_entry = self._profile_cache.get(
-                self._profile_key(session.target_gpu, session.relay_gpus)
-            )
         planning_session = (
             session
             if planning_relays == tuple(session.relay_gpus)
@@ -2474,13 +2481,11 @@ class TurboBusDaemon:
         relay_eligibility: dict[str, object],
         reservations: list[TransferReservation],
     ) -> dict[str, object]:
-        profile_entry = self._profile_cache.get(
-            self._profile_key(session.target_gpu, planning_relays)
+        profile_entry = self._trusted_profile_entry_locked(
+            target_gpu=session.target_gpu,
+            planning_relays=planning_relays,
+            fallback_relays=tuple(session.relay_gpus),
         )
-        if profile_entry is None and planning_relays != tuple(session.relay_gpus):
-            profile_entry = self._profile_cache.get(
-                self._profile_key(session.target_gpu, session.relay_gpus)
-            )
         admission = dict(self._transfer_admissions.get(str(transfer_id), {}))
         ticket = self._active_execution_ticket_for_transfer_locked(
             transfer_id=str(transfer_id),
@@ -5542,6 +5547,129 @@ class TurboBusDaemon:
             max_age_seconds=self._profile_max_age_seconds,
             now=now,
         )
+
+    def _profile_topology_binding_locked(
+        self,
+        *,
+        target_gpu: int,
+        relay_gpus: Iterable[int],
+    ) -> dict[str, object]:
+        if self._topology_provider is None:
+            raise ValueError(_TOPOLOGY_UNAVAILABLE_ERROR)
+        inventory = self._topology_provider.snapshot()
+        requested_relays = tuple(self._normalize_relays(relay_gpus))
+        relay_eligibility = self._relay_eligibility_for_target_locked(
+            target_gpu=int(target_gpu),
+            requested_relays=requested_relays,
+            inventory=inventory,
+        )
+        eligible_by_relay = {
+            int(item["relay_gpu"]): dict(item)
+            for item in relay_eligibility["eligible_relays"]
+        }
+        missing_relays = [
+            int(relay)
+            for relay in requested_relays
+            if int(relay) not in eligible_by_relay
+        ]
+        if missing_relays:
+            raise ValueError(
+                "profile relay devices must be trusted topology-eligible: "
+                + ",".join(str(relay) for relay in missing_relays)
+            )
+        relay_bindings = []
+        for relay in requested_relays:
+            record = dict(eligible_by_relay[int(relay)])
+            topology = dict(record.get("topology", {}) or {})
+            if not bool(topology.get("pcie_trusted", False)):
+                raise ValueError(
+                    f"profile relay {relay} is missing trusted PCIe topology"
+                )
+            if not bool(topology.get("fabric_trusted", False)):
+                raise ValueError(
+                    f"profile relay {relay} is missing trusted fabric topology"
+                )
+            relay_bindings.append(
+                {
+                    "relay_gpu": int(relay),
+                    "reason": str(record.get("reason", "eligible")),
+                    "topology": topology,
+                }
+            )
+        return {
+            "source": "daemon_trusted_topology",
+            "topology_snapshot_id": inventory.topology_snapshot_id(),
+            "topology_version": inventory.version,
+            "inventory_source": inventory.source,
+            "inventory_discovered_at": inventory.discovered_at,
+            "target_gpu": int(target_gpu),
+            "relay_gpus": list(requested_relays),
+            "relay_topology": relay_bindings,
+        }
+
+    def _profile_matches_current_topology_locked(
+        self,
+        entry: Mapping[str, object],
+        *,
+        target_gpu: int,
+        relay_gpus: Iterable[int],
+    ) -> bool:
+        binding = entry.get("topology_binding")
+        if not isinstance(binding, Mapping):
+            return False
+        if self._topology_provider is None:
+            return False
+        try:
+            current = self._profile_topology_binding_locked(
+                target_gpu=int(target_gpu),
+                relay_gpus=relay_gpus,
+            )
+        except ValueError:
+            return False
+        if str(binding.get("topology_snapshot_id", "")) != str(
+            current.get("topology_snapshot_id", "")
+        ):
+            return False
+        if int(binding.get("topology_version", -1) or -1) != int(
+            current.get("topology_version", -2) or -2
+        ):
+            return False
+        return tuple(int(item) for item in binding.get("relay_gpus", ()) or ()) == tuple(
+            int(item) for item in current.get("relay_gpus", ()) or ()
+        )
+
+    def _trusted_profile_entry_locked(
+        self,
+        *,
+        target_gpu: int,
+        planning_relays: Iterable[int],
+        fallback_relays: Iterable[int],
+    ) -> dict | None:
+        planning_key = self._profile_key(target_gpu, planning_relays)
+        entry = daemon_profiles.cached_profile(self._profile_cache, planning_key)
+        if entry is not None and self._profile_matches_current_topology_locked(
+            entry,
+            target_gpu=int(target_gpu),
+            relay_gpus=planning_relays,
+        ):
+            return entry
+        if entry is not None:
+            daemon_profiles.invalidate_cached_profile(self._profile_cache, planning_key)
+        planning_tuple = tuple(int(item) for item in planning_relays)
+        fallback_tuple = tuple(int(item) for item in fallback_relays)
+        if planning_tuple == fallback_tuple:
+            return None
+        fallback_key = self._profile_key(target_gpu, fallback_tuple)
+        fallback_entry = daemon_profiles.cached_profile(self._profile_cache, fallback_key)
+        if fallback_entry is not None and self._profile_matches_current_topology_locked(
+            fallback_entry,
+            target_gpu=int(target_gpu),
+            relay_gpus=fallback_tuple,
+        ):
+            return fallback_entry
+        if fallback_entry is not None:
+            daemon_profiles.invalidate_cached_profile(self._profile_cache, fallback_key)
+        return None
 
     def describe(
         self,

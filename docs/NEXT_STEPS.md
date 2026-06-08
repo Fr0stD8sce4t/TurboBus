@@ -5,19 +5,19 @@ appending history.
 
 ## Current Main Target
 
-G16 model loading takeover.
+G17 training-state offload closure.
 
-Model-loading paths must submit model-weight movement through
-`TurboBusRuntimeSession` as `TransferIntent` work and consume daemon
-`TransferReceipt` objects. They must not choose direct, relay, pool, target GPU,
-or relay GPU policy in adapter or application code.
+Training-state offload paths must register real CPU/GPU buffers through
+`TurboBusRuntimeSession`, submit training-state `TransferIntent` work, and
+consume daemon `TransferReceipt` objects without exposing direct, relay, pool,
+target-GPU, or relay-GPU policy to adapter or application code.
 
 ## Current Code Work
 
-- `turbobus/adapters/model_loading.py`: model-weight registration and
-  runtime-session-backed transfer submission.
+- `turbobus/adapters/training_offload.py`: optimizer/checkpoint/state bucket
+  registration, offload/restore submission, wait, and receipt lifecycle state.
 - `turbobus/runtime_session.py`: production adapter construction and receipt
-  consumption entry points for model-loading workloads.
+  consumption entry points for training-state workloads.
 - `turbobus/offload/store.py`: shared named-block transfer path used by
   framework adapters.
 
@@ -38,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G16 is complete, advance to G17 training-state offload closure.
+After G17 is complete, advance to G18 unified auditable receipt closure.
 
 ## Auto-Advance Policy
 
@@ -46,7 +46,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G16 model loading takeover.
 - G17 training-state offload closure.
 - G18 unified auditable receipt closure.
 

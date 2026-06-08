@@ -2,6 +2,7 @@ from .base import FrameworkAdapter
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter, make_contiguous_kv_slots
 from .model_loading import (
     ModelWeightBucket,
+    ModelWeightLoadLifecycle,
     ModelWeightLoader,
     ModelWeightManifest,
     ModelWeightTensor,
@@ -41,6 +42,7 @@ __all__ = [
     "InferenceKVSlot",
     "InferenceKVSlotAdapter",
     "ModelWeightBucket",
+    "ModelWeightLoadLifecycle",
     "ModelWeightLoader",
     "ModelWeightManifest",
     "ModelWeightTensor",

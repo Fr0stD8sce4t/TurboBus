@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
 from ..model_manifest import ModelWeightManifest, ModelWeightTensor
-from ..schema import WorkloadKind
+from ..schema import TransferReceipt, WorkloadKind
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,13 @@ class ModelWeightBucket:
     byte_count: int | None = None
     cpu_slot: object | None = None
     gpu_slot: object | None = None
+
+
+@dataclass(frozen=True)
+class ModelWeightLoadLifecycle:
+    operation: str
+    names: tuple[str, ...]
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelWeightLoader(OffloadStore):
@@ -107,12 +114,22 @@ class ModelWeightLoader(OffloadStore):
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
         self._manifest: ModelWeightManifest | None = None
+        self._load_lifecycle_history: list[ModelWeightLoadLifecycle] = []
+        self._last_load_lifecycle: ModelWeightLoadLifecycle | None = None
         if manifest is not None:
             self.register_manifest(manifest)
 
     @property
     def manifest(self) -> ModelWeightManifest | None:
         return self._manifest
+
+    @property
+    def last_load_lifecycle(self) -> ModelWeightLoadLifecycle | None:
+        return self._last_load_lifecycle
+
+    @property
+    def load_lifecycle_history(self) -> tuple[ModelWeightLoadLifecycle, ...]:
+        return tuple(self._load_lifecycle_history)
 
     def register_manifest(
         self,
@@ -239,10 +256,11 @@ class ModelWeightLoader(OffloadStore):
         return self.bucket_infos(names)
 
     def load_bucket(self, name: str):
-        return self.prefetch(name)
+        handles = self._load_selected([name], operation="load_bucket")
+        return handles[0]
 
     def load_buckets(self, names: Iterable[str]) -> list:
-        return self.prefetch_many(names)
+        return self._load_selected(names, operation="load_buckets")
 
     def submit_load_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_prefetch_many(names)
@@ -258,24 +276,28 @@ class ModelWeightLoader(OffloadStore):
 
     def load_manifest(self, names: Iterable[str] | None = None) -> list:
         selected = self._manifest_names(names)
-        batch = self.submit_load_tensors(selected)
-        self.wait_many(selected)
-        return list(batch.handles)
+        return self._load_selected(selected, operation="load_manifest")
 
     def load_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_load_buckets(names)
 
     def load_prefix(self, names: Iterable[str]) -> list:
-        names = list(names)
-        batch = self.submit_load_buckets(names)
-        self.wait_many(names)
-        return list(batch.handles)
+        return self._load_selected(names, operation="load_prefix")
 
     def load_all(self) -> list:
-        return self.prefetch_many(self.names())
+        return self._load_selected(self.names(), operation="load_all")
 
     def wait_all(self) -> None:
         self.wait_many(self.names())
+
+    def wait_many(self, names: Iterable[str]) -> None:
+        names = self._normalize_names(names)
+        super().wait_many(names)
+        self._record_load_lifecycle(
+            operation="wait_many",
+            names=names,
+            handles=self._handles_for_names(names),
+        )
 
     def transfer_stats(self, names: Iterable[str]) -> TransferStats:
         return self.transfer_stats_many(names)
@@ -287,10 +309,121 @@ class ModelWeightLoader(OffloadStore):
 
     def _manifest_names(self, names: Iterable[str] | None) -> list[str]:
         if names is not None:
-            return list(names)
+            return self._normalize_names(names)
         if self._manifest is not None:
             return self._manifest.names()
         return self.names()
+
+    def _load_selected(self, names: Iterable[str], *, operation: str) -> list:
+        names = self._normalize_names(names)
+        if not names:
+            return []
+        batch = self.submit_load_tensors(names)
+        super().wait_many(names)
+        self._record_load_lifecycle(
+            operation=operation,
+            names=names,
+            handles=batch.handles,
+        )
+        return list(batch.handles)
+
+    def _record_load_lifecycle(
+        self,
+        *,
+        operation: str,
+        names: list[str],
+        handles: Iterable[object],
+    ) -> None:
+        handles = list(handles)
+        if not handles:
+            return
+        lifecycle = ModelWeightLoadLifecycle(
+            operation=str(operation),
+            names=tuple(names),
+            evidence=self._load_lifecycle_evidence(
+                operation=operation,
+                names=names,
+                handles=handles,
+            ),
+        )
+        self._last_load_lifecycle = lifecycle
+        self._load_lifecycle_history.append(lifecycle)
+
+    def _load_lifecycle_evidence(
+        self,
+        *,
+        operation: str,
+        names: list[str],
+        handles: Iterable[object],
+    ) -> dict[str, Any]:
+        receipts = _unique_receipts_from_handles(handles)
+        if names and not receipts:
+            raise RuntimeError("model weight load completed without TransferReceipt evidence")
+        transfer_stats = self.transfer_stats_many(names).as_dict()
+        return {
+            "evidence_id": (
+                f"model-load-{self.transfer_context.session_id}-"
+                f"{self.transfer_context.intent_prefix}-{len(self._load_lifecycle_history) + 1}"
+            ),
+            "operation": str(operation),
+            "job_id": self.transfer_context.job_id,
+            "session_id": self.transfer_context.session_id,
+            "workload_kind": str(self.transfer_context.workload_kind.value),
+            "buffer_registration_source": "TurboBusRuntimeSession",
+            "intent_source": "TransferIntent",
+            "receipt_source": "TransferReceipt",
+            "policy_source": "daemon_scheduler",
+            "cpu_buffer_id": self.transfer_context.cpu_buffer_id,
+            "gpu_buffer_id": self.transfer_context.gpu_buffer_id,
+            "tensor_names": tuple(names),
+            "tensor_count": len(names),
+            "manifest_tensor_count": (
+                0 if self._manifest is None else len(self._manifest.tensors)
+            ),
+            "manifest_cpu_span_bytes": (
+                0 if self._manifest is None else self._manifest.cpu_span_bytes
+            ),
+            "manifest_gpu_span_bytes": (
+                0 if self._manifest is None else self._manifest.gpu_span_bytes
+            ),
+            "receipt_count": len(receipts),
+            "intent_ids": _join_unique(
+                getattr(getattr(handle, "intent", None), "intent_id", None)
+                for handle in handles
+            ),
+            "receipt_ids": _join_unique(receipt.receipt_id for receipt in receipts),
+            "ticket_ids": _join_unique(receipt.ticket_id for receipt in receipts),
+            "decision_ids": _join_unique(receipt.decision_id for receipt in receipts),
+            "topology_snapshot_ids": _join_unique(
+                receipt.topology_snapshot_id for receipt in receipts
+            ),
+            "transfer_ids": _join_unique(
+                receipt.metadata.get("transfer_id") for receipt in receipts
+            ),
+            "receipt_states": _join_unique(
+                getattr(receipt.state, "value", str(receipt.state))
+                for receipt in receipts
+            ),
+            "completion_sources": _join_unique(
+                receipt.metadata.get("completion_source") for receipt in receipts
+            ),
+            **transfer_stats,
+        }
+
+    def _handles_for_names(self, names: Iterable[str]) -> list[object]:
+        handles = []
+        seen = set()
+        for name in names:
+            handle = self.block(name).last_handle
+            if handle is None or id(handle) in seen:
+                continue
+            seen.add(id(handle))
+            handles.append(handle)
+        return handles
+
+    @staticmethod
+    def _normalize_names(names: Iterable[str]) -> list[str]:
+        return [str(name) for name in names]
 
 
 def _coerce_manifest(
@@ -348,8 +481,37 @@ def _optional_backing_nbytes(backing) -> int | None:
     return None
 
 
+def _unique_receipts_from_handles(handles: Iterable[object]) -> list[TransferReceipt]:
+    receipts: list[TransferReceipt] = []
+    seen = set()
+    for handle in handles:
+        receipt = getattr(handle, "receipt", None)
+        if not isinstance(receipt, TransferReceipt):
+            continue
+        if receipt.receipt_id in seen:
+            continue
+        seen.add(receipt.receipt_id)
+        receipts.append(receipt)
+    return receipts
+
+
+def _join_unique(values: Iterable[object]) -> str:
+    seen = set()
+    ordered = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(text)
+    return ",".join(ordered)
+
+
 __all__ = [
     "ModelWeightBucket",
+    "ModelWeightLoadLifecycle",
     "ModelWeightManifest",
     "ModelWeightTensor",
     "ModelWeightLoader",

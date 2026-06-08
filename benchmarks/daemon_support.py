@@ -79,13 +79,21 @@ def receipt_to_trace(receipt: TransferReceipt) -> dict[str, object]:
 
 def receipt_trace_line(receipt: TransferReceipt, *, prefix: str = "daemon_receipt") -> str:
     trace = receipt_to_trace(receipt)
+    return receipt_trace_line_from_trace(trace, prefix=prefix)
+
+
+def receipt_trace_line_from_trace(
+    trace: Mapping[str, object],
+    *,
+    prefix: str = "daemon_receipt",
+) -> str:
     fields = [
         prefix,
         f"intent_id={trace['intent_id']}",
         f"decision_id={trace['decision_id']}",
         f"topology_snapshot_id={trace['topology_snapshot_id']}",
         f"ticket_id={trace['ticket_id']}",
-        f"state={receipt.state.value}",
+        f"state={trace['state']}",
         f"bytes_total={trace['bytes_total']}",
         f"bytes_completed={trace['bytes_completed']}",
         f"direct_bytes={trace['direct_bytes']}",

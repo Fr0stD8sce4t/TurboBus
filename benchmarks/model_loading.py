@@ -18,7 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from daemon_support import benchmark_job_id, receipt_to_trace, receipt_trace_line
+from daemon_support import (
+    benchmark_job_id,
+    receipt_to_trace,
+    receipt_trace_line_from_trace,
+)
+from turbobus.runtime.evidence import validate_runtime_receipts
 from turbobus.schema import TransferReceipt, WorkloadKind
 
 
@@ -129,6 +134,7 @@ def first_receipt(handles) -> TransferReceipt:
             unique.append(receipt)
     if len(unique) != 1:
         raise RuntimeError(f"expected one receipt for batched load, got {len(unique)}")
+    validate_runtime_receipts(unique, source="benchmark_model_loading")
     return unique[0]
 
 
@@ -677,33 +683,13 @@ def compact_summary(result: dict) -> str:
             f"ticket_id={sample['ticket_id']}"
         )
         lines.append(
-            receipt_trace_line(
-                receipt_from_trace(sample["receipt"]),
+            receipt_trace_line_from_trace(
+                sample["receipt"],
                 prefix="model_load_receipt",
             )
         )
     lines.append("MODEL_LOAD_SUMMARY_END")
     return "\n".join(lines)
-
-
-def receipt_from_trace(trace: dict):
-    return TransferReceipt(
-        receipt_id=trace["receipt_id"],
-        ticket_id=trace["ticket_id"],
-        intent_id=trace["intent_id"],
-        decision_id=trace["decision_id"],
-        topology_snapshot_id=trace["topology_snapshot_id"],
-        job_id=trace["job_id"],
-        session_id=trace["session_id"],
-        state=trace["state"],
-        bytes_total=trace["bytes_total"],
-        bytes_completed=trace["bytes_completed"],
-        started_at=trace.get("started_at", 0.0),
-        completed_at=trace.get("completed_at"),
-        path_stats=tuple(trace.get("path_stats", ())),
-        error=trace.get("error"),
-        metadata=trace.get("metadata", {}),
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:

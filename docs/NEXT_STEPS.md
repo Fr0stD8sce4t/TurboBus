@@ -5,21 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G41 benchmark code recovery.
+G42 paper report code recovery.
 
-Benchmark code entries must be restored only as production evidence consumers.
-They may consume real `TransferReceipt`, adapter lifecycle evidence, and daemon
-or worker completion evidence, but must not run benchmarks, create synthetic
+Paper report code entries must be restored only as production evidence
+consumers. They may consume benchmark summaries, real `TransferReceipt`
+validation summaries, adapter lifecycle evidence, and daemon or worker
+completion evidence, but must not run paper validation, create synthetic
 evidence, add dry-run deliverables, manufacture receipts, or define core
 architecture.
 
 ## Current Code Work
 
-- benchmark-facing code entries under `benchmarks/`: production evidence
+- paper-report-facing code entries under `benchmarks/`: production evidence
   consumers only.
 - `turbobus/runtime/evidence.py`: shared validation entry for real receipts
   and adapter lifecycle evidence.
-- `turbobus/api.py` and package exports: public receipt-consumption boundary.
+- `benchmarks/paper_validation.py`: report aggregation must consume existing
+  production evidence only.
 
 Round rules:
 
@@ -39,8 +41,7 @@ Round rules:
 
 ## Next Entry
 
-After G41 is complete, continue automatically to G42 as the only current
-target.
+After G42 is complete, stop auto-advance.
 
 ## Auto-Advance Policy
 
@@ -48,5 +49,4 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G41 benchmark code recovery.
 - G42 paper report code recovery.

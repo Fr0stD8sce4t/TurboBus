@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from ..offload.stats import TransferStats
 from ..runtime.validation import validate_runtime_receipt
@@ -703,6 +703,19 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
         finally:
             integration.forget_request(request.request_id)
+        lifecycle_evidence = _vllm_kv_lifecycle_evidence(
+            operation="restore",
+            request=request,
+            job_id=self.job_id,
+            session_id=self.session_id,
+            source_request_id=saved.source_request_id,
+            block_count=len(request.block_ids),
+            matched_tokens=request.matched_tokens,
+            layer_count=len(kv_caches),
+            range_count=len(range_names),
+            receipt_trace=receipt_trace,
+        )
+        saved.last_restore_lifecycle_evidence = lifecycle_evidence
         self.state.events.append(
             {
                 "event": "restore",
@@ -720,6 +733,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "total_ms": total_ms,
                 "layers": len(kv_caches),
                 "ranges": len(range_names),
+                "lifecycle_evidence": lifecycle_evidence,
                 **stats,
                 **receipt_trace,
             }
@@ -740,6 +754,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             total_ms=f"{total_ms:.3f}",
             layers=len(kv_caches),
             ranges=len(range_names),
+            lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             **stats,
             **receipt_trace,
         )
@@ -870,6 +885,18 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         context.fallback_reasons.extend(_csv_values(receipt_trace["fallback_reason"]))
         context.ranges = len(range_names)
         register_start = time.perf_counter()
+        lifecycle_evidence = _vllm_kv_lifecycle_evidence(
+            operation="save",
+            request=request,
+            job_id=self.job_id,
+            session_id=self.session_id,
+            source_request_id=request.request_id,
+            block_count=request.block_count,
+            matched_tokens=request.matched_tokens,
+            layer_count=len(context.kv_caches),
+            range_count=context.ranges,
+            receipt_trace=receipt_trace,
+        )
         prefix = TurboBusSavedPrefix(
             key=request.prefix_key,
             cpu_backings=context.cpu_backings,
@@ -905,6 +932,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             fallback_reason=_join_unique(context.fallback_reasons),
             save_layer_count=len(context.ready_layers),
             save_layer_ranges=context.ranges,
+            save_lifecycle_evidence=lifecycle_evidence,
         )
         evicted = self._store_prefix(prefix)
         _store_saved_prefix(prefix)
@@ -948,6 +976,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             "topology_snapshot_ids": _join_unique(context.topology_snapshot_ids),
             "ticket_ids": _join_unique(context.ticket_ids),
             "fallback_reason": _join_unique(context.fallback_reasons),
+            "receipt_count": lifecycle_evidence["receipt_count"],
+            "receipt_states": lifecycle_evidence["receipt_states"],
+            "completion_sources": lifecycle_evidence["completion_sources"],
+            "transfer_ids": lifecycle_evidence["transfer_ids"],
         }
         self.state.events.append(
             {
@@ -970,6 +1002,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "total_ms": total_ms,
                 "layers": len(context.kv_caches),
                 "ranges": context.ranges,
+                "lifecycle_evidence": lifecycle_evidence,
                 **stats,
                 **receipt_trace,
             }
@@ -994,6 +1027,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             total_ms=f"{total_ms:.3f}",
             layers=len(context.kv_caches),
             ranges=context.ranges,
+            lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             **stats,
             **receipt_trace,
         )
@@ -1163,6 +1197,9 @@ def _receipt_trace_from_receipts(
     decision_ids: list[str] = []
     topology_snapshot_ids: list[str] = []
     ticket_ids: list[str] = []
+    receipt_states: list[str] = []
+    completion_sources: list[str] = []
+    transfer_ids: list[str] = []
     fallback_reasons: list[str] = []
     for receipt in receipts:
         validate_runtime_receipt(
@@ -1175,6 +1212,13 @@ def _receipt_trace_from_receipts(
         decision_ids.append(receipt.decision_id)
         topology_snapshot_ids.append(receipt.topology_snapshot_id)
         ticket_ids.append(receipt.ticket_id)
+        receipt_states.append(str(receipt.state.value))
+        completion_source = receipt.metadata.get("completion_source")
+        if completion_source:
+            completion_sources.append(str(completion_source))
+        transfer_id = receipt.metadata.get("transfer_id")
+        if transfer_id:
+            transfer_ids.append(str(transfer_id))
         fallback_reason = receipt.metadata.get("fallback_reason")
         if fallback_reason:
             fallback_reasons.append(str(fallback_reason))
@@ -1191,7 +1235,56 @@ def _receipt_trace_from_receipts(
         "decision_ids": _join_unique(decision_ids),
         "topology_snapshot_ids": _join_unique(topology_snapshot_ids),
         "ticket_ids": _join_unique(ticket_ids),
+        "receipt_count": len(receipts),
+        "receipt_states": _join_unique(receipt_states),
+        "completion_sources": _join_unique(completion_sources),
+        "transfer_ids": _join_unique(transfer_ids),
         "fallback_reason": _join_unique(fallback_reasons),
+    }
+
+
+def _vllm_kv_lifecycle_evidence(
+    *,
+    operation: str,
+    request: TurboBusRequestMetadata,
+    job_id: str,
+    session_id: str,
+    source_request_id: str,
+    block_count: int,
+    matched_tokens: int,
+    layer_count: int,
+    range_count: int,
+    receipt_trace: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "evidence_id": (
+            f"vllm-kv-{operation}-{session_id}-{request.prefix_key}-"
+            f"{request.request_id}"
+        ),
+        "operation": str(operation),
+        "request_id": request.request_id,
+        "source_request_id": str(source_request_id),
+        "prefix_key": request.prefix_key,
+        "job_id": str(job_id),
+        "session_id": str(session_id),
+        "block_count": int(block_count),
+        "matched_tokens": int(matched_tokens),
+        "layer_count": int(layer_count),
+        "range_count": int(range_count),
+        "buffer_registration_source": "TurboBusRuntimeSession",
+        "intent_source": "TransferIntent",
+        "receipt_source": "TransferReceipt",
+        "receipt_count": int(receipt_trace.get("receipt_count", 0) or 0),
+        "receipt_ids": str(receipt_trace.get("receipt_ids", "")),
+        "receipt_states": str(receipt_trace.get("receipt_states", "")),
+        "decision_ids": str(receipt_trace.get("decision_ids", "")),
+        "topology_snapshot_ids": str(receipt_trace.get("topology_snapshot_ids", "")),
+        "ticket_ids": str(receipt_trace.get("ticket_ids", "")),
+        "transfer_ids": str(receipt_trace.get("transfer_ids", "")),
+        "completion_sources": str(receipt_trace.get("completion_sources", "")),
+        "direct_bytes": int(receipt_trace.get("direct_bytes", 0) or 0),
+        "relay_bytes": int(receipt_trace.get("relay_bytes", 0) or 0),
+        "fallback_reason": str(receipt_trace.get("fallback_reason", "")),
     }
 
 

@@ -5,23 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G14 vLLM KV lifecycle closure.
+G15 prefix store productionization.
 
-vLLM KV save and restore must register real KV CPU/GPU buffers through
-`TurboBusRuntimeSession`, submit KV-cache `TransferIntent` objects, and consume
-daemon `TransferReceipt` objects without exposing route, relay, pool, direct, or
-target-GPU policy to the adapter or application.
+Prefix storage must become a production lifecycle boundary for framework KV
+state. Saved prefixes need ownership, capacity, eviction, cleanup, and receipt
+evidence handling that remains bound to `TurboBusRuntimeSession` and does not
+expose route, relay, pool, direct, or target-GPU policy to adapters or
+applications.
 
 ## Current Code Work
 
-- `turbobus/adapters/vllm.py`: vLLM KV block and range lifecycle through
-  runtime-session-backed KV slot adapters.
-- `turbobus/adapters/vllm_integration.py`: vLLM runner/cache binding, CPU
-  backing allocation, restore/save lifecycle, and receipt consumption.
-- `turbobus/adapters/vllm_kv_connector.py`: vLLM connector entry point,
-  request lifecycle, prefix save/load flow, and runtime-session ownership.
-- `turbobus/offload/store.py`: shared offload block registration and
-  TransferIntent submission path used by vLLM KV adapters.
+- `turbobus/adapters/vllm_prefix_store.py`: prefix ownership, lookup, eviction,
+  lifecycle evidence, and cleanup semantics.
+- `turbobus/adapters/vllm_kv_connector.py`: connector save/load path that stores
+  and consumes prefix lifecycle state through runtime-session-backed transfers.
+- `turbobus/adapters/vllm_backing_pool.py`: CPU backing reuse and release path
+  for saved or evicted prefixes.
 
 Round rules:
 
@@ -40,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G14 is complete, advance to G15 prefix store productionization.
+After G15 is complete, advance to G16 model loading takeover.
 
 ## Auto-Advance Policy
 
@@ -48,7 +47,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G14 vLLM KV lifecycle closure.
 - G15 prefix store productionization.
 - G16 model loading takeover.
 - G17 training-state offload closure.

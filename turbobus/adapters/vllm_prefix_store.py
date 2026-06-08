@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -46,6 +46,8 @@ class TurboBusSavedPrefix:
     fallback_reason: str = ""
     save_layer_count: int = 0
     save_layer_ranges: int = 0
+    save_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
+    last_restore_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 class TurboBusPrefixStore:

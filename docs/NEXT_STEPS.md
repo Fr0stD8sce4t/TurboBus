@@ -5,22 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G33 profile collection and daemon import closure.
+G34 scheduler cost model strengthening.
 
-Profile collection and import code must produce production measurement records
-for direct PCIe, relay PCIe, and GPU-GPU fabric paths, normalize them into the
-daemon profile format, and make daemon scheduler consumption explicit without
-using synthetic profile evidence as production proof.
+Scheduler planning must use imported profile measurements, runtime pressure,
+relay admission state, and workload priority as one explicit cost model for
+direct, relay-only, and mixed pooled decisions without letting applications
+select physical routes.
 
 ## Current Code Work
 
-- `turbobus/profiling/bootstrap.py`: profile bootstrap from runtime/backend
-  measurement into daemon profile import.
-- `turbobus/profiling/daemon_format.py`: production profile schema validation
-  for direct, relay, and fabric measurements.
-- `turbobus/daemon/profiles.py`: daemon profile cache/import/invalidation
-  behavior consumed by scheduler planning.
-- `turbobus/scheduler/daemon.py`: scheduler profile consumption path.
+- `turbobus/scheduler/daemon.py`: cost model metadata, candidate path scoring,
+  runtime pressure handling, and fallback reasons.
+- `turbobus/planner_engine.py`: direct, relay, and mixed pooled path weighting
+  consumed by daemon scheduler.
+- `turbobus/planner_types.py`: planner path cost metadata carried into
+  scheduling decisions.
+- `turbobus/scheduler/load_feedback.py`: queued/running/active pressure used by
+  scheduler cost calculations.
 
 Round rules:
 
@@ -40,7 +41,7 @@ Round rules:
 
 ## Next Entry
 
-After G33 is complete, continue automatically to G34 as the only current
+After G34 is complete, continue automatically to G35 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -49,7 +50,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G33 profile collection and daemon import closure.
 - G34 scheduler cost model strengthening.
 - G35 runtime feedback strengthening.
 - G36 multi-tenant isolation strengthening.

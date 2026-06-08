@@ -2008,7 +2008,7 @@ class TurboBusDaemon:
                     updated_at=float(time.time() if updated_at is None else updated_at),
                     topology_binding=topology_binding,
                 )
-            except ValueError as exc:
+            except (TypeError, ValueError) as exc:
                 return DaemonResponse(ok=False, error=str(exc))
             stored = daemon_profiles.put_cached_profile(self._profile_cache, key, entry)
         return DaemonResponse(ok=True, payload={"profile": stored})

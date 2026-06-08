@@ -210,14 +210,40 @@ def _profile_entry_summary(entry: object | None) -> dict[str, object]:
         return {"available": False}
     relays = profile.get("relays", []) or []
     relay_records = tuple(item for item in relays if isinstance(item, Mapping))
+    measurement_records = tuple(
+        item
+        for item in profile.get("measurement_records", ()) or ()
+        if isinstance(item, Mapping)
+    )
     return {
         "available": True,
         "target_device": int(profile.get("target_device", entry.get("target_gpu", 0))),
         "direct_h2d_bw_gbps": float(profile.get("direct_h2d_bw_gbps", 0.0) or 0.0),
         "direct_d2h_bw_gbps": float(profile.get("direct_d2h_bw_gbps", 0.0) or 0.0),
         "relay_count": len(relay_records),
+        "measurement_record_count": len(measurement_records),
+        "measurement_record_types": sorted(
+            {str(item.get("record_type", "")) for item in measurement_records}
+        ),
+        "profile_import": _profile_import_summary(entry),
         "profile_bytes": int(entry.get("profile_bytes", 0) or 0),
         "updated_at": float(entry.get("updated_at", 0.0) or 0.0),
+    }
+
+
+def _profile_import_summary(entry: Mapping[str, object]) -> dict[str, object]:
+    profile_import = entry.get("profile_import")
+    if not isinstance(profile_import, Mapping):
+        return {"available": False}
+    return {
+        "available": True,
+        "source": profile_import.get("source"),
+        "measurement_source": profile_import.get("measurement_source"),
+        "record_count": int(profile_import.get("record_count", 0) or 0),
+        "record_types": list(profile_import.get("record_types", ()) or ()),
+        "production_evidence": bool(
+            profile_import.get("production_evidence", False)
+        ),
     }
 
 

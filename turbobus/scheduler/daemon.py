@@ -679,6 +679,8 @@ def _scheduler_cost_model_metadata(
             normalized_direction,
         ),
         "profile_binding": _profile_topology_binding(profile),
+        "profile_import": _profile_import_metadata(profile),
+        "profile_measurements": _profile_measurement_metadata(profile),
     }
 
 
@@ -736,6 +738,53 @@ def _profile_topology_binding(profile: _Profile) -> dict[str, object]:
     metadata = dict(profile.cost_metadata or {})
     binding = metadata.get("topology_binding")
     return dict(binding) if isinstance(binding, Mapping) else {}
+
+
+def _profile_import_metadata(profile: _Profile) -> dict[str, object]:
+    metadata = dict(profile.cost_metadata or {})
+    profile_import = metadata.get("profile_import")
+    if not isinstance(profile_import, Mapping):
+        return {"available": False}
+    return {
+        "available": True,
+        "source": profile_import.get("source"),
+        "measurement_source": profile_import.get("measurement_source"),
+        "profile_bytes": int(profile_import.get("profile_bytes", 0) or 0),
+        "record_count": int(profile_import.get("record_count", 0) or 0),
+        "record_types": tuple(profile_import.get("record_types", ()) or ()),
+        "relay_devices": tuple(profile_import.get("relay_devices", ()) or ()),
+        "production_evidence": bool(
+            profile_import.get("production_evidence", False)
+        ),
+    }
+
+
+def _profile_measurement_metadata(profile: _Profile) -> dict[str, object]:
+    metadata = dict(profile.cost_metadata or {})
+    records = tuple(
+        item
+        for item in metadata.get("measurement_records", ()) or ()
+        if isinstance(item, Mapping)
+    )
+    if not records:
+        return {"available": False}
+    by_type: dict[str, int] = {}
+    relays: set[int] = set()
+    for record in records:
+        record_type = str(record.get("record_type", ""))
+        by_type[record_type] = by_type.get(record_type, 0) + 1
+        relay_device = record.get("relay_device")
+        if relay_device is not None:
+            relays.add(int(relay_device))
+    return {
+        "available": True,
+        "record_count": len(records),
+        "records_by_type": by_type,
+        "relay_devices": tuple(sorted(relays)),
+        "has_direct_pcie": by_type.get("direct_pcie", 0) >= 2,
+        "has_relay_pcie": by_type.get("relay_pcie", 0) > 0,
+        "has_gpu_fabric": by_type.get("gpu_fabric", 0) > 0,
+    }
 
 
 def _relay_topology_binding(relay: _RelayProfile) -> dict[str, object]:
@@ -900,6 +949,18 @@ def _profile_cost_context(
         "profile_updated_at": float(profile_entry.get("updated_at", 0.0) or 0.0),
         "profile_bytes": int(profile_entry.get("profile_bytes", 0) or 0),
     }
+    profile_import = profile_entry.get("profile_import")
+    if isinstance(profile_import, Mapping):
+        context["profile_import"] = dict(profile_import)
+    profile = profile_entry.get("profile")
+    if isinstance(profile, Mapping):
+        records = profile.get("measurement_records")
+        if isinstance(records, tuple | list):
+            context["measurement_records"] = tuple(
+                dict(item)
+                for item in records
+                if isinstance(item, Mapping)
+            )
     if isinstance(binding, Mapping):
         context["topology_binding"] = {
             "source": binding.get("source"),

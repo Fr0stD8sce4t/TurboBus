@@ -33,6 +33,11 @@ class _RelayProfile:
     effective_bw_gbps: float
     effective_d2h_bw_gbps: float
     p2p_enabled: bool
+    scheduler_weight_h2d_gbps: float = 0.0
+    scheduler_weight_d2h_gbps: float = 0.0
+    runtime_pressure_h2d: float = 0.0
+    runtime_pressure_d2h: float = 0.0
+    cost_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,11 @@ class _Profile:
     direct_h2d_bw_gbps: float
     direct_d2h_bw_gbps: float
     relays: tuple[_RelayProfile, ...]
+    direct_scheduler_weight_h2d_gbps: float = 0.0
+    direct_scheduler_weight_d2h_gbps: float = 0.0
+    direct_runtime_pressure_h2d: float = 0.0
+    direct_runtime_pressure_d2h: float = 0.0
+    cost_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -254,6 +264,7 @@ class DaemonScheduler:
                         or 0.0
                     ),
                     relays=(),
+                    cost_metadata=_profile_cost_context(profile_entry),
                 ),
                 "session is not worker relay capable",
                 _RelayPolicy(
@@ -313,6 +324,7 @@ class DaemonScheduler:
                     relay.get("effective_d2h_bw_gbps", 0.0) or 0.0
                 ),
                 p2p_enabled=bool(relay.get("p2p_enabled", False)),
+                cost_metadata=_relay_cost_context(profile_entry, relay_device),
             )
             relay_profile, relay_adjustment = _relay_profile_with_load_feedback(
                 relay_profile,
@@ -353,7 +365,11 @@ class DaemonScheduler:
             )
         if direction == "d2h" and direct_d2h <= 0.0:
             direct_d2h = direct_h2d
-        direct_h2d, direct_d2h, direct_adjustment = _direct_bandwidth_with_load_feedback(
+        (
+            direct_weight_h2d,
+            direct_weight_d2h,
+            direct_adjustment,
+        ) = _direct_scheduler_weights(
             direct_h2d,
             direct_d2h,
             runtime_view=runtime_view,
@@ -376,6 +392,11 @@ class DaemonScheduler:
                 direct_h2d_bw_gbps=direct_h2d,
                 direct_d2h_bw_gbps=direct_d2h,
                 relays=selected_relays,
+                direct_scheduler_weight_h2d_gbps=direct_weight_h2d,
+                direct_scheduler_weight_d2h_gbps=direct_weight_d2h,
+                direct_runtime_pressure_h2d=runtime_view.direct_cost_pressure("h2d"),
+                direct_runtime_pressure_d2h=runtime_view.direct_cost_pressure("d2h"),
+                cost_metadata=_profile_cost_context(profile_entry),
             ),
             None,
             relay_policy,
@@ -565,7 +586,7 @@ def _scheduler_cost_model_metadata(
     for assignment in plan.assignments:
         path = assignment.path
         bytes_count = sum(chunk.bytes for chunk in assignment.chunks)
-        bandwidth = max(float(path.effective_bw_gbps), 1e-12)
+        bandwidth = max(_path_scheduler_weight(path), 1e-12)
         estimated_seconds = _estimated_transfer_seconds(bytes_count, bandwidth)
         total_estimated_seconds += estimated_seconds
         if path.kind == "relay":
@@ -591,45 +612,56 @@ def _scheduler_cost_model_metadata(
                 "bytes": int(bytes_count),
                 "chunk_count": len(assignment.chunks),
                 "effective_bw_gbps": float(path.effective_bw_gbps),
+                "scheduler_weight_gbps": _path_scheduler_weight(path),
+                "allocation_ratio": (
+                    0.0 if total_bytes <= 0 else float(bytes_count) / float(total_bytes)
+                ),
                 "estimated_seconds": estimated_seconds,
                 "runtime_pressure": relay_pressure,
                 "pressure_summary": dict(pressure_summary),
+                "cost_metadata": dict(path.cost_metadata),
             }
         )
     relay_profiles = {
         int(relay.relay_device): relay
         for relay in profile.relays
     }
+    direct_weight = _profile_direct_scheduler_weight(profile, normalized_direction)
     candidate_paths: list[dict[str, object]] = [
         {
             "kind": "direct",
             "target_device": int(profile.target_device),
             "relay_device": None,
             "effective_bw_gbps": direct_bw,
+            "scheduler_weight_gbps": direct_weight,
             "runtime_pressure": runtime_view.direct_cost_pressure(normalized_direction),
             "estimated_full_transfer_seconds": _estimated_transfer_seconds(
                 total_bytes,
-                max(direct_bw, 1e-12),
+                max(direct_weight, 1e-12),
             ),
+            "topology_binding": _profile_topology_binding(profile),
         }
     ]
     for relay_device, relay in sorted(relay_profiles.items()):
         relay_bw = _profile_relay_bandwidth(relay, normalized_direction)
+        relay_weight = _profile_relay_scheduler_weight(relay, normalized_direction)
         candidate_paths.append(
             {
                 "kind": "relay",
                 "target_device": int(relay.target_device),
                 "relay_device": int(relay_device),
                 "effective_bw_gbps": relay_bw,
+                "scheduler_weight_gbps": relay_weight,
                 "runtime_pressure": runtime_view.relay_cost_pressure(
                     relay_device,
                     normalized_direction,
                 ),
                 "estimated_full_transfer_seconds": _estimated_transfer_seconds(
                     total_bytes,
-                    max(relay_bw, 1e-12),
+                    max(relay_weight, 1e-12),
                 ),
                 "relay_load": dict(runtime_view.relay_load.get(relay_device, {})),
+                "topology_binding": _relay_topology_binding(relay),
             }
         )
     resolved_mode = _resolved_mode_for_plan(plan).value
@@ -646,12 +678,70 @@ def _scheduler_cost_model_metadata(
         "runtime_pressure_summary": runtime_view.scheduler_pressure_summary(
             normalized_direction,
         ),
+        "profile_binding": _profile_topology_binding(profile),
     }
 
 
 def _estimated_transfer_seconds(bytes_count: int, bandwidth_gbps: float) -> float:
     bandwidth_bytes_per_second = max(float(bandwidth_gbps), 1e-12) * 1_000_000_000.0
     return float(max(0, int(bytes_count))) / bandwidth_bytes_per_second
+
+
+def _path_scheduler_weight(path) -> float:
+    weight = getattr(path, "scheduler_weight_gbps", None)
+    if weight is not None:
+        return max(0.0, float(weight))
+    return max(0.0, float(getattr(path, "effective_bw_gbps", 0.0) or 0.0))
+
+
+def _profile_direct_scheduler_weight(profile: _Profile, direction: str) -> float:
+    if str(direction).lower() == "d2h":
+        return max(
+            0.0,
+            float(
+                profile.direct_scheduler_weight_d2h_gbps
+                or profile.direct_scheduler_weight_h2d_gbps
+                or _profile_direct_bandwidth(profile, direction)
+            ),
+        )
+    return max(
+        0.0,
+        float(
+            profile.direct_scheduler_weight_h2d_gbps
+            or _profile_direct_bandwidth(profile, direction)
+        ),
+    )
+
+
+def _profile_relay_scheduler_weight(relay: _RelayProfile, direction: str) -> float:
+    if str(direction).lower() == "d2h":
+        return max(
+            0.0,
+            float(
+                relay.scheduler_weight_d2h_gbps
+                or relay.scheduler_weight_h2d_gbps
+                or _profile_relay_bandwidth(relay, direction)
+            ),
+        )
+    return max(
+        0.0,
+        float(
+            relay.scheduler_weight_h2d_gbps
+            or _profile_relay_bandwidth(relay, direction)
+        ),
+    )
+
+
+def _profile_topology_binding(profile: _Profile) -> dict[str, object]:
+    metadata = dict(profile.cost_metadata or {})
+    binding = metadata.get("topology_binding")
+    return dict(binding) if isinstance(binding, Mapping) else {}
+
+
+def _relay_topology_binding(relay: _RelayProfile) -> dict[str, object]:
+    metadata = dict(relay.cost_metadata or {})
+    topology = metadata.get("topology")
+    return dict(topology) if isinstance(topology, Mapping) else {}
 
 
 def _profile_direct_bandwidth(profile: _Profile, direction: str) -> float:
@@ -799,12 +889,61 @@ def _profile_payload(profile_entry: Mapping[str, object] | None) -> Mapping[str,
     return profile_entry
 
 
+def _profile_cost_context(
+    profile_entry: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if not isinstance(profile_entry, Mapping):
+        return {}
+    binding = profile_entry.get("topology_binding")
+    context = {
+        "profile_source": "daemon_profile_cache",
+        "profile_updated_at": float(profile_entry.get("updated_at", 0.0) or 0.0),
+        "profile_bytes": int(profile_entry.get("profile_bytes", 0) or 0),
+    }
+    if isinstance(binding, Mapping):
+        context["topology_binding"] = {
+            "source": binding.get("source"),
+            "topology_snapshot_id": binding.get("topology_snapshot_id"),
+            "topology_version": binding.get("topology_version"),
+            "inventory_source": binding.get("inventory_source"),
+            "target_gpu": binding.get("target_gpu"),
+            "relay_gpus": tuple(binding.get("relay_gpus", ()) or ()),
+        }
+    return context
+
+
+def _relay_cost_context(
+    profile_entry: Mapping[str, object] | None,
+    relay_device: int,
+) -> dict[str, object]:
+    context = _profile_cost_context(profile_entry)
+    if not isinstance(profile_entry, Mapping):
+        return context
+    binding = profile_entry.get("topology_binding")
+    if not isinstance(binding, Mapping):
+        return context
+    for item in binding.get("relay_topology", ()) or ():
+        if not isinstance(item, Mapping):
+            continue
+        if int(item.get("relay_gpu", -1)) != int(relay_device):
+            continue
+        topology = item.get("topology")
+        if isinstance(topology, Mapping):
+            context["topology"] = dict(topology)
+        context["topology_reason"] = item.get("reason")
+        break
+    return context
+
+
 def _direct_fallback_profile(target_gpu: int) -> _Profile:
     return _Profile(
         target_device=int(target_gpu),
         direct_h2d_bw_gbps=1.0,
         direct_d2h_bw_gbps=1.0,
         relays=(),
+        direct_scheduler_weight_h2d_gbps=1.0,
+        direct_scheduler_weight_d2h_gbps=1.0,
+        cost_metadata={"profile_source": "direct_fallback_profile"},
     )
 
 
@@ -854,7 +993,7 @@ def _relay_reservation_chunks(
     return min(requested, session_available, relay_available)
 
 
-def _direct_bandwidth_with_load_feedback(
+def _direct_scheduler_weights(
     direct_h2d: float,
     direct_d2h: float,
     *,
@@ -871,9 +1010,9 @@ def _direct_bandwidth_with_load_feedback(
             "kind": "direct",
             "relay_device": None,
             "original_h2d_bw_gbps": float(direct_h2d),
-            "adjusted_h2d_bw_gbps": adjusted_h2d,
+            "scheduler_weight_h2d_gbps": adjusted_h2d,
             "original_d2h_bw_gbps": float(direct_d2h),
-            "adjusted_d2h_bw_gbps": adjusted_d2h,
+            "scheduler_weight_d2h_gbps": adjusted_d2h,
             "h2d_pressure": h2d_pressure,
             "d2h_pressure": d2h_pressure,
             "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
@@ -903,15 +1042,20 @@ def _relay_profile_with_load_feedback(
         h2d_bw_gbps=relay_profile.h2d_bw_gbps,
         d2h_bw_gbps=relay_profile.d2h_bw_gbps,
         p2p_bw_gbps=relay_profile.p2p_bw_gbps,
-        effective_bw_gbps=_bandwidth_after_pressure(
+        effective_bw_gbps=relay_profile.effective_bw_gbps,
+        effective_d2h_bw_gbps=relay_profile.effective_d2h_bw_gbps,
+        p2p_enabled=relay_profile.p2p_enabled,
+        scheduler_weight_h2d_gbps=_bandwidth_after_pressure(
             relay_profile.effective_bw_gbps,
             h2d_pressure,
         ),
-        effective_d2h_bw_gbps=_bandwidth_after_pressure(
+        scheduler_weight_d2h_gbps=_bandwidth_after_pressure(
             relay_profile.effective_d2h_bw_gbps,
             d2h_pressure,
         ),
-        p2p_enabled=relay_profile.p2p_enabled,
+        runtime_pressure_h2d=h2d_pressure,
+        runtime_pressure_d2h=d2h_pressure,
+        cost_metadata=dict(relay_profile.cost_metadata or {}),
     )
     relay = int(relay_profile.relay_device)
     return (
@@ -920,12 +1064,12 @@ def _relay_profile_with_load_feedback(
             "kind": "relay",
             "relay_device": relay,
             "original_effective_bw_gbps": float(relay_profile.effective_bw_gbps),
-            "adjusted_effective_bw_gbps": float(adjusted.effective_bw_gbps),
+            "scheduler_weight_h2d_gbps": float(adjusted.scheduler_weight_h2d_gbps),
             "original_effective_d2h_bw_gbps": float(
                 relay_profile.effective_d2h_bw_gbps
             ),
-            "adjusted_effective_d2h_bw_gbps": float(
-                adjusted.effective_d2h_bw_gbps
+            "scheduler_weight_d2h_gbps": float(
+                adjusted.scheduler_weight_d2h_gbps
             ),
             "pressure": directionless_pressure,
             "h2d_pressure": h2d_pressure,

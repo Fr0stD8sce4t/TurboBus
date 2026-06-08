@@ -115,6 +115,9 @@ class PlannerEngine:
                     p2p_bw_gbps=0.0,
                     effective_bw_gbps=float(direct_bw),
                     enabled=True,
+                    scheduler_weight_gbps=_direct_scheduler_weight(profile, direction),
+                    runtime_pressure=_direct_runtime_pressure(profile, direction),
+                    cost_metadata=dict(getattr(profile, "cost_metadata", {}) or {}),
                 )
             )
 
@@ -146,6 +149,9 @@ class PlannerEngine:
                     p2p_bw_gbps=float(getattr(relay, "p2p_bw_gbps", 0.0) or 0.0),
                     effective_bw_gbps=float(relay_effective_bw),
                     enabled=True,
+                    scheduler_weight_gbps=_relay_scheduler_weight(relay, direction),
+                    runtime_pressure=_relay_runtime_pressure(relay, direction),
+                    cost_metadata=dict(getattr(relay, "cost_metadata", {}) or {}),
                 )
             )
         return paths
@@ -157,7 +163,7 @@ class PlannerEngine:
         chunk_bytes: int,
         paths: Sequence[PlannerPath],
     ) -> PlannerTransferPlan:
-        total_bw = sum(path.effective_bw_gbps for path in paths)
+        total_bw = sum(_scheduler_weight(path) for path in paths)
         if total_bw <= 0.0:
             raise RuntimeError("enabled paths have zero effective bandwidth")
 
@@ -168,7 +174,7 @@ class PlannerEngine:
             selected = 0
             best_score = math.inf
             for index, path in enumerate(paths):
-                score = assigned_scores[index] / max(path.effective_bw_gbps, 1e-12)
+                score = assigned_scores[index] / max(_scheduler_weight(path), 1e-12)
                 if score < best_score:
                     best_score = score
                     selected = index
@@ -201,6 +207,50 @@ def _relay_effective_bandwidth(relay, direction: str) -> float:
     if direction != "h2d" and effective_bw <= 0.0:
         effective_bw = max(0.0, float(getattr(relay, "effective_bw_gbps", 0.0) or 0.0))
     return effective_bw
+
+
+def _direct_scheduler_weight(profile, direction: str) -> float:
+    attr = (
+        "direct_scheduler_weight_h2d_gbps"
+        if direction == "h2d"
+        else "direct_scheduler_weight_d2h_gbps"
+    )
+    weight = float(getattr(profile, attr, 0.0) or 0.0)
+    if weight > 0.0:
+        return weight
+    return _direct_bandwidth(profile, direction)
+
+
+def _relay_scheduler_weight(relay, direction: str) -> float:
+    attr = (
+        "scheduler_weight_h2d_gbps"
+        if direction == "h2d"
+        else "scheduler_weight_d2h_gbps"
+    )
+    weight = float(getattr(relay, attr, 0.0) or 0.0)
+    if weight > 0.0:
+        return weight
+    return _relay_effective_bandwidth(relay, direction)
+
+
+def _direct_runtime_pressure(profile, direction: str) -> float:
+    attr = (
+        "direct_runtime_pressure_h2d"
+        if direction == "h2d"
+        else "direct_runtime_pressure_d2h"
+    )
+    return max(0.0, float(getattr(profile, attr, 0.0) or 0.0))
+
+
+def _relay_runtime_pressure(relay, direction: str) -> float:
+    attr = "runtime_pressure_h2d" if direction == "h2d" else "runtime_pressure_d2h"
+    return max(0.0, float(getattr(relay, attr, 0.0) or 0.0))
+
+
+def _scheduler_weight(path: PlannerPath) -> float:
+    if path.scheduler_weight_gbps is not None:
+        return max(0.0, float(path.scheduler_weight_gbps))
+    return max(0.0, float(path.effective_bw_gbps))
 
 
 def _make_chunks(total_bytes: int, chunk_bytes: int) -> list[PlannerChunk]:

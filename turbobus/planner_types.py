@@ -55,6 +55,9 @@ class PlannerPath:
     effective_bw_gbps: float = 0.0
     enabled: bool = True
     fabric_kind: str | None = None
+    scheduler_weight_gbps: float | None = None
+    runtime_pressure: float = 0.0
+    cost_metadata: dict[str, object] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return asdict(self)

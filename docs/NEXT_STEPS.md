@@ -5,22 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G21 paper-grade scheduler cost model.
+G22 mixed pooled execution hardening.
 
-Scheduler decisions must use measured daemon profiles, trusted topology
-bindings, live queue/running/admitted state, relay pressure, and job priority to
-produce explainable direct, relay, or mixed pooled path splits. The scheduler
-must remain the only production source of transfer plans.
+Mixed direct plus relay plans must execute as exact daemon-issued plans through
+worker/backend code, preserve path-level timing and bytes, and expose unified
+completion evidence for direct and relay chunks without application-side route
+selection.
 
 ## Current Code Work
 
-- `turbobus/scheduler/daemon.py`: scheduler cost model, profile consumption,
-  path cost metadata, relay policy, and fallback behavior.
-- `turbobus/scheduler/load_feedback.py`: runtime pressure, fairness, queue,
-  worker/backend feedback, and relay-load accounting.
-- `turbobus/planner_engine.py`: chunk-to-path allocation using measured path
-  costs.
-- `turbobus/daemon/server.py`: runtime state snapshots and scheduler inputs.
+- `turbobus/worker/cuda_executor.py`: mixed worker/backend execution evidence.
+- `turbobus/worker/lifecycle.py`: worker request, async execution, status
+  report, cleanup, and completion aggregation.
+- `turbobus/direct_fallback.py`: direct-only backend execution evidence.
+- `turbobus/intent_executor.py`: daemon-issued mixed plan execution bridge.
+- `cpp/src/executor_cuda.cu`: native mixed direct and relay path execution.
 
 Round rules:
 
@@ -39,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G21 is complete, continue automatically to G22 as the only current target.
+After G22 is complete, continue automatically to G23 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -47,7 +46,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G21 paper-grade scheduler cost model.
 - G22 mixed pooled execution hardening.
 - G23 cross-job admission and fairness closure.
 - G24 failure recovery and cleanup closure.

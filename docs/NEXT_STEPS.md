@@ -5,21 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G40 validation code entry recovery.
+G41 benchmark code recovery.
 
-Validation code entries must be restored only as code paths that consume real
-`TransferReceipt` and daemon/worker completion evidence from production
-runtime flows. They must not run functional validation, create synthetic
-evidence, add dry-run deliverables, or manufacture receipts.
+Benchmark code entries must be restored only as production evidence consumers.
+They may consume real `TransferReceipt`, adapter lifecycle evidence, and daemon
+or worker completion evidence, but must not run benchmarks, create synthetic
+evidence, add dry-run deliverables, manufacture receipts, or define core
+architecture.
 
 ## Current Code Work
 
-- `turbobus/runtime/validation.py`: receipt and reproduction-evidence
-  validators.
-- validation-facing code entry files under `turbobus/`: production evidence
+- benchmark-facing code entries under `benchmarks/`: production evidence
   consumers only.
-- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from
-  real receipts.
+- `turbobus/runtime/evidence.py`: shared validation entry for real receipts
+  and adapter lifecycle evidence.
+- `turbobus/api.py` and package exports: public receipt-consumption boundary.
 
 Round rules:
 
@@ -39,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G40 is complete, continue automatically to G41 as the only current
+After G41 is complete, continue automatically to G42 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -48,6 +48,5 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G40 validation code entry recovery.
 - G41 benchmark code recovery.
 - G42 paper report code recovery.

@@ -7,6 +7,11 @@ from .client import (
     SharedPinnedCpuBufferAllocator,
 )
 from .model_manifest import ModelWeightManifest, ModelWeightTensor
+from .runtime.evidence import (
+    RuntimeEvidenceValidationReport,
+    validate_adapter_lifecycle_evidence,
+    validate_runtime_receipts,
+)
 from .runtime_session import TurboBusRuntimeSession
 from .runtime.validation import validated_real_execution_evidence
 from .runtime_options import RuntimeOptions
@@ -41,8 +46,11 @@ __all__ = [
     "TransferReceipt",
     "TransferStatusState",
     "RuntimeOptions",
+    "RuntimeEvidenceValidationReport",
     "TurboBusClient",
     "TurboBusRuntimeSession",
     "WorkloadKind",
+    "validate_adapter_lifecycle_evidence",
+    "validate_runtime_receipts",
     "validated_real_execution_evidence",
 ]

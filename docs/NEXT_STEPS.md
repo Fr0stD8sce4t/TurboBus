@@ -5,21 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G32 CUDA mixed pooled strengthening.
+G33 profile collection and daemon import closure.
 
-CUDA worker/backend code must strengthen daemon-issued direct-only, relay-only,
-and mixed direct+relay execution paths across H2D, D2H, multi-chunk, and
-multi-relay plans. Completion evidence must preserve exact path split, native
-path stats, relay device stats, cleanup, and byte accounting.
+Profile collection and import code must produce production measurement records
+for direct PCIe, relay PCIe, and GPU-GPU fabric paths, normalize them into the
+daemon profile format, and make daemon scheduler consumption explicit without
+using synthetic profile evidence as production proof.
 
 ## Current Code Work
 
-- `turbobus/worker/cuda_executor.py`: strengthen daemon exact-plan conversion,
-  mixed pooled path accounting, native stats propagation, and cleanup evidence.
-- `turbobus/native_plan.py`: keep native path conversion aligned with
-  daemon-issued path kind, direction, relay device, and chunk ranges.
-- `cpp/src/executor_cuda.cu`: strengthen direct, relay, and mixed pooled CUDA
-  execution code without adding validation-only shortcuts.
+- `turbobus/profiling/bootstrap.py`: profile bootstrap from runtime/backend
+  measurement into daemon profile import.
+- `turbobus/profiling/daemon_format.py`: production profile schema validation
+  for direct, relay, and fabric measurements.
+- `turbobus/daemon/profiles.py`: daemon profile cache/import/invalidation
+  behavior consumed by scheduler planning.
+- `turbobus/scheduler/daemon.py`: scheduler profile consumption path.
 
 Round rules:
 
@@ -39,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G32 is complete, continue automatically to G33 as the only current
+After G33 is complete, continue automatically to G34 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -48,7 +49,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G32 CUDA mixed pooled strengthening.
 - G33 profile collection and daemon import closure.
 - G34 scheduler cost model strengthening.
 - G35 runtime feedback strengthening.

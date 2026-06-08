@@ -209,6 +209,8 @@ class CudaWorkerExecutor:
         bytes_completed = _stats_int(stats, "bytes", int(plan_payload["total_bytes"]))
         planned_direct_bytes = _assignment_byte_count(plan_payload, "direct")
         planned_relay_bytes = _assignment_byte_count(plan_payload, "relay")
+        planned_direct_chunks = _assignment_chunk_count(plan_payload, "direct")
+        planned_relay_chunks = _assignment_chunk_count(plan_payload, "relay")
         try:
             _trace_cuda_worker_stage(
                 "cuda_executor_verify_start",
@@ -223,9 +225,9 @@ class CudaWorkerExecutor:
                 expected_bytes=int(plan_payload["total_bytes"]),
                 resource_evidence=resource_evidence,
                 direct_bytes=planned_direct_bytes,
-                direct_chunks=_assignment_chunk_count(plan_payload, "direct"),
+                direct_chunks=planned_direct_chunks,
                 relay_bytes=planned_relay_bytes,
-                relay_chunks=_assignment_chunk_count(plan_payload, "relay"),
+                relay_chunks=planned_relay_chunks,
             )
             completion_evidence.setdefault("resource_evidence", resource_evidence)
             _trace_cuda_worker_stage(
@@ -245,53 +247,58 @@ class CudaWorkerExecutor:
         direct_chunks = _stats_int(
             stats,
             "direct_chunks",
-            _assignment_chunk_count(plan_payload, "direct"),
+            planned_direct_chunks,
         )
         relay_chunks = _stats_int(
             stats,
             "relay_chunks",
-            _assignment_chunk_count(plan_payload, "relay"),
+            planned_relay_chunks,
         )
+        direct_bytes = _stats_int(
+            stats,
+            "direct_bytes",
+            planned_direct_bytes,
+        )
+        relay_bytes = _stats_int(
+            stats,
+            "relay_bytes",
+            planned_relay_bytes,
+        )
+        if int(direct_bytes) != int(planned_direct_bytes):
+            raise RuntimeError("worker direct bytes do not match daemon plan")
+        if int(relay_bytes) != int(planned_relay_bytes):
+            raise RuntimeError("worker relay bytes do not match daemon plan")
+        if int(direct_chunks) != int(planned_direct_chunks):
+            raise RuntimeError("worker direct chunks do not match daemon plan")
+        if int(relay_chunks) != int(planned_relay_chunks):
+            raise RuntimeError("worker relay chunks do not match daemon plan")
         path_level_evidence = _path_level_execution_evidence(
             stats,
             plan_payload=plan_payload,
             expected_direct_bytes=planned_direct_bytes,
             expected_relay_bytes=planned_relay_bytes,
         )
+        canonical_evidence = _canonical_worker_completion_evidence(
+            request=request,
+            target_device=int(target_device),
+            staging_slot=staging_slot,
+            resource_evidence=resource_evidence,
+            completion_evidence=completion_evidence,
+            path_level_evidence=path_level_evidence,
+            direct_bytes=direct_bytes,
+            direct_chunks=direct_chunks,
+            relay_bytes=relay_bytes,
+            relay_chunks=relay_chunks,
+        )
         result = WorkerTransferResult(
             transfer_id=request.transfer_id,
             state=WorkerTransferState.COMPLETE,
             bytes_completed=bytes_completed,
             metadata={
-                "executor": "cuda_worker",
-                "path": _metadata_path(
-                    direction=request.data_plane.direction,
-                    direct_chunks=direct_chunks,
-                ),
-                "plan_source": "daemon",
-                "relay_gpu": request.data_plane.relay_gpu,
-                "relay_gpus": _relay_gpus_for_request(request),
-                "target_device": int(target_device),
-                "src_buffer_id": request.data_plane.src_handle.buffer_id,
-                "dst_buffer_id": request.data_plane.dst_handle.buffer_id,
-                "staging_slot_id": staging_slot.slot_id,
-                "resource_evidence": resource_evidence,
-                "async_data_plane": handle.execution_evidence(),
-                "direct_bytes": _stats_int(
-                    stats,
-                    "direct_bytes",
-                    planned_direct_bytes,
-                ),
-                "direct_chunks": direct_chunks,
-                "relay_bytes": _stats_int(
-                    stats,
-                    "relay_bytes",
-                    planned_relay_bytes,
-                ),
-                "relay_chunks": relay_chunks,
-                **path_level_evidence,
                 **completion_evidence,
+                **canonical_evidence,
                 **_ticket_binding_metadata(request),
+                "async_data_plane": handle.execution_evidence(),
             },
         )
         self._terminal[handle.transfer_id] = handle
@@ -828,12 +835,26 @@ def _path_level_execution_evidence(
 ) -> dict[str, object]:
     native_path_stats = _native_path_stats(stats)
     if not native_path_stats:
+        planned_path_stats = _planned_path_stats(plan_payload)
+        relay_device_stats = _relay_device_stats_from_path_stats(planned_path_stats)
         return {
+            "relay_device_stats": relay_device_stats,
             "path_level_evidence": {
                 "source": "daemon_plan_without_native_path_stats",
-                "path_stats": _planned_path_stats(plan_payload),
+                "path_stats": planned_path_stats,
+                "relay_device_stats": relay_device_stats,
                 "direct_bytes": int(expected_direct_bytes),
                 "relay_bytes": int(expected_relay_bytes),
+                "direct_chunks": sum(
+                    int(path["chunks"])
+                    for path in planned_path_stats
+                    if str(path.get("kind", "")).startswith("direct")
+                ),
+                "relay_chunks": sum(
+                    int(path["chunks"])
+                    for path in planned_path_stats
+                    if str(path.get("kind", "")).startswith("relay")
+                ),
             }
         }
     direct_bytes = sum(
@@ -871,6 +892,29 @@ def _path_level_execution_evidence(
             ),
         },
     }
+
+
+def _relay_device_stats_from_path_stats(
+    path_stats: tuple[dict[str, object], ...],
+) -> tuple[dict[str, int], ...]:
+    by_relay: dict[int, dict[str, int]] = {}
+    for path in path_stats:
+        if not str(path.get("kind", "")).startswith("relay"):
+            continue
+        relay_device = int(path.get("relay_device", -1))
+        if relay_device < 0:
+            continue
+        record = by_relay.setdefault(
+            relay_device,
+            {
+                "relay_device": relay_device,
+                "bytes": 0,
+                "chunks": 0,
+            },
+        )
+        record["bytes"] += int(path.get("bytes", 0) or 0)
+        record["chunks"] += int(path.get("chunks", 0) or 0)
+    return tuple(by_relay[key] for key in sorted(by_relay))
 
 
 def _native_path_stats(stats: Any) -> tuple[dict[str, object], ...]:
@@ -947,6 +991,61 @@ def _planned_path_stats(
             }
         )
     return tuple(records)
+
+
+def _canonical_worker_completion_evidence(
+    *,
+    request: WorkerTransferRequest,
+    target_device: int,
+    staging_slot: WorkerStagingSlot,
+    resource_evidence: dict[str, object],
+    completion_evidence: dict[str, object],
+    path_level_evidence: dict[str, object],
+    direct_bytes: int,
+    direct_chunks: int,
+    relay_bytes: int,
+    relay_chunks: int,
+) -> dict[str, object]:
+    expected_bytes = int(direct_bytes) + int(relay_bytes)
+    verified_bytes = int(completion_evidence.get("verified_bytes", expected_bytes) or 0)
+    if verified_bytes != expected_bytes:
+        raise RuntimeError("worker completion verified bytes do not match daemon plan")
+    canonical = {
+        "expected_bytes": expected_bytes,
+        "verified_bytes": verified_bytes,
+        "content_match": bool(completion_evidence.get("content_match", False)),
+        "verification_source": completion_evidence.get(
+            "verification_source",
+            "cuda_worker",
+        ),
+        "verification_method": completion_evidence.get(
+            "verification_method",
+            "worker_backend_verification",
+        ),
+        "executor": "cuda_worker",
+        "path": _metadata_path(
+            direction=request.data_plane.direction,
+            direct_chunks=int(direct_chunks),
+        ),
+        "plan_source": "daemon",
+        "relay_gpu": request.data_plane.relay_gpu,
+        "relay_gpus": _relay_gpus_for_request(request),
+        "target_device": int(target_device),
+        "src_buffer_id": request.data_plane.src_handle.buffer_id,
+        "dst_buffer_id": request.data_plane.dst_handle.buffer_id,
+        "staging_slot_id": staging_slot.slot_id,
+        "resource_evidence": resource_evidence,
+        "direct_bytes": int(direct_bytes),
+        "direct_chunks": int(direct_chunks),
+        "relay_bytes": int(relay_bytes),
+        "relay_chunks": int(relay_chunks),
+    }
+    if "source_digest" in completion_evidence:
+        canonical["source_digest"] = completion_evidence["source_digest"]
+    if "destination_digest" in completion_evidence:
+        canonical["destination_digest"] = completion_evidence["destination_digest"]
+    canonical.update(path_level_evidence)
+    return canonical
 
 
 def _worker_completion_evidence(

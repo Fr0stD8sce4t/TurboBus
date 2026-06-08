@@ -223,6 +223,30 @@ class RuntimeLoadView:
             + float(summary["worker_pressure"]),
         )
 
+    def priority_pressure_discount(self) -> float:
+        priority = min(max(int(self.priority), 0), 9)
+        return 1.0 / (1.0 + priority * 0.08)
+
+    def workload_path_multiplier(self, path_kind: str) -> float:
+        workload = str(self.workload_kind)
+        kind = str(path_kind).lower()
+        if kind == "relay":
+            if workload == WorkloadKind.KV_CACHE.value:
+                return 1.08
+            if workload == WorkloadKind.MODEL_WEIGHTS.value:
+                return 1.06
+            if workload in {
+                WorkloadKind.TRAINING_STATE.value,
+                WorkloadKind.OPTIMIZER_STATE.value,
+            }:
+                return 0.98
+            return 1.0
+        if workload == WorkloadKind.KV_CACHE.value:
+            return 0.98
+        if workload == WorkloadKind.MODEL_WEIGHTS.value:
+            return 0.99
+        return 1.0
+
 
 def runtime_state_metadata(
     runtime_state: Mapping[str, object] | None,

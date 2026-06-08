@@ -6,24 +6,25 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G33 are complete.
-- G33 profile collection and daemon import closure is present: backend profile
-  results now normalize into direct PCIe, relay PCIe, and GPU fabric measurement
-  records, daemon import stores topology-bound production profile metadata, and
-  scheduler cost-model metadata exposes imported measurement coverage.
-- Auto-advance continues with G34 as the only active target.
+- G1 through G34 are complete.
+- G34 scheduler cost model strengthening is present: scheduler planning now
+  derives direct and relay path weights from one daemon cost model combining
+  imported profile measurements, runtime pressure, relay admission state,
+  workload kind, and priority, and planner output carries path-level cost
+  metadata into daemon-issued plans.
+- Auto-advance continues with G35 as the only active target.
 
 ## Remaining Risk
 
-- G34 scheduler cost model strengthening is not complete: scheduler scoring
-  still needs a tighter cost-model path that combines imported profile
-  measurements, runtime pressure, relay admission state, and workload priority.
+- G35 runtime feedback strengthening is not complete: daemon and worker/backend
+  runtime state still need tighter feedback propagation into future scheduling
+  inputs.
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred.
 
 ## Next Main Target
 
-G34 scheduler cost model strengthening.
+G35 runtime feedback strengthening.
 
 Progress-file rule:
 

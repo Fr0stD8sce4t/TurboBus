@@ -190,6 +190,7 @@ class PlannerEngine:
             assignments=tuple(
                 assignment for assignment in assignments if assignment.chunks
             ),
+            cost_metadata=_plan_cost_metadata(paths),
         )
 
 
@@ -251,6 +252,30 @@ def _scheduler_weight(path: PlannerPath) -> float:
     if path.scheduler_weight_gbps is not None:
         return max(0.0, float(path.scheduler_weight_gbps))
     return max(0.0, float(path.effective_bw_gbps))
+
+
+def _plan_cost_metadata(paths: Sequence[PlannerPath]) -> dict[str, object]:
+    path_records = []
+    for path in paths:
+        path_records.append(
+            {
+                "kind": path.kind,
+                "target_device": int(path.target_device),
+                "relay_device": None if path.kind != "relay" else int(path.relay_device),
+                "effective_bw_gbps": float(path.effective_bw_gbps),
+                "scheduler_weight_gbps": _scheduler_weight(path),
+                "runtime_pressure": float(path.runtime_pressure),
+                "source": dict(path.cost_metadata).get(
+                    "source",
+                    "planner_path_weight",
+                ),
+            }
+        )
+    return {
+        "source": "planner_engine_scheduler_weighted_assignment",
+        "path_count": len(path_records),
+        "paths": tuple(path_records),
+    }
 
 
 def _make_chunks(total_bytes: int, chunk_bytes: int) -> list[PlannerChunk]:

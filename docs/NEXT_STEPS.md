@@ -5,23 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G34 scheduler cost model strengthening.
+G35 runtime feedback strengthening.
 
-Scheduler planning must use imported profile measurements, runtime pressure,
-relay admission state, and workload priority as one explicit cost model for
-direct, relay-only, and mixed pooled decisions without letting applications
-select physical routes.
+Runtime feedback must carry queued, admitted, running, active, completion, and
+cleanup state from daemon and worker/backend execution back into scheduling so
+future transfer plans react to real in-flight system pressure.
 
 ## Current Code Work
 
-- `turbobus/scheduler/daemon.py`: cost model metadata, candidate path scoring,
-  runtime pressure handling, and fallback reasons.
-- `turbobus/planner_engine.py`: direct, relay, and mixed pooled path weighting
-  consumed by daemon scheduler.
-- `turbobus/planner_types.py`: planner path cost metadata carried into
-  scheduling decisions.
-- `turbobus/scheduler/load_feedback.py`: queued/running/active pressure used by
-  scheduler cost calculations.
+- `turbobus/daemon/server.py`: runtime resource state, status updates,
+  terminal feedback, admission refresh, and scheduling inputs.
+- `turbobus/scheduler/load_feedback.py`: runtime feedback normalization and
+  scheduler pressure summaries.
+- `turbobus/worker/lifecycle.py`: worker execution status and completion
+  evidence surfaced to daemon.
+- `turbobus/worker/cuda_executor.py`: backend/worker runtime metrics carried
+  into completion metadata.
 
 Round rules:
 
@@ -41,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G34 is complete, continue automatically to G35 as the only current
+After G35 is complete, continue automatically to G36 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -50,7 +49,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G34 scheduler cost model strengthening.
 - G35 runtime feedback strengthening.
 - G36 multi-tenant isolation strengthening.
 - G37 vLLM KV code integration strengthening.

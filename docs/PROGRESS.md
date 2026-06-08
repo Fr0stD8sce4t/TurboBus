@@ -19,8 +19,6 @@
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- Functional validation, server validation, benchmark execution, paper
-  validation, and multi-GPU execution remain deferred.
 
 ## Next Main Target
 

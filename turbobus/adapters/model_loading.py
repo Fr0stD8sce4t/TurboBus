@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
-from ..offload.context import AdapterTransferContext
+from ..offload.context import AdapterTransferContext, forbidden_physical_policy_keys
 from ..offload.lifecycle import adapter_lifecycle_evidence_from_handles
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
@@ -58,7 +58,10 @@ class ModelWeightLoader(OffloadStore):
             workload_kind=WorkloadKind.MODEL_WEIGHTS,
             priority=priority,
             policy_hints=policy_hints,
-            metadata=metadata,
+            metadata=_validate_model_loading_metadata(
+                metadata,
+                field_name="model loader metadata",
+            ),
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
@@ -112,6 +115,10 @@ class ModelWeightLoader(OffloadStore):
         ) = None,
     ) -> None:
         super().__init__(runtime_session, transfer_context)
+        _validate_model_loading_metadata(
+            transfer_context.metadata,
+            field_name="model loader context metadata",
+        )
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
         self._manifest: ModelWeightManifest | None = None
@@ -139,6 +146,7 @@ class ModelWeightLoader(OffloadStore):
         replace: bool = False,
     ) -> list[OffloadBlock]:
         resolved = _coerce_manifest(manifest)
+        _validate_manifest_metadata_no_physical_policy(resolved)
         if self._manifest is not None and not replace:
             raise ValueError("model weight manifest is already registered")
         _validate_manifest_backing_span(
@@ -264,7 +272,7 @@ class ModelWeightLoader(OffloadStore):
         return self._load_selected(names, operation="load_buckets")
 
     def submit_load_buckets(self, names: Iterable[str]) -> OffloadBatch:
-        return self.submit_prefetch_many(names)
+        return self._submit_selected(names, operation="submit_load_buckets")
 
     def load_tensor(self, name: str):
         return self.load_bucket(name)
@@ -278,6 +286,10 @@ class ModelWeightLoader(OffloadStore):
     def load_manifest(self, names: Iterable[str] | None = None) -> list:
         selected = self._manifest_names(names)
         return self._load_selected(selected, operation="load_manifest")
+
+    def submit_load_manifest(self, names: Iterable[str] | None = None) -> OffloadBatch:
+        selected = self._manifest_names(names)
+        return self._submit_selected(selected, operation="submit_load_manifest")
 
     def load_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_load_buckets(names)
@@ -319,7 +331,7 @@ class ModelWeightLoader(OffloadStore):
         names = self._normalize_names(names)
         if not names:
             return []
-        batch = self.submit_load_tensors(names)
+        batch = self.submit_prefetch_many(names)
         super().wait_many(names)
         self._record_load_lifecycle(
             operation=operation,
@@ -327,6 +339,16 @@ class ModelWeightLoader(OffloadStore):
             handles=batch.handles,
         )
         return list(batch.handles)
+
+    def _submit_selected(self, names: Iterable[str], *, operation: str) -> OffloadBatch:
+        names = self._normalize_names(names)
+        batch = self.submit_prefetch_many(names)
+        self._record_load_lifecycle(
+            operation=operation,
+            names=names,
+            handles=batch.handles,
+        )
+        return batch
 
     def _record_load_lifecycle(
         self,
@@ -373,6 +395,8 @@ class ModelWeightLoader(OffloadStore):
             extra={
                 "adapter": "model_weight_loader",
                 "load_direction": "h2d",
+                "adapter_submit_source": "TurboBusRuntimeSession",
+                "adapter_handle_source": "ReceiptTransferHandle",
                 "policy_source": "daemon_scheduler",
                 "route_policy_visible_to_adapter": False,
                 "physical_route_source": "daemon_scheduler",
@@ -500,6 +524,35 @@ def _coerce_tensor(tensor: ModelWeightTensor | Mapping[str, object]) -> ModelWei
             metadata=dict(tensor.get("metadata", {})),
         )
     raise TypeError("model weight tensor must be a ModelWeightTensor or mapping")
+
+
+def _validate_model_loading_metadata(
+    metadata: Mapping[str, object] | None,
+    *,
+    field_name: str,
+) -> dict[str, object]:
+    resolved = {} if metadata is None else dict(metadata)
+    invalid_keys = forbidden_physical_policy_keys(resolved)
+    if invalid_keys:
+        raise ValueError(
+            f"{field_name} must not choose physical paths: "
+            + ", ".join(str(key) for key in invalid_keys)
+        )
+    return resolved
+
+
+def _validate_manifest_metadata_no_physical_policy(
+    manifest: ModelWeightManifest,
+) -> None:
+    _validate_model_loading_metadata(
+        manifest.metadata,
+        field_name="model weight manifest metadata",
+    )
+    for tensor in manifest.tensors:
+        _validate_model_loading_metadata(
+            tensor.metadata,
+            field_name=f"model weight tensor {tensor.name} metadata",
+        )
 
 
 def _validate_manifest_backing_span(

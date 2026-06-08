@@ -5,22 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G38 model loading code integration strengthening.
+G39 training offload code integration strengthening.
 
-Model-loading integration code must submit model-weight H2D work through
-`TurboBusRuntimeSession` using registered buffers, `TransferIntent`, and
-`TransferReceipt` consumption without exposing direct, relay, target-GPU, or
-relay-GPU route selection to adapter callers.
+Training offload integration code must submit training-state H2D/D2H work
+through `TurboBusRuntimeSession` using registered buffers, `TransferIntent`,
+and `TransferReceipt` consumption without exposing direct, relay, target-GPU,
+or relay-GPU route selection to adapter callers.
 
 ## Current Code Work
 
-- `turbobus/adapters/model_loading.py`: model-weight loader entry points,
-  manifest binding, and receipt-backed load lifecycle.
+- `turbobus/adapters/training_offload.py`: training-state offload/restore
+  entry points and receipt-backed lifecycle.
 - `turbobus/offload/context.py` and `turbobus/offload/store.py`: shared adapter
   context, registered buffer use, physical-policy rejection, and receipt
   consumption.
 - `turbobus/runtime_session.py`: production runtime-session factory for
-  model-loading adapters.
+  training-offload adapters.
 
 Round rules:
 
@@ -40,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G38 is complete, continue automatically to G39 as the only current
+After G39 is complete, continue automatically to G40 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -49,7 +49,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G38 model loading code integration strengthening.
 - G39 training offload code integration strengthening.
 - G40 validation code entry recovery.
 - G41 benchmark code recovery.

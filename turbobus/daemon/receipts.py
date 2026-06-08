@@ -215,6 +215,20 @@ def receipt_for_transfer(
         relay_completion_evidence=relay_completion_evidence,
         worker_completion_evidence=worker_completion_evidence,
     )
+    reproduction_evidence = _reproduction_evidence_view(
+        transfer_id=transfer_id,
+        intent=intent,
+        status=status,
+        decision=decision,
+        ticket=ticket,
+        admission=admission,
+        plan_generation=plan_generation,
+        completion_source=completion_source,
+        completion_contract=completion_contract,
+        buffer_lifetime_evidence=buffer_lifetime_evidence,
+        cuda_ipc_lifecycle=cuda_ipc_lifecycle,
+        evidence=evidence,
+    )
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
         ticket_id=(
@@ -348,6 +362,7 @@ def receipt_for_transfer(
             "cuda_ipc_lifecycle": cuda_ipc_lifecycle,
             "completion_contract": completion_contract,
             "buffer_lifetime_evidence": buffer_lifetime_evidence,
+            "reproduction_evidence": reproduction_evidence,
         },
     )
 
@@ -436,6 +451,133 @@ def _buffer_lifetime_evidence(
         ),
         "cleanup": cleanup_mapping or None,
     }
+
+
+def _reproduction_evidence_view(
+    *,
+    transfer_id: str,
+    intent: TransferIntent,
+    status: TransferStatus,
+    decision: SchedulingDecision,
+    ticket: ExecutionTicket | None,
+    admission: Mapping[str, object],
+    plan_generation: int,
+    completion_source: str | None,
+    completion_contract: Mapping[str, object],
+    buffer_lifetime_evidence: Mapping[str, object],
+    cuda_ipc_lifecycle: Mapping[str, object] | None,
+    evidence: Mapping[str, object],
+) -> dict[str, object]:
+    execution_path = completion_contract.get("execution_path")
+    path_view = (
+        dict(execution_path)
+        if isinstance(execution_path, Mapping)
+        else _execution_path_view_from_decision(decision)
+    )
+    return {
+        "schema": "turbobus.reproduction_evidence.v1",
+        "source": "TransferReceipt",
+        "fake_receipt": False,
+        "synthetic_evidence": False,
+        "dry_run": False,
+        "route_policy_source": "daemon_scheduler",
+        "transfer": {
+            "transfer_id": str(transfer_id),
+            "intent_id": intent.intent_id,
+            "decision_id": decision.decision_id,
+            "topology_snapshot_id": decision.topology_snapshot_id,
+            "ticket_id": None if ticket is None else ticket.ticket_id,
+            "job_id": intent.job_id,
+            "session_id": intent.session_id,
+            "direction": intent.direction,
+            "workload_kind": str(intent.workload_kind.value),
+            "state": status.state.value,
+            "bytes_total": int(status.bytes_total),
+            "bytes_completed": int(status.bytes_completed),
+            "plan_generation": int(plan_generation),
+        },
+        "scheduling": {
+            "fallback_reason": decision.fallback_reason,
+            "admission_state": admission.get("state"),
+            "admission_reason": admission.get("reason"),
+            "path_summary": [dict(item) for item in decision.path_summary],
+        },
+        "execution": {
+            "completion_source": completion_source,
+            "executed": completion_source in {"worker", "backend"},
+            "verified": bool(evidence.get("verified", False)),
+            "verified_bytes": int(evidence.get("verified_bytes", 0) or 0),
+            "expected_bytes": evidence.get("expected_bytes"),
+            "content_match": bool(evidence.get("content_match", False)),
+            "verification_source": evidence.get("verification_source"),
+            "verification_method": evidence.get("verification_method"),
+            "mode": _execution_mode_from_path(path_view),
+            "path": path_view,
+        },
+        "completion_contract": dict(completion_contract),
+        "buffer_lifetime": dict(buffer_lifetime_evidence),
+        "cuda_ipc_lifecycle": (
+            dict(cuda_ipc_lifecycle)
+            if isinstance(cuda_ipc_lifecycle, Mapping)
+            else None
+        ),
+        "cleanup": completion_contract.get("cleanup"),
+        "failure_cleanup_contract": completion_contract.get(
+            "failure_cleanup_contract"
+        ),
+    }
+
+
+def _execution_path_view_from_decision(
+    decision: SchedulingDecision,
+) -> dict[str, object]:
+    direct_bytes = 0
+    relay_bytes = 0
+    direct_chunks = 0
+    relay_chunks = 0
+    for path in decision.path_summary:
+        path_bytes = int(path.get("bytes", 0) or 0)
+        path_chunks = int(path.get("chunks", 0) or 0)
+        if str(path.get("kind", "")).lower() == "relay":
+            relay_bytes += path_bytes
+            relay_chunks += path_chunks
+        else:
+            direct_bytes += path_bytes
+            direct_chunks += path_chunks
+    return {
+        "direct_bytes": direct_bytes,
+        "direct_chunks": direct_chunks,
+        "relay_bytes": relay_bytes,
+        "relay_chunks": relay_chunks,
+        "plan_source": "daemon",
+        "path": _execution_mode_from_path(
+            {
+                "direct_bytes": direct_bytes,
+                "relay_bytes": relay_bytes,
+            }
+        ),
+    }
+
+
+def _execution_mode_from_path(path_view: Mapping[str, object] | None) -> str:
+    if not isinstance(path_view, Mapping):
+        return "unknown"
+    direct_bytes = int(path_view.get("direct_bytes", 0) or 0)
+    relay_bytes = int(path_view.get("relay_bytes", 0) or 0)
+    if direct_bytes > 0 and relay_bytes > 0:
+        return "mixed_pooled"
+    if relay_bytes > 0:
+        return "relay_only"
+    if direct_bytes > 0:
+        return "direct_only"
+    path = str(path_view.get("path", "")).lower()
+    if "mixed" in path or "pool" in path:
+        return "mixed_pooled"
+    if "relay" in path:
+        return "relay_only"
+    if "direct" in path:
+        return "direct_only"
+    return "unknown"
 
 
 def _completion_contract_view(

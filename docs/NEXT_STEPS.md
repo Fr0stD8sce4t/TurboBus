@@ -5,27 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G29 unified reproduction evidence model.
+G30 real-execution validation and evaluation entry recovery.
 
-The production receipt model must expose one stable evidence view for direct,
-relay, mixed pooled execution, failure cleanup, buffer lifetime, CUDA IPC
-lifecycle, and framework adapter lifecycles. Evidence must come from real
-daemon/worker/backend `TransferReceipt` completion or explicit failure, not
-from fake receipts, synthetic topology, JSON artifacts, or dry-run output.
+Validation and evaluation entry points may return only around real
+daemon/worker/backend `TransferReceipt` objects and their
+`reproduction_evidence` view. They must reject fake receipts, synthetic
+evidence, JSON-only artifacts, and dry-run output as reproduction proof.
 
 ## Current Code Work
 
-- `turbobus/daemon/receipts.py`: unified `TransferReceipt` metadata,
-  completion contract, buffer lifetime evidence, CUDA IPC lifecycle, and
-  path-level evidence view.
-- `turbobus/daemon/server.py`: completion evidence normalization, merge, archive,
-  cleanup retention, and runtime feedback preservation.
-- `turbobus/intent_executor.py`: worker/backend completion evidence propagation
-  into receipts.
-- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from real
-  receipts and runtime buffer bindings.
-- `turbobus/runtime/validation.py`: runtime receipt contract validation around
-  real completion evidence.
+- `turbobus/runtime/validation.py`: receipt-level reproduction evidence
+  validation for real execution, path mode, completion, cleanup, buffer
+  lifetime, and daemon-owned scheduling policy.
+- `turbobus/daemon/receipts.py`: stable receipt evidence schema consumed by
+  validation and later evaluation code.
+- Existing validation or evaluation-facing modules may consume only real
+  receipts from the production daemon/worker/backend path.
 
 Round rules:
 
@@ -38,13 +33,16 @@ Round rules:
   describable production capability on the current target path.
 - Do not advance benchmark, example, paper-validation, server-validation, new
   test, dry-run, fake receipt, synthetic evidence, or replacement verification
-  entry work during the current system-body pass.
+  entry work before G30.
+- During G30, validation and evaluation may consume only real executed
+  daemon/worker/backend evidence.
 - Update this file and `docs/PROGRESS.md` after each completed closure.
 - Keep only active and next work here. Do not append completed history.
 
 ## Next Entry
 
-After G29 is complete, continue automatically to G30 as the only current target.
+After G30 is complete, stop if no further user-provided auto-advance target is
+available.
 
 ## Auto-Advance Policy
 
@@ -52,5 +50,4 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G29 unified reproduction evidence model.
 - G30 real-execution validation and evaluation entry recovery.

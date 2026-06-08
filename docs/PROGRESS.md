@@ -5,28 +5,27 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G28 are complete.
-- G28 training offload real integration closure is present: training-state
-  lifecycle evidence now binds prefetch/offload direction, bucket ranges,
-  runtime-session CPU/GPU buffers, receipt ids, intent ids, ticket ids,
-  completion contracts, byte counts, and path split evidence while keeping
-  physical route policy owned by the daemon scheduler.
-- Auto-advance continues with G29 as the only active target.
+- G1 through G29 are complete.
+- G29 unified reproduction evidence model is present: every production
+  `TransferReceipt` now exposes a stable `reproduction_evidence` view covering
+  daemon-owned scheduling, direct/relay/mixed execution mode, completion
+  contract, cleanup, buffer lifetime, CUDA IPC lifecycle, and fake/synthetic/
+  dry-run rejection markers.
+- Auto-advance continues with G30 as the only active target.
 
 ## Remaining Risk
 
-- G29 unified reproduction evidence model is not complete: direct, relay, mixed
-  pooled execution, failure cleanup, buffer lifetime, CUDA IPC lifecycle, and
-  adapter lifecycle evidence still need one stable receipt-level view for later
-  real-execution validation.
+- G30 real-execution validation and evaluation entry recovery is not complete:
+  validation-facing code still needs a production entry that consumes only real
+  daemon/worker/backend receipt evidence and rejects fake, synthetic, JSON-only,
+  or dry-run proof.
 - End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
-  evidence remains deferred. Future validation work must use real executed
-  daemon/worker/backend evidence, not fake receipts, synthetic evidence, JSON
-  artifacts, or dry-run output.
+  evidence remains deferred until validation is bound to real executed
+  daemon/worker/backend evidence.
 
 ## Next Main Target
 
-G29 unified reproduction evidence model.
+G30 real-execution validation and evaluation entry recovery.
 
 Progress-file rule:
 

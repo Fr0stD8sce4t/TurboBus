@@ -61,6 +61,7 @@ def validate_runtime_receipt(
         source_buffer_id=source_buffer_id,
         destination_buffer_id=destination_buffer_id,
     )
+    require_reproduction_evidence(metadata)
     require_worker_startup_evidence(metadata)
     require_worker_async_pool_evidence(metadata)
 
@@ -185,6 +186,31 @@ def require_worker_async_pool_evidence(metadata: Mapping[str, object]) -> None:
         raise ValueError("runtime receipt worker_async_pool missing state")
 
 
+def require_reproduction_evidence(metadata: Mapping[str, object]) -> None:
+    reproduction = metadata.get("reproduction_evidence")
+    if not isinstance(reproduction, Mapping):
+        raise ValueError("runtime receipt missing reproduction_evidence")
+    if reproduction.get("schema") != "turbobus.reproduction_evidence.v1":
+        raise ValueError("runtime receipt reproduction_evidence has wrong schema")
+    if reproduction.get("source") != "TransferReceipt":
+        raise ValueError("runtime receipt reproduction_evidence must come from TransferReceipt")
+    for forbidden in ("fake_receipt", "synthetic_evidence", "dry_run"):
+        if bool(reproduction.get(forbidden, False)):
+            raise ValueError(f"runtime receipt reproduction_evidence uses {forbidden}")
+    transfer = reproduction.get("transfer")
+    if not isinstance(transfer, Mapping):
+        raise ValueError("runtime receipt reproduction_evidence missing transfer view")
+    execution = reproduction.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("runtime receipt reproduction_evidence missing execution view")
+    if reproduction.get("route_policy_source") != "daemon_scheduler":
+        raise ValueError("runtime receipt reproduction_evidence route policy is not daemon-owned")
+    if not isinstance(reproduction.get("completion_contract"), Mapping):
+        raise ValueError("runtime receipt reproduction_evidence missing completion contract")
+    if not isinstance(reproduction.get("buffer_lifetime"), Mapping):
+        raise ValueError("runtime receipt reproduction_evidence missing buffer lifetime")
+
+
 def _require_runtime_buffer_record(
     record: object,
     *,
@@ -295,6 +321,7 @@ def _require_runtime_buffer_resource_evidence(
 __all__ = [
     "require_complete_receipt_evidence",
     "require_failed_receipt_evidence",
+    "require_reproduction_evidence",
     "require_receipt_ticket_binding",
     "require_runtime_buffer_lifetime_evidence",
     "require_worker_async_pool_evidence",

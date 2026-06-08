@@ -5,23 +5,23 @@ appending history.
 
 ## Current Main Target
 
-G24 failure recovery and cleanup closure.
+G25 CUDA IPC lifecycle hardening.
 
-Worker/backend failures must converge through daemon-owned cleanup, release
-relay leases and staging records, preserve failure evidence, and leave receipts
-with explicit cleanup and partial-completion state.
+CUDA IPC GPU buffers must be registered, authorized, opened, used, and closed
+only inside daemon-issued execution paths, with lifecycle evidence bound to
+job/session/ticket ownership.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: failure status, reservation release, transfer
-  retirement, receipt archive, and runtime feedback cleanup.
-- `turbobus/worker/lifecycle.py`: worker execution failure, cleanup response,
-  terminal status report, and async pool evidence.
-- `turbobus/intent_executor.py`: worker failure reporting and planned relay
-  cleanup evidence.
-- `turbobus/daemon/receipts.py`: failed receipt cleanup, partial completion,
-  and completion-contract evidence.
-- `turbobus/worker/cuda_executor.py`: backend exception result evidence.
+- `turbobus/buffer_registration.py`: CUDA IPC handle conversion and ownership
+  evidence for runtime buffers.
+- `turbobus/worker/resources.py`: worker data-plane resource binding, CUDA IPC
+  open/close evidence, and span validation.
+- `turbobus/runtime_session.py`: runtime-owned CUDA buffer registration and
+  release.
+- `turbobus/daemon/server.py`: buffer ownership, active lease/ticket
+  protection, and cleanup retention.
+- `turbobus/worker/validation.py`: ticket and buffer owner checks.
 
 Round rules:
 
@@ -40,7 +40,7 @@ Round rules:
 
 ## Next Entry
 
-After G24 is complete, continue automatically to G25 as the only current target.
+After G25 is complete, continue automatically to G26 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -48,7 +48,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G24 failure recovery and cleanup closure.
 - G25 CUDA IPC lifecycle hardening.
 - G26 vLLM real lifecycle closure.
 - G27 model loading real integration closure.

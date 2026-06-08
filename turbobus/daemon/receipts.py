@@ -196,6 +196,7 @@ def receipt_for_transfer(
     path_level_evidence = evidence.get("path_level_evidence")
     native_path_stats = evidence.get("native_path_stats")
     relay_device_stats = evidence.get("relay_device_stats")
+    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
@@ -336,6 +337,11 @@ def receipt_for_transfer(
                     if isinstance(item, Mapping)
                 ]
                 if isinstance(relay_device_stats, list | tuple)
+                else None
+            ),
+            "failure_cleanup_contract": (
+                dict(failure_cleanup_contract)
+                if isinstance(failure_cleanup_contract, Mapping)
                 else None
             ),
             "completion_contract": completion_contract,
@@ -486,6 +492,11 @@ def _completion_contract_view(
             if isinstance(evidence.get("relay_device_stats"), list | tuple)
             else None
         ),
+        "failure_cleanup_contract": (
+            dict(evidence.get("failure_cleanup_contract"))
+            if isinstance(evidence.get("failure_cleanup_contract"), Mapping)
+            else None
+        ),
         "execution_path": (
             dict(execution_path_evidence)
             if isinstance(execution_path_evidence, Mapping)
@@ -607,6 +618,7 @@ def _single_mode_completion_view(
         "path_level_evidence",
         "native_path_stats",
         "relay_device_stats",
+        "failure_cleanup_contract",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]
@@ -659,6 +671,7 @@ def _worker_completion_view(
         "path_level_evidence",
         "native_path_stats",
         "relay_device_stats",
+        "failure_cleanup_contract",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]

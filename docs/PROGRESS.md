@@ -5,20 +5,19 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G23 are complete.
-- G23 cross-job admission and fairness closure is present: daemon relay
-  admission now evaluates live weighted job pressure, delays new relay plans
-  when a job exceeds the fairness threshold, records fairness evidence in queue
-  and receipt metadata, and lets delayed transfers re-enter through the daemon
-  priority queue once resource checks pass.
-- Auto-advance continues with G24 as the only active target.
+- G1 through G24 are complete.
+- G24 failure recovery and cleanup closure is present: failed and canceled
+  worker/backend paths now merge daemon cleanup results into a
+  `failure_cleanup_contract`, archive it into completion evidence, refresh
+  terminal runtime feedback, and expose the contract through `TransferReceipt`.
+- Auto-advance continues with G25 as the only active target.
 
 ## Remaining Risk
 
-- G24 failure recovery and cleanup closure is not complete: worker/backend
-  failure paths still need a single cleanup contract that releases relay
-  reservations, staging records, execution tickets, and runtime feedback while
-  preserving partial completion evidence in receipts.
+- G25 CUDA IPC lifecycle hardening is not complete: CUDA IPC GPU buffer
+  registration, worker open/close evidence, active ticket/lease protection, and
+  ownership-bound cleanup retention still need to be tightened into one
+  lifecycle contract.
 - End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
   evidence remains deferred. Future validation work must use real executed
   daemon/worker/backend evidence, not fake receipts, synthetic evidence, JSON
@@ -26,7 +25,7 @@
 
 ## Next Main Target
 
-G24 failure recovery and cleanup closure.
+G25 CUDA IPC lifecycle hardening.
 
 Progress-file rule:
 

@@ -1161,6 +1161,13 @@ class TurboBusDaemon:
                     reap_expired=False,
                 )
                 promoted = admission_refresh["promoted_transfers"]
+                self._record_failure_cleanup_contract_locked(
+                    transfer_id=updated.transfer_id,
+                    final_state=updated.state,
+                    error=updated.error or "worker_failed",
+                    removed=removed,
+                    promoted=promoted,
+                )
             elif updated.state is TransferStatusState.CANCELED:
                 self._append_transfer_audit_records_locked(
                     event_type="transfer_canceled",
@@ -1190,6 +1197,13 @@ class TurboBusDaemon:
                     reap_expired=False,
                 )
                 promoted = admission_refresh["promoted_transfers"]
+                self._record_failure_cleanup_contract_locked(
+                    transfer_id=updated.transfer_id,
+                    final_state=updated.state,
+                    error=updated.error or "transfer_canceled",
+                    removed=removed,
+                    promoted=promoted,
+                )
             return DaemonResponse(
                 ok=True,
                 payload={
@@ -7077,6 +7091,84 @@ def _job_runtime_state_from_records(
                 "active_bytes_remaining": 0,
             },
         )
+
+    def _record_failure_cleanup_contract_locked(
+        self,
+        *,
+        transfer_id: str,
+        final_state: TransferStatusState,
+        error: str,
+        removed: Mapping[str, object],
+        promoted: Iterable[Mapping[str, object]],
+    ) -> None:
+        normalized = str(transfer_id)
+        contract = {
+            "source": "daemon_failure_cleanup_contract",
+            "transfer_id": normalized,
+            "final_state": final_state.value,
+            "error": str(error),
+            "removed": {
+                str(key): int(value)
+                for key, value in dict(removed).items()
+                if value is not None
+            },
+            "promoted_transfers": [
+                dict(item) for item in promoted if isinstance(item, Mapping)
+            ],
+            "recorded_at": time.time(),
+            "active_ticket_retained": normalized in self._transfer_tickets,
+            "active_reservation_count": sum(
+                1
+                for mapped_transfer_id in self._reservation_transfers.values()
+                if mapped_transfer_id == normalized
+            ),
+            "active_staging_count": sum(
+                1
+                for record in self._staging_records.values()
+                if str(record.get("transfer_id", "")) == normalized
+            ),
+        }
+        self._merge_failure_cleanup_contract_into_evidence_locked(
+            transfer_id=normalized,
+            contract=contract,
+        )
+        self._archive_transfer_receipt_state_locked(normalized)
+        self._record_terminal_runtime_feedback_locked(normalized)
+
+    def _merge_failure_cleanup_contract_into_evidence_locked(
+        self,
+        *,
+        transfer_id: str,
+        contract: Mapping[str, object],
+    ) -> None:
+        normalized = str(transfer_id)
+        active_evidence = self._transfer_completion_evidence.get(normalized)
+        if isinstance(active_evidence, Mapping):
+            updated = dict(active_evidence)
+            updated["failure_cleanup_contract"] = dict(contract)
+            cleanup = updated.get("cleanup")
+            if isinstance(cleanup, Mapping):
+                cleanup_record = dict(cleanup)
+            else:
+                cleanup_record = {}
+            cleanup_record.setdefault("ok", True)
+            cleanup_record["failure_cleanup_contract"] = dict(contract)
+            updated["cleanup"] = cleanup_record
+            self._transfer_completion_evidence[normalized] = updated
+            return
+        archived = self._transfer_receipt_archive.get(normalized)
+        if not isinstance(archived, Mapping):
+            return
+        archived_evidence = dict(archived.get("completion_evidence", {}) or {})
+        archived_evidence["failure_cleanup_contract"] = dict(contract)
+        cleanup = archived_evidence.get("cleanup")
+        cleanup_record = dict(cleanup) if isinstance(cleanup, Mapping) else {}
+        cleanup_record.setdefault("ok", True)
+        cleanup_record["failure_cleanup_contract"] = dict(contract)
+        archived_evidence["cleanup"] = cleanup_record
+        updated_archive = dict(archived)
+        updated_archive["completion_evidence"] = archived_evidence
+        self._transfer_receipt_archive[normalized] = updated_archive
         state = str(item.get("state", ""))
         if state == TransferStatusState.SUBMITTED.value:
             job_record["queued_transfer_count"] += 1
@@ -7408,6 +7500,7 @@ def _normalize_completion_evidence(
     path_level_evidence = evidence.get("path_level_evidence")
     native_path_stats = evidence.get("native_path_stats")
     relay_device_stats = evidence.get("relay_device_stats")
+    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -7495,6 +7588,11 @@ def _normalize_completion_evidence(
                 )
             }
         ),
+        **(
+            {}
+            if not isinstance(failure_cleanup_contract, Mapping)
+            else {"failure_cleanup_contract": dict(failure_cleanup_contract)}
+        ),
         **ticket_binding,
     }
 
@@ -7516,6 +7614,7 @@ def _merge_completion_evidence(
         "cleanup",
         "worker_async_pool",
         "path_level_evidence",
+        "failure_cleanup_contract",
     ):
         previous = existing.get(field_name)
         current = incoming.get(field_name)
@@ -7628,6 +7727,9 @@ def _normalize_status_ticket_evidence(
     worker_async_pool = evidence.get("worker_async_pool")
     if isinstance(worker_async_pool, Mapping):
         ticket_binding["worker_async_pool"] = dict(worker_async_pool)
+    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
+    if isinstance(failure_cleanup_contract, Mapping):
+        ticket_binding["failure_cleanup_contract"] = dict(failure_cleanup_contract)
     for field_name in (
         "executor",
         "path",

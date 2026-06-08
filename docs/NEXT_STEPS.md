@@ -5,23 +5,20 @@ appending history.
 
 ## Current Main Target
 
-G18 unified auditable receipt closure.
+System-body auto-advance queue complete through G18.
 
-All framework-facing production adapters must expose auditable lifecycle state
-that is derived from daemon `TransferReceipt` objects. The final closure must
-make receipt evidence consistent across offload, model loading, training state,
-and vLLM KV paths without adding benchmark, example, dry-run, fake receipt, or
-synthetic validation entry points.
+No new implementation target is active in the current queue. Benchmark, example,
+paper validation, server validation, new tests, fake evidence, synthetic
+evidence, and dry-run deliverables remain deferred.
 
 ## Current Code Work
 
-- `turbobus/offload/handles.py`: shared receipt handle validation and wait
-  semantics.
-- `turbobus/offload/store.py`: shared named-block TransferIntent submission,
-  wait, block state, and receipt consumption path.
-- `turbobus/adapters/model_loading.py`: model-weight lifecycle evidence.
-- `turbobus/adapters/training_offload.py`: training-state lifecycle evidence.
-- `turbobus/adapters/vllm_kv_connector.py`: vLLM KV lifecycle evidence.
+- No active code work remains in the G14-G18 auto-advance queue.
+- `turbobus/offload/lifecycle.py` owns shared framework-facing lifecycle
+  evidence derived from daemon `TransferReceipt` objects.
+- Framework adapters should keep using `TurboBusRuntimeSession`,
+  `TransferIntent`, and daemon `TransferReceipt` paths without adapter-side
+  route, relay, pool, target-GPU, or relay-GPU policy.
 
 Round rules:
 
@@ -40,24 +37,14 @@ Round rules:
 
 ## Next Entry
 
-After G18 is complete, stop auto-advance for the system-body queue and leave
-benchmark, example, paper validation, server validation, and new tests deferred.
+Stop auto-advance for the current system-body queue. A new queue should be
+defined before starting validation, benchmark, example, paper-validation,
+server-validation, or new-test work.
 
 ## Auto-Advance Policy
 
-Auto-advance is active for the system-body queue.
+Auto-advance queue complete.
 
 Remaining auto-advance target queue:
 
-- G18 unified auditable receipt closure.
-
-In auto-advance mode:
-
-- keep exactly one current active target at a time;
-- after each completed target, rewrite this file and `docs/PROGRESS.md` so the
-  next queued target becomes the only current active target;
-- carry forward the no-benchmark, no-example, no-test, no-fake-evidence, and
-  daemon-issued-plan constraints;
-- stop when the queue is complete, external environment blocks the target, a
-  real architecture choice needs user review, or continuing would leave the
-  system-body scope.
+- None.

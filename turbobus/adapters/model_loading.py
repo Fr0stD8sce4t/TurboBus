@@ -5,10 +5,11 @@ from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext
+from ..offload.lifecycle import adapter_lifecycle_evidence_from_handles
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
 from ..model_manifest import ModelWeightManifest, ModelWeightTensor
-from ..schema import TransferReceipt, WorkloadKind
+from ..schema import WorkloadKind
 
 
 @dataclass(frozen=True)
@@ -356,59 +357,31 @@ class ModelWeightLoader(OffloadStore):
         names: list[str],
         handles: Iterable[object],
     ) -> dict[str, Any]:
-        receipts = _unique_receipts_from_handles(handles)
-        if names and not receipts:
-            raise RuntimeError("model weight load completed without TransferReceipt evidence")
         transfer_stats = self.transfer_stats_many(names).as_dict()
-        return {
-            "evidence_id": (
+        return adapter_lifecycle_evidence_from_handles(
+            evidence_id=(
                 f"model-load-{self.transfer_context.session_id}-"
                 f"{self.transfer_context.intent_prefix}-{len(self._load_lifecycle_history) + 1}"
             ),
-            "operation": str(operation),
-            "job_id": self.transfer_context.job_id,
-            "session_id": self.transfer_context.session_id,
-            "workload_kind": str(self.transfer_context.workload_kind.value),
-            "buffer_registration_source": "TurboBusRuntimeSession",
-            "intent_source": "TransferIntent",
-            "receipt_source": "TransferReceipt",
-            "policy_source": "daemon_scheduler",
-            "cpu_buffer_id": self.transfer_context.cpu_buffer_id,
-            "gpu_buffer_id": self.transfer_context.gpu_buffer_id,
-            "tensor_names": tuple(names),
-            "tensor_count": len(names),
-            "manifest_tensor_count": (
-                0 if self._manifest is None else len(self._manifest.tensors)
-            ),
-            "manifest_cpu_span_bytes": (
-                0 if self._manifest is None else self._manifest.cpu_span_bytes
-            ),
-            "manifest_gpu_span_bytes": (
-                0 if self._manifest is None else self._manifest.gpu_span_bytes
-            ),
-            "receipt_count": len(receipts),
-            "intent_ids": _join_unique(
-                getattr(getattr(handle, "intent", None), "intent_id", None)
-                for handle in handles
-            ),
-            "receipt_ids": _join_unique(receipt.receipt_id for receipt in receipts),
-            "ticket_ids": _join_unique(receipt.ticket_id for receipt in receipts),
-            "decision_ids": _join_unique(receipt.decision_id for receipt in receipts),
-            "topology_snapshot_ids": _join_unique(
-                receipt.topology_snapshot_id for receipt in receipts
-            ),
-            "transfer_ids": _join_unique(
-                receipt.metadata.get("transfer_id") for receipt in receipts
-            ),
-            "receipt_states": _join_unique(
-                getattr(receipt.state, "value", str(receipt.state))
-                for receipt in receipts
-            ),
-            "completion_sources": _join_unique(
-                receipt.metadata.get("completion_source") for receipt in receipts
-            ),
-            **transfer_stats,
-        }
+            operation=operation,
+            transfer_context=self.transfer_context,
+            item_field="tensor_names",
+            item_count_field="tensor_count",
+            item_names=names,
+            handles=handles,
+            transfer_stats=transfer_stats,
+            extra={
+                "manifest_tensor_count": (
+                    0 if self._manifest is None else len(self._manifest.tensors)
+                ),
+                "manifest_cpu_span_bytes": (
+                    0 if self._manifest is None else self._manifest.cpu_span_bytes
+                ),
+                "manifest_gpu_span_bytes": (
+                    0 if self._manifest is None else self._manifest.gpu_span_bytes
+                ),
+            },
+        )
 
     def _handles_for_names(self, names: Iterable[str]) -> list[object]:
         handles = []
@@ -479,34 +452,6 @@ def _optional_backing_nbytes(backing) -> int | None:
     if nbytes is not None:
         return int(nbytes)
     return None
-
-
-def _unique_receipts_from_handles(handles: Iterable[object]) -> list[TransferReceipt]:
-    receipts: list[TransferReceipt] = []
-    seen = set()
-    for handle in handles:
-        receipt = getattr(handle, "receipt", None)
-        if not isinstance(receipt, TransferReceipt):
-            continue
-        if receipt.receipt_id in seen:
-            continue
-        seen.add(receipt.receipt_id)
-        receipts.append(receipt)
-    return receipts
-
-
-def _join_unique(values: Iterable[object]) -> str:
-    seen = set()
-    ordered = []
-    for value in values:
-        if value is None:
-            continue
-        text = str(value)
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        ordered.append(text)
-    return ",".join(ordered)
 
 
 __all__ = [

@@ -5,6 +5,7 @@ import time
 from typing import Any, Mapping
 
 from ..offload.stats import TransferStats
+from ..offload.lifecycle import receipt_trace_from_receipts
 from ..runtime.validation import validate_runtime_receipt
 from ..runtime_session import TurboBusRuntimeSession
 from ..runtime_options import RuntimeOptions
@@ -1242,16 +1243,6 @@ def _receipt_trace_from_receipts(
     receipts: list[TransferReceipt],
     runtime_session: TurboBusRuntimeSession,
 ) -> dict[str, Any]:
-    direct_bytes = 0
-    relay_bytes = 0
-    receipt_ids: list[str] = []
-    decision_ids: list[str] = []
-    topology_snapshot_ids: list[str] = []
-    ticket_ids: list[str] = []
-    receipt_states: list[str] = []
-    completion_sources: list[str] = []
-    transfer_ids: list[str] = []
-    fallback_reasons: list[str] = []
     for receipt in receipts:
         validate_runtime_receipt(
             receipt,
@@ -1259,39 +1250,7 @@ def _receipt_trace_from_receipts(
             job_id=runtime_session.job_id,
             session_id=runtime_session.session_id,
         )
-        receipt_ids.append(receipt.receipt_id)
-        decision_ids.append(receipt.decision_id)
-        topology_snapshot_ids.append(receipt.topology_snapshot_id)
-        ticket_ids.append(receipt.ticket_id)
-        receipt_states.append(str(receipt.state.value))
-        completion_source = receipt.metadata.get("completion_source")
-        if completion_source:
-            completion_sources.append(str(completion_source))
-        transfer_id = receipt.metadata.get("transfer_id")
-        if transfer_id:
-            transfer_ids.append(str(transfer_id))
-        fallback_reason = receipt.metadata.get("fallback_reason")
-        if fallback_reason:
-            fallback_reasons.append(str(fallback_reason))
-        for path in receipt.path_stats:
-            path_bytes = int(path.get("bytes", 0) or 0)
-            if str(path.get("kind", "")).lower() == "relay":
-                relay_bytes += path_bytes
-            else:
-                direct_bytes += path_bytes
-    return {
-        "direct_bytes": direct_bytes,
-        "relay_bytes": relay_bytes,
-        "receipt_ids": _join_unique(receipt_ids),
-        "decision_ids": _join_unique(decision_ids),
-        "topology_snapshot_ids": _join_unique(topology_snapshot_ids),
-        "ticket_ids": _join_unique(ticket_ids),
-        "receipt_count": len(receipts),
-        "receipt_states": _join_unique(receipt_states),
-        "completion_sources": _join_unique(completion_sources),
-        "transfer_ids": _join_unique(transfer_ids),
-        "fallback_reason": _join_unique(fallback_reasons),
-    }
+    return receipt_trace_from_receipts(receipts)
 
 
 def _vllm_kv_lifecycle_evidence(

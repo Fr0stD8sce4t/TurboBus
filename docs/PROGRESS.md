@@ -5,26 +5,23 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G17 are complete.
-- G17 training-state offload closure is present: training-state prefetch and
-  offload APIs now submit runtime-session-backed transfer intent, wait for
-  daemon receipts, reject completed transfers without `TransferReceipt`
-  evidence, and expose receipt-derived lifecycle evidence for bucket movement
-  without adapter-side route policy.
-- Auto-advance continues with G18 as the only active target.
+- G1 through G18 are complete.
+- G18 unified auditable receipt closure is present: model loading,
+  training-state offload, and vLLM KV paths now share receipt-derived lifecycle
+  evidence through `turbobus/offload/lifecycle.py`, while retaining
+  daemon-issued `TransferIntent` and `TransferReceipt` authority.
+- Auto-advance queue is complete.
 
 ## Remaining Risk
 
-- G18 unified auditable receipt closure is not complete: framework-facing
-  receipt lifecycle evidence still needs one shared structure across offload,
-  model loading, training state, and vLLM KV paths.
-- Alternative verification paths, fake receipts, synthetic evidence, benchmark
-  work, and dry-run deliverables remain out of scope for the current
-  system-body pass.
+- End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
+  evidence remains deferred and has not been added in this system-body queue.
+- Future validation work must use real executed daemon/worker/backend evidence,
+  not fake receipts, synthetic evidence, JSON artifacts, or dry-run output.
 
 ## Next Main Target
 
-G18 unified auditable receipt closure.
+No active main target remains in the current auto-advance queue.
 
 Progress-file rule:
 

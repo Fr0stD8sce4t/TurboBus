@@ -5,27 +5,24 @@
 - The project is still in system-body implementation; benchmarks, examples,
   paper validation, server validation, new tests, fake evidence, synthetic
   evidence, and dry-run deliverables remain deferred.
-- G1 through G29 are complete.
-- G29 unified reproduction evidence model is present: every production
-  `TransferReceipt` now exposes a stable `reproduction_evidence` view covering
-  daemon-owned scheduling, direct/relay/mixed execution mode, completion
-  contract, cleanup, buffer lifetime, CUDA IPC lifecycle, and fake/synthetic/
-  dry-run rejection markers.
-- Auto-advance continues with G30 as the only active target.
+- G1 through G30 are complete.
+- G30 real-execution validation and evaluation entry recovery is present:
+  validation-facing code now accepts only terminal `TransferReceipt` objects,
+  validates daemon/worker/backend `reproduction_evidence`, rejects fake,
+  synthetic, JSON-only, and dry-run proof, and exposes a normalized
+  `turbobus.real_execution_validation.v1` view for later evaluation.
+- The G19-G30 auto-advance queue has no remaining active target.
 
 ## Remaining Risk
 
-- G30 real-execution validation and evaluation entry recovery is not complete:
-  validation-facing code still needs a production entry that consumes only real
-  daemon/worker/backend receipt evidence and rejects fake, synthetic, JSON-only,
-  or dry-run proof.
 - End-to-end CUDA, vLLM, multi-GPU, server, benchmark, and paper-validation
-  evidence remains deferred until validation is bound to real executed
-  daemon/worker/backend evidence.
+  evidence remains deferred to a future user-provided target queue. Future
+  validation and evaluation must consume real executed daemon/worker/backend
+  receipt evidence through the recovered validation entry.
 
 ## Next Main Target
 
-G30 real-execution validation and evaluation entry recovery.
+None for the current G19-G30 queue.
 
 Progress-file rule:
 

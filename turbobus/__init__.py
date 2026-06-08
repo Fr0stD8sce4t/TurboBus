@@ -8,6 +8,7 @@ from .client import (
 )
 from .model_manifest import ModelWeightManifest, ModelWeightTensor
 from .runtime_session import TurboBusRuntimeSession
+from .runtime.validation import validated_real_execution_evidence
 from .runtime_options import RuntimeOptions
 from .schema import (
     BufferHandle,
@@ -43,4 +44,5 @@ __all__ = [
     "TurboBusClient",
     "TurboBusRuntimeSession",
     "WorkloadKind",
+    "validated_real_execution_evidence",
 ]

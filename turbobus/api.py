@@ -5,6 +5,7 @@ from typing import Mapping
 
 from .daemon.client import TurboBusDaemonClient
 from .intent_execution_support import require_ok
+from .runtime.validation import validated_real_execution_evidence
 from .schema import DaemonResponse, TransferIntent, TransferReceipt, TransferStatusState
 
 
@@ -101,6 +102,7 @@ def _require_terminal_receipt(
         TransferStatusState.FAILED,
         TransferStatusState.CANCELED,
     }:
+        validated_real_execution_evidence(receipt)
         return
     raise RuntimeError(
         "TurboBusClient cannot complete production transfer execution from a "

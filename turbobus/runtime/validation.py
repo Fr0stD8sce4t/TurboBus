@@ -51,19 +51,61 @@ def validate_runtime_receipt(
         raise ValueError("runtime receipt job_id does not match runtime session")
     if receipt.session_id != str(session_id):
         raise ValueError("runtime receipt session_id does not match runtime session")
+    validated_real_execution_evidence(receipt)
     metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
-    require_receipt_ticket_binding(receipt, metadata)
-    require_complete_receipt_evidence(receipt)
-    require_failed_receipt_evidence(receipt)
     require_runtime_buffer_lifetime_evidence(
         metadata,
         session_id=session_id,
         source_buffer_id=source_buffer_id,
         destination_buffer_id=destination_buffer_id,
     )
-    require_reproduction_evidence(metadata)
     require_worker_startup_evidence(metadata)
     require_worker_async_pool_evidence(metadata)
+
+
+def validated_real_execution_evidence(receipt: TransferReceipt) -> dict[str, object]:
+    if not isinstance(receipt, TransferReceipt):
+        raise TypeError("real-execution validation requires a TransferReceipt")
+    state = TransferStatusState(receipt.state)
+    if state not in {
+        TransferStatusState.COMPLETE,
+        TransferStatusState.FAILED,
+        TransferStatusState.CANCELED,
+    }:
+        raise ValueError("real-execution validation requires a terminal receipt")
+    metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+    require_receipt_ticket_binding(receipt, metadata)
+    require_complete_receipt_evidence(receipt)
+    require_failed_receipt_evidence(receipt)
+    reproduction = require_reproduction_evidence(metadata, receipt=receipt)
+    _require_real_execution_view(receipt, reproduction)
+    execution = reproduction["execution"]
+    transfer = reproduction["transfer"]
+    return {
+        "schema": "turbobus.real_execution_validation.v1",
+        "source": "TransferReceipt",
+        "fake_receipt": False,
+        "synthetic_evidence": False,
+        "dry_run": False,
+        "receipt_id": receipt.receipt_id,
+        "ticket_id": receipt.ticket_id,
+        "intent_id": receipt.intent_id,
+        "decision_id": receipt.decision_id,
+        "topology_snapshot_id": receipt.topology_snapshot_id,
+        "job_id": receipt.job_id,
+        "session_id": receipt.session_id,
+        "state": TransferStatusState(receipt.state).value,
+        "bytes_total": int(receipt.bytes_total),
+        "bytes_completed": int(receipt.bytes_completed),
+        "transfer_id": transfer.get("transfer_id"),
+        "completion_source": execution.get("completion_source"),
+        "execution_mode": execution.get("mode"),
+        "verified": bool(execution.get("verified", False)),
+        "verified_bytes": int(execution.get("verified_bytes", 0) or 0),
+        "content_match": bool(execution.get("content_match", False)),
+        "route_policy_source": "daemon_scheduler",
+        "reproduction_evidence": dict(reproduction),
+    }
 
 
 def require_receipt_ticket_binding(
@@ -186,7 +228,11 @@ def require_worker_async_pool_evidence(metadata: Mapping[str, object]) -> None:
         raise ValueError("runtime receipt worker_async_pool missing state")
 
 
-def require_reproduction_evidence(metadata: Mapping[str, object]) -> None:
+def require_reproduction_evidence(
+    metadata: Mapping[str, object],
+    *,
+    receipt: TransferReceipt | None = None,
+) -> dict[str, object]:
     reproduction = metadata.get("reproduction_evidence")
     if not isinstance(reproduction, Mapping):
         raise ValueError("runtime receipt missing reproduction_evidence")
@@ -209,6 +255,100 @@ def require_reproduction_evidence(metadata: Mapping[str, object]) -> None:
         raise ValueError("runtime receipt reproduction_evidence missing completion contract")
     if not isinstance(reproduction.get("buffer_lifetime"), Mapping):
         raise ValueError("runtime receipt reproduction_evidence missing buffer lifetime")
+    metadata_transfer_id = metadata.get("transfer_id")
+    if metadata_transfer_id is not None:
+        transfer_id = transfer.get("transfer_id")
+        if transfer_id is None or str(transfer_id) != str(metadata_transfer_id):
+            raise ValueError(
+                "runtime receipt reproduction_evidence transfer_id does not "
+                "match metadata"
+            )
+    if receipt is not None:
+        _require_reproduction_receipt_binding(receipt, reproduction)
+    return dict(reproduction)
+
+
+def _require_reproduction_receipt_binding(
+    receipt: TransferReceipt,
+    reproduction: Mapping[str, object],
+) -> None:
+    transfer = reproduction.get("transfer")
+    if not isinstance(transfer, Mapping):
+        raise ValueError("runtime receipt reproduction_evidence missing transfer view")
+    expected = {
+        "intent_id": receipt.intent_id,
+        "decision_id": receipt.decision_id,
+        "topology_snapshot_id": receipt.topology_snapshot_id,
+        "ticket_id": receipt.ticket_id,
+        "job_id": receipt.job_id,
+        "session_id": receipt.session_id,
+        "state": TransferStatusState(receipt.state).value,
+    }
+    for field_name, expected_value in expected.items():
+        observed = transfer.get(field_name)
+        if observed is None or str(observed) != str(expected_value):
+            raise ValueError(
+                "runtime receipt reproduction_evidence "
+                f"{field_name} does not match receipt"
+            )
+    for field_name in ("bytes_total", "bytes_completed"):
+        observed = transfer.get(field_name)
+        expected_bytes = getattr(receipt, field_name)
+        if observed is None or int(observed) != int(expected_bytes):
+            raise ValueError(
+                "runtime receipt reproduction_evidence "
+                f"{field_name} does not match receipt"
+            )
+
+
+def _require_real_execution_view(
+    receipt: TransferReceipt,
+    reproduction: Mapping[str, object],
+) -> None:
+    execution = reproduction.get("execution")
+    if not isinstance(execution, Mapping):
+        raise ValueError("real-execution evidence missing execution view")
+    completion_source = str(execution.get("completion_source", "")).lower()
+    if completion_source not in {"worker", "backend"}:
+        raise ValueError("real-execution evidence missing worker/backend source")
+    if not bool(execution.get("executed", False)):
+        raise ValueError("real-execution evidence was not executed")
+    mode = str(execution.get("mode", "")).lower()
+    if mode not in {"direct_only", "relay_only", "mixed_pooled"}:
+        raise ValueError("real-execution evidence has no validated path mode")
+    if not isinstance(execution.get("path"), Mapping):
+        raise ValueError("real-execution evidence missing path view")
+    completion_contract = reproduction.get("completion_contract")
+    if not isinstance(completion_contract, Mapping):
+        raise ValueError("real-execution evidence missing completion contract")
+    for field_name in ("ticket_id", "transfer_id", "plan_generation"):
+        if completion_contract.get(field_name) is None:
+            raise ValueError(
+                "real-execution evidence completion contract missing "
+                f"{field_name}"
+            )
+    if str(completion_contract.get("ticket_id")) != str(receipt.ticket_id):
+        raise ValueError("real-execution evidence ticket_id does not match receipt")
+    transfer = reproduction.get("transfer")
+    if not isinstance(transfer, Mapping):
+        raise ValueError("real-execution evidence missing transfer view")
+    if str(completion_contract.get("transfer_id")) != str(transfer.get("transfer_id")):
+        raise ValueError(
+            "real-execution evidence transfer_id does not match reproduction view"
+        )
+    state = TransferStatusState(receipt.state)
+    if state is TransferStatusState.COMPLETE:
+        if not bool(execution.get("verified", False)):
+            raise ValueError("real-execution evidence missing verification")
+        if int(execution.get("verified_bytes", 0) or 0) != int(receipt.bytes_total):
+            raise ValueError("real-execution evidence verified bytes mismatch")
+        if not bool(execution.get("content_match", False)):
+            raise ValueError("real-execution evidence missing content match")
+    cleanup = reproduction.get("cleanup")
+    failure_cleanup = reproduction.get("failure_cleanup_contract")
+    if state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
+        if cleanup is None and failure_cleanup is None:
+            raise ValueError("failed real-execution evidence missing cleanup contract")
 
 
 def _require_runtime_buffer_record(
@@ -326,6 +466,7 @@ __all__ = [
     "require_runtime_buffer_lifetime_evidence",
     "require_worker_async_pool_evidence",
     "require_worker_startup_evidence",
+    "validated_real_execution_evidence",
     "validate_intent_ranges_fit_buffers",
     "validate_runtime_receipt",
 ]

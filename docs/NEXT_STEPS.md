@@ -5,22 +5,20 @@ appending history.
 
 ## Current Main Target
 
-G30 real-execution validation and evaluation entry recovery.
+G30 real-execution validation and evaluation entry recovery is complete.
 
-Validation and evaluation entry points may return only around real
-daemon/worker/backend `TransferReceipt` objects and their
-`reproduction_evidence` view. They must reject fake receipts, synthetic
-evidence, JSON-only artifacts, and dry-run output as reproduction proof.
+The active G19-G30 auto-advance queue has no remaining target. Do not start a
+new implementation target until the next user-provided queue or current target
+is supplied.
 
 ## Current Code Work
 
-- `turbobus/runtime/validation.py`: receipt-level reproduction evidence
-  validation for real execution, path mode, completion, cleanup, buffer
-  lifetime, and daemon-owned scheduling policy.
-- `turbobus/daemon/receipts.py`: stable receipt evidence schema consumed by
-  validation and later evaluation code.
-- Existing validation or evaluation-facing modules may consume only real
-  receipts from the production daemon/worker/backend path.
+- `turbobus/runtime/validation.py`: production validation entry consumes only
+  terminal `TransferReceipt` objects, verifies their real daemon/worker/backend
+  `reproduction_evidence`, and returns a normalized
+  `turbobus.real_execution_validation.v1` view for later evaluation.
+- `turbobus/api.py`: terminal receipt consumption now rejects receipts that do
+  not pass the real-execution evidence gate.
 
 Round rules:
 
@@ -41,13 +39,10 @@ Round rules:
 
 ## Next Entry
 
-After G30 is complete, stop if no further user-provided auto-advance target is
-available.
+Stop. No further user-provided auto-advance target is available in this queue.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction system queue.
 
-Remaining auto-advance target queue:
-
-- G30 real-execution validation and evaluation entry recovery.
+Remaining auto-advance target queue: none.

@@ -371,8 +371,19 @@ class ModelWeightLoader(OffloadStore):
             handles=handles,
             transfer_stats=transfer_stats,
             extra={
+                "adapter": "model_weight_loader",
+                "load_direction": "h2d",
+                "policy_source": "daemon_scheduler",
+                "route_policy_visible_to_adapter": False,
+                "physical_route_source": "daemon_scheduler",
+                "runtime_buffer_binding": self._runtime_buffer_binding_evidence(),
+                "tensor_bindings": self._tensor_binding_evidence(names),
+                "bucket_ranges": self._bucket_range_evidence(names),
                 "manifest_tensor_count": (
                     0 if self._manifest is None else len(self._manifest.tensors)
+                ),
+                "manifest_tensor_names": (
+                    [] if self._manifest is None else self._manifest.names()
                 ),
                 "manifest_cpu_span_bytes": (
                     0 if self._manifest is None else self._manifest.cpu_span_bytes
@@ -380,8 +391,73 @@ class ModelWeightLoader(OffloadStore):
                 "manifest_gpu_span_bytes": (
                     0 if self._manifest is None else self._manifest.gpu_span_bytes
                 ),
+                "manifest_metadata": (
+                    {} if self._manifest is None else dict(self._manifest.metadata)
+                ),
             },
         )
+
+    def _runtime_buffer_binding_evidence(self) -> dict[str, Any]:
+        return {
+            "job_id": self.transfer_context.job_id,
+            "session_id": self.transfer_context.session_id,
+            "workload_kind": str(self.transfer_context.workload_kind.value),
+            "cpu_buffer_id": self.transfer_context.cpu_buffer_id,
+            "gpu_buffer_id": self.transfer_context.gpu_buffer_id,
+            "intent_prefix": self.transfer_context.intent_prefix,
+            "policy_hints": dict(self.transfer_context.policy_hints),
+            "metadata": dict(self.transfer_context.metadata),
+        }
+
+    def _tensor_binding_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
+        bindings: list[dict[str, Any]] = []
+        for name in names:
+            block = self.block(name)
+            tensor = None
+            if self._manifest is not None:
+                try:
+                    tensor = self._manifest.tensor(name)
+                except KeyError:
+                    tensor = None
+            record = {
+                "name": str(name),
+                "bucket_id": block.block_id,
+                "cpu_slot": block.cpu_slot,
+                "gpu_slot": block.gpu_slot,
+                "cpu_offset": int(block.cpu_offset),
+                "gpu_offset": int(block.gpu_offset),
+                "byte_count": int(block.bytes),
+            }
+            if tensor is not None:
+                record["tensor"] = tensor.as_dict()
+            bindings.append(record)
+        return bindings
+
+    def _bucket_range_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
+        ranges: list[dict[str, Any]] = []
+        for name in names:
+            info = self.block_info(name)
+            ranges.append(
+                {
+                    "name": info.name,
+                    "block_id": info.block_id,
+                    "cpu_slot": info.cpu_slot,
+                    "gpu_slot": info.gpu_slot,
+                    "src_offset": int(info.cpu_offset),
+                    "dst_offset": int(info.gpu_offset),
+                    "bytes": int(info.bytes),
+                    "state": info.state.value,
+                    "last_operation": info.last_operation,
+                    "last_intent_id": info.last_intent_id,
+                    "last_receipt_id": info.last_receipt_id,
+                    "last_ticket_id": info.last_ticket_id,
+                    "last_decision_id": info.last_decision_id,
+                    "last_topology_snapshot_id": info.last_topology_snapshot_id,
+                    "last_receipt_state": info.last_receipt_state,
+                    "last_transfer_error": info.last_transfer_error,
+                }
+            )
+        return ranges
 
     def _handles_for_names(self, names: Iterable[str]) -> list[object]:
         handles = []

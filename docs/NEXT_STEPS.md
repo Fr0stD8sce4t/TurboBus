@@ -5,27 +5,26 @@ appending history.
 
 ## Current Main Target
 
-G27 model loading real integration closure.
+G28 training offload real integration closure.
 
-Model weight loading must register real runtime-session CPU/GPU buffers, map
-manifest tensors to byte ranges, submit only `TransferIntent`, consume only
-`TransferReceipt`, and record a stable model-loading lifecycle that binds
-manifest tensors, bucket ranges, runtime buffers, receipt ids, ticket ids, byte
-counts, and path split evidence without exposing direct, relay, pool, target
-GPU, or relay GPU choice to the adapter.
+Training-state prefetch and offload must register real runtime-session CPU/GPU
+buffers, map training buckets to H2D/D2H byte ranges, submit only
+`TransferIntent`, consume only `TransferReceipt`, and record a stable
+training-offload lifecycle that binds bucket ranges, runtime buffers, receipt
+ids, ticket ids, byte counts, direction, and path split evidence without
+exposing direct, relay, pool, target GPU, or relay GPU choice to the adapter.
 
 ## Current Code Work
 
-- `turbobus/adapters/model_loading.py`: manifest tensor mapping, bucket/range
-  registration, model-load lifecycle evidence, and receipt aggregation.
-- `turbobus/model_manifest.py`: model tensor descriptors and manifest span
-  accounting.
+- `turbobus/adapters/training_offload.py`: training bucket registration,
+  prefetch/offload lifecycle evidence, and receipt aggregation.
 - `turbobus/offload/store.py`: bucket batch conversion into daemon-submitted
-  `TransferIntent`.
+  H2D/D2H `TransferIntent`.
+- `turbobus/offload/blocks.py`: block state and receipt identity tracking.
 - `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from real
   `TransferReceipt` objects.
-- `turbobus/runtime_session.py`: model-loading adapter construction through the
-  single production runtime-session entry.
+- `turbobus/runtime_session.py`: training-offload adapter construction through
+  the single production runtime-session entry.
 
 Round rules:
 
@@ -44,7 +43,7 @@ Round rules:
 
 ## Next Entry
 
-After G27 is complete, continue automatically to G28 as the only current target.
+After G28 is complete, continue automatically to G29 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -52,7 +51,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G27 model loading real integration closure.
 - G28 training offload real integration closure.
 - G29 unified reproduction evidence model.
 - G30 real-execution validation and evaluation entry recovery.

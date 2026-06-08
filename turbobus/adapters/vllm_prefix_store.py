@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any
 
 
@@ -48,12 +49,40 @@ class TurboBusSavedPrefix:
     save_layer_ranges: int = 0
     save_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
     last_restore_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
+    store_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
+    cleanup_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TurboBusPrefixStoreRemoval:
+    prefix: TurboBusSavedPrefix
+    reason: str
+    cleanup_evidence: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class TurboBusPrefixStoreMutation:
+    prefix: TurboBusSavedPrefix
+    evidence: dict[str, Any]
+    removals: tuple[TurboBusPrefixStoreRemoval, ...] = field(default_factory=tuple)
+
+    @property
+    def removed_prefixes(self) -> list[TurboBusSavedPrefix]:
+        return [removal.prefix for removal in self.removals]
+
+
+@dataclass(frozen=True)
+class TurboBusPrefixStoreDrain:
+    prefixes: tuple[TurboBusSavedPrefix, ...]
+    evidence: dict[str, Any]
+    removals: tuple[TurboBusPrefixStoreRemoval, ...] = field(default_factory=tuple)
 
 
 class TurboBusPrefixStore:
     def __init__(self, max_prefixes: int = 0) -> None:
         self._prefixes: dict[str, TurboBusSavedPrefix] = {}
         self.max_prefixes = max(0, int(max_prefixes))
+        self._generation = 0
 
     def put(self, prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
         if not prefix.key:
@@ -69,6 +98,53 @@ class TurboBusPrefixStore:
             removed = self._prefixes.pop(oldest_key)
             evicted.append(removed)
         return evicted
+
+    def put_with_lifecycle(
+        self,
+        prefix: TurboBusSavedPrefix,
+        *,
+        reason: str,
+    ) -> TurboBusPrefixStoreMutation:
+        if not prefix.key:
+            raise ValueError("prefix key must not be empty")
+        self._generation += 1
+        generation = self._generation
+        removals: list[TurboBusPrefixStoreRemoval] = []
+        store_key = self._store_key(prefix.key, prefix.session_id, prefix.job_id)
+        previous = self._prefixes.pop(store_key, None)
+        if previous is not None:
+            removals.append(
+                self._removal(
+                    previous,
+                    reason="replaced",
+                    generation=generation,
+                    mutation_reason=reason,
+                )
+            )
+        self._prefixes[store_key] = prefix
+        while self.max_prefixes > 0 and len(self._prefixes) > self.max_prefixes:
+            oldest_key = next(iter(self._prefixes))
+            removed = self._prefixes.pop(oldest_key)
+            removals.append(
+                self._removal(
+                    removed,
+                    reason="capacity_evicted",
+                    generation=generation,
+                    mutation_reason=reason,
+                )
+            )
+        evidence = self._store_evidence(
+            prefix,
+            reason=reason,
+            generation=generation,
+            removed_count=len(removals),
+        )
+        prefix.store_lifecycle_evidence = evidence
+        return TurboBusPrefixStoreMutation(
+            prefix=prefix,
+            evidence=evidence,
+            removals=tuple(removals),
+        )
 
     def get(
         self,
@@ -132,6 +208,42 @@ class TurboBusPrefixStore:
             self._prefixes.pop(key)
         return removed
 
+    def drain_with_lifecycle(
+        self,
+        session_id: str | None = None,
+        job_id: str | None = None,
+        *,
+        reason: str,
+    ) -> TurboBusPrefixStoreDrain:
+        self._generation += 1
+        generation = self._generation
+        prefixes = tuple(self.drain(session_id=session_id, job_id=job_id))
+        removals = tuple(
+            self._removal(
+                prefix,
+                reason="drained",
+                generation=generation,
+                mutation_reason=reason,
+            )
+            for prefix in prefixes
+        )
+        evidence = {
+            "mutation_id": f"prefix-drain-{generation}",
+            "action": "drain",
+            "reason": str(reason),
+            "generation": generation,
+            "session_id": None if session_id is None else str(session_id),
+            "job_id": None if job_id is None else str(job_id),
+            "prefix_count": len(prefixes),
+            "store_size_after": len(self._prefixes),
+            "created_at": time.time(),
+        }
+        return TurboBusPrefixStoreDrain(
+            prefixes=prefixes,
+            evidence=evidence,
+            removals=removals,
+        )
+
     def __len__(self) -> int:
         return len(self._prefixes)
 
@@ -142,6 +254,71 @@ class TurboBusPrefixStore:
         job_id: str = "default",
     ) -> str:
         return f"{str(job_id)}\0{str(session_id)}\0{str(key)}"
+
+    def _store_evidence(
+        self,
+        prefix: TurboBusSavedPrefix,
+        *,
+        reason: str,
+        generation: int,
+        removed_count: int,
+    ) -> dict[str, Any]:
+        save_evidence = dict(prefix.save_lifecycle_evidence)
+        return {
+            "mutation_id": f"prefix-put-{generation}",
+            "action": "put",
+            "reason": str(reason),
+            "generation": generation,
+            "key": prefix.key,
+            "job_id": prefix.job_id,
+            "session_id": prefix.session_id,
+            "source_request_id": prefix.source_request_id,
+            "block_count": prefix.block_count,
+            "matched_tokens": prefix.matched_tokens,
+            "receipt_ids": save_evidence.get("receipt_ids", prefix.receipt_ids),
+            "ticket_ids": save_evidence.get("ticket_ids", prefix.ticket_ids),
+            "decision_ids": save_evidence.get("decision_ids", prefix.decision_ids),
+            "topology_snapshot_ids": save_evidence.get(
+                "topology_snapshot_ids",
+                prefix.topology_snapshot_ids,
+            ),
+            "removed_count": int(removed_count),
+            "capacity": self.max_prefixes,
+            "store_size_after": len(self._prefixes),
+            "created_at": time.time(),
+        }
+
+    def _removal(
+        self,
+        prefix: TurboBusSavedPrefix,
+        *,
+        reason: str,
+        generation: int,
+        mutation_reason: str,
+    ) -> TurboBusPrefixStoreRemoval:
+        evidence = {
+            "mutation_id": f"prefix-remove-{generation}-{prefix.key}",
+            "action": "remove",
+            "reason": str(reason),
+            "mutation_reason": str(mutation_reason),
+            "generation": generation,
+            "key": prefix.key,
+            "job_id": prefix.job_id,
+            "session_id": prefix.session_id,
+            "source_request_id": prefix.source_request_id,
+            "receipt_ids": prefix.receipt_ids,
+            "ticket_ids": prefix.ticket_ids,
+            "store_lifecycle_evidence_id": prefix.store_lifecycle_evidence.get(
+                "mutation_id"
+            ),
+            "created_at": time.time(),
+        }
+        prefix.cleanup_lifecycle_evidence = evidence
+        return TurboBusPrefixStoreRemoval(
+            prefix=prefix,
+            reason=str(reason),
+            cleanup_evidence=evidence,
+        )
 
 
 _PREFIX_STORE = TurboBusPrefixStore()
@@ -176,6 +353,9 @@ def remove_saved_prefix(
 
 __all__ = [
     "TurboBusPrefixStore",
+    "TurboBusPrefixStoreDrain",
+    "TurboBusPrefixStoreMutation",
+    "TurboBusPrefixStoreRemoval",
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
     "clear_saved_prefixes",

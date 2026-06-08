@@ -199,7 +199,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         closed_prefixes = self._close_saved_prefixes()
         closed_pending_saves = self._close_pending_save_contexts()
         closed_pending_metadata = self._close_pending_metadata()
-        self._backing_pool.close()
+        free_backing_cleanup = self._backing_pool.close()
         clear_saved_prefixes(self.session_id, job_id=self.job_id)
         clear_metadata = getattr(self, "clear_connector_metadata", None)
         if callable(clear_metadata):
@@ -211,7 +211,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "job_id": self.job_id,
                 "session_id": self.session_id,
                 "connector_session_id": self.connector_session_id,
-                "prefixes": closed_prefixes,
+                "prefixes": closed_prefixes["count"],
+                "prefix_cleanup_mutation_ids": closed_prefixes["cleanup_mutation_ids"],
+                "free_backing_cleanup": free_backing_cleanup,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
             }
@@ -222,7 +224,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             job_id=self.job_id,
             session_id=self.session_id,
             connector_session_id=self.connector_session_id,
-            prefixes=closed_prefixes,
+            prefixes=closed_prefixes["count"],
+            prefix_cleanup_mutation_ids=",".join(closed_prefixes["cleanup_mutation_ids"]),
+            free_backing_cleanup_groups=len(free_backing_cleanup),
             pending_saves=closed_pending_saves,
             **closed_pending_metadata,
         )
@@ -934,9 +938,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             save_layer_ranges=context.ranges,
             save_lifecycle_evidence=lifecycle_evidence,
         )
-        evicted = self._store_prefix(prefix)
+        mutation = self._store_prefix(prefix)
         _store_saved_prefix(prefix)
-        for removed in evicted:
+        for removal in mutation.removals:
+            removed = removal.prefix
             if removed.key != prefix.key:
                 _remove_saved_prefix(
                     removed.key,
@@ -951,6 +956,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             matched_tokens=request.matched_tokens,
             source_request_id=request.request_id,
             layers=len(context.cpu_backings),
+            store_mutation_id=mutation.evidence["mutation_id"],
+            removed_prefixes=len(mutation.removals),
         )
         self.state.saved_request_ids.add(request.request_id)
         register_ms = (time.perf_counter() - register_start) * 1000.0
@@ -1003,6 +1010,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "layers": len(context.kv_caches),
                 "ranges": context.ranges,
                 "lifecycle_evidence": lifecycle_evidence,
+                "store_lifecycle_evidence": mutation.evidence,
                 **stats,
                 **receipt_trace,
             }
@@ -1028,6 +1036,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             layers=len(context.kv_caches),
             ranges=context.ranges,
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
+            store_mutation_id=mutation.evidence["mutation_id"],
             **stats,
             **receipt_trace,
         )
@@ -1060,15 +1069,20 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
     def _allocate_cpu_backings(self, block_count: int, kv_caches: list[Any]) -> list[Any]:
         return self._backing_pool._allocate_for_pool(block_count, kv_caches)
 
-    def _store_prefix(self, prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
+    def _store_prefix(self, prefix: TurboBusSavedPrefix):
         if prefix.job_id == "default":
             prefix.job_id = self.job_id
         elif prefix.job_id != self.job_id:
             raise ValueError("saved prefix job_id must match connector job_id")
-        evicted = self._prefix_store.put(prefix)
+        mutation = self._prefix_store.put_with_lifecycle(
+            prefix,
+            reason="vllm_kv_save",
+        )
         kv_caches = list(self.state.kv_caches.values())
-        for removed in evicted:
-            self._backing_pool.release_prefix(removed, kv_caches)
+        for removal in mutation.removals:
+            removed = removal.prefix
+            backing_evidence = self._backing_pool.release_prefix(removed, kv_caches)
+            removal.cleanup_evidence["backing_lifecycle"] = backing_evidence
             self.state.events.append(
                 {
                     "event": "evict_prefix",
@@ -1076,6 +1090,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "session_id": removed.session_id,
                     "block_count": removed.block_count,
                     "source_request_id": removed.source_request_id,
+                    "reason": removal.reason,
+                    "cleanup_lifecycle_evidence": removal.cleanup_evidence,
+                    "backing_lifecycle": backing_evidence,
                 }
             )
             _emit_event(
@@ -1084,17 +1101,51 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 session_id=removed.session_id,
                 block_count=removed.block_count,
                 source_request_id=removed.source_request_id,
+                reason=removal.reason,
+                cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
+                backing_lifecycle_action=backing_evidence["action"],
             )
-        return evicted
+        return mutation
 
-    def _close_saved_prefixes(self) -> int:
-        prefixes = self._prefix_store.drain(
+    def _close_saved_prefixes(self) -> dict[str, object]:
+        drained = self._prefix_store.drain_with_lifecycle(
             session_id=self.session_id,
             job_id=self.job_id,
+            reason="connector_close",
         )
-        for prefix in prefixes:
-            self._backing_pool.close_prefix(prefix)
-        return len(prefixes)
+        cleanup_mutation_ids: list[str] = []
+        for removal in drained.removals:
+            prefix = removal.prefix
+            backing_evidence = self._backing_pool.close_prefix(prefix)
+            removal.cleanup_evidence["backing_lifecycle"] = backing_evidence
+            cleanup_mutation_ids.append(str(removal.cleanup_evidence["mutation_id"]))
+            self.state.events.append(
+                {
+                    "event": "close_prefix",
+                    "prefix_key": prefix.key,
+                    "session_id": prefix.session_id,
+                    "block_count": prefix.block_count,
+                    "source_request_id": prefix.source_request_id,
+                    "reason": removal.reason,
+                    "cleanup_lifecycle_evidence": removal.cleanup_evidence,
+                    "backing_lifecycle": backing_evidence,
+                }
+            )
+            _emit_event(
+                "close_prefix",
+                prefix_key=prefix.key,
+                session_id=prefix.session_id,
+                block_count=prefix.block_count,
+                source_request_id=prefix.source_request_id,
+                reason=removal.reason,
+                cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
+                backing_lifecycle_action=backing_evidence["action"],
+            )
+        return {
+            "count": len(drained.prefixes),
+            "cleanup_mutation_ids": cleanup_mutation_ids,
+            "drain_mutation_id": drained.evidence["mutation_id"],
+        }
 
     def _close_pending_save_contexts(self) -> int:
         contexts = list(self._layer_save_contexts.values())

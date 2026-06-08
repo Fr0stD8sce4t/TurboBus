@@ -5,22 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G15 prefix store productionization.
+G16 model loading takeover.
 
-Prefix storage must become a production lifecycle boundary for framework KV
-state. Saved prefixes need ownership, capacity, eviction, cleanup, and receipt
-evidence handling that remains bound to `TurboBusRuntimeSession` and does not
-expose route, relay, pool, direct, or target-GPU policy to adapters or
-applications.
+Model-loading paths must submit model-weight movement through
+`TurboBusRuntimeSession` as `TransferIntent` work and consume daemon
+`TransferReceipt` objects. They must not choose direct, relay, pool, target GPU,
+or relay GPU policy in adapter or application code.
 
 ## Current Code Work
 
-- `turbobus/adapters/vllm_prefix_store.py`: prefix ownership, lookup, eviction,
-  lifecycle evidence, and cleanup semantics.
-- `turbobus/adapters/vllm_kv_connector.py`: connector save/load path that stores
-  and consumes prefix lifecycle state through runtime-session-backed transfers.
-- `turbobus/adapters/vllm_backing_pool.py`: CPU backing reuse and release path
-  for saved or evicted prefixes.
+- `turbobus/adapters/model_loading.py`: model-weight registration and
+  runtime-session-backed transfer submission.
+- `turbobus/runtime_session.py`: production adapter construction and receipt
+  consumption entry points for model-loading workloads.
+- `turbobus/offload/store.py`: shared named-block transfer path used by
+  framework adapters.
 
 Round rules:
 
@@ -39,7 +38,7 @@ Round rules:
 
 ## Next Entry
 
-After G15 is complete, advance to G16 model loading takeover.
+After G16 is complete, advance to G17 training-state offload closure.
 
 ## Auto-Advance Policy
 
@@ -47,7 +46,6 @@ Auto-advance is active for the system-body queue.
 
 Remaining auto-advance target queue:
 
-- G15 prefix store productionization.
 - G16 model loading takeover.
 - G17 training-state offload closure.
 - G18 unified auditable receipt closure.

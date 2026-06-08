@@ -26,25 +26,68 @@ class TurboBusCPUBackingPool:
             return available.pop(), True
         return self._allocate_for_pool(block_count, kv_caches), False
 
-    def release(self, block_count: int, kv_caches: list[Any], cpu_backings: list[Any]) -> None:
+    def release(
+        self,
+        block_count: int,
+        kv_caches: list[Any],
+        cpu_backings: list[Any],
+    ) -> dict[str, Any]:
         signature = backing_signature(block_count, kv_caches)
         self._free_by_shape.setdefault(signature, []).append(list(cpu_backings))
+        return {
+            "action": "release_to_pool",
+            "block_count": int(block_count),
+            "backing_count": len(cpu_backings),
+            "signature": [list(item) for item in signature],
+            "free_groups_for_signature": len(self._free_by_shape[signature]),
+        }
 
-    def release_prefix(self, prefix: TurboBusSavedPrefix, kv_caches: list[Any]) -> None:
-        self.release(prefix.block_count, kv_caches, prefix.cpu_backings)
+    def release_prefix(
+        self,
+        prefix: TurboBusSavedPrefix,
+        kv_caches: list[Any],
+    ) -> dict[str, Any]:
+        evidence = self.release(prefix.block_count, kv_caches, prefix.cpu_backings)
+        evidence.update(
+            {
+                "prefix_key": prefix.key,
+                "job_id": prefix.job_id,
+                "session_id": prefix.session_id,
+                "source_request_id": prefix.source_request_id,
+            }
+        )
+        return evidence
 
-    def close_backings(self, cpu_backings: list[Any]) -> None:
+    def close_backings(self, cpu_backings: list[Any]) -> list[dict[str, Any]]:
+        evidence = []
         for backing in cpu_backings:
-            _close_backing(backing)
+            evidence.append(_close_backing(backing))
+        return evidence
 
-    def close_prefix(self, prefix: TurboBusSavedPrefix) -> None:
-        self.close_backings(prefix.cpu_backings)
+    def close_prefix(self, prefix: TurboBusSavedPrefix) -> dict[str, Any]:
+        backing_evidence = self.close_backings(prefix.cpu_backings)
+        return {
+            "action": "close_prefix_backings",
+            "prefix_key": prefix.key,
+            "job_id": prefix.job_id,
+            "session_id": prefix.session_id,
+            "source_request_id": prefix.source_request_id,
+            "backing_count": len(prefix.cpu_backings),
+            "backings": backing_evidence,
+        }
 
-    def close(self) -> None:
+    def close(self) -> list[dict[str, Any]]:
+        evidence = []
         for groups in self._free_by_shape.values():
             for cpu_backings in groups:
-                self.close_backings(cpu_backings)
+                evidence.append(
+                    {
+                        "action": "close_free_backing_group",
+                        "backings": self.close_backings(cpu_backings),
+                    }
+                )
         self._free_by_shape.clear()
+        return evidence
 
     @staticmethod
     def _allocate(
@@ -139,14 +182,26 @@ def backing_signature(block_count: int, kv_caches: list[Any]) -> tuple[tuple[int
     )
 
 
-def _close_backing(backing: Any) -> None:
+def _close_backing(backing: Any) -> dict[str, Any]:
+    evidence = {
+        "backing_type": type(backing).__name__,
+        "buffer_id": getattr(backing, "buffer_id", None),
+    }
     release = getattr(backing, "release", None)
     if callable(release):
         release()
-        return
+        evidence["action"] = "release"
+        evidence["closed"] = bool(getattr(backing, "closed", False))
+        return evidence
     close = getattr(backing, "close", None)
     if callable(close):
         close()
+        evidence["action"] = "close"
+        evidence["closed"] = bool(getattr(backing, "closed", False))
+        return evidence
+    evidence["action"] = "none"
+    evidence["closed"] = bool(getattr(backing, "closed", False))
+    return evidence
 
 
 __all__ = [

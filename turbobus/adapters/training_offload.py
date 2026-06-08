@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
-from ..offload.context import AdapterTransferContext
+from ..offload.context import AdapterTransferContext, forbidden_physical_policy_keys
 from ..offload.lifecycle import adapter_lifecycle_evidence_from_handles
 from ..offload.stats import TransferStats
 from ..offload.store import OffloadBatch, OffloadStore
@@ -51,7 +51,10 @@ class TrainingOffloadManager(OffloadStore):
             gpu_buffer,
             workload_kind=workload_kind,
             priority=priority,
-            metadata=metadata,
+            metadata=_validate_training_offload_metadata(
+                metadata,
+                field_name="training offload metadata",
+            ),
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
@@ -86,6 +89,10 @@ class TrainingOffloadManager(OffloadStore):
         gpu_buffer,
     ) -> None:
         super().__init__(runtime_session, transfer_context)
+        _validate_training_offload_metadata(
+            transfer_context.metadata,
+            field_name="training offload context metadata",
+        )
         self.cpu_buffer = cpu_buffer
         self.gpu_buffer = gpu_buffer
         self._transfer_lifecycle_history: list[TrainingOffloadLifecycle] = []
@@ -183,7 +190,7 @@ class TrainingOffloadManager(OffloadStore):
         handles = self._run_selected(
             [name],
             operation="prefetch_bucket",
-            submitter=self.submit_prefetch_buckets,
+            submitter=self.submit_prefetch_many,
         )
         return handles[0]
 
@@ -191,11 +198,15 @@ class TrainingOffloadManager(OffloadStore):
         return self._run_selected(
             names,
             operation="prefetch_buckets",
-            submitter=self.submit_prefetch_buckets,
+            submitter=self.submit_prefetch_many,
         )
 
     def submit_prefetch_buckets(self, names: Iterable[str]) -> OffloadBatch:
-        return self.submit_prefetch_many(names)
+        return self._submit_selected(
+            names,
+            operation="submit_prefetch_buckets",
+            submitter=self.submit_prefetch_many,
+        )
 
     def prefetch_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_prefetch_buckets(names)
@@ -204,21 +215,21 @@ class TrainingOffloadManager(OffloadStore):
         return self._run_selected(
             names,
             operation="prefetch_prefix",
-            submitter=self.submit_prefetch_buckets,
+            submitter=self.submit_prefetch_many,
         )
 
     def prefetch_all(self) -> list:
         return self._run_selected(
             self.names(),
             operation="prefetch_all",
-            submitter=self.submit_prefetch_buckets,
+            submitter=self.submit_prefetch_many,
         )
 
     def offload_bucket(self, name: str):
         handles = self._run_selected(
             [name],
             operation="offload_bucket",
-            submitter=self.submit_offload_buckets,
+            submitter=self.submit_evict_many,
         )
         return handles[0]
 
@@ -226,11 +237,15 @@ class TrainingOffloadManager(OffloadStore):
         return self._run_selected(
             names,
             operation="offload_buckets",
-            submitter=self.submit_offload_buckets,
+            submitter=self.submit_evict_many,
         )
 
     def submit_offload_buckets(self, names: Iterable[str]) -> OffloadBatch:
-        return self.submit_evict_many(names)
+        return self._submit_selected(
+            names,
+            operation="submit_offload_buckets",
+            submitter=self.submit_evict_many,
+        )
 
     def offload_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_offload_buckets(names)
@@ -239,14 +254,14 @@ class TrainingOffloadManager(OffloadStore):
         return self._run_selected(
             names,
             operation="offload_prefix",
-            submitter=self.submit_offload_buckets,
+            submitter=self.submit_evict_many,
         )
 
     def offload_all(self) -> list:
         return self._run_selected(
             self.names(),
             operation="offload_all",
-            submitter=self.submit_offload_buckets,
+            submitter=self.submit_evict_many,
         )
 
     def wait_all(self) -> None:
@@ -292,6 +307,22 @@ class TrainingOffloadManager(OffloadStore):
             handles=batch.handles,
         )
         return list(batch.handles)
+
+    def _submit_selected(
+        self,
+        names: Iterable[str],
+        *,
+        operation: str,
+        submitter,
+    ) -> OffloadBatch:
+        names = self._normalize_names(names)
+        batch = submitter(names)
+        self._record_transfer_lifecycle(
+            operation=operation,
+            names=names,
+            handles=batch.handles,
+        )
+        return batch
 
     def _record_transfer_lifecycle(
         self,
@@ -339,6 +370,8 @@ class TrainingOffloadManager(OffloadStore):
             extra={
                 "adapter": "training_offload_manager",
                 "operation_direction": self._operation_direction(operation, names),
+                "adapter_submit_source": "TurboBusRuntimeSession",
+                "adapter_handle_source": "ReceiptTransferHandle",
                 "policy_source": "daemon_scheduler",
                 "route_policy_visible_to_adapter": False,
                 "physical_route_source": "daemon_scheduler",
@@ -455,6 +488,21 @@ class TrainingOffloadManager(OffloadStore):
     @staticmethod
     def _normalize_names(names: Iterable[str]) -> list[str]:
         return [str(name) for name in names]
+
+
+def _validate_training_offload_metadata(
+    metadata: Mapping[str, object] | None,
+    *,
+    field_name: str,
+) -> dict[str, object]:
+    resolved = {} if metadata is None else dict(metadata)
+    invalid_keys = forbidden_physical_policy_keys(resolved)
+    if invalid_keys:
+        raise ValueError(
+            f"{field_name} must not choose physical paths: "
+            + ", ".join(str(key) for key in invalid_keys)
+        )
+    return resolved
 
 
 __all__ = [

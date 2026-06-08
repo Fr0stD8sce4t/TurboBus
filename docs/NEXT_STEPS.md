@@ -5,22 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G39 training offload code integration strengthening.
+G40 validation code entry recovery.
 
-Training offload integration code must submit training-state H2D/D2H work
-through `TurboBusRuntimeSession` using registered buffers, `TransferIntent`,
-and `TransferReceipt` consumption without exposing direct, relay, target-GPU,
-or relay-GPU route selection to adapter callers.
+Validation code entries must be restored only as code paths that consume real
+`TransferReceipt` and daemon/worker completion evidence from production
+runtime flows. They must not run functional validation, create synthetic
+evidence, add dry-run deliverables, or manufacture receipts.
 
 ## Current Code Work
 
-- `turbobus/adapters/training_offload.py`: training-state offload/restore
-  entry points and receipt-backed lifecycle.
-- `turbobus/offload/context.py` and `turbobus/offload/store.py`: shared adapter
-  context, registered buffer use, physical-policy rejection, and receipt
-  consumption.
-- `turbobus/runtime_session.py`: production runtime-session factory for
-  training-offload adapters.
+- `turbobus/runtime/validation.py`: receipt and reproduction-evidence
+  validators.
+- validation-facing code entry files under `turbobus/`: production evidence
+  consumers only.
+- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from
+  real receipts.
 
 Round rules:
 
@@ -40,7 +39,7 @@ Round rules:
 
 ## Next Entry
 
-After G39 is complete, continue automatically to G40 as the only current
+After G40 is complete, continue automatically to G41 as the only current
 target.
 
 ## Auto-Advance Policy
@@ -49,7 +48,6 @@ Auto-advance is active for the paper-reproduction code-function queue.
 
 Remaining auto-advance target queue:
 
-- G39 training offload code integration strengthening.
 - G40 validation code entry recovery.
 - G41 benchmark code recovery.
 - G42 paper report code recovery.

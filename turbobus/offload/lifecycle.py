@@ -32,6 +32,8 @@ def receipt_trace_from_receipts(receipts: Iterable[TransferReceipt]) -> dict[str
     transfer_ids: list[str] = []
     fallback_reasons: list[str] = []
     receipt_list = list(receipts)
+    receipt_contracts: list[dict[str, Any]] = []
+    runtime_buffer_bindings: list[dict[str, Any]] = []
     for receipt in receipt_list:
         receipt_ids.append(receipt.receipt_id)
         intent_ids.append(receipt.intent_id)
@@ -39,13 +41,16 @@ def receipt_trace_from_receipts(receipts: Iterable[TransferReceipt]) -> dict[str
         topology_snapshot_ids.append(receipt.topology_snapshot_id)
         ticket_ids.append(receipt.ticket_id)
         receipt_states.append(str(receipt.state.value))
-        completion_source = receipt.metadata.get("completion_source")
+        metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+        receipt_contracts.append(_receipt_contract_summary(receipt, metadata))
+        runtime_buffer_bindings.extend(_runtime_buffer_bindings(receipt, metadata))
+        completion_source = metadata.get("completion_source")
         if completion_source:
             completion_sources.append(str(completion_source))
-        transfer_id = receipt.metadata.get("transfer_id")
+        transfer_id = metadata.get("transfer_id")
         if transfer_id:
             transfer_ids.append(str(transfer_id))
-        fallback_reason = receipt.metadata.get("fallback_reason")
+        fallback_reason = metadata.get("fallback_reason")
         if fallback_reason:
             fallback_reasons.append(str(fallback_reason))
         for path in receipt.path_stats:
@@ -67,6 +72,8 @@ def receipt_trace_from_receipts(receipts: Iterable[TransferReceipt]) -> dict[str
         "completion_sources": join_unique(completion_sources),
         "transfer_ids": join_unique(transfer_ids),
         "fallback_reason": join_unique(fallback_reasons),
+        "receipt_contracts": receipt_contracts,
+        "runtime_buffer_bindings": runtime_buffer_bindings,
     }
 
 
@@ -122,6 +129,90 @@ def join_unique(values: Iterable[object]) -> str:
         seen.add(text)
         ordered.append(text)
     return ",".join(ordered)
+
+
+def _receipt_contract_summary(
+    receipt: TransferReceipt,
+    metadata: Mapping[str, Any],
+) -> dict[str, Any]:
+    completion_contract = metadata.get("completion_contract")
+    cuda_ipc_lifecycle = metadata.get("cuda_ipc_lifecycle")
+    return {
+        "receipt_id": receipt.receipt_id,
+        "intent_id": receipt.intent_id,
+        "decision_id": receipt.decision_id,
+        "topology_snapshot_id": receipt.topology_snapshot_id,
+        "ticket_id": receipt.ticket_id,
+        "job_id": receipt.job_id,
+        "session_id": receipt.session_id,
+        "state": str(receipt.state.value),
+        "bytes_total": int(receipt.bytes_total),
+        "bytes_completed": int(receipt.bytes_completed),
+        "completion_source": metadata.get("completion_source"),
+        "transfer_id": metadata.get("transfer_id"),
+        "verified": bool(metadata.get("verified", False)),
+        "verified_bytes": int(metadata.get("verified_bytes", 0) or 0),
+        "completion_contract": (
+            dict(completion_contract)
+            if isinstance(completion_contract, Mapping)
+            else None
+        ),
+        "cuda_ipc_lifecycle": (
+            dict(cuda_ipc_lifecycle)
+            if isinstance(cuda_ipc_lifecycle, Mapping)
+            else None
+        ),
+    }
+
+
+def _runtime_buffer_bindings(
+    receipt: TransferReceipt,
+    metadata: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    lifetime = metadata.get("buffer_lifetime_evidence")
+    if not isinstance(lifetime, Mapping):
+        return []
+    bindings: list[dict[str, Any]] = []
+    for role, key in (
+        ("source", "source_buffer"),
+        ("destination", "destination_buffer"),
+    ):
+        record = lifetime.get(key)
+        if not isinstance(record, Mapping):
+            continue
+        registration = record.get("registration")
+        registration_mapping = (
+            dict(registration) if isinstance(registration, Mapping) else {}
+        )
+        registration_metadata = registration_mapping.get("metadata")
+        bindings.append(
+            {
+                "receipt_id": receipt.receipt_id,
+                "intent_id": receipt.intent_id,
+                "role": role,
+                "buffer_id": record.get("buffer_id"),
+                "handle_type": registration_mapping.get("handle_type"),
+                "runtime_buffer_kind": record.get("runtime_buffer_kind"),
+                "runtime_session_id": record.get("runtime_session_id"),
+                "runtime_owned": bool(record.get("runtime_owned", False)),
+                "registration_metadata": (
+                    dict(registration_metadata)
+                    if isinstance(registration_metadata, Mapping)
+                    else None
+                ),
+                "resource_evidence": (
+                    dict(record["resource_evidence"])
+                    if isinstance(record.get("resource_evidence"), Mapping)
+                    else None
+                ),
+                "cuda_ipc_lifecycle": (
+                    dict(record["cuda_ipc_lifecycle"])
+                    if isinstance(record.get("cuda_ipc_lifecycle"), Mapping)
+                    else None
+                ),
+            }
+        )
+    return bindings
 
 
 __all__ = [

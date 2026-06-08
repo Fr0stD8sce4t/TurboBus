@@ -264,6 +264,32 @@ class VllmTurboBusIntegration:
         self.state.request_cpu_slot_starts[request_id] = slot_start
         return names
 
+    def lifecycle_request_binding(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> dict[str, object]:
+        request_id = str(request_id)
+        slot_start = self._resolve_cpu_slot_start(request_id, cpu_slot_start)
+        refs = self.make_refs_for_request(request_id, cpu_slot_start=slot_start)
+        adapter = self.require_adapter()
+        return {
+            "request_id": request_id,
+            "cpu_slot_start": int(slot_start),
+            "block_ids": list(self.block_ids_for_request(request_id)),
+            "block_ids_by_group": [
+                list(group) for group in self.block_ids_by_group_for_request(request_id)
+            ],
+            "kv_cache_count": len(self.state.kv_caches),
+            "cpu_backing_count": (
+                0 if self._cpu_backings is None else len(self._cpu_backings)
+            ),
+            "range_refs": [_vllm_ref_lifecycle(ref) for ref in refs],
+            "registered_block_names": adapter.block_names_for_request(request_id),
+            "adapter_group_bindings": adapter.lifecycle_group_bindings(),
+        }
+
     def block_names_for_request(
         self,
         request_id: str,
@@ -418,3 +444,17 @@ def _require_runtime_session_open(runtime_session) -> None:
         raise TypeError("vLLM integration requires a TurboBusRuntimeSession")
     if bool(getattr(runtime_session, "closed", False)):
         raise RuntimeError("runtime session is closed")
+
+
+def _vllm_ref_lifecycle(ref: VllmKVBlockRef) -> dict[str, object]:
+    return {
+        "request_id": ref.request_id,
+        "group_id": int(ref.group_id),
+        "block_id": int(ref.block_id),
+        "cpu_slot": int(ref.cpu_slot),
+        "gpu_slot": int(ref.gpu_slot),
+        "lane_id": None if ref.lane_id is None else int(ref.lane_id),
+        "cpu_offset": None if ref.cpu_offset is None else int(ref.cpu_offset),
+        "gpu_offset": None if ref.gpu_offset is None else int(ref.gpu_offset),
+        "byte_count": None if ref.byte_count is None else int(ref.byte_count),
+    }

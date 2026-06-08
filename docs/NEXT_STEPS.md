@@ -5,26 +5,27 @@ appending history.
 
 ## Current Main Target
 
-G26 vLLM real lifecycle closure.
+G27 model loading real integration closure.
 
-vLLM KV cache save and restore must run through `TurboBusRuntimeSession`,
-submit only `TransferIntent`, consume only `TransferReceipt`, and record a
-stable workload lifecycle that binds request ids, block ids, runtime buffers,
-receipt ids, ticket ids, byte counts, and path split evidence without exposing
-direct, relay, pool, target GPU, or relay GPU choice to the adapter.
+Model weight loading must register real runtime-session CPU/GPU buffers, map
+manifest tensors to byte ranges, submit only `TransferIntent`, consume only
+`TransferReceipt`, and record a stable model-loading lifecycle that binds
+manifest tensors, bucket ranges, runtime buffers, receipt ids, ticket ids, byte
+counts, and path split evidence without exposing direct, relay, pool, target
+GPU, or relay GPU choice to the adapter.
 
 ## Current Code Work
 
-- `turbobus/adapters/vllm_integration.py`: real vLLM KV cache observation,
-  block-id mapping, CPU backing ownership, and runtime-session adapter binding.
-- `turbobus/adapters/vllm_kv_connector.py`: prefix save/restore lifecycle
-  records, receipt trace aggregation, and backing-pool cleanup evidence.
-- `turbobus/adapters/vllm.py`: KV block/range conversion into runtime-owned
-  transfer contexts.
-- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from
-  real `TransferReceipt` objects.
-- `turbobus/runtime_session.py`: vLLM adapter construction through the single
-  production runtime-session entry.
+- `turbobus/adapters/model_loading.py`: manifest tensor mapping, bucket/range
+  registration, model-load lifecycle evidence, and receipt aggregation.
+- `turbobus/model_manifest.py`: model tensor descriptors and manifest span
+  accounting.
+- `turbobus/offload/store.py`: bucket batch conversion into daemon-submitted
+  `TransferIntent`.
+- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from real
+  `TransferReceipt` objects.
+- `turbobus/runtime_session.py`: model-loading adapter construction through the
+  single production runtime-session entry.
 
 Round rules:
 
@@ -43,7 +44,7 @@ Round rules:
 
 ## Next Entry
 
-After G26 is complete, continue automatically to G27 as the only current target.
+After G27 is complete, continue automatically to G28 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -51,7 +52,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G26 vLLM real lifecycle closure.
 - G27 model loading real integration closure.
 - G28 training offload real integration closure.
 - G29 unified reproduction evidence model.

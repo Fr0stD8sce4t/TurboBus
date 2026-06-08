@@ -109,6 +109,28 @@ class VllmKVSlotAdapter:
         self._registered_names: set[str] = set()
         self._request_group_names: dict[str, dict[int, tuple[str, ...]]] = {}
 
+    def lifecycle_group_bindings(self) -> list[dict[str, object]]:
+        bindings: list[dict[str, object]] = []
+        for group_id, group in sorted(self.groups.items()):
+            adapter = self.adapters[group_id]
+            transfer_context = adapter.transfer_context
+            bindings.append(
+                {
+                    "group_id": int(group_id),
+                    "layer_id": None if group.layer_id is None else int(group.layer_id),
+                    "block_bytes": int(group.block_bytes),
+                    "cpu_buffer_id": transfer_context.cpu_buffer_id,
+                    "gpu_buffer_id": transfer_context.gpu_buffer_id,
+                    "job_id": transfer_context.job_id,
+                    "session_id": transfer_context.session_id,
+                    "workload_kind": str(transfer_context.workload_kind.value),
+                    "intent_prefix": transfer_context.intent_prefix,
+                    "policy_source": "daemon_scheduler",
+                    "metadata": dict(transfer_context.metadata),
+                }
+            )
+        return bindings
+
     def register_blocks(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         slots_by_group: dict[int, list[InferenceKVSlot]] = {}
         request_group_names: dict[str, dict[int, list[str]]] = {}

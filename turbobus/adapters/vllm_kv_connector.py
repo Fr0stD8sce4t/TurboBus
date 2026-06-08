@@ -97,6 +97,7 @@ class _LayerSaveContext:
     fallback_reasons: list[str] = field(default_factory=list)
     ranges: int = 0
     ready_layers: set[int] = field(default_factory=set)
+    request_binding: dict[str, Any] = field(default_factory=dict)
 
 
 class TurboBusConnectorMetadata(KVConnectorMetadata):
@@ -690,6 +691,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             request.request_id,
             cpu_slot_start=request.cpu_slot_start,
         )
+        request_binding = integration.lifecycle_request_binding(
+            request.request_id,
+            cpu_slot_start=request.cpu_slot_start,
+        )
         register_ms = (time.perf_counter() - register_start) * 1000.0
         prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
         try:
@@ -719,6 +724,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             layer_count=len(kv_caches),
             range_count=len(range_names),
             receipt_trace=receipt_trace,
+            request_binding=request_binding,
         )
         saved.last_restore_lifecycle_evidence = lifecycle_evidence
         self.state.events.append(
@@ -800,6 +806,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
+            request_binding = integration.lifecycle_request_binding(
+                request.request_id,
+                cpu_slot_start=request.cpu_slot_start,
+            )
             refs_ms = (time.perf_counter() - register_start) * 1000.0
         except Exception:
             self._backing_pool.release(
@@ -818,6 +828,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             client_init_ms=client_init_ms,
             cpu_alloc_ms=cpu_alloc_ms,
             refs_ms=refs_ms,
+            request_binding=request_binding,
         )
         self._layer_save_contexts[request.request_id] = context
         return context
@@ -901,6 +912,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             layer_count=len(context.kv_caches),
             range_count=context.ranges,
             receipt_trace=receipt_trace,
+            request_binding=context.request_binding,
         )
         prefix = TurboBusSavedPrefix(
             key=request.prefix_key,
@@ -1265,7 +1277,10 @@ def _vllm_kv_lifecycle_evidence(
     layer_count: int,
     range_count: int,
     receipt_trace: Mapping[str, Any],
+    request_binding: Mapping[str, Any],
 ) -> dict[str, Any]:
+    receipt_contracts = receipt_trace.get("receipt_contracts")
+    runtime_buffer_bindings = receipt_trace.get("runtime_buffer_bindings")
     return {
         "evidence_id": (
             f"vllm-kv-{operation}-{session_id}-{request.prefix_key}-"
@@ -1284,6 +1299,10 @@ def _vllm_kv_lifecycle_evidence(
         "buffer_registration_source": "TurboBusRuntimeSession",
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
+        "policy_source": "daemon_scheduler",
+        "route_policy_visible_to_adapter": False,
+        "physical_route_source": "daemon_scheduler",
+        "intent_ids": str(receipt_trace.get("intent_ids", "")),
         "receipt_count": int(receipt_trace.get("receipt_count", 0) or 0),
         "receipt_ids": str(receipt_trace.get("receipt_ids", "")),
         "receipt_states": str(receipt_trace.get("receipt_states", "")),
@@ -1295,6 +1314,18 @@ def _vllm_kv_lifecycle_evidence(
         "direct_bytes": int(receipt_trace.get("direct_bytes", 0) or 0),
         "relay_bytes": int(receipt_trace.get("relay_bytes", 0) or 0),
         "fallback_reason": str(receipt_trace.get("fallback_reason", "")),
+        "request_binding": dict(request_binding),
+        "block_ids": list(request.block_ids),
+        "runtime_buffer_bindings": (
+            [dict(item) for item in runtime_buffer_bindings if isinstance(item, Mapping)]
+            if isinstance(runtime_buffer_bindings, list)
+            else []
+        ),
+        "receipt_contracts": (
+            [dict(item) for item in receipt_contracts if isinstance(item, Mapping)]
+            if isinstance(receipt_contracts, list)
+            else []
+        ),
     }
 
 

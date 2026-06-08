@@ -156,6 +156,7 @@ class WorkerDataPlaneResources:
             "open_evidence": (
                 None if self.open_evidence is None else dict(self.open_evidence)
             ),
+            "cuda_ipc_lifecycle": self.cuda_ipc_lifecycle(),
         }
 
     def close_evidence(self) -> dict[str, object]:
@@ -193,7 +194,75 @@ class WorkerDataPlaneResources:
             "open_evidence": (
                 None if self.open_evidence is None else dict(self.open_evidence)
             ),
+            "cuda_ipc_lifecycle": self.cuda_ipc_lifecycle(),
         }
+
+    def cuda_ipc_lifecycle(self) -> dict[str, object]:
+        cpu_handle = (
+            self.request.src_handle
+            if self.request.direction == "h2d"
+            else self.request.dst_handle
+        )
+        device_handle = (
+            self.request.dst_handle
+            if self.request.direction == "h2d"
+            else self.request.src_handle
+        )
+        open_evidence = (
+            {} if self.open_evidence is None else dict(self.open_evidence)
+        )
+        span_validation = open_evidence.get("cuda_ipc_span_validation")
+        allocation_size = device_handle.metadata.get("allocation_size_bytes")
+        offset_bytes = device_handle.metadata.get("device_offset_bytes", 0)
+        lifecycle = {
+            "source": "worker_cuda_ipc_lifecycle",
+            "transfer_id": self.request.transfer_id,
+            "lease_id": self.request.lease_id,
+            "ticket_id": self.ticket_id,
+            "plan_generation": self.plan_generation,
+            "session_id": self.request.session_id,
+            "job_id": self.request.job_id,
+            "direction": self.request.direction,
+            "src_buffer_id": self.request.src_handle.buffer_id,
+            "dst_buffer_id": self.request.dst_handle.buffer_id,
+            "cpu_buffer_id": cpu_handle.buffer_id,
+            "cpu_handle_type": cpu_handle.handle_type,
+            "cpu_buffer_role": self.cpu_buffer_role,
+            "cpu_buffer_opened": bool(open_evidence.get("cpu_buffer_opened", False)),
+            "cpu_buffer_closed": bool(self.cpu_buffer.closed),
+            "cuda_host_registration_requested": bool(
+                open_evidence.get("cuda_host_registration_requested", False)
+            ),
+            "cuda_host_registered": bool(self.cpu_buffer.cuda_registered),
+            "device_buffer_id": device_handle.buffer_id,
+            "device_handle_type": device_handle.handle_type,
+            "device_buffer_role": self.device_buffer_role,
+            "device_index": self.device_index,
+            "device_bytes": self.device_bytes,
+            "device_ipc_opened": bool(open_evidence.get("device_ipc_opened", False)),
+            "device_ipc_closed": bool(self._device_ipc_closed),
+            "resources_closed": bool(self.closed),
+            "device_offset_bytes": int(offset_bytes),
+            "ticket_owner_binding": {
+                "job_id": self.request.job_id,
+                "session_id": self.request.session_id,
+                "ticket_id": self.ticket_id,
+                "lease_id": self.request.lease_id,
+                "plan_generation": self.plan_generation,
+            },
+        }
+        if allocation_size is not None:
+            lifecycle["allocation_size_bytes"] = int(allocation_size)
+        if self.device_ipc_base_ptr is not None:
+            lifecycle["device_ipc_base_ptr"] = int(self.device_ipc_base_ptr)
+        if self.device_ptr is not None:
+            lifecycle["device_ptr"] = int(self.device_ptr)
+        if isinstance(span_validation, dict):
+            lifecycle["cuda_ipc_span_validation"] = dict(span_validation)
+            lifecycle["span_validated"] = bool(span_validation.get("validated", False))
+        else:
+            lifecycle["span_validated"] = False
+        return lifecycle
 
     def _require_open(self) -> None:
         if self._closed:
@@ -332,6 +401,17 @@ class WorkerDataPlaneResourceBinding:
                 self._device_ipc_base_ptr = None
             if failure_cleanup:
                 failure_evidence["failure_cleanup"] = failure_cleanup
+            failure_evidence["cuda_ipc_lifecycle"] = _cuda_ipc_failure_lifecycle(
+                request=self.request,
+                ticket_id=self.worker_request.ticket.ticket_id,
+                plan_generation=int(
+                    self.worker_request.ticket.metadata["plan_generation"]
+                ),
+                device_handle=device_handle,
+                cpu_handle=cpu_handle,
+                open_evidence=open_evidence,
+                failure_cleanup=failure_cleanup,
+            )
             self._failure_evidence = failure_evidence
             raise WorkerDataPlaneResourceError(
                 f"failed to bind worker data-plane resources: {exc}"
@@ -527,6 +607,76 @@ def _resource_binding_evidence(
         "cuda_host_registered": False,
         "device_ipc_opened": False,
     }
+
+
+def _cuda_ipc_failure_lifecycle(
+    *,
+    request: WorkerDataPlaneRequest,
+    ticket_id: str,
+    plan_generation: int,
+    device_handle: WorkerBufferHandle,
+    cpu_handle: WorkerBufferHandle,
+    open_evidence: dict[str, object],
+    failure_cleanup: dict[str, object],
+) -> dict[str, object]:
+    span_validation = open_evidence.get("cuda_ipc_span_validation")
+    lifecycle = {
+        "source": "worker_cuda_ipc_lifecycle",
+        "transfer_id": str(request.transfer_id),
+        "lease_id": str(request.lease_id),
+        "ticket_id": str(ticket_id),
+        "plan_generation": int(plan_generation),
+        "session_id": str(request.session_id),
+        "job_id": str(request.job_id),
+        "direction": str(request.direction),
+        "src_buffer_id": str(request.src_handle.buffer_id),
+        "dst_buffer_id": str(request.dst_handle.buffer_id),
+        "cpu_buffer_id": str(cpu_handle.buffer_id),
+        "cpu_handle_type": str(cpu_handle.handle_type),
+        "cpu_buffer_role": "source" if request.direction == "h2d" else "destination",
+        "cpu_buffer_opened": bool(open_evidence.get("cpu_buffer_opened", False)),
+        "cpu_buffer_closed": bool(
+            failure_cleanup.get("cpu_buffer_closed_after_failure", False)
+        ),
+        "cuda_host_registration_requested": bool(
+            open_evidence.get("cuda_host_registration_requested", False)
+        ),
+        "cuda_host_registered": bool(open_evidence.get("cuda_host_registered", False)),
+        "device_buffer_id": str(device_handle.buffer_id),
+        "device_handle_type": str(device_handle.handle_type),
+        "device_buffer_role": (
+            "destination" if request.direction == "h2d" else "source"
+        ),
+        "device_index": device_handle.device_index,
+        "device_bytes": int(device_handle.size_bytes),
+        "device_ipc_opened": bool(open_evidence.get("device_ipc_opened", False)),
+        "device_ipc_closed": bool(
+            failure_cleanup.get("device_ipc_closed_after_failure", False)
+        ),
+        "resources_closed": False,
+        "device_offset_bytes": int(device_handle.metadata.get("device_offset_bytes", 0)),
+        "failure_cleanup": dict(failure_cleanup),
+        "ticket_owner_binding": {
+            "job_id": str(request.job_id),
+            "session_id": str(request.session_id),
+            "ticket_id": str(ticket_id),
+            "lease_id": str(request.lease_id),
+            "plan_generation": int(plan_generation),
+        },
+    }
+    allocation_size = device_handle.metadata.get("allocation_size_bytes")
+    if allocation_size is not None:
+        lifecycle["allocation_size_bytes"] = int(allocation_size)
+    if "device_ipc_base_ptr" in open_evidence:
+        lifecycle["device_ipc_base_ptr"] = int(open_evidence["device_ipc_base_ptr"])
+    if "device_ptr" in open_evidence:
+        lifecycle["device_ptr"] = int(open_evidence["device_ptr"])
+    if isinstance(span_validation, dict):
+        lifecycle["cuda_ipc_span_validation"] = dict(span_validation)
+        lifecycle["span_validated"] = bool(span_validation.get("validated", False))
+    else:
+        lifecycle["span_validated"] = False
+    return lifecycle
 
 
 __all__ = [

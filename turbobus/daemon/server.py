@@ -7501,6 +7501,14 @@ def _normalize_completion_evidence(
     native_path_stats = evidence.get("native_path_stats")
     relay_device_stats = evidence.get("relay_device_stats")
     failure_cleanup_contract = evidence.get("failure_cleanup_contract")
+    cuda_ipc_lifecycle = evidence.get("cuda_ipc_lifecycle")
+    if not isinstance(cuda_ipc_lifecycle, Mapping) and isinstance(
+        resource_evidence,
+        Mapping,
+    ):
+        nested_cuda_ipc_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
+        if isinstance(nested_cuda_ipc_lifecycle, Mapping):
+            cuda_ipc_lifecycle = nested_cuda_ipc_lifecycle
     expected_evidence_bytes = evidence.get("expected_bytes")
     return {
         "verified": True,
@@ -7593,6 +7601,11 @@ def _normalize_completion_evidence(
             if not isinstance(failure_cleanup_contract, Mapping)
             else {"failure_cleanup_contract": dict(failure_cleanup_contract)}
         ),
+        **(
+            {}
+            if not isinstance(cuda_ipc_lifecycle, Mapping)
+            else {"cuda_ipc_lifecycle": dict(cuda_ipc_lifecycle)}
+        ),
         **ticket_binding,
     }
 
@@ -7615,6 +7628,7 @@ def _merge_completion_evidence(
         "worker_async_pool",
         "path_level_evidence",
         "failure_cleanup_contract",
+        "cuda_ipc_lifecycle",
     ):
         previous = existing.get(field_name)
         current = incoming.get(field_name)
@@ -7730,6 +7744,16 @@ def _normalize_status_ticket_evidence(
     failure_cleanup_contract = evidence.get("failure_cleanup_contract")
     if isinstance(failure_cleanup_contract, Mapping):
         ticket_binding["failure_cleanup_contract"] = dict(failure_cleanup_contract)
+    cuda_ipc_lifecycle = evidence.get("cuda_ipc_lifecycle")
+    if not isinstance(cuda_ipc_lifecycle, Mapping) and isinstance(
+        resource_evidence,
+        Mapping,
+    ):
+        nested_cuda_ipc_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
+        if isinstance(nested_cuda_ipc_lifecycle, Mapping):
+            cuda_ipc_lifecycle = nested_cuda_ipc_lifecycle
+    if isinstance(cuda_ipc_lifecycle, Mapping):
+        ticket_binding["cuda_ipc_lifecycle"] = dict(cuda_ipc_lifecycle)
     for field_name in (
         "executor",
         "path",

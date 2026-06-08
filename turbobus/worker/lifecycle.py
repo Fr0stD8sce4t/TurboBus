@@ -1324,16 +1324,22 @@ def _worker_result_with_resource_close_evidence(
         return result
     metadata = dict(result.metadata)
     resource_evidence = dict(metadata.get("resource_evidence") or {})
-    resource_evidence["close_evidence"] = resources.close_evidence()
+    close_evidence = resources.close_evidence()
+    cuda_ipc_lifecycle = resources.cuda_ipc_lifecycle()
+    resource_evidence["close_evidence"] = close_evidence
+    resource_evidence["cuda_ipc_lifecycle"] = cuda_ipc_lifecycle
     metadata["resource_evidence"] = resource_evidence
+    metadata["cuda_ipc_lifecycle"] = cuda_ipc_lifecycle
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
         completion_resource_evidence = dict(
             completion_evidence.get("resource_evidence") or {}
         )
-        completion_resource_evidence["close_evidence"] = resources.close_evidence()
+        completion_resource_evidence["close_evidence"] = close_evidence
+        completion_resource_evidence["cuda_ipc_lifecycle"] = cuda_ipc_lifecycle
         completion_evidence["resource_evidence"] = completion_resource_evidence
+        completion_evidence["cuda_ipc_lifecycle"] = cuda_ipc_lifecycle
         metadata["completion_evidence"] = completion_evidence
     return WorkerTransferResult(
         transfer_id=result.transfer_id,
@@ -1631,6 +1637,7 @@ def _execution_contract_evidence_from_metadata(
         "dst_buffer_id",
         "staging_slot_id",
         "resource_evidence",
+        "cuda_ipc_lifecycle",
         "worker_startup",
         "worker_async_pool",
         "path_level_evidence",
@@ -1646,6 +1653,11 @@ def _execution_contract_evidence_from_metadata(
     cleanup = metadata.get("cleanup")
     if isinstance(cleanup, Mapping):
         evidence.setdefault("cleanup", dict(cleanup))
+    resource_evidence = metadata.get("resource_evidence")
+    if isinstance(resource_evidence, Mapping):
+        cuda_ipc_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
+        if isinstance(cuda_ipc_lifecycle, Mapping):
+            evidence.setdefault("cuda_ipc_lifecycle", dict(cuda_ipc_lifecycle))
     return evidence
 
 

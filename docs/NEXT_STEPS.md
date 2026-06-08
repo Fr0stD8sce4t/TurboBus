@@ -5,23 +5,26 @@ appending history.
 
 ## Current Main Target
 
-G25 CUDA IPC lifecycle hardening.
+G26 vLLM real lifecycle closure.
 
-CUDA IPC GPU buffers must be registered, authorized, opened, used, and closed
-only inside daemon-issued execution paths, with lifecycle evidence bound to
-job/session/ticket ownership.
+vLLM KV cache save and restore must run through `TurboBusRuntimeSession`,
+submit only `TransferIntent`, consume only `TransferReceipt`, and record a
+stable workload lifecycle that binds request ids, block ids, runtime buffers,
+receipt ids, ticket ids, byte counts, and path split evidence without exposing
+direct, relay, pool, target GPU, or relay GPU choice to the adapter.
 
 ## Current Code Work
 
-- `turbobus/buffer_registration.py`: CUDA IPC handle conversion and ownership
-  evidence for runtime buffers.
-- `turbobus/worker/resources.py`: worker data-plane resource binding, CUDA IPC
-  open/close evidence, and span validation.
-- `turbobus/runtime_session.py`: runtime-owned CUDA buffer registration and
-  release.
-- `turbobus/daemon/server.py`: buffer ownership, active lease/ticket
-  protection, and cleanup retention.
-- `turbobus/worker/validation.py`: ticket and buffer owner checks.
+- `turbobus/adapters/vllm_integration.py`: real vLLM KV cache observation,
+  block-id mapping, CPU backing ownership, and runtime-session adapter binding.
+- `turbobus/adapters/vllm_kv_connector.py`: prefix save/restore lifecycle
+  records, receipt trace aggregation, and backing-pool cleanup evidence.
+- `turbobus/adapters/vllm.py`: KV block/range conversion into runtime-owned
+  transfer contexts.
+- `turbobus/offload/lifecycle.py`: adapter lifecycle evidence derived from
+  real `TransferReceipt` objects.
+- `turbobus/runtime_session.py`: vLLM adapter construction through the single
+  production runtime-session entry.
 
 Round rules:
 
@@ -40,7 +43,7 @@ Round rules:
 
 ## Next Entry
 
-After G25 is complete, continue automatically to G26 as the only current target.
+After G26 is complete, continue automatically to G27 as the only current target.
 
 ## Auto-Advance Policy
 
@@ -48,7 +51,6 @@ Auto-advance is active for the paper-reproduction system queue.
 
 Remaining auto-advance target queue:
 
-- G25 CUDA IPC lifecycle hardening.
 - G26 vLLM real lifecycle closure.
 - G27 model loading real integration closure.
 - G28 training offload real integration closure.

@@ -197,6 +197,7 @@ def receipt_for_transfer(
     native_path_stats = evidence.get("native_path_stats")
     relay_device_stats = evidence.get("relay_device_stats")
     failure_cleanup_contract = evidence.get("failure_cleanup_contract")
+    cuda_ipc_lifecycle = _cuda_ipc_lifecycle_from_evidence(evidence)
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
@@ -344,6 +345,7 @@ def receipt_for_transfer(
                 if isinstance(failure_cleanup_contract, Mapping)
                 else None
             ),
+            "cuda_ipc_lifecycle": cuda_ipc_lifecycle,
             "completion_contract": completion_contract,
             "buffer_lifetime_evidence": buffer_lifetime_evidence,
         },
@@ -497,6 +499,7 @@ def _completion_contract_view(
             if isinstance(evidence.get("failure_cleanup_contract"), Mapping)
             else None
         ),
+        "cuda_ipc_lifecycle": _cuda_ipc_lifecycle_from_evidence(evidence),
         "execution_path": (
             dict(execution_path_evidence)
             if isinstance(execution_path_evidence, Mapping)
@@ -619,6 +622,7 @@ def _single_mode_completion_view(
         "native_path_stats",
         "relay_device_stats",
         "failure_cleanup_contract",
+        "cuda_ipc_lifecycle",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]
@@ -672,6 +676,7 @@ def _worker_completion_view(
         "native_path_stats",
         "relay_device_stats",
         "failure_cleanup_contract",
+        "cuda_ipc_lifecycle",
     ):
         if field_name in evidence and evidence[field_name] is not None:
             view[field_name] = evidence[field_name]
@@ -706,7 +711,49 @@ def _buffer_lifetime_record(
         owned_cpu_buffer_release = snapshot.get("owned_cpu_buffer_release")
         if isinstance(owned_cpu_buffer_release, Mapping):
             record["owned_cpu_buffer_release"] = dict(owned_cpu_buffer_release)
+    cuda_ipc_lifecycle = None
+    if isinstance(resource_evidence, Mapping):
+        nested_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
+        if isinstance(nested_lifecycle, Mapping):
+            cuda_ipc_lifecycle = dict(nested_lifecycle)
+        elif str(resource_evidence.get("device_buffer_id", "")) == str(
+            expected_buffer_id
+        ) and str(resource_evidence.get("device_handle_type", "")) == "cuda_ipc_device":
+            cuda_ipc_lifecycle = dict(resource_evidence)
+    if cuda_ipc_lifecycle is not None:
+        record["cuda_ipc_lifecycle"] = cuda_ipc_lifecycle
     return record
+
+
+def _cuda_ipc_lifecycle_from_evidence(
+    evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    candidates: list[object] = [
+        evidence.get("cuda_ipc_lifecycle"),
+        evidence.get("resource_evidence"),
+        evidence.get("worker_completion_evidence"),
+        evidence.get("direct_completion_evidence"),
+        evidence.get("relay_completion_evidence"),
+    ]
+    for candidate in candidates:
+        lifecycle = _extract_cuda_ipc_lifecycle(candidate)
+        if lifecycle is not None:
+            return lifecycle
+    return None
+
+
+def _extract_cuda_ipc_lifecycle(candidate: object) -> dict[str, object] | None:
+    if not isinstance(candidate, Mapping):
+        return None
+    lifecycle = candidate.get("cuda_ipc_lifecycle")
+    if isinstance(lifecycle, Mapping):
+        return dict(lifecycle)
+    resource_evidence = candidate.get("resource_evidence")
+    if isinstance(resource_evidence, Mapping):
+        nested_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
+        if isinstance(nested_lifecycle, Mapping):
+            return dict(nested_lifecycle)
+    return None
 
 
 def _buffer_resource_evidence_for_buffer(

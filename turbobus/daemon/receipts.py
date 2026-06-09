@@ -262,6 +262,11 @@ def receipt_for_transfer(
                 if isinstance(admission.get("priority_order"), Mapping)
                 else None
             ),
+            "multi_tenant_admission": (
+                dict(admission["multi_tenant_admission"])
+                if isinstance(admission.get("multi_tenant_admission"), Mapping)
+                else None
+            ),
             "plan_generation": int(plan_generation),
             "plan_expires_at": plan_expires_at,
             "completion_source": completion_source,

@@ -6,25 +6,26 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G46 are complete.
-- G46 buffer lifecycle pooling is present: `TurboBusRuntimeSession` records
-  shared pinned CPU and CUDA IPC buffer registration, active intent use,
-  terminal receipt use, cleanup, close, and runtime retention evidence.
-- Auto-advance is active. The current main target is G47 multi-tenant fairness
-  admission.
+- G1 through G47 are complete.
+- G47 multi-tenant fairness admission is present: daemon admission records
+  job/session load, queued/running/admitted/delayed transfer state, active
+  leases, relay quota pressure, buffer ownership, and receipt-facing admission
+  metadata.
+- Auto-advance is active. The current main target is G48 daemon state recovery
+  semantics.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G47 still needs daemon admission to account for multi-tenant queued/running
-  transfer load, active leases, buffer ownership, and fair accept/queue/reject
-  evidence.
+- G48 still needs daemon state recovery to preserve terminal receipt,
+  admission, queue, ticket, lease, buffer, and cleanup evidence after transfer
+  completion or resource removal.
 
 ## Next Main Target
 
-G47 multi-tenant fairness admission.
+G48 daemon state recovery semantics.
 
 Progress-file rule:
 

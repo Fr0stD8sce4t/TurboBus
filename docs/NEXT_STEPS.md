@@ -5,21 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G47 multi-tenant fairness admission.
+G48 daemon state recovery semantics.
 
-G46 is complete: runtime sessions now maintain a pooled buffer lifecycle record
-for shared pinned CPU and CUDA IPC buffers across daemon registration, intent
-use, receipt finalization, cleanup, close, and receipt-facing retention
-evidence. The current target is to close daemon-side fairness admission.
+G47 is complete: daemon admission now records multi-tenant fairness evidence
+covering job/session load, queued/running/admitted/delayed transfer state,
+active leases, relay quota pressure, buffer ownership, and receipt-facing
+admission metadata. The current target is daemon state recovery semantics.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: transfer admission, job/session ownership,
-  queued/running state, buffer protection, and rejection evidence.
-- `turbobus/scheduler/load.py`: runtime load view used by admission and
-  scheduling policy.
-- `turbobus/scheduler/daemon.py`: scheduler-facing admission inputs and
-  metadata.
+- `turbobus/daemon/server.py`: daemon-owned transfer, lease, session, buffer,
+  ticket, queue, and receipt archive state.
+- `turbobus/daemon/dispatch.py`: daemon request routing for state-facing
+  operations.
+- `turbobus/runtime_session.py`: runtime close and recovery-facing receipt
+  consumption.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -40,13 +40,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G47 as one complete production capability: daemon admission should use
-multi-tenant job/session, queued/running transfer, active lease, and buffer
-ownership state to accept, queue, or reject TransferIntent requests with
-receipt-facing admission evidence.
+Implement G48 as one complete production capability: daemon state recovery
+should preserve terminal receipt, admission, queue, ticket, lease, buffer, and
+cleanup evidence after transfers finish or resources are removed, so runtime
+sessions can recover authoritative daemon state without synthetic receipts.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G47, G48, G49, G50, G51, G52, G53, G54.
+Remaining auto-advance target queue: G48, G49, G50, G51, G52, G53, G54.

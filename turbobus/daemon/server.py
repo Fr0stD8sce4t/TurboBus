@@ -1935,6 +1935,22 @@ class TurboBusDaemon:
                 decision=decision,
                 now=now,
             )
+            admission_order = _admission_priority_record(
+                transfer_id=transfer_id,
+                admission=admission,
+                queue_record=self._transfer_queue_records.get(transfer_id, {}),
+                runtime_state=self._runtime_resource_state_locked(now=float(now)),
+                now=float(now),
+            )
+            admission = _admission_with_priority_evidence(
+                {
+                    **admission,
+                    "priority_order": admission_order,
+                },
+                admission_order,
+            )
+            self._transfer_admissions[transfer_id] = admission
+            self._refresh_transfer_queue_record_locked(transfer_id, now=now)
             self._transfer_buffer_snapshots[transfer_id] = self._buffer_snapshots_for_ids_locked(
                 buffer_ids_tuple
             )
@@ -2396,7 +2412,7 @@ class TurboBusDaemon:
         leases = scheduling_decision_leases(decision)
         if not leases:
             fallback_reason = decision.fallback_reason
-            return {
+            admission = {
                 "state": _ADMISSION_ADMITTED,
                 "reason": fallback_reason or "direct_or_fallback_plan",
                 "decision_state": str(decision.state.value),
@@ -2406,6 +2422,21 @@ class TurboBusDaemon:
                 "lease_ids": (),
                 "admitted_at": float(now),
             }
+            admission["multi_tenant_admission"] = (
+                self._multi_tenant_admission_evidence_locked(
+                    state=_ADMISSION_ADMITTED,
+                    reason=str(admission["reason"]),
+                    session=session,
+                    job_id=job_id,
+                    total_bytes=int(total_bytes),
+                    workload_kind=str(workload_kind),
+                    priority=int(priority),
+                    leases=(),
+                    fairness=None,
+                    now=now,
+                )
+            )
+            return admission
         requested_chunks = sum(lease.chunk_limit for lease in leases)
         reason = self._relay_admission_blocked_reason_locked(
             session=session,
@@ -2426,7 +2457,7 @@ class TurboBusDaemon:
             now=now,
         )
         if reason is None:
-            return {
+            admission = {
                 "state": _ADMISSION_ADMITTED,
                 "reason": "relay_resources_available",
                 "decision_state": str(decision.state.value),
@@ -2437,8 +2468,23 @@ class TurboBusDaemon:
                 "admitted_at": float(now),
                 "fairness": fairness,
             }
+            admission["multi_tenant_admission"] = (
+                self._multi_tenant_admission_evidence_locked(
+                    state=_ADMISSION_ADMITTED,
+                    reason=str(admission["reason"]),
+                    session=session,
+                    job_id=job_id,
+                    total_bytes=int(total_bytes),
+                    workload_kind=str(workload_kind),
+                    priority=int(priority),
+                    leases=leases,
+                    fairness=fairness,
+                    now=now,
+                )
+            )
+            return admission
         if allow_delayed:
-            return {
+            admission = {
                 "state": _ADMISSION_DELAYED,
                 "reason": reason,
                 "decision_state": str(decision.state.value),
@@ -2449,7 +2495,22 @@ class TurboBusDaemon:
                 "delayed_at": float(now),
                 "fairness": fairness,
             }
-        return {
+            admission["multi_tenant_admission"] = (
+                self._multi_tenant_admission_evidence_locked(
+                    state=_ADMISSION_DELAYED,
+                    reason=str(reason),
+                    session=session,
+                    job_id=job_id,
+                    total_bytes=int(total_bytes),
+                    workload_kind=str(workload_kind),
+                    priority=int(priority),
+                    leases=leases,
+                    fairness=fairness,
+                    now=now,
+                )
+            )
+            return admission
+        admission = {
             "state": _ADMISSION_ADMITTED,
             "reason": "scheduler_fallback_or_rejection",
             "decision_state": str(decision.state.value),
@@ -2460,6 +2521,21 @@ class TurboBusDaemon:
             "admitted_at": float(now),
             "fairness": fairness,
         }
+        admission["multi_tenant_admission"] = (
+            self._multi_tenant_admission_evidence_locked(
+                state=_ADMISSION_ADMITTED,
+                reason=str(admission["reason"]),
+                session=session,
+                job_id=job_id,
+                total_bytes=int(total_bytes),
+                workload_kind=str(workload_kind),
+                priority=int(priority),
+                leases=leases,
+                fairness=fairness,
+                now=now,
+            )
+        )
+        return admission
 
     def _relay_admission_blocked_reason_locked(
         self,
@@ -2555,6 +2631,110 @@ class TurboBusDaemon:
             "running_transfer_count": int(load_view.running_transfer_count),
             "active_transfer_count": int(load_view.active_transfer_count),
             "delayed_transfer_count": int(load_view.delayed_transfer_count),
+        }
+
+    def _multi_tenant_admission_evidence_locked(
+        self,
+        *,
+        state: str,
+        reason: str,
+        session: Session,
+        job_id: str | None,
+        total_bytes: int,
+        workload_kind: str,
+        priority: int,
+        leases,
+        fairness: Mapping[str, object] | None,
+        now: float,
+    ) -> dict[str, object]:
+        normalized_job_id = str(job_id or session.session_id)
+        runtime_state = self._runtime_resource_state_locked(now=float(now))
+        runtime_summary = (
+            runtime_state.get("summary", {})
+            if isinstance(runtime_state.get("summary"), Mapping)
+            else {}
+        )
+        job_runtime_state = runtime_summary.get("job_runtime_state")
+        if not isinstance(job_runtime_state, Mapping):
+            job_runtime_state = runtime_state.get("job_runtime_state", {})
+        current_job_state = {}
+        if isinstance(job_runtime_state, Mapping):
+            candidate = job_runtime_state.get(normalized_job_id, {})
+            if isinstance(candidate, Mapping):
+                current_job_state = dict(candidate)
+        lease_records = tuple(
+            self._admission_requested_lease_record_locked(lease)
+            for lease in tuple(leases or ())
+        )
+        buffer_ownership = tuple(
+            self._buffer_ownership_record_locked(buffer_id)
+            for buffer_id in sorted(self._buffers)
+            if self._buffers[buffer_id].job_id == normalized_job_id
+        )
+        return {
+            "source": "daemon_multi_tenant_fairness_admission",
+            "state": str(state),
+            "reason": str(reason),
+            "job_id": normalized_job_id,
+            "session_id": session.session_id,
+            "workload_kind": str(workload_kind),
+            "priority": int(priority),
+            "request_bytes": int(total_bytes),
+            "session_active_chunks": int(session.active_chunks),
+            "session_max_inflight_chunks": int(session.max_inflight_chunks),
+            "session_relay_gpus": tuple(int(gpu) for gpu in session.relay_gpus),
+            "queued_transfer_count": int(
+                runtime_summary.get("queued_transfer_count", 0) or 0
+            ),
+            "admitted_transfer_count": int(
+                runtime_summary.get("admitted_transfer_count", 0) or 0
+            ),
+            "delayed_transfer_count": int(
+                runtime_summary.get("delayed_transfer_count", 0) or 0
+            ),
+            "running_transfer_count": int(
+                runtime_summary.get("running_transfer_count", 0) or 0
+            ),
+            "active_transfer_count": int(
+                runtime_summary.get("active_transfer_count", 0) or 0
+            ),
+            "active_lease_count": int(runtime_summary.get("active_lease_count", 0) or 0),
+            "active_reservation_count": int(
+                runtime_summary.get("active_reservation_count", 0) or 0
+            ),
+            "current_job_runtime_state": current_job_state,
+            "requested_leases": lease_records,
+            "buffer_ownership": buffer_ownership,
+            "fairness": {} if fairness is None else dict(fairness),
+            "captured_at": float(now),
+        }
+
+    def _admission_requested_lease_record_locked(self, lease) -> dict[str, object]:
+        relay_device = int(lease.relay_device)
+        quota = self._relay_quotas.get(relay_device)
+        active_lease_ids = tuple(
+            str(lease_id)
+            for lease_id, token in sorted(self._lease_tokens.items())
+            if int(token.relay_gpu) == relay_device
+            and lease_id in self._reservations
+        )
+        return {
+            "relay_device": relay_device,
+            "job_id": None if lease.job_id is None else str(lease.job_id),
+            "chunk_limit": int(lease.chunk_limit),
+            "bytes_limit": int(lease.bytes_limit),
+            "active_lease_ids": active_lease_ids,
+            "quota_active_chunks": (
+                None if quota is None else int(quota.active_chunks)
+            ),
+            "quota_max_inflight_chunks": (
+                None if quota is None else int(quota.max_inflight_chunks)
+            ),
+            "quota_available_chunks": (
+                None
+                if quota is None
+                else max(0, int(quota.max_inflight_chunks) - int(quota.active_chunks))
+            ),
         }
 
     def _plan_expires_at_for_decision(
@@ -2925,6 +3105,7 @@ class TurboBusDaemon:
                     "promotion_checked_at": float(now),
                     "priority_order": admission_order,
                 }
+                admission = _admission_with_priority_evidence(admission, admission_order)
                 self._transfer_admissions[transfer_id] = admission
                 self._refresh_transfer_queue_record_locked(transfer_id, now=now)
                 continue
@@ -2953,6 +3134,7 @@ class TurboBusDaemon:
                 "promoted_at": float(now),
                 "priority_order": admission_order,
             }
+            admission = _admission_with_priority_evidence(admission, admission_order)
             self._transfer_admissions[transfer_id] = admission
             intent_id = request.get("intent_id")
             intent = (
@@ -3160,6 +3342,11 @@ class TurboBusDaemon:
                 if isinstance(admission.get("fairness"), Mapping)
                 else None
             ),
+            "multi_tenant_admission": (
+                dict(admission["multi_tenant_admission"])
+                if isinstance(admission.get("multi_tenant_admission"), Mapping)
+                else None
+            ),
             "plan_generation": self._transfer_plan_generations.get(str(transfer_id), 0),
             "plan_expires_at": self._transfer_plan_expirations.get(str(transfer_id)),
             "started_at": None,
@@ -3211,6 +3398,9 @@ class TurboBusDaemon:
             priority_order = admission.get("priority_order")
             if isinstance(priority_order, Mapping):
                 record["admission_priority_order"] = dict(priority_order)
+            multi_tenant_admission = admission.get("multi_tenant_admission")
+            if isinstance(multi_tenant_admission, Mapping):
+                record["multi_tenant_admission"] = dict(multi_tenant_admission)
         record["plan_generation"] = self._transfer_plan_generations.get(
             str(transfer_id),
             int(record.get("plan_generation", 0) or 0),
@@ -7527,6 +7717,19 @@ def _ordered_delayed_admission_records(
             ),
         )
     )
+
+
+def _admission_with_priority_evidence(
+    admission: Mapping[str, object],
+    priority_order: Mapping[str, object],
+) -> dict[str, object]:
+    updated = dict(admission)
+    evidence = updated.get("multi_tenant_admission")
+    if isinstance(evidence, Mapping):
+        admission_evidence = dict(evidence)
+        admission_evidence["priority_order"] = dict(priority_order)
+        updated["multi_tenant_admission"] = admission_evidence
+    return updated
 
 
 def _admission_priority_record(

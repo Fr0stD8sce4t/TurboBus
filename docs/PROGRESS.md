@@ -18,10 +18,7 @@
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
-  validation, and multi-GPU execution remain deferred and were not run in this
-  code-function queue.
-- Functional validation, server validation, benchmark execution, paper
-  validation, and multi-GPU execution are still deferred to the later validation
+  validation, and multi-GPU execution remain deferred to the later validation
   and evaluation stage.
 
 ## Next Main Target

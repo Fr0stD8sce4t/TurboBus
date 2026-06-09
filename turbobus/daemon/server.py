@@ -12,6 +12,7 @@ from typing import Iterable, Mapping
 from . import dispatch as daemon_dispatch
 from . import leases as daemon_leases
 from . import peer_auth
+from . import planning_helpers
 from . import profiles as daemon_profiles
 from . import receipts as daemon_receipts
 from ..schema import (
@@ -143,7 +144,9 @@ class TurboBusDaemon:
 
     def get_inventory(self) -> DaemonResponse:
         if self._topology_provider is None:
-            return _topology_unavailable_response()
+            return planning_helpers.topology_unavailable_response(
+                _TOPOLOGY_UNAVAILABLE_ERROR,
+            )
         inventory = self._topology_provider.snapshot()
         return DaemonResponse(
             ok=True,
@@ -155,7 +158,9 @@ class TurboBusDaemon:
 
     def invalidate_topology(self) -> DaemonResponse:
         if self._topology_provider is None:
-            return _topology_unavailable_response()
+            return planning_helpers.topology_unavailable_response(
+                _TOPOLOGY_UNAVAILABLE_ERROR,
+            )
         invalidate = getattr(self._topology_provider, "invalidate", None)
         if not callable(invalidate):
             return DaemonResponse(
@@ -192,7 +197,9 @@ class TurboBusDaemon:
             self._reap_stale_sessions_locked(now)
             self._refresh_admission_state_locked(now=now)
             if self._topology_provider is None:
-                return _topology_unavailable_response()
+                return planning_helpers.topology_unavailable_response(
+                    _TOPOLOGY_UNAVAILABLE_ERROR,
+                )
             inventory = self._topology_provider.snapshot()
             candidates = tuple(sorted(self._relay_quotas))
             return DaemonResponse(
@@ -316,7 +323,7 @@ class TurboBusDaemon:
                     )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-                if _job_identity_conflicts(existing_job, job):
+                if planning_helpers.job_identity_conflicts(existing_job, job):
                     return DaemonResponse(
                         ok=False,
                         error=(
@@ -377,7 +384,7 @@ class TurboBusDaemon:
                     )
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-                if _buffer_registration_conflicts(existing_buffer, buffer):
+                if planning_helpers.buffer_registration_conflicts(existing_buffer, buffer):
                     return DaemonResponse(
                         ok=False,
                         error=(
@@ -556,7 +563,7 @@ class TurboBusDaemon:
                         transfer_ids=self._transfer_ids_for_buffer_locked(
                             cleanup.target_id
                         ),
-                        buffer_snapshot=_buffer_snapshot_record(buffer),
+                        buffer_snapshot=planning_helpers.buffer_snapshot_record(buffer),
                         retention_evidence=_merge_retention_evidence(
                             self._buffer_cleanup_ownership_evidence_locked(
                                 cleanup.target_id,
@@ -1714,7 +1721,7 @@ class TurboBusDaemon:
                     plan,
                     direction=request.direction,
                 )
-                authorized_relay_ranges = _relay_ranges_from_plan(
+                authorized_relay_ranges = planning_helpers.relay_ranges_from_plan(
                     plan,
                     relay_gpu=tuple(item.relay_gpu for item in related_leases),
                     direction=request.direction,
@@ -1897,7 +1904,9 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 if str(exc) == _TOPOLOGY_UNAVAILABLE_ERROR:
-                    return _topology_unavailable_response()
+                    return planning_helpers.topology_unavailable_response(
+                        _TOPOLOGY_UNAVAILABLE_ERROR,
+                    )
                 return DaemonResponse(ok=False, error=str(exc))
             transfer_id = str(uuid.uuid4())
             self._transfer_plan_generations[transfer_id] = 1
@@ -1998,7 +2007,7 @@ class TurboBusDaemon:
             if (
                 not reservations
                 and len(buffer_ids_tuple) >= 2
-                and _decision_is_direct_only(decision)
+                and planning_helpers.decision_is_direct_only(decision)
             ):
                 ticket = self._execution_ticket_for_plan_locked(
                     transfer_id=transfer_id,
@@ -2936,14 +2945,14 @@ class TurboBusDaemon:
         if len(normalized) >= 1:
             source = self._buffers.get(normalized[0])
             if isinstance(source, BufferRegistration):
-                snapshots["source"] = _buffer_snapshot_record(source)
+                snapshots["source"] = planning_helpers.buffer_snapshot_record(source)
                 snapshots["source"]["daemon_buffer_ownership"] = (
                     self._buffer_ownership_record_locked(normalized[0])
                 )
         if len(normalized) >= 2:
             destination = self._buffers.get(normalized[1])
             if isinstance(destination, BufferRegistration):
-                snapshots["destination"] = _buffer_snapshot_record(destination)
+                snapshots["destination"] = planning_helpers.buffer_snapshot_record(destination)
                 snapshots["destination"]["daemon_buffer_ownership"] = (
                     self._buffer_ownership_record_locked(normalized[1])
                 )
@@ -3874,7 +3883,10 @@ class TurboBusDaemon:
         plan = self._transfer_plans.get(request.transfer_id)
         if plan is None:
             return (primary_lease,)
-        relay_devices = _relay_devices_from_plan(plan, direction=request.direction)
+        relay_devices = planning_helpers.relay_devices_from_plan(
+            plan,
+            direction=request.direction,
+        )
         if not relay_devices:
             return (primary_lease,)
         if primary_lease.relay_gpu not in relay_devices:
@@ -3911,7 +3923,7 @@ class TurboBusDaemon:
     ) -> dict[str, dict[str, object]]:
         records: dict[str, dict[str, object]] = {}
         for lease in leases:
-            ranges = _relay_ranges_from_plan(
+            ranges = planning_helpers.relay_ranges_from_plan(
                 plan,
                 relay_gpu=lease.relay_gpu,
                 direction=direction,
@@ -4712,7 +4724,7 @@ class TurboBusDaemon:
                     "peer_identity": self._job_peer_identities.get(buffer.job_id)
                     or session_peer,
                     "transfer_ids": tuple(sorted(transfer_ids)),
-                    "buffer_snapshot": _buffer_snapshot_record(buffer),
+                    "buffer_snapshot": planning_helpers.buffer_snapshot_record(buffer),
                 }
             )
         return {
@@ -6364,7 +6376,7 @@ class TurboBusDaemon:
             **relay_eligibility,
             "topology_snapshot_id": inventory.topology_snapshot_id(),
             "topology_version": inventory.version,
-            "fabric_capability_summary": _fabric_capability_summary_with_snapshot(
+            "fabric_capability_summary": planning_helpers.fabric_capability_summary_with_snapshot(
                 relay_eligibility.get("fabric_capability_summary", {}),
                 inventory=inventory,
             ),
@@ -6542,7 +6554,7 @@ class TurboBusDaemon:
                 if path.device_id == relay
             ],
             "fabric_links": fabric_links,
-            "path_capabilities": _relay_path_capabilities(
+            "path_capabilities": planning_helpers.relay_path_capabilities(
                 inventory,
                 relay_gpu=relay,
                 target_gpu=target,
@@ -6690,232 +6702,6 @@ def reserve_socket(path: str) -> socket.socket:
     secure_unix_socket(path)
     sock.listen()
     return sock
-
-
-def _topology_unavailable_response() -> DaemonResponse:
-    return DaemonResponse(
-        ok=False,
-        error=_TOPOLOGY_UNAVAILABLE_ERROR,
-    )
-
-
-def _buffer_snapshot_record(buffer: BufferRegistration) -> dict[str, object]:
-    return {
-        "buffer_id": buffer.buffer_id,
-        "job_id": buffer.job_id,
-        "kind": str(buffer.kind),
-        "size_bytes": int(buffer.size_bytes),
-        "device_index": buffer.device_index,
-        "address": buffer.address,
-        "pinned": bool(buffer.pinned),
-        "handle_type": str(buffer.handle_type),
-        "metadata": dict(buffer.metadata),
-    }
-
-
-def _relay_path_capabilities(
-    inventory,
-    *,
-    relay_gpu: int,
-    target_gpu: int | None,
-    fabric_links: list[dict[str, object]],
-) -> dict[str, object]:
-    pcie_paths = [
-        path for path in inventory.pcie_paths if path.device_id == int(relay_gpu)
-    ]
-    pcie_path = pcie_paths[0] if pcie_paths else None
-    enabled_fabric_links = [
-        link for link in fabric_links if bool(link.get("enabled", False))
-    ]
-    fabric_bandwidths = [
-        float(link.get("bandwidth_gbps", 0.0) or 0.0)
-        for link in enabled_fabric_links
-    ]
-    fabric_bandwidth_sources = sorted(
-        {
-            str(link.get("bandwidth_source"))
-            for link in enabled_fabric_links
-            if link.get("bandwidth_source") is not None
-        }
-    )
-    pcie_bandwidth = 0.0 if pcie_path is None else pcie_path.bandwidth_gbps
-    fabric_bandwidth = sum(fabric_bandwidths)
-    return {
-        "relay_gpu": int(relay_gpu),
-        "target_gpu": target_gpu,
-        "has_pcie_path": pcie_path is not None,
-        "pcie_root_complex": None if pcie_path is None else pcie_path.root_complex,
-        "pcie_numa_node": None if pcie_path is None else pcie_path.numa_node,
-        "pcie_link_generation": (
-            None if pcie_path is None else pcie_path.link_generation
-        ),
-        "pcie_link_width": None if pcie_path is None else pcie_path.link_width,
-        "pcie_negotiated_speed_gtps": (
-            None if pcie_path is None else pcie_path.negotiated_speed_gtps
-        ),
-        "pcie_bandwidth_gbps": pcie_bandwidth,
-        "pcie_bandwidth_source": (
-            None if pcie_path is None else pcie_path.bandwidth_source
-        ),
-        "pcie_switch_hierarchy": (
-            [] if pcie_path is None else list(pcie_path.switch_hierarchy)
-        ),
-        "fabric_link_count": len(fabric_links),
-        "enabled_fabric_link_count": len(enabled_fabric_links),
-        "fabric_kinds": sorted(
-            {str(link.get("fabric")) for link in enabled_fabric_links}
-        ),
-        "fabric_capabilities": sorted(
-            {
-                str(link.get("capability"))
-                for link in enabled_fabric_links
-                if link.get("capability") is not None
-            }
-        ),
-        "fabric_bandwidth_gbps": fabric_bandwidth,
-        "fabric_bandwidth_sources": fabric_bandwidth_sources,
-        "p2p_enabled": bool(enabled_fabric_links),
-        "pcie_trusted": pcie_path is not None and pcie_bandwidth > 0.0,
-        "fabric_trusted": bool(enabled_fabric_links) and fabric_bandwidth > 0.0,
-        "topology_trusted": (
-            pcie_path is not None
-            and pcie_bandwidth > 0.0
-            and bool(enabled_fabric_links)
-            and fabric_bandwidth > 0.0
-        ),
-    }
-
-
-def _fabric_capability_summary_with_snapshot(
-    summary: object,
-    *,
-    inventory,
-) -> dict[str, object]:
-    result = dict(summary) if isinstance(summary, Mapping) else {}
-    result.setdefault("source", "daemon_topology_fabric_capability_summary")
-    result["topology_snapshot_id"] = inventory.topology_snapshot_id()
-    result["topology_version"] = int(inventory.version)
-    result["inventory_source"] = inventory.source
-    result["inventory_discovered_at"] = float(inventory.discovered_at)
-    return result
-
-
-def _relay_ranges_from_plan(
-    plan: dict[str, object],
-    *,
-    relay_gpu: int | Iterable[int],
-    direction: str,
-) -> tuple[dict[str, int], ...]:
-    if not isinstance(plan, dict):
-        raise ValueError("transfer plan is unavailable")
-    ranges: list[dict[str, int]] = []
-    if isinstance(relay_gpu, int):
-        relays = {int(relay_gpu)}
-    else:
-        relays = {int(gpu) for gpu in relay_gpu}
-    if not relays:
-        raise ValueError("daemon plan has no authorized relay chunks")
-    requested_direction = str(direction).lower()
-    for assignment in plan.get("assignments", ()) or ():
-        if not isinstance(assignment, dict):
-            raise ValueError("transfer plan assignment must be an object")
-        path = assignment.get("path")
-        if not isinstance(path, dict):
-            raise ValueError("transfer plan assignment path must be an object")
-        if str(path.get("kind", "")).lower() != "relay":
-            continue
-        if str(path.get("direction", "")).lower() != requested_direction:
-            continue
-        if int(path.get("relay_device", -1)) not in relays:
-            continue
-        for chunk in assignment.get("chunks", ()) or ():
-            if not isinstance(chunk, dict):
-                raise ValueError("transfer plan chunk must be an object")
-            ranges.append(
-                {
-                    "src_offset": int(chunk["src_offset"]),
-                    "dst_offset": int(chunk["dst_offset"]),
-                    "bytes": int(chunk["bytes"]),
-                }
-            )
-    if not ranges:
-        raise ValueError("daemon plan has no authorized relay chunks")
-    return tuple(ranges)
-
-
-def _relay_devices_from_plan(
-    plan: dict[str, object],
-    *,
-    direction: str,
-) -> set[int]:
-    if not isinstance(plan, dict):
-        raise ValueError("transfer plan is unavailable")
-    relays: set[int] = set()
-    requested_direction = str(direction).lower()
-    for assignment in plan.get("assignments", ()) or ():
-        if not isinstance(assignment, dict):
-            raise ValueError("transfer plan assignment must be an object")
-        path = assignment.get("path")
-        if not isinstance(path, dict):
-            raise ValueError("transfer plan assignment path must be an object")
-        if str(path.get("kind", "")).lower() != "relay":
-            continue
-        if str(path.get("direction", "")).lower() != requested_direction:
-            continue
-        if assignment.get("chunks"):
-            relays.add(int(path.get("relay_device", -1)))
-    return relays
-
-
-def _decision_is_direct_only(decision: SchedulingDecision) -> bool:
-    assignments = decision.plan.get("assignments", ()) or ()
-    if not assignments:
-        return False
-    for assignment in assignments:
-        if not isinstance(assignment, dict):
-            return False
-        path = assignment.get("path")
-        if not isinstance(path, dict):
-            return False
-        if str(path.get("kind", "")).lower() != "direct":
-            return False
-    return True
-
-
-def _job_identity_conflicts(
-    existing: JobIdentity,
-    incoming: JobIdentity,
-) -> bool:
-    return any(
-        getattr(existing, field_name) != getattr(incoming, field_name)
-        for field_name in (
-            "job_id",
-            "user_id",
-            "session_id",
-            "container_id",
-            "process_id",
-        )
-    )
-
-
-def _buffer_registration_conflicts(
-    existing: BufferRegistration,
-    incoming: BufferRegistration,
-) -> bool:
-    return any(
-        getattr(existing, field_name) != getattr(incoming, field_name)
-        for field_name in (
-            "buffer_id",
-            "job_id",
-            "kind",
-            "size_bytes",
-            "device_index",
-            "address",
-            "pinned",
-            "handle_type",
-            "metadata",
-        )
-    )
 
 
 def _runtime_active_path_records_for_transfer(

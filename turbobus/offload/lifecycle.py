@@ -88,6 +88,7 @@ def adapter_lifecycle_evidence_from_handles(
     handles: Iterable[object],
     transfer_stats: Mapping[str, Any],
     extra: Mapping[str, Any] | None = None,
+    runtime_session=None,
 ) -> dict[str, Any]:
     names = tuple(str(name) for name in item_names)
     handle_list = list(handles)
@@ -97,6 +98,13 @@ def adapter_lifecycle_evidence_from_handles(
             f"{operation} completed without TransferReceipt evidence"
         )
     trace = receipt_trace_from_receipts(receipts)
+    if runtime_session is not None:
+        recovery = _daemon_recovery_from_receipts(receipts, runtime_session)
+        trace["daemon_recovery"] = recovery
+        trace["daemon_recovery_count"] = len(recovery)
+        trace["daemon_recovery_sources"] = join_unique(
+            item.get("source") for item in recovery
+        )
     return {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
@@ -129,6 +137,44 @@ def join_unique(values: Iterable[object]) -> str:
         seen.add(text)
         ordered.append(text)
     return ",".join(ordered)
+
+
+def _daemon_recovery_from_receipts(
+    receipts: Iterable[TransferReceipt],
+    runtime_session,
+) -> list[dict[str, Any]]:
+    recover = getattr(runtime_session, "recover_transfer_state", None)
+    if not callable(recover):
+        return []
+    recovered: list[dict[str, Any]] = []
+    for receipt in receipts:
+        metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+        transfer_id = metadata.get("transfer_id")
+        if transfer_id is None:
+            continue
+        recovery = recover(
+            intent_id=receipt.intent_id,
+            transfer_id=str(transfer_id),
+        )
+        recovered.append(
+            {
+                "intent_id": receipt.intent_id,
+                "receipt_id": receipt.receipt_id,
+                "transfer_id": str(transfer_id),
+                "source": recovery.get("source"),
+                "state": recovery.get("state"),
+                "admission": recovery.get("admission"),
+                "queue_record": recovery.get("queue_record"),
+                "ticket": recovery.get("ticket"),
+                "reservations": recovery.get("reservations"),
+                "leases": recovery.get("leases"),
+                "buffer_snapshots": recovery.get("buffer_snapshots"),
+                "cleanup_targets": recovery.get("cleanup_targets"),
+                "completion_source": recovery.get("completion_source"),
+                "completion_evidence": recovery.get("completion_evidence"),
+            }
+        )
+    return recovered
 
 
 def _receipt_contract_summary(

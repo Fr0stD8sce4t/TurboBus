@@ -6,12 +6,11 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G49 are complete.
-- G49 vLLM KV deep integration is present: KV save and restore consume
-  TransferReceipt and daemon recovery state, preserving admission, queue,
-  ticket, lease, buffer, cleanup, and completion evidence in lifecycle records
-  without exposing physical route choices.
-- Auto-advance is active. The current main target is G50 weight loading deep
+- G1 through G50 are complete.
+- G50 weight loading deep integration is present: model weight loading consumes
+  TransferReceipt plus daemon recovery evidence for H2D weight movement through
+  `TurboBusRuntimeSession` without exposing physical route choices.
+- Auto-advance is active. The current main target is G51 training state deep
   integration.
 
 ## Remaining Risk
@@ -19,13 +18,13 @@
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G50 still needs model weight loading to use real `TurboBusRuntimeSession`
-  buffers, submit H2D TransferIntent, and consume TransferReceipt plus daemon
-  recovery evidence without adapter route selection.
+- G51 still needs training-state offload to use real `TurboBusRuntimeSession`
+  buffers, submit H2D/D2H TransferIntent, and consume TransferReceipt plus
+  daemon recovery evidence without adapter route selection.
 
 ## Next Main Target
 
-G50 weight loading deep integration.
+G51 training state deep integration.
 
 Progress-file rule:
 

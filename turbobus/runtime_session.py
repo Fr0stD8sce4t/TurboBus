@@ -53,6 +53,26 @@ from .worker.process import run_worker_service_process
 from .worker.socket_client import WorkerServiceSocketClient
 
 
+_PHYSICAL_ROUTE_METADATA_KEYS = {
+    "mode",
+    "path",
+    "paths",
+    "physical_path",
+    "physical_paths",
+    "physical_route",
+    "physical_routes",
+    "route",
+    "routes",
+    "relay",
+    "relays",
+    "relay_gpu",
+    "relay_gpus",
+    "target_device",
+    "target_gpu",
+    "transfer_mode",
+}
+
+
 class ManagedProductionStartupError(RuntimeError):
     def __init__(
         self,
@@ -1056,8 +1076,11 @@ class TurboBusRuntimeSession:
             if chunk_bytes is None
             else int(chunk_bytes)
         )
-        resolved_policy_hints = dict({} if policy_hints is None else policy_hints)
+        resolved_policy_hints = _runtime_policy_hints_without_physical_routes(
+            policy_hints,
+        )
         resolved_policy_hints["chunk_bytes"] = resolved_chunk_bytes
+        resolved_metadata = _runtime_metadata_without_physical_routes(metadata)
         intent = TransferIntent(
             intent_id=(
                 f"intent-{uuid.uuid4().hex}"
@@ -1074,7 +1097,7 @@ class TurboBusRuntimeSession:
             workload_kind=workload_kind,
             priority=int(priority),
             policy_hints=resolved_policy_hints,
-            metadata={} if metadata is None else dict(metadata),
+            metadata=resolved_metadata,
         )
         return self._submit_runtime_intent(intent)
 
@@ -1103,11 +1126,14 @@ class TurboBusRuntimeSession:
             gpu_buffer = self.register_cuda_buffer(gpu_buffer)
             session_id = self.open_session()
             cpu_buffer = self.register_cpu_buffer(cpu_buffer)
-            resolved_policy_hints = {} if policy_hints is None else dict(policy_hints)
+            resolved_policy_hints = _runtime_policy_hints_without_physical_routes(
+                policy_hints,
+            )
             if "chunk_bytes" not in resolved_policy_hints:
                 resolved_policy_hints["chunk_bytes"] = int(
                     getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
                 )
+            resolved_metadata = _runtime_metadata_without_physical_routes(metadata)
             return AdapterTransferContext(
                 job_id=self.job_id,
                 session_id=session_id,
@@ -1118,7 +1144,7 @@ class TurboBusRuntimeSession:
                 workload_kind=workload_kind,
                 priority=priority,
                 policy_hints=resolved_policy_hints,
-                metadata={} if metadata is None else metadata,
+                metadata=resolved_metadata,
                 intent_prefix=intent_prefix,
                 wait_timeout_seconds=wait_timeout_seconds,
             )
@@ -1360,6 +1386,7 @@ class TurboBusRuntimeSession:
             raise ValueError("intent source buffer is not registered with the session")
         if intent.destination_buffer_id not in self._buffers:
             raise ValueError("intent destination buffer is not registered with the session")
+        _require_intent_control_plane_safe(intent)
         self._validate_intent_uses_runtime_buffers(intent)
         self._register_pending_buffers()
         self._bootstrap_profile_if_enabled()
@@ -2354,6 +2381,72 @@ def _transfer_receipt_from_payload(payload: Mapping[str, object]) -> TransferRec
     if unknown:
         raise ValueError("daemon receipt contains unknown fields: " + ", ".join(unknown))
     return TransferReceipt(**dict(payload))
+
+
+def _require_intent_control_plane_safe(intent: TransferIntent) -> None:
+    policy_violations = _physical_route_keys(intent.policy_hints)
+    if policy_violations:
+        raise ValueError(
+            "intent policy_hints must not choose physical paths: "
+            + ", ".join(policy_violations)
+        )
+    metadata_violations = _physical_route_keys(intent.metadata)
+    if metadata_violations:
+        raise ValueError(
+            "intent metadata must not choose physical paths: "
+            + ", ".join(metadata_violations)
+        )
+
+
+def _runtime_policy_hints_without_physical_routes(
+    value: Mapping[str, object] | None,
+) -> dict[str, object]:
+    policy_hints = {} if value is None else dict(value)
+    violations = _physical_route_keys(policy_hints)
+    if violations:
+        raise ValueError(
+            "policy_hints must not choose physical paths: "
+            + ", ".join(violations)
+        )
+    return policy_hints
+
+
+def _runtime_metadata_without_physical_routes(
+    value: Mapping[str, object] | None,
+) -> dict[str, object]:
+    metadata = {} if value is None else dict(value)
+    violations = _physical_route_keys(metadata)
+    if violations:
+        raise ValueError(
+            "metadata must not choose physical paths: "
+            + ", ".join(violations)
+        )
+    return metadata
+
+
+def _physical_route_keys(value: Mapping[str, object]) -> list[str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("runtime intent control metadata must be a mapping")
+    invalid: list[str] = []
+    for key, item in value.items():
+        key_text = str(key)
+        normalized = _physical_route_key_name(key_text)
+        if normalized in _PHYSICAL_ROUTE_METADATA_KEYS:
+            invalid.append(key_text)
+        if isinstance(item, Mapping):
+            invalid.extend(
+                f"{key_text}.{child}"
+                for child in _physical_route_keys(item)
+            )
+    return sorted(invalid)
+
+
+def _physical_route_key_name(key: str) -> str:
+    normalized = str(key).lower()
+    for prefix in ("turbobus.", "scheduler.", "runtime."):
+        if normalized.startswith(prefix):
+            return normalized.removeprefix(prefix)
+    return normalized
 
 
 def _runtime_buffer_retention_evidence(

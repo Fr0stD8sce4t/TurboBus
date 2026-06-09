@@ -5,21 +5,18 @@ appending history.
 
 ## Current Main Target
 
-G54 production safety boundary enhancement.
+Code-function queue complete through G54.
 
-G53 is complete: backend execution now exposes an exact-plan submission
-interface for daemon-issued direct, relay, and mixed pooled plans. CUDA remains
-the current production backend, while worker and direct execution no longer
-submit native CUDA plans through separate route-specific branches. The current
-target is production safety boundary enhancement.
+G54 is complete: `TurboBusRuntimeSession` now enforces a runtime-level control
+plane boundary for generated intents, adapter transfer contexts, and externally
+supplied `TransferIntent` objects. Application and adapter metadata can no
+longer carry physical route choices such as direct, relay, pool, target GPU, or
+relay GPU selectors into daemon scheduling.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`: single production runtime-session authority.
-- `turbobus/intent_executor.py`: TransferIntent to daemon-issued execution path.
-- `turbobus/direct_fallback.py`: direct-only exact-plan backend execution.
-- `turbobus/worker/cuda_executor.py`: ticketed worker/backend execution.
-- `turbobus/daemon/server.py`: daemon plan, ticket, status, and receipt boundary.
+- `turbobus/runtime_session.py`: runtime-level policy and metadata boundary for
+  generated intents, adapter contexts, and externally supplied intents.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -40,13 +37,12 @@ Round rules:
 
 ## Next Entry
 
-Implement G54 as one complete production capability: production-looking runtime
-and backend execution paths should stay bounded by `TurboBusRuntimeSession`,
-daemon-issued tickets, and exact daemon-issued plans so applications and
-adapters cannot choose physical routes or bypass daemon scheduling.
+No further code-function target is active in this queue. The remaining work is
+deferred validation and evaluation around real execution evidence, not part of
+the current no-validation code-function pass.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G54.
+Remaining auto-advance target queue: none.

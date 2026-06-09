@@ -6,26 +6,27 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G53 are complete.
-- G53 backend extensibility interface is present: direct-only runtime execution
-  and worker-managed relay or mixed pooled execution now submit exact
-  daemon-issued plans through a shared backend submission contract while keeping
-  CUDA as the current production backend.
-- Auto-advance is active. The current main target is G54 production safety
-  boundary enhancement.
+- G1 through G54 are complete.
+- G54 production safety boundary enhancement is present:
+  `TurboBusRuntimeSession` rejects application or adapter policy hints and
+  metadata that attempt to choose physical routes, relay GPUs, target GPUs, or
+  transfer modes before submitting generated or externally supplied
+  `TransferIntent` objects to the daemon.
+- Auto-advance queue G43 through G54 is complete for the current code-function
+  pass.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G54 still needs production-looking runtime and backend execution boundaries
-  tightened so applications and adapters cannot bypass daemon scheduling or
-  choose physical routes.
+- Functional validation, server validation, benchmark execution, paper
+  validation, and multi-GPU execution are still deferred to the later validation
+  and evaluation stage.
 
 ## Next Main Target
 
-G54 production safety boundary enhancement.
+No current code-function target remains in the G43 through G54 queue.
 
 Progress-file rule:
 

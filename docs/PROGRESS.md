@@ -6,25 +6,26 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G51 are complete.
-- G51 training-state deep integration is present: training offload consumes
-  TransferReceipt plus daemon recovery evidence for H2D/D2H movement through
-  `TurboBusRuntimeSession` without exposing physical route choices.
-- Auto-advance is active. The current main target is G52 topology and fabric
-  abstraction hardening.
+- G1 through G52 are complete.
+- G52 topology and fabric abstraction is present: daemon-discovered PCIe, NUMA,
+  and scale-up fabric capability summaries flow into scheduler and profile
+  metadata for direct, relay, and mixed pooled plans without synthetic
+  production topology.
+- Auto-advance is active. The current main target is G53 backend extensibility
+  interface.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G52 still needs topology and fabric abstraction to carry daemon-discovered
-  PCIe, NUMA, and scale-up fabric capabilities into scheduler/profile metadata
-  without synthetic production topology.
+- G53 still needs a backend extensibility interface for direct, relay, and mixed
+  pooled exact daemon-issued plans while keeping CUDA as the current production
+  backend and deferring ROCm/HIP.
 
 ## Next Main Target
 
-G52 topology and fabric abstraction hardening.
+G53 backend extensibility interface.
 
 Progress-file rule:
 

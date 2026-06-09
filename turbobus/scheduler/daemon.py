@@ -704,6 +704,7 @@ def _scheduler_cost_model_metadata(
         "runtime_pressure_summary": runtime_view.scheduler_pressure_summary(
             normalized_direction,
         ),
+        "fabric_abstraction": _fabric_abstraction_metadata(profile),
         "profile_binding": _profile_topology_binding(profile),
         "profile_import": _profile_import_metadata(profile),
         "profile_measurements": _profile_measurement_metadata(profile),
@@ -773,6 +774,79 @@ def _profile_topology_binding(profile: _Profile) -> dict[str, object]:
     metadata = dict(profile.cost_metadata or {})
     binding = metadata.get("topology_binding")
     return dict(binding) if isinstance(binding, Mapping) else {}
+
+
+def _fabric_abstraction_metadata(profile: _Profile) -> dict[str, object]:
+    binding = _profile_topology_binding(profile)
+    relay_topology = tuple(
+        item
+        for item in binding.get("relay_topology", ()) or ()
+        if isinstance(item, Mapping)
+    )
+    relay_capabilities = []
+    for item in relay_topology:
+        topology = item.get("topology")
+        if not isinstance(topology, Mapping):
+            continue
+        relay_capabilities.append(
+            {
+                "relay_gpu": item.get("relay_gpu"),
+                "target_gpu": topology.get("target_gpu"),
+                "pcie_bandwidth_gbps": float(
+                    topology.get("pcie_bandwidth_gbps", 0.0) or 0.0
+                ),
+                "fabric_bandwidth_gbps": float(
+                    topology.get("fabric_bandwidth_gbps", 0.0) or 0.0
+                ),
+                "pcie_numa_node": topology.get("pcie_numa_node"),
+                "pcie_root_complex": topology.get("pcie_root_complex"),
+                "fabric_kinds": tuple(topology.get("fabric_kinds", ()) or ()),
+                "fabric_capabilities": tuple(
+                    topology.get("fabric_capabilities", ()) or ()
+                ),
+                "pcie_trusted": bool(topology.get("pcie_trusted", False)),
+                "fabric_trusted": bool(topology.get("fabric_trusted", False)),
+                "topology_trusted": bool(topology.get("topology_trusted", False)),
+            }
+        )
+    return {
+        "source": "daemon_scheduler_fabric_abstraction",
+        "topology_snapshot_id": binding.get("topology_snapshot_id"),
+        "topology_version": binding.get("topology_version"),
+        "target_gpu": binding.get("target_gpu"),
+        "inventory_source": binding.get("inventory_source"),
+        "relay_count": len(relay_capabilities),
+        "trusted_relay_count": sum(
+            1 for item in relay_capabilities if bool(item.get("topology_trusted", False))
+        ),
+        "aggregate_relay_pcie_bandwidth_gbps": sum(
+            float(item.get("pcie_bandwidth_gbps", 0.0) or 0.0)
+            for item in relay_capabilities
+        ),
+        "aggregate_fabric_bandwidth_gbps": sum(
+            float(item.get("fabric_bandwidth_gbps", 0.0) or 0.0)
+            for item in relay_capabilities
+        ),
+        "fabric_kinds": tuple(
+            sorted(
+                {
+                    str(kind)
+                    for item in relay_capabilities
+                    for kind in item.get("fabric_kinds", ()) or ()
+                }
+            )
+        ),
+        "fabric_capabilities": tuple(
+            sorted(
+                {
+                    str(capability)
+                    for item in relay_capabilities
+                    for capability in item.get("fabric_capabilities", ()) or ()
+                }
+            )
+        ),
+        "relay_capabilities": tuple(relay_capabilities),
+    }
 
 
 def _profile_import_metadata(profile: _Profile) -> dict[str, object]:
@@ -926,7 +1000,9 @@ def _topology_metadata(
             "requested_relays": (),
             "eligible_relays": (),
             "filtered_relays": (),
+            "fabric_capability_summary": {},
         }
+    fabric_summary = relay_eligibility.get("fabric_capability_summary")
     return {
         "topology_snapshot_id": (
             relay_eligibility.get("topology_snapshot_id") or topology_snapshot_id
@@ -944,6 +1020,9 @@ def _topology_metadata(
             dict(item)
             for item in relay_eligibility.get("filtered_relays", ()) or ()
             if isinstance(item, Mapping)
+        ),
+        "fabric_capability_summary": (
+            dict(fabric_summary) if isinstance(fabric_summary, Mapping) else {}
         ),
     }
 

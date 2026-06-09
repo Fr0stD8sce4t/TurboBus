@@ -254,6 +254,11 @@ class DaemonResourceInventory:
                 "filtered_relays": [],
                 "inventory_source": self.source,
                 "inventory_discovered_at": self.discovered_at,
+                "fabric_capability_summary": fabric_capability_summary(
+                    self,
+                    target_device=int(target_device),
+                    requested_relays=(),
+                ),
             }
 
         filtered: list[dict[str, object]] = []
@@ -331,6 +336,11 @@ class DaemonResourceInventory:
             "filtered_relays": filtered,
             "inventory_source": self.source,
             "inventory_discovered_at": self.discovered_at,
+            "fabric_capability_summary": fabric_capability_summary(
+                self,
+                target_device=target,
+                requested_relays=requested_relays,
+            ),
         }
 
 
@@ -427,6 +437,85 @@ def _relay_topology_evidence(
         ),
         "pcie_trusted": pcie_path is not None and pcie_bandwidth > 0.0,
         "fabric_trusted": bool(enabled_fabric_links) and fabric_bandwidth > 0.0,
+        "topology_trusted": (
+            pcie_path is not None
+            and pcie_bandwidth > 0.0
+            and bool(enabled_fabric_links)
+            and fabric_bandwidth > 0.0
+        ),
+    }
+
+
+def fabric_capability_summary(
+    inventory: DaemonResourceInventory,
+    *,
+    target_device: int,
+    requested_relays: Iterable[int],
+) -> dict[str, object]:
+    target = int(target_device)
+    requested = tuple(sorted({int(gpu) for gpu in requested_relays}))
+    relay_records = tuple(
+        _relay_topology_evidence(inventory, relay, target)
+        for relay in requested
+        if relay != target
+    )
+    pcie_paths = {
+        int(path.device_id): path
+        for path in inventory.pcie_paths
+    }
+    target_pcie = pcie_paths.get(target)
+    return {
+        "source": "daemon_topology_fabric_capability_summary",
+        "target_gpu": target,
+        "requested_relays": requested,
+        "target_pcie": (
+            {}
+            if target_pcie is None
+            else {
+                "has_pcie_path": True,
+                "pcie_bandwidth_gbps": float(target_pcie.bandwidth_gbps),
+                "pcie_bandwidth_source": target_pcie.bandwidth_source,
+                "pcie_root_complex": target_pcie.root_complex,
+                "pcie_numa_node": target_pcie.numa_node,
+            }
+        ),
+        "relay_count": len(relay_records),
+        "trusted_relay_count": sum(
+            1 for record in relay_records if bool(record.get("topology_trusted", False))
+        ),
+        "trusted_pcie_relay_count": sum(
+            1 for record in relay_records if bool(record.get("pcie_trusted", False))
+        ),
+        "trusted_fabric_relay_count": sum(
+            1 for record in relay_records if bool(record.get("fabric_trusted", False))
+        ),
+        "aggregate_relay_pcie_bandwidth_gbps": sum(
+            float(record.get("pcie_bandwidth_gbps", 0.0) or 0.0)
+            for record in relay_records
+        ),
+        "aggregate_fabric_bandwidth_gbps": sum(
+            float(record.get("fabric_bandwidth_gbps", 0.0) or 0.0)
+            for record in relay_records
+        ),
+        "fabric_kinds": tuple(
+            sorted(
+                {
+                    str(kind)
+                    for record in relay_records
+                    for kind in record.get("fabric_kinds", ()) or ()
+                }
+            )
+        ),
+        "fabric_capabilities": tuple(
+            sorted(
+                {
+                    str(capability)
+                    for record in relay_records
+                    for capability in record.get("fabric_capabilities", ()) or ()
+                }
+            )
+        ),
+        "relay_topology": relay_records,
     }
 
 
@@ -445,4 +534,5 @@ __all__ = [
     "GpuInventoryRecord",
     "PciePathRecord",
     "TopologyProvider",
+    "fabric_capability_summary",
 ]

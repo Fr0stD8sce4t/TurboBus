@@ -5,22 +5,19 @@ appending history.
 
 ## Current Main Target
 
-G52 topology and fabric abstraction hardening.
+G53 backend extensibility interface.
 
-G51 is complete: training-state offload now consumes TransferReceipt plus
-daemon recovery evidence for H2D/D2H movement through `TurboBusRuntimeSession`
-without exposing physical route choices. The current target is topology and
-fabric abstraction hardening.
+G52 is complete: topology and fabric abstraction now carries daemon-discovered
+PCIe, NUMA, and scale-up fabric capability summaries into scheduler and profile
+metadata for direct, relay, and mixed pooled plans without synthetic production
+topology. The current target is backend extensibility interface.
 
 ## Current Code Work
 
-- `turbobus/topology*`: daemon-owned topology and fabric discovery objects.
-- `turbobus/profiling/bootstrap.py`: topology/profile import into daemon
-  scheduling inputs.
-- `turbobus/scheduler/daemon.py`: fabric-aware direct, relay, and mixed pooled
-  scheduling metadata.
-- `turbobus/daemon/server.py`: production topology ownership and rejection of
-  synthetic production topology.
+- `turbobus/backends/cuda.py`: CUDA backend contract and runtime operations.
+- `turbobus/native_runtime.py`: native runtime plan execution boundary.
+- `turbobus/worker/cuda_executor.py`: worker-side backend execution wrapper.
+- `turbobus/intent_executor.py`: exact daemon-issued plan execution bridge.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -41,13 +38,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G52 as one complete production capability: topology and fabric
-abstraction should carry daemon-discovered PCIe, NUMA, and scale-up fabric
-capabilities into scheduler/profile metadata for direct, relay, and mixed pooled
-plans without allowing synthetic production topology.
+Implement G53 as one complete production capability: backend execution should
+expose a clear extensibility interface for direct, relay, and mixed pooled exact
+daemon-issued plans while keeping CUDA as the current production backend and
+without adding ROCm/HIP work or alternate validation entrypoints.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G52, G53, G54.
+Remaining auto-advance target queue: G53, G54.

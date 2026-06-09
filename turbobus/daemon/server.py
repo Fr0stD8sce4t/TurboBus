@@ -6364,6 +6364,10 @@ class TurboBusDaemon:
             **relay_eligibility,
             "topology_snapshot_id": inventory.topology_snapshot_id(),
             "topology_version": inventory.version,
+            "fabric_capability_summary": _fabric_capability_summary_with_snapshot(
+                relay_eligibility.get("fabric_capability_summary", {}),
+                inventory=inventory,
+            ),
             "eligible_relays": eligible_relays,
             "filtered_relays": filtered_relays,
         }
@@ -6780,6 +6784,20 @@ def _relay_path_capabilities(
             and fabric_bandwidth > 0.0
         ),
     }
+
+
+def _fabric_capability_summary_with_snapshot(
+    summary: object,
+    *,
+    inventory,
+) -> dict[str, object]:
+    result = dict(summary) if isinstance(summary, Mapping) else {}
+    result.setdefault("source", "daemon_topology_fabric_capability_summary")
+    result["topology_snapshot_id"] = inventory.topology_snapshot_id()
+    result["topology_version"] = int(inventory.version)
+    result["inventory_source"] = inventory.source
+    result["inventory_discovered_at"] = float(inventory.discovered_at)
+    return result
 
 
 def _relay_ranges_from_plan(

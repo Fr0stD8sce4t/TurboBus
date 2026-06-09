@@ -6,25 +6,25 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G50 are complete.
-- G50 weight loading deep integration is present: model weight loading consumes
-  TransferReceipt plus daemon recovery evidence for H2D weight movement through
+- G1 through G51 are complete.
+- G51 training-state deep integration is present: training offload consumes
+  TransferReceipt plus daemon recovery evidence for H2D/D2H movement through
   `TurboBusRuntimeSession` without exposing physical route choices.
-- Auto-advance is active. The current main target is G51 training state deep
-  integration.
+- Auto-advance is active. The current main target is G52 topology and fabric
+  abstraction hardening.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G51 still needs training-state offload to use real `TurboBusRuntimeSession`
-  buffers, submit H2D/D2H TransferIntent, and consume TransferReceipt plus
-  daemon recovery evidence without adapter route selection.
+- G52 still needs topology and fabric abstraction to carry daemon-discovered
+  PCIe, NUMA, and scale-up fabric capabilities into scheduler/profile metadata
+  without synthetic production topology.
 
 ## Next Main Target
 
-G51 training state deep integration.
+G52 topology and fabric abstraction hardening.
 
 Progress-file rule:
 

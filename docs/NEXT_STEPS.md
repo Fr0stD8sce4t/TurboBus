@@ -5,21 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G51 training state deep integration.
+G52 topology and fabric abstraction hardening.
 
-G50 is complete: model weight loading now consumes TransferReceipt plus daemon
-recovery evidence for H2D weight movement through `TurboBusRuntimeSession`
-without exposing physical route choices. The current target is training state
-deep integration.
+G51 is complete: training-state offload now consumes TransferReceipt plus
+daemon recovery evidence for H2D/D2H movement through `TurboBusRuntimeSession`
+without exposing physical route choices. The current target is topology and
+fabric abstraction hardening.
 
 ## Current Code Work
 
-- `turbobus/adapters/training_offload.py`: optimizer and training-state
-  offload adapter path.
-- `turbobus/adapters/`: shared adapter contracts that submit TransferIntent
-  and consume TransferReceipt.
-- `turbobus/runtime_session.py`: production API for real buffer registration
-  and receipt consumption.
+- `turbobus/topology*`: daemon-owned topology and fabric discovery objects.
+- `turbobus/profiling/bootstrap.py`: topology/profile import into daemon
+  scheduling inputs.
+- `turbobus/scheduler/daemon.py`: fabric-aware direct, relay, and mixed pooled
+  scheduling metadata.
+- `turbobus/daemon/server.py`: production topology ownership and rejection of
+  synthetic production topology.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -40,14 +41,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G51 as one complete production capability: training-state offload
-should register real runtime buffers through `TurboBusRuntimeSession`, submit
-H2D/D2H TransferIntent for optimizer or training state movement, and consume
-TransferReceipt plus daemon recovery evidence without exposing direct, relay,
-pool, target GPU, or relay GPU choice to adapter callers.
+Implement G52 as one complete production capability: topology and fabric
+abstraction should carry daemon-discovered PCIe, NUMA, and scale-up fabric
+capabilities into scheduler/profile metadata for direct, relay, and mixed pooled
+plans without allowing synthetic production topology.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G51, G52, G53, G54.
+Remaining auto-advance target queue: G52, G53, G54.

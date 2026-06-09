@@ -367,6 +367,7 @@ class TrainingOffloadManager(OffloadStore):
             item_names=names,
             handles=handles,
             transfer_stats=transfer_stats,
+            runtime_session=self.client,
             extra={
                 "adapter": "training_offload_manager",
                 "operation_direction": self._operation_direction(operation, names),
@@ -375,6 +376,7 @@ class TrainingOffloadManager(OffloadStore):
                 "policy_source": "daemon_scheduler",
                 "route_policy_visible_to_adapter": False,
                 "physical_route_source": "daemon_scheduler",
+                "daemon_recovery_source": "TurboBusRuntimeSession",
                 "runtime_buffer_binding": self._runtime_buffer_binding_evidence(),
                 "bucket_bindings": self._bucket_binding_evidence(names),
                 "bucket_ranges": self._bucket_range_evidence(names),

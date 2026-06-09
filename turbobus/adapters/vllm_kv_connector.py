@@ -728,6 +728,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             request_binding=request_binding,
         )
         saved.last_restore_lifecycle_evidence = lifecycle_evidence
+        saved.daemon_recovery_evidence = {
+            "operation": "restore",
+            "request_id": request.request_id,
+            "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
+        }
         self.state.events.append(
             {
                 "event": "restore",
@@ -951,6 +956,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             save_layer_count=len(context.ready_layers),
             save_layer_ranges=context.ranges,
             save_lifecycle_evidence=lifecycle_evidence,
+            daemon_recovery_evidence={
+                "operation": "save",
+                "request_id": request.request_id,
+                "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
+            },
         )
         mutation = self._store_prefix(prefix)
         _store_saved_prefix(prefix)
@@ -1274,7 +1284,49 @@ def _receipt_trace_from_receipts(
             job_id=runtime_session.job_id,
             session_id=runtime_session.session_id,
         )
-    return receipt_trace_from_receipts(receipts)
+    trace = receipt_trace_from_receipts(receipts)
+    recovery = _daemon_recovery_from_receipts(receipts, runtime_session)
+    trace["daemon_recovery"] = recovery
+    trace["daemon_recovery_count"] = len(recovery)
+    trace["daemon_recovery_sources"] = _join_unique(
+        str(item.get("source", "")) for item in recovery if item.get("source")
+    )
+    return trace
+
+
+def _daemon_recovery_from_receipts(
+    receipts: list[TransferReceipt],
+    runtime_session: TurboBusRuntimeSession,
+) -> list[dict[str, Any]]:
+    recovered: list[dict[str, Any]] = []
+    for receipt in receipts:
+        metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+        transfer_id = metadata.get("transfer_id")
+        if transfer_id is None:
+            continue
+        recovery = runtime_session.recover_transfer_state(
+            intent_id=receipt.intent_id,
+            transfer_id=str(transfer_id),
+        )
+        recovered.append(
+            {
+                "intent_id": receipt.intent_id,
+                "receipt_id": receipt.receipt_id,
+                "transfer_id": str(transfer_id),
+                "source": recovery.get("source"),
+                "state": recovery.get("state"),
+                "admission": recovery.get("admission"),
+                "queue_record": recovery.get("queue_record"),
+                "ticket": recovery.get("ticket"),
+                "reservations": recovery.get("reservations"),
+                "leases": recovery.get("leases"),
+                "buffer_snapshots": recovery.get("buffer_snapshots"),
+                "cleanup_targets": recovery.get("cleanup_targets"),
+                "completion_source": recovery.get("completion_source"),
+                "completion_evidence": recovery.get("completion_evidence"),
+            }
+        )
+    return recovered
 
 
 def _vllm_kv_lifecycle_evidence(
@@ -1293,6 +1345,7 @@ def _vllm_kv_lifecycle_evidence(
 ) -> dict[str, Any]:
     receipt_contracts = receipt_trace.get("receipt_contracts")
     runtime_buffer_bindings = receipt_trace.get("runtime_buffer_bindings")
+    daemon_recovery = receipt_trace.get("daemon_recovery")
     return {
         "evidence_id": (
             f"vllm-kv-{operation}-{session_id}-{request.prefix_key}-"
@@ -1339,6 +1392,17 @@ def _vllm_kv_lifecycle_evidence(
             [dict(item) for item in receipt_contracts if isinstance(item, Mapping)]
             if isinstance(receipt_contracts, list)
             else []
+        ),
+        "daemon_recovery": (
+            [dict(item) for item in daemon_recovery if isinstance(item, Mapping)]
+            if isinstance(daemon_recovery, list)
+            else []
+        ),
+        "daemon_recovery_count": int(
+            receipt_trace.get("daemon_recovery_count", 0) or 0
+        ),
+        "daemon_recovery_sources": str(
+            receipt_trace.get("daemon_recovery_sources", "")
         ),
     }
 

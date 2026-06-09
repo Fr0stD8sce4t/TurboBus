@@ -5,16 +5,16 @@ appending history.
 
 ## Current Main Target
 
-G49 vLLM KV deep integration.
+G50 weight loading deep integration.
 
-G48 is complete: daemon recovery now exposes authoritative transfer state
-covering terminal receipt, admission, queue, ticket, lease, buffer, cleanup,
-completion, and archived evidence without synthetic receipts. The current
-target is vLLM KV deep integration.
+G49 is complete: vLLM KV save and restore now consume TransferReceipt and
+daemon recovery state, preserving admission, queue, ticket, lease, buffer,
+cleanup, and completion evidence in KV lifecycle records without exposing
+physical route choices. The current target is weight loading deep integration.
 
 ## Current Code Work
 
-- `turbobus/adapters/vllm*`: vLLM KV-facing runtime-session integration.
+- `turbobus/adapters/model_loading.py`: model weight loading adapter path.
 - `turbobus/adapters/`: shared adapter contracts that submit TransferIntent
   and consume TransferReceipt.
 - `turbobus/runtime_session.py`: production API for real buffer registration
@@ -39,13 +39,14 @@ Round rules:
 
 ## Next Entry
 
-Implement G49 as one complete production capability: vLLM KV integration should
-register real runtime buffers through `TurboBusRuntimeSession`, submit H2D/D2H
-TransferIntent for KV movement, and consume TransferReceipt without exposing
-direct, relay, pool, target GPU, or relay GPU choice to adapter callers.
+Implement G50 as one complete production capability: model weight loading
+should register real runtime buffers through `TurboBusRuntimeSession`, submit
+H2D TransferIntent for weight movement, and consume TransferReceipt plus daemon
+recovery evidence without exposing direct, relay, pool, target GPU, or relay GPU
+choice to adapter callers.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G49, G50, G51, G52, G53, G54.
+Remaining auto-advance target queue: G50, G51, G52, G53, G54.

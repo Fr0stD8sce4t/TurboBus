@@ -51,6 +51,7 @@ class TurboBusSavedPrefix:
     last_restore_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
     store_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
     cleanup_lifecycle_evidence: dict[str, Any] = field(default_factory=dict)
+    daemon_recovery_evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

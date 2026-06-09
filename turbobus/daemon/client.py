@@ -75,6 +75,9 @@ class TurboBusDaemonClient(_DaemonSocketClientBase):
 
 
 class TurboBusDaemonRuntimeClient(_DaemonSocketClientBase):
+    def runtime_telemetry(self) -> DaemonResponse:
+        return self.send(DaemonRequest(request_type=RequestType.RUNTIME_TELEMETRY))
+
     def register_session(
         self,
         target_gpu: int,
@@ -225,6 +228,9 @@ def _daemon_socket_timeout() -> float | None:
 class TurboBusDaemonAdminClient(_DaemonSocketClientBase):
     def describe(self) -> DaemonResponse:
         return self.send(DaemonRequest(request_type=RequestType.PROFILE))
+
+    def runtime_telemetry(self) -> DaemonResponse:
+        return self.send(DaemonRequest(request_type=RequestType.RUNTIME_TELEMETRY))
 
     def get_inventory(self) -> DaemonResponse:
         return self.send(

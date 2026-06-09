@@ -156,6 +156,8 @@ def handle_request(
             return DaemonResponse(ok=False, error=str(exc))
     if request.request_type == RequestType.PROFILE:
         return daemon.describe(peer_identity=request.peer_identity)
+    if request.request_type == RequestType.RUNTIME_TELEMETRY:
+        return daemon.runtime_telemetry(peer_identity=request.peer_identity)
     return DaemonResponse(ok=False, error=f"unsupported request: {request.request_type}")
 
 

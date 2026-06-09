@@ -5860,6 +5860,24 @@ class TurboBusDaemon:
                 },
             )
 
+    def runtime_telemetry(
+        self,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
+        with self._lock:
+            now = time.time()
+            self._reap_stale_sessions_locked(now)
+            self._refresh_admission_state_locked(now=now)
+            runtime_state = self._runtime_resource_state_locked(now=now)
+            telemetry = _daemon_runtime_telemetry_snapshot(
+                runtime_state=runtime_state,
+                relay_quotas=self._relay_quotas,
+                sessions=self._sessions,
+                jobs=self._jobs,
+                requester_peer_identity=peer_identity,
+            )
+            return DaemonResponse(ok=True, payload={"runtime_telemetry": telemetry})
+
     def handle_request(
         self,
         request: DaemonRequest,
@@ -6707,6 +6725,237 @@ def _runtime_state_without_transfer(
                 "job_runtime_state": filtered["job_runtime_state"],
             }
     return filtered
+
+
+def _daemon_runtime_telemetry_snapshot(
+    *,
+    runtime_state: Mapping[str, object],
+    relay_quotas: Mapping[int, RelayQuota],
+    sessions: Mapping[str, Session],
+    jobs: Mapping[str, JobIdentity],
+    requester_peer_identity: PeerIdentity | None,
+) -> dict[str, object]:
+    summary = dict(runtime_state.get("summary", {}) or {})
+    relay_load = relay_load_from_runtime_state(runtime_state)
+    active_resource_usage = dict(runtime_state.get("active_resource_usage", {}) or {})
+    job_runtime_state = {
+        str(job_id): dict(record)
+        for job_id, record in dict(runtime_state.get("job_runtime_state", {}) or {}).items()
+        if isinstance(record, Mapping)
+    }
+    return {
+        "schema_version": 1,
+        "source": "daemon_runtime_telemetry",
+        "version": int(runtime_state.get("version", 0) or 0),
+        "captured_at": float(runtime_state.get("captured_at", 0.0) or 0.0),
+        "requester_peer_identity": (
+            None if requester_peer_identity is None else asdict(requester_peer_identity)
+        ),
+        "summary": _runtime_telemetry_summary(summary),
+        "queue": {
+            "transfer_order": tuple(runtime_state.get("transfer_order", ()) or ()),
+            "queued": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("queued_transfers", ())
+                )
+            ),
+            "admitted": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("admitted_transfers", ())
+                )
+            ),
+            "delayed": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("delayed_transfers", ())
+                )
+            ),
+        },
+        "execution": {
+            "running": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("running_transfers", ())
+                )
+            ),
+            "active": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("active_transfers", ())
+                )
+            ),
+            "active_paths": tuple(
+                _runtime_telemetry_path_record(record)
+                for record in _runtime_mapping_records(runtime_state.get("active_paths", ()))
+            ),
+            "active_resource_usage": active_resource_usage,
+            "active_execution_evidence": dict(
+                summary.get("active_execution_evidence", {}) or {}
+            ),
+            "active_execution_evidence_by_source": {
+                str(source): dict(value)
+                for source, value in dict(
+                    summary.get("active_execution_evidence_by_source", {}) or {}
+                ).items()
+                if isinstance(value, Mapping)
+            },
+        },
+        "terminal": {
+            "recent": tuple(
+                _runtime_telemetry_transfer_record(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("recent_terminal_transfers", ())
+                )
+            ),
+            "terminal_execution_evidence": dict(
+                summary.get("terminal_execution_evidence", {}) or {}
+            ),
+            "terminal_execution_evidence_by_source": {
+                str(source): dict(value)
+                for source, value in dict(
+                    summary.get("terminal_execution_evidence_by_source", {}) or {}
+                ).items()
+                if isinstance(value, Mapping)
+            },
+            "terminal_completion_source_counts": dict(
+                summary.get("terminal_completion_source_counts", {}) or {}
+            ),
+        },
+        "relays": {
+            "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
+            "relay_load": {
+                int(relay): dict(record)
+                for relay, record in sorted(relay_load.items())
+            },
+            "active_reservations": tuple(
+                dict(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("active_reservations", ())
+                )
+            ),
+            "active_leases": tuple(
+                dict(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("active_leases", ())
+                )
+            ),
+            "relay_staging": tuple(
+                dict(record)
+                for record in _runtime_mapping_records(
+                    runtime_state.get("relay_staging", ())
+                )
+            ),
+            "quota": {
+                int(relay): {
+                    "relay_gpu": int(quota.relay_gpu),
+                    "max_sessions": int(quota.max_sessions),
+                    "max_inflight_chunks": int(quota.max_inflight_chunks),
+                    "active_chunks": int(quota.active_chunks),
+                    "sessions": tuple(sorted(str(item) for item in quota.sessions)),
+                }
+                for relay, quota in sorted(relay_quotas.items())
+            },
+        },
+        "jobs": {
+            "runtime_state": job_runtime_state,
+            "registered": {
+                str(job_id): {
+                    "job_id": job.job_id,
+                    "user_id": job.user_id,
+                    "session_id": job.session_id,
+                    "container_id": job.container_id,
+                    "process_id": job.process_id,
+                    "weight": float(job.weight),
+                }
+                for job_id, job in sorted(jobs.items())
+            },
+        },
+        "sessions": {
+            str(session_id): {
+                "session_id": session.session_id,
+                "target_gpu": int(session.target_gpu),
+                "relay_gpus": tuple(int(gpu) for gpu in session.relay_gpus),
+                "max_inflight_chunks": int(session.max_inflight_chunks),
+                "active_chunks": int(session.active_chunks),
+                "active": bool(session.active),
+                "worker_relay_capable": bool(session.worker_relay_capable),
+            }
+            for session_id, session in sorted(sessions.items())
+        },
+        "worker_feedback": dict(summary.get("runtime_feedback_metrics", {}) or {}),
+    }
+
+
+def _runtime_telemetry_summary(summary: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "queued_transfer_count": int(summary.get("queued_transfer_count", 0) or 0),
+        "admitted_transfer_count": int(summary.get("admitted_transfer_count", 0) or 0),
+        "delayed_transfer_count": int(summary.get("delayed_transfer_count", 0) or 0),
+        "running_transfer_count": int(summary.get("running_transfer_count", 0) or 0),
+        "active_transfer_count": int(summary.get("active_transfer_count", 0) or 0),
+        "recent_terminal_transfer_count": int(
+            summary.get("recent_terminal_transfer_count", 0) or 0
+        ),
+        "terminal_transfer_count": int(summary.get("terminal_transfer_count", 0) or 0),
+        "active_reservation_count": int(summary.get("active_reservation_count", 0) or 0),
+        "active_lease_count": int(summary.get("active_lease_count", 0) or 0),
+        "relay_staging_count": int(summary.get("relay_staging_count", 0) or 0),
+        "relay_path_count": int(summary.get("relay_path_count", 0) or 0),
+        "relay_path_bytes_total": int(summary.get("relay_path_bytes_total", 0) or 0),
+        "completion_source_counts": dict(summary.get("completion_source_counts", {}) or {}),
+        "queued_bytes_by_direction": dict(
+            summary.get("queued_bytes_by_direction", {}) or {}
+        ),
+        "active_bytes_by_direction": dict(
+            summary.get("active_bytes_by_direction", {}) or {}
+        ),
+        "active_paths": dict(summary.get("active_paths", {}) or {}),
+    }
+
+
+def _runtime_telemetry_transfer_record(record: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "transfer_id": str(record.get("transfer_id", "")),
+        "intent_id": record.get("intent_id"),
+        "job_id": record.get("job_id"),
+        "session_id": record.get("session_id"),
+        "state": str(record.get("state", "")),
+        "direction": str(record.get("direction", "unknown")),
+        "bytes_total": int(record.get("bytes_total", 0) or 0),
+        "bytes_completed": int(record.get("bytes_completed", 0) or 0),
+        "bytes_remaining": max(
+            0,
+            int(record.get("bytes_total", 0) or 0)
+            - int(record.get("bytes_completed", 0) or 0),
+        ),
+        "chunk_bytes": int(record.get("chunk_bytes", 0) or 0),
+        "workload_kind": record.get("workload_kind"),
+        "priority": int(record.get("priority", 0) or 0),
+        "admission_state": record.get("admission_state"),
+        "admission_reason": record.get("admission_reason"),
+        "completion_source": record.get("completion_source"),
+        "plan_generation": int(record.get("plan_generation", 0) or 0),
+        "queued_at": record.get("queued_at"),
+        "started_at": record.get("started_at"),
+        "completed_at": record.get("completed_at"),
+        "fallback_reason": record.get("fallback_reason"),
+    }
+
+
+def _runtime_telemetry_path_record(record: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "transfer_id": str(record.get("transfer_id", "")),
+        "kind": str(record.get("kind", "unknown")),
+        "direction": str(record.get("direction", "unknown")),
+        "target_device": record.get("target_device"),
+        "relay_device": record.get("relay_device"),
+        "bytes_total": int(record.get("bytes_total", 0) or 0),
+        "chunk_count": int(record.get("chunk_count", 0) or 0),
+        "completion_source": record.get("completion_source"),
+        "phase": record.get("phase"),
+    }
 
 
 def _refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:

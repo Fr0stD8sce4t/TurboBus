@@ -932,6 +932,19 @@ class TurboBusRuntimeSession:
             )
         return evidence
 
+    def runtime_telemetry_snapshot(self) -> dict[str, object]:
+        self._require_open()
+        self._ensure_managed_services_alive("runtime_telemetry_snapshot")
+        telemetry = getattr(self._runtime_daemon_client(), "runtime_telemetry", None)
+        if not callable(telemetry):
+            raise TypeError("daemon runtime client must support runtime_telemetry")
+        response = telemetry()
+        require_ok(response, "daemon runtime telemetry query failed")
+        snapshot = response.payload.get("runtime_telemetry")
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("daemon response missing runtime_telemetry")
+        return dict(snapshot)
+
     def _register_buffer(self, buffer: ExecutableBuffer) -> None:
         self._require_open()
         validate_runtime_buffer_backing(buffer)

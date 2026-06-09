@@ -32,5 +32,13 @@ class RuntimeExecutionDaemonView:
     def validate_lease(self, *args, **kwargs) -> DaemonResponse:
         return self.execution_daemon.validate_lease(*args, **kwargs)
 
+    def runtime_telemetry(self) -> DaemonResponse:
+        telemetry = getattr(self.execution_daemon, "runtime_telemetry", None)
+        if not callable(telemetry):
+            telemetry = getattr(self.intent_daemon, "runtime_telemetry", None)
+        if not callable(telemetry):
+            raise TypeError("daemon client must support runtime_telemetry")
+        return telemetry()
+
 
 __all__ = ["RuntimeExecutionDaemonView"]

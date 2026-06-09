@@ -5,17 +5,19 @@ appending history.
 
 ## Current Main Target
 
-G31-G42 code-function queue complete.
+G44 adaptive scheduling policy.
 
-The auto-advance code-function queue has completed through G42. Keep future
-work scoped to the next explicit target. Do not start functional validation,
-benchmark execution, paper validation, server validation, multi-GPU execution,
-new tests, mock gates, fake receipts, synthetic evidence, or dry-run
-deliverables unless a new active plan explicitly allows that stage.
+G43 is complete: the daemon now exposes a production runtime telemetry snapshot
+for queued, admitted, delayed, running, active, recent-terminal, relay-load,
+job, session, and worker-feedback state. The current target is to make the
+scheduler consume that telemetry through a clearer adaptive policy model.
 
 ## Current Code Work
 
-- No active code target in the G31-G42 queue.
+- `turbobus/scheduler/daemon.py`: scheduler cost and relay filtering policy.
+- `turbobus/scheduler/load_feedback.py`: runtime load view derived from daemon
+  telemetry.
+- `turbobus/daemon/server.py`: daemon telemetry source passed into scheduling.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -36,10 +38,13 @@ Round rules:
 
 ## Next Entry
 
-Auto-advance has stopped because G42 is complete.
+Implement G44 as one complete production capability: scheduler decisions should
+use daemon runtime telemetry to adapt direct, relay, and mixed pooled path
+weights without allowing applications or adapters to choose physical routes.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: none.
+Remaining auto-advance target queue: G44, G45, G46, G47, G48, G49, G50, G51,
+G52, G53, G54.

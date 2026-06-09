@@ -6,24 +6,25 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G42 are complete.
-- G42 paper report code recovery is present: report-facing code now aggregates
-  existing production benchmark JSON only, consumes daemon/worker receipt
-  evidence already present in those summaries, and no longer starts benchmark
-  subprocesses, deletes outputs, creates synthetic evidence, manufactures
-  receipts, or emits dry-run deliverables.
-- Auto-advance has stopped because the G31-G42 code-function queue is complete.
+- G1 through G43 are complete.
+- G43 runtime telemetry model is present: daemon, socket clients, runtime view,
+  and `TurboBusRuntimeSession` expose a production telemetry snapshot for queue,
+  active execution, relay load, recent terminal completion, job/session state,
+  and worker runtime feedback.
+- Auto-advance is active. The current main target is G44 adaptive scheduling
+  policy.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
+- G44 still needs scheduler policy code that consumes the telemetry model for
+  adaptive direct/relay/mixed weighting.
 
 ## Next Main Target
 
-No active G31-G42 target remains. The next main target requires a new explicit
-plan.
+G44 adaptive scheduling policy.
 
 Progress-file rule:
 

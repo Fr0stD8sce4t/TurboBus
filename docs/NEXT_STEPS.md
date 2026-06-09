@@ -5,20 +5,22 @@ appending history.
 
 ## Current Main Target
 
-G45 worker resident async execution.
+G46 buffer lifecycle pooling.
 
-G44 is complete: scheduler decisions now derive adaptive direct/relay/mixed
-weights from daemon runtime telemetry and record the adaptive policy in
-decision metadata. The current target is to strengthen resident worker async
-execution for daemon-issued tickets.
+G45 is complete: worker execution now exposes resident async pool state,
+queue/running/terminal snapshots, cancellation, drain, close, and failure
+evidence for daemon-issued ticket work. The current target is to strengthen
+buffer lifecycle pooling.
 
 ## Current Code Work
 
-- `turbobus/worker/lifecycle.py`: worker async execution pool, submit/wait,
-  cleanup, and result reporting.
-- `turbobus/worker/cuda_executor.py`: CUDA worker handle lifecycle and terminal
-  state.
-- `turbobus/worker/models.py`: worker request/result contracts.
+- `turbobus/runtime_session.py`: runtime-owned buffer registration, cleanup,
+  and close behavior.
+- `turbobus/runtime/buffers.py`: runtime buffer backing validation and
+  registration metadata.
+- `turbobus/buffer_registration.py`: executable buffer registration helpers.
+- `turbobus/worker/resources.py`: worker-side shared pinned CPU and CUDA IPC
+  resource open/close lifecycle.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -39,13 +41,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G45 as one complete production capability: worker execution should
-keep daemon-issued ticket work in a resident async pool with clear submit,
-wait, cancellation/failure cleanup, and receipt-facing evidence.
+Implement G46 as one complete production capability: shared pinned CPU buffers
+and CUDA IPC buffers should have a clear pooled lifecycle with registration,
+reference/lease ownership, execution use, cleanup, and receipt-facing evidence.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G45, G46, G47, G48, G49, G50, G51, G52,
-G53, G54.
+Remaining auto-advance target queue: G46, G47, G48, G49, G50, G51, G52, G53,
+G54.

@@ -586,6 +586,7 @@ class WorkerAsyncExecutionPool:
         self._queued: dict[str, dict[str, object]] = {}
         self._running: dict[str, dict[str, object]] = {}
         self._terminal: dict[str, dict[str, object]] = {}
+        self._closed = False
 
     def submit(
         self,
@@ -612,6 +613,8 @@ class WorkerAsyncExecutionPool:
             queued_at=queued_at,
         )
         with self._lock:
+            if self._closed:
+                raise WorkerAsyncExecutionPoolError("worker async execution pool is closed")
             if worker_request.transfer_id in self._queued or worker_request.transfer_id in self._running:
                 raise WorkerAsyncExecutionPoolError(
                     "worker transfer is already queued or running"
@@ -645,20 +648,85 @@ class WorkerAsyncExecutionPool:
 
     def describe(self) -> dict[str, object]:
         with self._lock:
-            return {
-                "queued": {
-                    key: dict(value) for key, value in sorted(self._queued.items())
-                },
-                "running": {
-                    key: dict(value) for key, value in sorted(self._running.items())
-                },
-                "terminal": {
-                    key: dict(value) for key, value in sorted(self._terminal.items())
-                },
-            }
+            return self._describe_locked()
 
-    def close(self) -> None:
-        self._executor_pool.shutdown(wait=True)
+    def cancel_transfer(
+        self,
+        execution: "WorkerAsyncExecution",
+        *,
+        reason: str = "worker_async_execution_cancelled",
+    ) -> dict[str, object]:
+        if not isinstance(execution, WorkerAsyncExecution):
+            raise TypeError("execution must be WorkerAsyncExecution")
+        if execution.pool is not self:
+            raise WorkerAsyncExecutionPoolError(
+                "worker async execution belongs to another pool"
+            )
+        canceled = execution.future.cancel()
+        record = {
+            "pool": "worker_async_execution_pool",
+            "pool_ticket": execution.pool_ticket,
+            "transfer_id": execution.transfer_id,
+            "state": "canceled" if canceled else "cancel_requested",
+            "reason": str(reason),
+            "canceled": bool(canceled),
+            "recorded_at": time.time(),
+        }
+        with self._lock:
+            queued = self._queued.pop(execution.transfer_id, None)
+            if isinstance(queued, Mapping):
+                record["queued_record"] = dict(queued)
+            running = self._running.get(execution.transfer_id)
+            if isinstance(running, Mapping):
+                record["running_record"] = dict(running)
+            self._terminal[execution.transfer_id] = record
+        return dict(record)
+
+    def drain_terminal(self) -> dict[str, dict[str, object]]:
+        with self._lock:
+            terminal = {
+                key: dict(value) for key, value in sorted(self._terminal.items())
+            }
+            self._terminal.clear()
+        return terminal
+
+    def close(self, *, cancel_queued: bool = True) -> dict[str, object]:
+        closed_at = time.time()
+        with self._lock:
+            self._closed = True
+            queued_snapshot = {
+                key: dict(value) for key, value in sorted(self._queued.items())
+            }
+            running_snapshot = {
+                key: dict(value) for key, value in sorted(self._running.items())
+            }
+        self._executor_pool.shutdown(wait=True, cancel_futures=bool(cancel_queued))
+        with self._lock:
+            terminal_snapshot = {
+                key: dict(value) for key, value in sorted(self._terminal.items())
+            }
+        return {
+            "pool": "worker_async_execution_pool",
+            "closed_at": closed_at,
+            "cancel_queued": bool(cancel_queued),
+            "queued_at_close": queued_snapshot,
+            "running_at_close": running_snapshot,
+            "terminal_at_close": terminal_snapshot,
+        }
+
+    def _describe_locked(self) -> dict[str, object]:
+        return {
+            "closed": bool(self._closed),
+            "queued": {
+                key: dict(value) for key, value in sorted(self._queued.items())
+            },
+            "running": {
+                key: dict(value) for key, value in sorted(self._running.items())
+            },
+            "terminal": {
+                key: dict(value) for key, value in sorted(self._terminal.items())
+            },
+        }
 
     def _next_pool_ticket(self, worker_request: WorkerTransferRequest) -> str:
         with self._lock:
@@ -737,12 +805,19 @@ class WorkerAsyncExecution:
         self.future = future
 
     def evidence(self, *, state: str = "failed") -> dict[str, object]:
-        return {
+        evidence = {
             "pool": "worker_async_execution_pool",
             "pool_ticket": self.pool_ticket,
             "transfer_id": self.transfer_id,
             "state": str(state),
         }
+        evidence["pool_snapshot"] = self.pool.describe()
+        evidence["future"] = {
+            "done": bool(self.future.done()),
+            "cancelled": bool(self.future.cancelled()),
+            "running": bool(self.future.running()),
+        }
+        return evidence
 
 
 class WorkerTransferClient:
@@ -789,6 +864,12 @@ class WorkerTransferClient:
         request: WorkerTransferAuthorizationRequest,
     ) -> WorkerTransferRequest:
         return self._authorizer._authorize(request)
+
+    def describe_execution_pool(self) -> dict[str, object]:
+        return self._execution_pool.describe()
+
+    def close_execution_pool(self, *, cancel_queued: bool = True) -> dict[str, object]:
+        return self._execution_pool.close(cancel_queued=cancel_queued)
 
     def submit_report_cleanup_lifecycle(
         self,

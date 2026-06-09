@@ -223,6 +223,106 @@ class RuntimeLoadView:
             + float(summary["worker_pressure"]),
         )
 
+    def adaptive_policy_for_path(
+        self,
+        *,
+        path_kind: str,
+        direction: str,
+        relay_device: int | None = None,
+        admission_state: str = "available",
+    ) -> dict[str, object]:
+        kind = str(path_kind).lower()
+        normalized_direction = str(direction).lower()
+        pressure_summary = self.scheduler_pressure_summary(normalized_direction)
+        if kind == "relay":
+            relay_record = (
+                {}
+                if relay_device is None
+                else dict(self.relay_load.get(int(relay_device), {}) or {})
+            )
+            path_pressure = self.relay_cost_pressure(
+                -1 if relay_device is None else int(relay_device),
+                normalized_direction,
+            )
+            path_active_bytes = int(relay_record.get("active_bytes", 0) or 0)
+            busy = relay_device is not None and int(relay_device) in self.busy_relays
+            idle_bonus = 0.18 if not busy and path_active_bytes == 0 else 0.0
+            backlog_penalty = min(
+                int(relay_record.get("active_path_count", 0) or 0)
+                + int(relay_record.get("active_lease_count", 0) or 0)
+                + int(relay_record.get("staging_record_count", 0) or 0),
+                16,
+            ) * 0.035
+            source_pressure = float(pressure_summary["worker_pressure"])
+        else:
+            path_pressure = self.direct_cost_pressure(normalized_direction)
+            direct_active = self.active_execution_evidence_by_source.get("backend", {})
+            path_active_bytes = _execution_evidence_total_bytes(direct_active)
+            busy = False
+            idle_bonus = 0.10 if path_active_bytes == 0 else 0.0
+            backlog_penalty = min(self.running_transfer_count, 16) * 0.018
+            source_pressure = float(pressure_summary["backend_pressure"])
+        fairness_denominator = max(self.fairness_threshold_bytes, 1.0)
+        fairness_overage = max(
+            0.0,
+            self.projected_weighted_active_bytes - self.fairness_threshold_bytes,
+        )
+        fairness_penalty = min(fairness_overage / fairness_denominator, 2.0) * 0.20
+        admission_penalty = _adaptive_admission_penalty(admission_state)
+        workload_bias = self.workload_path_multiplier(kind)
+        priority_discount = self.priority_pressure_discount()
+        total_penalty = max(
+            0.0,
+            path_pressure + backlog_penalty + fairness_penalty + admission_penalty,
+        )
+        multiplier = max(
+            0.05,
+            (1.0 + idle_bonus) * workload_bias * priority_discount
+            / (1.0 + total_penalty + source_pressure),
+        )
+        return {
+            "source": "daemon_runtime_telemetry_adaptive_policy",
+            "path_kind": kind,
+            "direction": normalized_direction,
+            "relay_device": relay_device,
+            "admission_state": str(admission_state),
+            "busy": bool(busy),
+            "path_pressure": path_pressure,
+            "source_pressure": source_pressure,
+            "backlog_penalty": backlog_penalty,
+            "fairness_penalty": fairness_penalty,
+            "admission_penalty": admission_penalty,
+            "idle_bonus": idle_bonus,
+            "workload_bias": workload_bias,
+            "priority_discount": priority_discount,
+            "multiplier": multiplier,
+            "path_active_bytes": int(path_active_bytes),
+            "runtime_state_version": int(self.runtime_state.get("version", 0) or 0),
+            "pressure_summary": dict(pressure_summary),
+        }
+
+    def adaptive_policy_metadata(self, direction: str) -> dict[str, object]:
+        normalized_direction = str(direction).lower()
+        relay_policies = {
+            int(relay): self.adaptive_policy_for_path(
+                path_kind="relay",
+                direction=normalized_direction,
+                relay_device=int(relay),
+            )
+            for relay in sorted(self.relay_load)
+        }
+        return {
+            "source": "daemon_runtime_telemetry_adaptive_policy",
+            "direction": normalized_direction,
+            "runtime_state_version": int(self.runtime_state.get("version", 0) or 0),
+            "direct": self.adaptive_policy_for_path(
+                path_kind="direct",
+                direction=normalized_direction,
+            ),
+            "relays": relay_policies,
+            "summary": self.scheduler_pressure_summary(normalized_direction),
+        }
+
     def priority_pressure_discount(self) -> float:
         priority = min(max(int(self.priority), 0), 9)
         return 1.0 / (1.0 + priority * 0.08)
@@ -493,6 +593,19 @@ def workload_charge_multiplier(workload_kind: str) -> float:
     if workload_kind == WorkloadKind.OPTIMIZER_STATE.value:
         return 1.25
     return 1.0
+
+
+def _adaptive_admission_penalty(admission_state: str) -> float:
+    state = str(admission_state).lower()
+    if state == "available":
+        return 0.0
+    if state == "admitted":
+        return 0.04
+    if state == "deferred":
+        return 0.18
+    if state == "filtered":
+        return 0.35
+    return 0.25
 
 
 def fairness_fallback_for_plan(

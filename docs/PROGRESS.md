@@ -6,25 +6,24 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G43 are complete.
-- G43 runtime telemetry model is present: daemon, socket clients, runtime view,
-  and `TurboBusRuntimeSession` expose a production telemetry snapshot for queue,
-  active execution, relay load, recent terminal completion, job/session state,
-  and worker runtime feedback.
-- Auto-advance is active. The current main target is G44 adaptive scheduling
-  policy.
+- G1 through G44 are complete.
+- G44 adaptive scheduling policy is present: daemon runtime telemetry now feeds
+  direct, relay, and mixed pooled scheduler weights, and decisions carry
+  adaptive policy metadata.
+- Auto-advance is active. The current main target is G45 worker resident async
+  execution.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G44 still needs scheduler policy code that consumes the telemetry model for
-  adaptive direct/relay/mixed weighting.
+- G45 still needs worker-side resident async execution hardening for submit,
+  wait, cancellation/failure cleanup, and evidence reporting.
 
 ## Next Main Target
 
-G44 adaptive scheduling policy.
+G45 worker resident async execution.
 
 Progress-file rule:
 

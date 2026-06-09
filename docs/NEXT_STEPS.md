@@ -5,19 +5,20 @@ appending history.
 
 ## Current Main Target
 
-G44 adaptive scheduling policy.
+G45 worker resident async execution.
 
-G43 is complete: the daemon now exposes a production runtime telemetry snapshot
-for queued, admitted, delayed, running, active, recent-terminal, relay-load,
-job, session, and worker-feedback state. The current target is to make the
-scheduler consume that telemetry through a clearer adaptive policy model.
+G44 is complete: scheduler decisions now derive adaptive direct/relay/mixed
+weights from daemon runtime telemetry and record the adaptive policy in
+decision metadata. The current target is to strengthen resident worker async
+execution for daemon-issued tickets.
 
 ## Current Code Work
 
-- `turbobus/scheduler/daemon.py`: scheduler cost and relay filtering policy.
-- `turbobus/scheduler/load_feedback.py`: runtime load view derived from daemon
-  telemetry.
-- `turbobus/daemon/server.py`: daemon telemetry source passed into scheduling.
+- `turbobus/worker/lifecycle.py`: worker async execution pool, submit/wait,
+  cleanup, and result reporting.
+- `turbobus/worker/cuda_executor.py`: CUDA worker handle lifecycle and terminal
+  state.
+- `turbobus/worker/models.py`: worker request/result contracts.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -38,13 +39,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G44 as one complete production capability: scheduler decisions should
-use daemon runtime telemetry to adapt direct, relay, and mixed pooled path
-weights without allowing applications or adapters to choose physical routes.
+Implement G45 as one complete production capability: worker execution should
+keep daemon-issued ticket work in a resident async pool with clear submit,
+wait, cancellation/failure cleanup, and receipt-facing evidence.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G44, G45, G46, G47, G48, G49, G50, G51,
-G52, G53, G54.
+Remaining auto-advance target queue: G45, G46, G47, G48, G49, G50, G51, G52,
+G53, G54.

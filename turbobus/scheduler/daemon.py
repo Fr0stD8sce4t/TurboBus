@@ -226,6 +226,7 @@ class DaemonScheduler:
                     relay_eligibility=relay_eligibility,
                 ),
                 "policy": runtime_load.policy_metadata(),
+                "adaptive_policy": runtime_load.adaptive_policy_metadata(direction),
                 "relay_policy": relay_policy.as_dict(),
             },
         )
@@ -1097,12 +1098,23 @@ def _direct_scheduler_weights(
 ) -> tuple[float, float, dict[str, object]]:
     h2d_pressure = runtime_view.direct_cost_pressure("h2d")
     d2h_pressure = runtime_view.direct_cost_pressure("d2h")
+    h2d_policy = runtime_view.adaptive_policy_for_path(
+        path_kind="direct",
+        direction="h2d",
+        admission_state=admission_state,
+    )
+    d2h_policy = runtime_view.adaptive_policy_for_path(
+        path_kind="direct",
+        direction="d2h",
+        admission_state=admission_state,
+    )
     adjusted_h2d, h2d_score = _scheduler_cost_adjusted_bandwidth(
         direct_h2d,
         h2d_pressure,
         runtime_view=runtime_view,
         path_kind="direct",
         admission_state=admission_state,
+        adaptive_policy=h2d_policy,
     )
     adjusted_d2h, d2h_score = _scheduler_cost_adjusted_bandwidth(
         direct_d2h,
@@ -1110,6 +1122,7 @@ def _direct_scheduler_weights(
         runtime_view=runtime_view,
         path_kind="direct",
         admission_state=admission_state,
+        adaptive_policy=d2h_policy,
     )
     return (
         adjusted_h2d,
@@ -1125,6 +1138,8 @@ def _direct_scheduler_weights(
             "d2h_pressure": d2h_pressure,
             "h2d_cost_score": h2d_score,
             "d2h_cost_score": d2h_score,
+            "adaptive_policy_h2d": h2d_policy,
+            "adaptive_policy_d2h": d2h_policy,
             "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
             "d2h_pressure_summary": runtime_view.scheduler_pressure_summary("d2h"),
             "admission_state": str(admission_state),
@@ -1151,12 +1166,25 @@ def _relay_profile_with_load_feedback(
         "d2h",
     )
     directionless_pressure = max(h2d_pressure, d2h_pressure)
+    h2d_policy = runtime_view.adaptive_policy_for_path(
+        path_kind="relay",
+        direction="h2d",
+        relay_device=relay_profile.relay_device,
+        admission_state=admission_state,
+    )
+    d2h_policy = runtime_view.adaptive_policy_for_path(
+        path_kind="relay",
+        direction="d2h",
+        relay_device=relay_profile.relay_device,
+        admission_state=admission_state,
+    )
     adjusted_h2d, h2d_score = _scheduler_cost_adjusted_bandwidth(
         relay_profile.effective_bw_gbps,
         h2d_pressure,
         runtime_view=runtime_view,
         path_kind="relay",
         admission_state=admission_state,
+        adaptive_policy=h2d_policy,
     )
     adjusted_d2h, d2h_score = _scheduler_cost_adjusted_bandwidth(
         relay_profile.effective_d2h_bw_gbps,
@@ -1164,6 +1192,7 @@ def _relay_profile_with_load_feedback(
         runtime_view=runtime_view,
         path_kind="relay",
         admission_state=admission_state,
+        adaptive_policy=d2h_policy,
     )
     path_cost_model = {
         "source": "daemon_scheduler_unified_cost_model",
@@ -1171,6 +1200,8 @@ def _relay_profile_with_load_feedback(
         "admission_reason": admission_reason,
         "h2d_cost_score": h2d_score,
         "d2h_cost_score": d2h_score,
+        "adaptive_policy_h2d": h2d_policy,
+        "adaptive_policy_d2h": d2h_policy,
         "workload_kind": runtime_view.workload_kind,
         "priority": int(runtime_view.priority),
     }
@@ -1280,6 +1311,7 @@ def _scheduler_cost_adjusted_bandwidth(
     runtime_view: RuntimeLoadView,
     path_kind: str,
     admission_state: str,
+    adaptive_policy: Mapping[str, object] | None = None,
 ) -> tuple[float, float]:
     cost_score = _scheduler_cost_score(
         pressure,
@@ -1290,7 +1322,10 @@ def _scheduler_cost_adjusted_bandwidth(
     normalized_bandwidth = max(0.0, float(bandwidth))
     if normalized_bandwidth <= 0.0:
         return 0.0, cost_score
-    return normalized_bandwidth / max(cost_score, 1e-12), cost_score
+    multiplier = 1.0
+    if isinstance(adaptive_policy, Mapping):
+        multiplier = max(0.05, float(adaptive_policy.get("multiplier", 1.0) or 1.0))
+    return normalized_bandwidth * multiplier / max(cost_score, 1e-12), cost_score
 
 
 def _scheduler_cost_score(

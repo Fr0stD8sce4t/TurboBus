@@ -3,10 +3,13 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from .. import native_plan, native_runtime, tensor_validation
+from .base import BackendExactPlanRequest, BackendSubmission
 
 
 class CudaNativeBackend:
     """Backend facade for the current CUDA native extension."""
+
+    name = "cuda"
 
     def __init__(
         self,
@@ -85,6 +88,43 @@ class CudaNativeBackend:
 
     def make_transfer_plan(self, plan: Any) -> Any:
         return self._native_plan.native_transfer_plan(plan)
+
+    def submit_exact_plan(
+        self,
+        runtime: Any,
+        request: BackendExactPlanRequest,
+    ) -> BackendSubmission:
+        exact_request = (
+            request
+            if isinstance(request, BackendExactPlanRequest)
+            else BackendExactPlanRequest(**dict(request))
+        )
+        native_plan_payload = self.make_transfer_plan(exact_request.plan)
+        if exact_request.direction == "h2d":
+            native_handle = self.fetch_plan_to_gpu(
+                runtime,
+                exact_request.host_ptr,
+                exact_request.host_bytes,
+                exact_request.device_ptr,
+                exact_request.device_bytes,
+                native_plan_payload,
+            )
+        else:
+            native_handle = self.offload_plan_to_cpu(
+                runtime,
+                exact_request.device_ptr,
+                exact_request.device_bytes,
+                exact_request.host_ptr,
+                exact_request.host_bytes,
+                native_plan_payload,
+            )
+        return BackendSubmission(
+            backend_name=self.name,
+            runtime=runtime,
+            handle=native_handle,
+            native_plan=native_plan_payload,
+            direction=exact_request.direction,
+        )
 
     def transfer_mode_value(self, mode: Any) -> Any:
         return self._native_runtime.runtime_transfer_mode_value(mode)

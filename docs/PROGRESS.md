@@ -6,26 +6,26 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G52 are complete.
-- G52 topology and fabric abstraction is present: daemon-discovered PCIe, NUMA,
-  and scale-up fabric capability summaries flow into scheduler and profile
-  metadata for direct, relay, and mixed pooled plans without synthetic
-  production topology.
-- Auto-advance is active. The current main target is G53 backend extensibility
-  interface.
+- G1 through G53 are complete.
+- G53 backend extensibility interface is present: direct-only runtime execution
+  and worker-managed relay or mixed pooled execution now submit exact
+  daemon-issued plans through a shared backend submission contract while keeping
+  CUDA as the current production backend.
+- Auto-advance is active. The current main target is G54 production safety
+  boundary enhancement.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G53 still needs a backend extensibility interface for direct, relay, and mixed
-  pooled exact daemon-issued plans while keeping CUDA as the current production
-  backend and deferring ROCm/HIP.
+- G54 still needs production-looking runtime and backend execution boundaries
+  tightened so applications and adapters cannot bypass daemon scheduling or
+  choose physical routes.
 
 ## Next Main Target
 
-G53 backend extensibility interface.
+G54 production safety boundary enhancement.
 
 Progress-file rule:
 

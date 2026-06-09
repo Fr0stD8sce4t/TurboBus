@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable, Mapping
 
+from .backends.base import BackendExactPlanRequest
 from .client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from .intent_execution_support import require_daemon_transfer_complete, require_ok
 from .profiling.daemon_format import profile_from_daemon_entry
@@ -239,7 +240,6 @@ def _run_direct_plan(
         device_bytes=int(device_bytes),
     )
     _set_cuda_device_for_direct_plan(backend, int(target_device))
-    native_plan = backend.make_transfer_plan(plan_payload)
     runtime = backend.create_runtime(runtime_options)
     backend.initialize_runtime(runtime, int(target_device), [])
     _install_daemon_profile_if_available(
@@ -265,32 +265,26 @@ def _run_direct_plan(
     completion_evidence: dict[str, object] | None = None
     unregister_evidence: dict[str, object] | None = None
     try:
-        if direction == "h2d":
-            handle = backend.fetch_plan_to_gpu(
-                runtime,
-                host_ptr,
-                host_buffer.size_bytes,
-                device_ptr,
-                int(device_bytes),
-                native_plan,
-            )
-        else:
-            handle = backend.offload_plan_to_cpu(
-                runtime,
-                device_ptr,
-                int(device_bytes),
-                host_ptr,
-                host_buffer.size_bytes,
-                native_plan,
-            )
-        backend.wait(runtime, handle)
-        stats = _direct_plan_stats(backend, runtime, handle)
+        submission = backend.submit_exact_plan(
+            runtime,
+            BackendExactPlanRequest(
+                direction=direction,
+                host_ptr=host_ptr,
+                host_bytes=host_buffer.size_bytes,
+                device_ptr=device_ptr,
+                device_bytes=int(device_bytes),
+                plan=plan_payload,
+            ),
+        )
+        backend.wait(submission.runtime, submission.handle)
+        stats = _direct_plan_stats(backend, submission.runtime, submission.handle)
         bytes_completed = _direct_plan_completed_bytes(
             stats,
             plan_payload=plan_payload,
         )
         completion_evidence = _direct_plan_completion_evidence(
             backend=backend,
+            backend_name=submission.backend_name,
             ticket=ticket,
             target_device=int(target_device),
             direction=direction,
@@ -435,6 +429,7 @@ def _direct_plan_completed_bytes(
 def _direct_plan_completion_evidence(
     *,
     backend,
+    backend_name: str,
     ticket: ExecutionTicket,
     target_device: int,
     direction: str,
@@ -452,6 +447,7 @@ def _direct_plan_completion_evidence(
             expected_bytes=int(expected_bytes),
             resource_evidence=resource_evidence,
             executor="direct_backend",
+            backend_name=backend_name,
             path=f"direct_{str(direction).lower()}",
             target_device=int(target_device),
             direct_bytes=int(expected_bytes),
@@ -477,6 +473,8 @@ def _direct_plan_completion_evidence(
     evidence.setdefault("expected_bytes", int(expected_bytes))
     evidence.setdefault("resource_evidence", dict(resource_evidence))
     evidence.setdefault("executor", "direct_backend")
+    evidence.setdefault("backend_name", str(backend_name))
+    evidence.setdefault("backend_submission_source", "backend_exact_plan_interface")
     evidence.setdefault("plan_source", "daemon")
     evidence.setdefault("path", f"direct_{str(direction).lower()}")
     evidence.setdefault("target_device", int(target_device))
@@ -496,6 +494,7 @@ def _skipped_verification_evidence(
     expected_bytes: int,
     resource_evidence: Mapping[str, object],
     executor: str,
+    backend_name: str,
     path: str,
     target_device: int,
     direct_bytes: int,
@@ -512,6 +511,8 @@ def _skipped_verification_evidence(
         "verification_skipped": True,
         "resource_evidence": dict(resource_evidence),
         "executor": str(executor),
+        "backend_name": str(backend_name),
+        "backend_submission_source": "backend_exact_plan_interface",
         "plan_source": "daemon",
         "path": str(path),
         "target_device": int(target_device),

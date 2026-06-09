@@ -5,19 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G53 backend extensibility interface.
+G54 production safety boundary enhancement.
 
-G52 is complete: topology and fabric abstraction now carries daemon-discovered
-PCIe, NUMA, and scale-up fabric capability summaries into scheduler and profile
-metadata for direct, relay, and mixed pooled plans without synthetic production
-topology. The current target is backend extensibility interface.
+G53 is complete: backend execution now exposes an exact-plan submission
+interface for daemon-issued direct, relay, and mixed pooled plans. CUDA remains
+the current production backend, while worker and direct execution no longer
+submit native CUDA plans through separate route-specific branches. The current
+target is production safety boundary enhancement.
 
 ## Current Code Work
 
-- `turbobus/backends/cuda.py`: CUDA backend contract and runtime operations.
-- `turbobus/native_runtime.py`: native runtime plan execution boundary.
-- `turbobus/worker/cuda_executor.py`: worker-side backend execution wrapper.
-- `turbobus/intent_executor.py`: exact daemon-issued plan execution bridge.
+- `turbobus/runtime_session.py`: single production runtime-session authority.
+- `turbobus/intent_executor.py`: TransferIntent to daemon-issued execution path.
+- `turbobus/direct_fallback.py`: direct-only exact-plan backend execution.
+- `turbobus/worker/cuda_executor.py`: ticketed worker/backend execution.
+- `turbobus/daemon/server.py`: daemon plan, ticket, status, and receipt boundary.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -38,13 +40,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G53 as one complete production capability: backend execution should
-expose a clear extensibility interface for direct, relay, and mixed pooled exact
-daemon-issued plans while keeping CUDA as the current production backend and
-without adding ROCm/HIP work or alternate validation entrypoints.
+Implement G54 as one complete production capability: production-looking runtime
+and backend execution paths should stay bounded by `TurboBusRuntimeSession`,
+daemon-issued tickets, and exact daemon-issued plans so applications and
+adapters cannot choose physical routes or bypass daemon scheduling.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G53, G54.
+Remaining auto-advance target queue: G54.

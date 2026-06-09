@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, replace
 from typing import Any
 
+from ..backends.base import BackendExactPlanRequest
 from ..backends.cuda import default_cuda_backend
 from ..profiling.daemon_format import profile_from_daemon_entry
 from ..runtime_options import RuntimeOptions
@@ -84,6 +85,7 @@ class CudaWorkerExecutor:
             )
         resource_evidence = _resource_evidence(request, resources)
         plan_payload: dict[str, object] = {}
+        backend_name = str(getattr(self.backend, "name", "cuda"))
         try:
             plan_payload = _worker_plan_payload(request, int(target_device))
             _trace_cuda_worker_stage(
@@ -91,7 +93,6 @@ class CudaWorkerExecutor:
                 transfer_id=request.transfer_id,
                 target_device=target_device,
             )
-            native_plan = self.backend.make_transfer_plan(plan_payload)
             runtime, runtime_reused, runtime_cache_key = self._runtime_for_request(
                 request,
                 target_device=int(target_device),
@@ -103,14 +104,6 @@ class CudaWorkerExecutor:
                     host_bytes=resources.host_bytes,
                     device_bytes=resources.device_bytes,
                 )
-                native_handle = self.backend.fetch_plan_to_gpu(
-                    runtime,
-                    resources.host_ptr,
-                    resources.host_bytes,
-                    resources.device_ptr,
-                    resources.device_bytes,
-                    native_plan,
-                )
             else:
                 _trace_cuda_worker_stage(
                     "cuda_executor_offload_start",
@@ -118,14 +111,20 @@ class CudaWorkerExecutor:
                     host_bytes=resources.host_bytes,
                     device_bytes=resources.device_bytes,
                 )
-                native_handle = self.backend.offload_plan_to_cpu(
-                    runtime,
-                    resources.device_ptr,
-                    resources.device_bytes,
-                    resources.host_ptr,
-                    resources.host_bytes,
-                    native_plan,
-                )
+            submission = self.backend.submit_exact_plan(
+                runtime,
+                BackendExactPlanRequest(
+                    direction=request.data_plane.direction,
+                    host_ptr=resources.host_ptr,
+                    host_bytes=resources.host_bytes,
+                    device_ptr=resources.device_ptr,
+                    device_bytes=resources.device_bytes,
+                    plan=plan_payload,
+                ),
+            )
+            native_handle = submission.handle
+            runtime = submission.runtime
+            backend_name = submission.backend_name
         except Exception as exc:
             handle = CudaWorkerTransferHandle.failed_before_submit(
                 request=request,
@@ -150,6 +149,7 @@ class CudaWorkerExecutor:
             resource_evidence=resource_evidence,
             runtime_reused=runtime_reused,
             runtime_cache_key=runtime_cache_key,
+            backend_name=backend_name,
         )
         self._inflight[request.transfer_id] = handle
         _trace_cuda_worker_stage(
@@ -383,6 +383,7 @@ class CudaWorkerTransferHandle:
     resource_evidence: dict[str, object]
     runtime_reused: bool = False
     runtime_cache_key: tuple[object, ...] = ()
+    backend_name: str = "cuda"
     submitted_at: float = 0.0
     completed_at: float | None = None
     state: WorkerTransferState = WorkerTransferState.RUNNING
@@ -397,6 +398,7 @@ class CudaWorkerTransferHandle:
         self.resource_evidence = dict(self.resource_evidence)
         self.runtime_reused = bool(self.runtime_reused)
         self.runtime_cache_key = tuple(self.runtime_cache_key)
+        self.backend_name = str(self.backend_name)
         self.state = WorkerTransferState(self.state)
 
     @classmethod
@@ -449,6 +451,8 @@ class CudaWorkerTransferHandle:
             "plan_generation": int(self.request.ticket.metadata["plan_generation"]),
             "target_device": self.target_device,
             "relay_gpus": _relay_gpus_for_request(self.request),
+            "backend_name": self.backend_name,
+            "backend_submission_source": "backend_exact_plan_interface",
             "runtime_reused": self.runtime_reused,
             "runtime_cache_key": tuple(self.runtime_cache_key),
             "submitted_at": self.submitted_at,

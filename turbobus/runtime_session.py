@@ -776,6 +776,37 @@ class TurboBusRuntimeSession:
             intent_id=normalized_intent_id,
         )
 
+    def recover_transfer_state(
+        self,
+        *,
+        intent_id: str | None = None,
+        transfer_id: str | None = None,
+    ) -> dict[str, object]:
+        self._require_open()
+        if intent_id is None and transfer_id is None:
+            raise ValueError("intent_id or transfer_id is required")
+        if intent_id is not None and str(intent_id) not in self._submitted_intent_ids:
+            raise ValueError(
+                "runtime session can only recover intents submitted through it"
+            )
+        recover = getattr(self.daemon_client, "recover_transfer_state", None)
+        if not callable(recover):
+            raise TypeError("daemon client must support recover_transfer_state")
+        response = recover(intent_id=intent_id, transfer_id=transfer_id)
+        require_ok(response, "daemon transfer recovery failed")
+        recovery = response.payload.get("transfer_recovery")
+        if not isinstance(recovery, Mapping):
+            raise ValueError("daemon response missing transfer_recovery")
+        receipt_payload = recovery.get("receipt")
+        if isinstance(receipt_payload, Mapping):
+            receipt = _transfer_receipt_from_payload(receipt_payload)
+            if receipt.intent_id in self._submitted_intent_ids:
+                self._finalize_runtime_receipt(
+                    receipt,
+                    intent_id=receipt.intent_id,
+                )
+        return dict(recovery)
+
     def bootstrap_profile(self, *, force: bool = False):
         self._require_open()
         self.open_session()

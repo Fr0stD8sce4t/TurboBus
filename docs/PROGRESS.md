@@ -6,26 +6,26 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G47 are complete.
-- G47 multi-tenant fairness admission is present: daemon admission records
-  job/session load, queued/running/admitted/delayed transfer state, active
-  leases, relay quota pressure, buffer ownership, and receipt-facing admission
-  metadata.
-- Auto-advance is active. The current main target is G48 daemon state recovery
-  semantics.
+- G1 through G48 are complete.
+- G48 daemon state recovery is present: daemon recovery exposes authoritative
+  transfer state covering terminal receipt, admission, queue, ticket, lease,
+  buffer, cleanup, completion, and archived evidence without synthetic
+  receipts.
+- Auto-advance is active. The current main target is G49 vLLM KV deep
+  integration.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G48 still needs daemon state recovery to preserve terminal receipt,
-  admission, queue, ticket, lease, buffer, and cleanup evidence after transfer
-  completion or resource removal.
+- G49 still needs vLLM KV integration to use real `TurboBusRuntimeSession`
+  buffers, submit TransferIntent, and consume TransferReceipt without adapter
+  route selection.
 
 ## Next Main Target
 
-G48 daemon state recovery semantics.
+G49 vLLM KV deep integration.
 
 Progress-file rule:
 

@@ -1486,6 +1486,46 @@ class TurboBusDaemon:
                 continue
             time.sleep(min(0.01, max(0.0, deadline - time.time())))
 
+    def recover_transfer_state(
+        self,
+        *,
+        intent_id: str | None = None,
+        transfer_id: str | None = None,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
+        with self._lock:
+            try:
+                normalized_transfer_id = self._resolve_recovery_transfer_id_locked(
+                    intent_id=intent_id,
+                    transfer_id=transfer_id,
+                )
+                archived = self._transfer_receipt_archive.get(
+                    normalized_transfer_id,
+                    {},
+                )
+                status = self._transfer_statuses.get(normalized_transfer_id)
+                if status is None and isinstance(archived.get("status"), TransferStatus):
+                    status = archived["status"]
+                if status is None:
+                    return DaemonResponse(ok=False, error="transfer status is unavailable")
+                self._validate_peer_owns_receipt_transfer_locked(
+                    transfer_id=normalized_transfer_id,
+                    job_id=status.job_id,
+                    peer_identity=peer_identity,
+                )
+                recovery_state = self._transfer_recovery_state_locked(
+                    normalized_transfer_id,
+                    status=status,
+                    archived=archived,
+                    now=time.time(),
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
+            return DaemonResponse(
+                ok=True,
+                payload={"transfer_recovery": recovery_state},
+            )
+
     def validate_lease(
         self,
         lease_id: str,
@@ -5480,6 +5520,17 @@ class TurboBusDaemon:
             "buffer_snapshots": dict(
                 self._transfer_buffer_snapshots.get(normalized, {})
             ),
+            "queue_record": dict(self._transfer_queue_records.get(normalized, {})),
+            "reservations": tuple(
+                self._runtime_reservation_record_locked(reservation_id, reservation)
+                for reservation_id, reservation in sorted(self._reservations.items())
+                if self._reservation_transfers.get(reservation_id) == normalized
+            ),
+            "leases": tuple(
+                self._runtime_lease_record_locked(lease_id, lease)
+                for lease_id, lease in sorted(self._lease_tokens.items())
+                if self._reservation_transfers.get(lease_id) == normalized
+            ),
             "peer_identity": self._transfer_owner_peer_for_archive_locked(
                 transfer_id=normalized,
                 status=status,
@@ -5493,6 +5544,140 @@ class TurboBusDaemon:
         if updated != existing:
             self._runtime_state_version += 1
         self._transfer_receipt_archive[normalized] = updated
+
+    def _resolve_recovery_transfer_id_locked(
+        self,
+        *,
+        intent_id: str | None,
+        transfer_id: str | None,
+    ) -> str:
+        if transfer_id is not None:
+            normalized_transfer_id = str(transfer_id)
+            if (
+                normalized_transfer_id not in self._transfer_statuses
+                and normalized_transfer_id not in self._transfer_receipt_archive
+            ):
+                raise ValueError("unknown transfer")
+            return normalized_transfer_id
+        if intent_id is None:
+            raise ValueError("intent_id or transfer_id is required")
+        normalized_intent_id = str(intent_id)
+        resolved = self._intent_transfers.get(normalized_intent_id)
+        if resolved is None:
+            resolved = self._archived_intent_transfers.get(normalized_intent_id)
+        if resolved is None:
+            raise ValueError("unknown transfer intent")
+        return str(resolved)
+
+    def _transfer_recovery_state_locked(
+        self,
+        transfer_id: str,
+        *,
+        status: TransferStatus,
+        archived: Mapping[str, object],
+        now: float,
+    ) -> dict[str, object]:
+        normalized = str(transfer_id)
+        self._archive_transfer_receipt_state_locked(normalized)
+        archived = self._transfer_receipt_archive.get(normalized, archived)
+        admission = dict(self._transfer_admissions.get(normalized, {}))
+        if not admission and isinstance(archived.get("admission"), Mapping):
+            admission = dict(archived["admission"])
+        queue_record = dict(self._transfer_queue_records.get(normalized, {}))
+        if not queue_record and isinstance(archived.get("queue_record"), Mapping):
+            queue_record = dict(archived["queue_record"])
+        ticket = self._receipt_execution_ticket_for_transfer_locked(normalized)
+        reservations = tuple(
+            self._runtime_reservation_record_locked(reservation_id, reservation)
+            for reservation_id, reservation in sorted(self._reservations.items())
+            if self._reservation_transfers.get(reservation_id) == normalized
+        )
+        archived_reservations = archived.get("reservations")
+        if (
+            not reservations
+            and isinstance(archived_reservations, Iterable)
+            and not isinstance(archived_reservations, (str, bytes, Mapping))
+        ):
+            reservations = tuple(
+                dict(item)
+                for item in archived_reservations
+                if isinstance(item, Mapping)
+            )
+        leases = tuple(
+            self._runtime_lease_record_locked(lease_id, lease)
+            for lease_id, lease in sorted(self._lease_tokens.items())
+            if self._reservation_transfers.get(lease_id) == normalized
+        )
+        archived_leases = archived.get("leases")
+        if (
+            not leases
+            and isinstance(archived_leases, Iterable)
+            and not isinstance(archived_leases, (str, bytes, Mapping))
+        ):
+            leases = tuple(
+                dict(item)
+                for item in archived_leases
+                if isinstance(item, Mapping)
+            )
+        buffer_snapshots = self._transfer_buffer_snapshots.get(normalized)
+        if not isinstance(buffer_snapshots, Mapping):
+            buffer_snapshots = archived.get("buffer_snapshots", {})
+        cleanup_targets = tuple(
+            _jsonable_cleanup_target_record(target)
+            for target in self._retired_cleanup_targets.values()
+            if normalized
+            in {str(item) for item in target.get("transfer_ids", ()) or ()}
+        )
+        intent = self._transfer_intents.get(str(archived.get("intent_id")))
+        if intent is None and isinstance(archived.get("intent"), TransferIntent):
+            intent = archived["intent"]
+        decision = self._scheduling_decisions.get(normalized)
+        if decision is None and isinstance(archived.get("decision"), SchedulingDecision):
+            decision = archived["decision"]
+        receipt = None
+        if intent is not None and decision is not None:
+            try:
+                receipt = self._receipt_for_intent_locked(intent.intent_id)
+            except ValueError:
+                receipt = None
+        return {
+            "source": "daemon_authoritative_transfer_recovery",
+            "transfer_id": normalized,
+            "intent_id": archived.get("intent_id"),
+            "state": str(getattr(status.state, "value", status.state)),
+            "job_id": status.job_id,
+            "session_id": status.session_id,
+            "status": asdict(status),
+            "receipt": None if receipt is None else asdict(receipt),
+            "admission": admission,
+            "queue_record": queue_record,
+            "ticket": None if ticket is None else asdict(ticket),
+            "reservations": reservations,
+            "leases": leases,
+            "buffer_snapshots": (
+                {
+                    str(key): dict(value)
+                    for key, value in buffer_snapshots.items()
+                    if isinstance(value, Mapping)
+                }
+                if isinstance(buffer_snapshots, Mapping)
+                else {}
+            ),
+            "cleanup_targets": cleanup_targets,
+            "completion_source": archived.get(
+                "completion_source",
+                self._transfer_completion_sources.get(normalized),
+            ),
+            "completion_evidence": dict(
+                archived.get(
+                    "completion_evidence",
+                    self._transfer_completion_evidence.get(normalized, {}),
+                )
+                or {}
+            ),
+            "recovered_at": float(now),
+            "archived": bool(normalized in self._transfer_receipt_archive),
+        }
 
     def _record_terminal_runtime_feedback_locked(self, transfer_id: str) -> None:
         normalized = str(transfer_id)

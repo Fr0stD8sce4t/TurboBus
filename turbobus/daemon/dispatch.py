@@ -90,6 +90,13 @@ def handle_request(
             timeout_seconds=payload.get("timeout_seconds"),
             peer_identity=request.peer_identity,
         )
+    if request.request_type == RequestType.RECOVER_TRANSFER_STATE:
+        payload = request.payload
+        return daemon.recover_transfer_state(
+            intent_id=payload.get("intent_id"),
+            transfer_id=payload.get("transfer_id"),
+            peer_identity=request.peer_identity,
+        )
     if request.request_type == RequestType.TRANSFER_STATUS:
         payload = request.payload
         return daemon.transfer_status(

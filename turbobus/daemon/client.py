@@ -73,6 +73,24 @@ class TurboBusDaemonClient(_DaemonSocketClientBase):
             )
         )
 
+    def recover_transfer_state(
+        self,
+        *,
+        intent_id: str | None = None,
+        transfer_id: str | None = None,
+    ) -> DaemonResponse:
+        payload: dict[str, object] = {}
+        if intent_id is not None:
+            payload["intent_id"] = str(intent_id)
+        if transfer_id is not None:
+            payload["transfer_id"] = str(transfer_id)
+        return self.send(
+            DaemonRequest(
+                request_type=RequestType.RECOVER_TRANSFER_STATE,
+                payload=payload,
+            )
+        )
+
 
 class TurboBusDaemonRuntimeClient(_DaemonSocketClientBase):
     def runtime_telemetry(self) -> DaemonResponse:

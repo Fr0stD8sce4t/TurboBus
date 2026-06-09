@@ -5,21 +5,20 @@ appending history.
 
 ## Current Main Target
 
-G48 daemon state recovery semantics.
+G49 vLLM KV deep integration.
 
-G47 is complete: daemon admission now records multi-tenant fairness evidence
-covering job/session load, queued/running/admitted/delayed transfer state,
-active leases, relay quota pressure, buffer ownership, and receipt-facing
-admission metadata. The current target is daemon state recovery semantics.
+G48 is complete: daemon recovery now exposes authoritative transfer state
+covering terminal receipt, admission, queue, ticket, lease, buffer, cleanup,
+completion, and archived evidence without synthetic receipts. The current
+target is vLLM KV deep integration.
 
 ## Current Code Work
 
-- `turbobus/daemon/server.py`: daemon-owned transfer, lease, session, buffer,
-  ticket, queue, and receipt archive state.
-- `turbobus/daemon/dispatch.py`: daemon request routing for state-facing
-  operations.
-- `turbobus/runtime_session.py`: runtime close and recovery-facing receipt
-  consumption.
+- `turbobus/adapters/vllm*`: vLLM KV-facing runtime-session integration.
+- `turbobus/adapters/`: shared adapter contracts that submit TransferIntent
+  and consume TransferReceipt.
+- `turbobus/runtime_session.py`: production API for real buffer registration
+  and receipt consumption.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -40,13 +39,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G48 as one complete production capability: daemon state recovery
-should preserve terminal receipt, admission, queue, ticket, lease, buffer, and
-cleanup evidence after transfers finish or resources are removed, so runtime
-sessions can recover authoritative daemon state without synthetic receipts.
+Implement G49 as one complete production capability: vLLM KV integration should
+register real runtime buffers through `TurboBusRuntimeSession`, submit H2D/D2H
+TransferIntent for KV movement, and consume TransferReceipt without exposing
+direct, relay, pool, target GPU, or relay GPU choice to adapter callers.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G48, G49, G50, G51, G52, G53, G54.
+Remaining auto-advance target queue: G49, G50, G51, G52, G53, G54.

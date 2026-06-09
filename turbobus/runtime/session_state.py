@@ -80,6 +80,9 @@ def clear_runtime_session_state(session) -> None:
     active_intent_ids = getattr(session, "_active_intent_ids", None)
     if active_intent_ids is not None:
         active_intent_ids.clear()
+    buffer_lifecycle_records = getattr(session, "_buffer_lifecycle_records", None)
+    if buffer_lifecycle_records is not None:
+        buffer_lifecycle_records.clear()
 
 
 __all__ = [

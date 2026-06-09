@@ -5,22 +5,21 @@ appending history.
 
 ## Current Main Target
 
-G46 buffer lifecycle pooling.
+G47 multi-tenant fairness admission.
 
-G45 is complete: worker execution now exposes resident async pool state,
-queue/running/terminal snapshots, cancellation, drain, close, and failure
-evidence for daemon-issued ticket work. The current target is to strengthen
-buffer lifecycle pooling.
+G46 is complete: runtime sessions now maintain a pooled buffer lifecycle record
+for shared pinned CPU and CUDA IPC buffers across daemon registration, intent
+use, receipt finalization, cleanup, close, and receipt-facing retention
+evidence. The current target is to close daemon-side fairness admission.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`: runtime-owned buffer registration, cleanup,
-  and close behavior.
-- `turbobus/runtime/buffers.py`: runtime buffer backing validation and
-  registration metadata.
-- `turbobus/buffer_registration.py`: executable buffer registration helpers.
-- `turbobus/worker/resources.py`: worker-side shared pinned CPU and CUDA IPC
-  resource open/close lifecycle.
+- `turbobus/daemon/server.py`: transfer admission, job/session ownership,
+  queued/running state, buffer protection, and rejection evidence.
+- `turbobus/scheduler/load.py`: runtime load view used by admission and
+  scheduling policy.
+- `turbobus/scheduler/daemon.py`: scheduler-facing admission inputs and
+  metadata.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:
@@ -41,13 +40,13 @@ Round rules:
 
 ## Next Entry
 
-Implement G46 as one complete production capability: shared pinned CPU buffers
-and CUDA IPC buffers should have a clear pooled lifecycle with registration,
-reference/lease ownership, execution use, cleanup, and receipt-facing evidence.
+Implement G47 as one complete production capability: daemon admission should use
+multi-tenant job/session, queued/running transfer, active lease, and buffer
+ownership state to accept, queue, or reject TransferIntent requests with
+receipt-facing admission evidence.
 
 ## Auto-Advance Policy
 
 Auto-advance is active for the paper-reproduction code-function queue.
 
-Remaining auto-advance target queue: G46, G47, G48, G49, G50, G51, G52, G53,
-G54.
+Remaining auto-advance target queue: G47, G48, G49, G50, G51, G52, G53, G54.

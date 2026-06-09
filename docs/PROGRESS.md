@@ -6,24 +6,25 @@
   benchmark runs, examples, paper validation, server validation, new tests, mock
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
-- G1 through G45 are complete.
-- G45 worker resident async execution is present: worker async pool exposes
-  queue/running/terminal snapshots, cancellation, drain, close, and
-  receipt-facing failure evidence for daemon-issued ticket work.
-- Auto-advance is active. The current main target is G46 buffer lifecycle
-  pooling.
+- G1 through G46 are complete.
+- G46 buffer lifecycle pooling is present: `TurboBusRuntimeSession` records
+  shared pinned CPU and CUDA IPC buffer registration, active intent use,
+  terminal receipt use, cleanup, close, and runtime retention evidence.
+- Auto-advance is active. The current main target is G47 multi-tenant fairness
+  admission.
 
 ## Remaining Risk
 
 - Functional validation, server validation, benchmark execution, paper
   validation, and multi-GPU execution remain deferred and were not run in this
   code-function queue.
-- G46 still needs pooled shared pinned CPU and CUDA IPC buffer lifecycle
-  hardening across registration, execution, cleanup, and receipt evidence.
+- G47 still needs daemon admission to account for multi-tenant queued/running
+  transfer load, active leases, buffer ownership, and fair accept/queue/reject
+  evidence.
 
 ## Next Main Target
 
-G46 buffer lifecycle pooling.
+G47 multi-tenant fairness admission.
 
 Progress-file rule:
 

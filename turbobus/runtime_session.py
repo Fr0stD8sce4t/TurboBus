@@ -29,6 +29,8 @@ from .ranges import TransferRange, range_as_dict
 from .profiling.bootstrap import bootstrap_daemon_profile
 from .runtime.buffers import (
     buffer_registration_fingerprint,
+    runtime_buffer_lifecycle_intent_use,
+    runtime_buffer_lifecycle_registration,
     runtime_session_buffer_metadata,
     validate_runtime_buffer_backing,
     validate_intent_uses_runtime_buffers,
@@ -103,6 +105,11 @@ class TurboBusRuntimeSession:
         repr=False,
     )
     _submitted_intent_buffers: dict[str, tuple[str, str]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _buffer_lifecycle_records: dict[str, dict[str, object]] = field(
         default_factory=dict,
         init=False,
         repr=False,
@@ -662,6 +669,21 @@ class TurboBusRuntimeSession:
         self._register_buffer(buffer)
         return buffer
 
+    def buffer_lifecycle_snapshot(self) -> dict[str, object]:
+        self._require_open()
+        records = {
+            buffer_id: _copy_buffer_lifecycle_record(record)
+            for buffer_id, record in sorted(self._buffer_lifecycle_records.items())
+        }
+        return {
+            "job_id": str(self.job_id),
+            "session_id": self._session_id,
+            "active_intent_ids": tuple(sorted(self._active_intent_ids)),
+            "registered_buffer_ids": tuple(sorted(self._registered_buffer_ids)),
+            "runtime_owned_cpu_buffer_ids": tuple(sorted(self._owned_cpu_buffer_ids)),
+            "buffers": records,
+        }
+
     def fetch_h2d(
         self,
         source: SharedPinnedCpuBuffer,
@@ -776,6 +798,7 @@ class TurboBusRuntimeSession:
                 payload={"closed": False, "already_closed": True},
             )
         managed_runtime_before_shutdown = self.managed_service_snapshot()
+        buffer_lifecycle_before_shutdown = self.buffer_lifecycle_snapshot()
         if self._session_id is None:
             local_cpu_cleanup = self._cleanup_local_cpu_buffers(
                 reason="runtime_session_close_without_daemon_session"
@@ -794,6 +817,7 @@ class TurboBusRuntimeSession:
                 owned_release = _owned_cpu_release_records(local_cpu_cleanup)
                 if owned_release:
                     payload["owned_cpu_buffer_release"] = owned_release
+            payload["buffer_lifecycle"] = buffer_lifecycle_before_shutdown
             if managed_runtime_before_shutdown is not None:
                 payload["managed_service_runtime_before_shutdown"] = (
                     managed_runtime_before_shutdown
@@ -855,6 +879,7 @@ class TurboBusRuntimeSession:
         payload = {}
         if isinstance(response.payload, Mapping):
             payload.update(dict(response.payload))
+        payload["buffer_lifecycle"] = buffer_lifecycle_before_shutdown
         if intent_wait_evidence:
             payload["active_intent_receipts"] = intent_wait_evidence
         if cleanup_evidence:
@@ -1361,6 +1386,10 @@ class TurboBusRuntimeSession:
                 registered_now.append(buffer_id)
                 self._registered_buffer_ids.add(buffer_id)
                 self._registered_buffer_fingerprints[buffer_id] = fingerprint
+                self._record_buffer_lifecycle_registration(
+                    buffer,
+                    runtime_owned=runtime_owned,
+                )
         except Exception:
             for buffer_id in reversed(registered_now):
                 try:
@@ -1429,6 +1458,7 @@ class TurboBusRuntimeSession:
                 reason=reason,
                 runtime_owned=runtime_owned,
                 local_cpu_cleanup=local_cpu_cleanup,
+                lifecycle_record=self._buffer_lifecycle_records.get(normalized_id),
             )
             retention_evidence = self._record_buffer_cleanup_retention(
                 normalized_id,
@@ -1442,15 +1472,50 @@ class TurboBusRuntimeSession:
                     )
                 )
         if cleanup_error is not None:
+            self._record_buffer_lifecycle_cleanup(
+                normalized_id,
+                reason=reason,
+                ok=False,
+                daemon_response=response,
+                local_cpu_cleanup=local_cpu_cleanup,
+                retention_evidence=retention_evidence,
+                error=cleanup_error,
+            )
             if local_cleanup_error is not None:
                 raise RuntimeError(
                     f"{cleanup_error}; local CPU buffer cleanup failed: {local_cleanup_error}"
                 ) from cleanup_error
             raise cleanup_error
         if local_cleanup_error is not None:
+            self._record_buffer_lifecycle_cleanup(
+                normalized_id,
+                reason=reason,
+                ok=False,
+                daemon_response=response,
+                local_cpu_cleanup=local_cpu_cleanup,
+                retention_evidence=retention_evidence,
+                error=local_cleanup_error,
+            )
             raise local_cleanup_error
         if retention_error is not None:
+            self._record_buffer_lifecycle_cleanup(
+                normalized_id,
+                reason=reason,
+                ok=False,
+                daemon_response=response,
+                local_cpu_cleanup=local_cpu_cleanup,
+                retention_evidence=retention_evidence,
+                error=retention_error,
+            )
             raise retention_error
+        self._record_buffer_lifecycle_cleanup(
+            normalized_id,
+            reason=reason,
+            ok=True,
+            daemon_response=response,
+            local_cpu_cleanup=local_cpu_cleanup,
+            retention_evidence=retention_evidence,
+        )
         payload = dict(response.payload) if isinstance(response.payload, Mapping) else {}
         if local_cpu_cleanup is not None:
             payload["local_cpu_buffer_cleanup"] = local_cpu_cleanup
@@ -1852,6 +1917,7 @@ class TurboBusRuntimeSession:
             str(intent.destination_buffer_id),
         )
         self._active_intent_ids.add(normalized_intent_id)
+        self._record_buffer_lifecycle_intent_use(intent)
 
     def _finalize_runtime_receipt(
         self,
@@ -1877,7 +1943,146 @@ class TurboBusRuntimeSession:
         state_text = str(getattr(receipt.state, "value", receipt.state)).lower()
         if state_text in terminal_states:
             self._active_intent_ids.discard(normalized_intent_id)
+        self._record_buffer_lifecycle_receipt(receipt, intent_id=normalized_intent_id)
         return receipt
+
+    def _record_buffer_lifecycle_registration(
+        self,
+        buffer: ExecutableBuffer,
+        *,
+        runtime_owned: bool,
+    ) -> None:
+        normalized_id = str(buffer.buffer_id)
+        existing = self._buffer_lifecycle_records.get(normalized_id, {})
+        registration_count = int(existing.get("registration_count", 0) or 0) + 1
+        record = runtime_buffer_lifecycle_registration(
+            buffer,
+            session_id=self.session_id,
+            runtime_owned=runtime_owned,
+            registered_at=time.time(),
+            registration_count=registration_count,
+        )
+        active_uses = _copy_lifecycle_mapping(existing.get("active_uses"))
+        terminal_uses = tuple(_copy_lifecycle_sequence(existing.get("terminal_uses")))
+        cleanup_history = tuple(_copy_lifecycle_sequence(existing.get("cleanup_history")))
+        if active_uses:
+            record["active_uses"] = active_uses
+        if terminal_uses:
+            record["terminal_uses"] = terminal_uses
+        if cleanup_history:
+            record["cleanup_history"] = cleanup_history
+        self._buffer_lifecycle_records[normalized_id] = record
+
+    def _record_buffer_lifecycle_intent_use(self, intent: TransferIntent) -> None:
+        roles = (
+            ("source", intent.source_buffer_id),
+            ("destination", intent.destination_buffer_id),
+        )
+        for role, buffer_id in roles:
+            normalized_id = str(buffer_id)
+            record = self._buffer_lifecycle_records.setdefault(
+                normalized_id,
+                {
+                    "buffer_id": normalized_id,
+                    "job_id": str(intent.job_id),
+                    "session_id": str(intent.session_id),
+                    "state": "referenced",
+                },
+            )
+            active_uses = _copy_lifecycle_mapping(record.get("active_uses"))
+            active_uses[str(intent.intent_id)] = runtime_buffer_lifecycle_intent_use(
+                intent,
+                buffer_id=normalized_id,
+                role=role,
+            )
+            record["active_uses"] = active_uses
+            record["active_use_count"] = len(active_uses)
+            record["last_used_at"] = time.time()
+            if str(record.get("state", "")) != "cleaned":
+                record["state"] = "active"
+
+    def _record_buffer_lifecycle_receipt(
+        self,
+        receipt: TransferReceipt,
+        *,
+        intent_id: str,
+    ) -> None:
+        buffer_ids = self._submitted_intent_buffers.get(str(intent_id))
+        if buffer_ids is None:
+            return
+        state_text = str(getattr(receipt.state, "value", receipt.state))
+        terminal_states = {"complete", "failed", "canceled"}
+        terminal = state_text.lower() in terminal_states
+        for buffer_id in buffer_ids:
+            record = self._buffer_lifecycle_records.get(str(buffer_id))
+            if record is None:
+                continue
+            active_uses = _copy_lifecycle_mapping(record.get("active_uses"))
+            use_record = active_uses.pop(str(intent_id), None)
+            if use_record is None:
+                use_record = {
+                    "intent_id": str(intent_id),
+                    "buffer_id": str(buffer_id),
+                    "state": "unknown",
+                }
+            use_record["state"] = state_text
+            use_record["bytes_completed"] = int(receipt.bytes_completed)
+            use_record["bytes_total"] = int(receipt.bytes_total)
+            if receipt.completed_at is not None:
+                use_record["completed_at"] = float(receipt.completed_at)
+            if receipt.error is not None:
+                use_record["error"] = str(receipt.error)
+            terminal_uses = list(_copy_lifecycle_sequence(record.get("terminal_uses")))
+            if terminal:
+                terminal_uses.append(use_record)
+            else:
+                active_uses[str(intent_id)] = use_record
+            record["active_uses"] = active_uses
+            record["terminal_uses"] = tuple(terminal_uses)
+            record["active_use_count"] = len(active_uses)
+            record["terminal_use_count"] = len(terminal_uses)
+            if active_uses:
+                record["state"] = "active"
+            elif str(record.get("state", "")) != "cleaned":
+                record["state"] = "registered"
+
+    def _record_buffer_lifecycle_cleanup(
+        self,
+        buffer_id: str,
+        *,
+        reason: str,
+        ok: bool,
+        daemon_response: DaemonResponse,
+        local_cpu_cleanup: Mapping[str, object] | None,
+        retention_evidence: Mapping[str, object] | None,
+        error: Exception | None = None,
+    ) -> None:
+        normalized_id = str(buffer_id)
+        record = self._buffer_lifecycle_records.setdefault(
+            normalized_id,
+            {"buffer_id": normalized_id},
+        )
+        cleanup_record: dict[str, object] = {
+            "buffer_id": normalized_id,
+            "reason": str(reason),
+            "ok": bool(ok),
+            "cleaned_at": time.time(),
+        }
+        if daemon_response.error is not None:
+            cleanup_record["daemon_error"] = daemon_response.error
+        if isinstance(daemon_response.payload, Mapping):
+            cleanup_record["daemon_payload"] = dict(daemon_response.payload)
+        if local_cpu_cleanup is not None:
+            cleanup_record["local_cpu_buffer_cleanup"] = dict(local_cpu_cleanup)
+        if retention_evidence is not None:
+            cleanup_record["runtime_buffer_retention"] = dict(retention_evidence)
+        if error is not None:
+            cleanup_record["error"] = str(error) or error.__class__.__name__
+        cleanup_history = list(_copy_lifecycle_sequence(record.get("cleanup_history")))
+        cleanup_history.append(cleanup_record)
+        record["cleanup_history"] = tuple(cleanup_history)
+        record["last_cleanup"] = dict(cleanup_record)
+        record["state"] = "cleaned" if ok else "cleanup_failed"
 
     def _close_active_intent_receipts(self) -> list[dict[str, object]]:
         evidence: list[dict[str, object]] = []
@@ -2127,12 +2332,18 @@ def _runtime_buffer_retention_evidence(
     reason: str,
     runtime_owned: bool,
     local_cpu_cleanup: Mapping[str, object] | None,
+    lifecycle_record: Mapping[str, object] | None,
 ) -> dict[str, object]:
     retention = {
         "buffer_id": str(buffer_id),
         "reason": str(reason),
         "runtime_owned": bool(runtime_owned),
+        "runtime_lifecycle_pool": True,
     }
+    if lifecycle_record is not None:
+        retention["runtime_buffer_lifecycle"] = _copy_buffer_lifecycle_record(
+            lifecycle_record
+        )
     if isinstance(buffer, SharedPinnedCpuBuffer):
         retention["runtime_buffer_kind"] = "shared_pinned_cpu"
         if local_cpu_cleanup is not None:
@@ -2154,6 +2365,46 @@ def _owned_cpu_release_records(
         for record in cleanup_records
         if isinstance(record, Mapping) and bool(record.get("runtime_owned", False))
     ]
+
+
+def _copy_buffer_lifecycle_record(record: Mapping[str, object]) -> dict[str, object]:
+    copied: dict[str, object] = {}
+    for key, value in record.items():
+        if isinstance(value, Mapping):
+            copied[str(key)] = _copy_lifecycle_mapping(value)
+        elif isinstance(value, (tuple, list)):
+            copied[str(key)] = tuple(_copy_lifecycle_sequence(value))
+        else:
+            copied[str(key)] = value
+    return copied
+
+
+def _copy_lifecycle_mapping(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    copied: dict[str, object] = {}
+    for key, item in value.items():
+        if isinstance(item, Mapping):
+            copied[str(key)] = _copy_lifecycle_mapping(item)
+        elif isinstance(item, (tuple, list)):
+            copied[str(key)] = tuple(_copy_lifecycle_sequence(item))
+        else:
+            copied[str(key)] = item
+    return copied
+
+
+def _copy_lifecycle_sequence(value: object) -> list[object]:
+    if not isinstance(value, (tuple, list)):
+        return []
+    copied: list[object] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            copied.append(_copy_lifecycle_mapping(item))
+        elif isinstance(item, (tuple, list)):
+            copied.append(tuple(_copy_lifecycle_sequence(item)))
+        else:
+            copied.append(item)
+    return copied
 
 
 def _attach_runtime_managed_service_state(

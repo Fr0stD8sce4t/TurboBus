@@ -5,8 +5,7 @@ appending history.
 
 ## Current Main Target
 
-worker startup and vLLM adapter runtime option propagation are complete for
-the current production pass.
+relay activity aggregation is unified for the current production pass.
 
 `RuntimeOptions` now preserves worker runtime cache entries, terminal history
 entries, and relay staging clearing policy across JSON/profile ingestion,
@@ -20,6 +19,8 @@ thresholds.
 - `turbobus/worker/process.py`: worker startup CLI runtime option wiring.
 - `turbobus/adapters/vllm_config.py` and `turbobus/adapters/vllm_kv_connector.py`:
   adapter-side runtime option propagation.
+- `turbobus/scheduler/load_feedback.py` and `turbobus/daemon/runtime_telemetry.py`:
+  unified relay activity aggregation.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:

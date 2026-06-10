@@ -12,6 +12,7 @@
   and relay staging clearing policy consistent across JSON/profile ingestion,
   worker startup, and the vLLM adapter path, including pool tuning and relay
   thresholds.
+- Relay activity aggregation is unified across scheduler and daemon telemetry.
 - Auto-advance queue G43 through G54 is complete for the current code-function
   pass.
 

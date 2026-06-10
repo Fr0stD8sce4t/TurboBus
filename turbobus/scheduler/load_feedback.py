@@ -108,11 +108,14 @@ class RuntimeLoadView:
             "active_resource_usage": active_resource_usage,
         }
 
-    def relay_pressure(self, relay_device: int) -> float:
+    def relay_pressure(self, relay_device: int, direction: str | None = None) -> float:
         record = self.relay_load.get(int(relay_device), {})
-        pressure = float(record.get("pressure", 0.0) or 0.0)
+        normalized_direction = None if direction is None else str(direction).lower()
+        pressure = relay_record_direction_pressure(record, normalized_direction)
         pressure += self.completion_source_pressure.get("worker", 0.0) * 0.10
-        relay_bytes = int(self.active_execution_evidence.get("relay_bytes", 0) or 0)
+        relay_bytes = relay_record_direction_bytes(record, normalized_direction)
+        if relay_bytes is None:
+            relay_bytes = int(self.active_execution_evidence.get("relay_bytes", 0) or 0)
         active_bytes = max(self.total_active_bytes, 1)
         if relay_bytes > 0:
             pressure += min(relay_bytes / active_bytes, 1.0) * 0.14
@@ -216,7 +219,7 @@ class RuntimeLoadView:
         summary = self.scheduler_pressure_summary(direction)
         return max(
             0.0,
-            self.relay_pressure(relay_device)
+            self.relay_pressure(relay_device, direction=direction)
             + float(summary["queue_pressure"])
             + float(summary["running_pressure"])
             + float(summary["fairness_pressure"])
@@ -248,7 +251,7 @@ class RuntimeLoadView:
             busy = relay_device is not None and int(relay_device) in self.busy_relays
             idle_bonus = 0.18 if not busy and path_active_bytes == 0 else 0.0
             backlog_penalty = min(
-                int(relay_record.get("active_path_count", 0) or 0)
+                relay_record_direction_count(relay_record, normalized_direction)
                 + int(relay_record.get("active_lease_count", 0) or 0)
                 + int(relay_record.get("staging_record_count", 0) or 0),
                 16,
@@ -270,14 +273,14 @@ class RuntimeLoadView:
         fairness_penalty = min(fairness_overage / fairness_denominator, 2.0) * 0.20
         admission_penalty = _adaptive_admission_penalty(admission_state)
         workload_bias = self.workload_path_multiplier(kind)
-        priority_discount = self.priority_pressure_discount()
+        priority_discount = self.priority_cost_discount()
         total_penalty = max(
             0.0,
             path_pressure + backlog_penalty + fairness_penalty + admission_penalty,
         )
         multiplier = max(
             0.05,
-            (1.0 + idle_bonus) * workload_bias * priority_discount
+            (1.0 + idle_bonus) * workload_bias
             / (1.0 + total_penalty + source_pressure),
         )
         return {
@@ -323,7 +326,7 @@ class RuntimeLoadView:
             "summary": self.scheduler_pressure_summary(normalized_direction),
         }
 
-    def priority_pressure_discount(self) -> float:
+    def priority_cost_discount(self) -> float:
         priority = min(max(int(self.priority), 0), 9)
         return 1.0 / (1.0 + priority * 0.08)
 
@@ -377,6 +380,7 @@ def runtime_state_metadata(
             "active_resource_usage": {},
             "relay_load": {},
         }
+    relay_activity = relay_activity_from_runtime_state(runtime_state)
     summary = runtime_state.get("summary", {})
     if not isinstance(summary, Mapping):
         summary = {}
@@ -428,7 +432,7 @@ def runtime_state_metadata(
         "runtime_feedback_metrics": dict(
             summary.get("runtime_feedback_metrics", {}) or {}
         ),
-        "busy_relays": tuple(int(item) for item in summary.get("busy_relays", ()) or ()),
+        "busy_relays": tuple(sorted(relay_activity["busy_relays"])),
         "active_bytes_by_direction": dict(
             summary.get("active_bytes_by_direction", {}) or {}
         ),
@@ -436,7 +440,7 @@ def runtime_state_metadata(
             summary.get("queued_bytes_by_direction", {}) or {}
         ),
         "active_resource_usage": dict(summary.get("active_resource_usage", {}) or {}),
-        "relay_load": relay_load_from_runtime_state(runtime_state),
+        "relay_load": relay_activity["relay_load"],
     }
 
 
@@ -471,8 +475,9 @@ def runtime_view(
         jobs = runtime_state.get("job_runtime_state", {})
         if isinstance(jobs, Mapping):
             job_runtime_state = jobs
-    busy_relays = busy_relays_from_runtime_state(runtime_state)
-    relay_load = relay_load_from_runtime_state(runtime_state)
+    relay_activity = relay_activity_from_runtime_state(runtime_state)
+    busy_relays = relay_activity["busy_relays"]
+    relay_load = relay_activity["relay_load"]
     completion_source_pressure = completion_source_pressure_from_runtime_state(
         runtime_state_snapshot
     )
@@ -642,14 +647,21 @@ def relay_fairness_admission_blocked_reason(
 def relay_admission_blocked_reason(
     runtime_view: RuntimeLoadView,
     relay_device: int,
+    direction: str | None = None,
 ) -> str | None:
     relay = int(relay_device)
-    if relay in runtime_view.busy_relays:
-        return "relay has active path"
     record = runtime_view.relay_load.get(relay, {})
-    pressure = runtime_view.relay_pressure(relay)
-    active_path_count = int(record.get("active_path_count", 0) or 0)
-    active_chunk_count = int(record.get("active_chunk_count", 0) or 0)
+    normalized_direction = None if direction is None else str(direction).lower()
+    active_path_count = relay_record_direction_count(record, normalized_direction)
+    if relay in runtime_view.busy_relays and normalized_direction is None:
+        return "relay has active path"
+    if relay in runtime_view.busy_relays and active_path_count > 0:
+        return "relay has active path for direction"
+    pressure = runtime_view.relay_pressure(relay, direction=normalized_direction)
+    active_chunk_count = relay_record_direction_chunk_count(
+        record,
+        normalized_direction,
+    )
     active_reservation_count = int(record.get("active_reservation_count", 0) or 0)
     active_lease_count = int(record.get("active_lease_count", 0) or 0)
     if active_path_count > 0 and pressure >= 0.30:
@@ -674,25 +686,9 @@ def relay_admission_blocked_reason(
 def busy_relays_from_runtime_state(
     runtime_state: Mapping[str, object] | None,
 ) -> set[int]:
-    busy: set[int] = set()
     if not isinstance(runtime_state, Mapping):
-        return busy
-    for record in _runtime_records(runtime_state.get("active_paths", ())):
-        if not isinstance(record, Mapping):
-            continue
-        if str(record.get("kind", "")).lower() != "relay":
-            continue
-        relay = record.get("relay_device")
-        if relay is not None:
-            busy.add(int(relay))
-    for key in ("active_leases", "active_reservations", "relay_staging"):
-        for record in _runtime_records(runtime_state.get(key, ())):
-            if not isinstance(record, Mapping):
-                continue
-            relay = record.get("relay_gpu")
-            if relay is not None:
-                busy.add(int(relay))
-    return busy
+        return set()
+    return set(relay_activity_from_runtime_state(runtime_state)["busy_relays"])
 
 
 def relay_load_from_runtime_state(
@@ -700,7 +696,16 @@ def relay_load_from_runtime_state(
 ) -> dict[int, dict[str, object]]:
     if not isinstance(runtime_state, Mapping):
         return {}
+    return dict(relay_activity_from_runtime_state(runtime_state)["relay_load"])
+
+
+def relay_activity_from_runtime_state(
+    runtime_state: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if not isinstance(runtime_state, Mapping):
+        return {"busy_relays": set(), "relay_load": {}}
     records: dict[int, dict[str, object]] = {}
+    busy: set[int] = set()
     for record in _runtime_records(runtime_state.get("active_paths", ())):
         if not isinstance(record, Mapping):
             continue
@@ -709,6 +714,7 @@ def relay_load_from_runtime_state(
         relay = record.get("relay_device")
         if relay is None:
             continue
+        busy.add(int(relay))
         bucket = _relay_load_bucket(records, int(relay))
         bucket["active_path_count"] = int(bucket["active_path_count"]) + 1
         bucket["active_chunk_count"] = int(bucket["active_chunk_count"]) + int(
@@ -717,6 +723,11 @@ def relay_load_from_runtime_state(
         bucket["active_bytes"] = int(bucket["active_bytes"]) + int(
             record.get("bytes_total", 0) or 0
         )
+        direction = str(record.get("direction", "unknown")).lower()
+        direction_bucket = _relay_direction_load_bucket(bucket, direction)
+        direction_bucket["active_path_count"] += 1
+        direction_bucket["active_chunk_count"] += int(record.get("chunk_count", 0) or 0)
+        direction_bucket["active_bytes"] += int(record.get("bytes_total", 0) or 0)
         transfer_id = record.get("transfer_id")
         if transfer_id is not None:
             bucket["transfer_ids"].add(str(transfer_id))
@@ -739,6 +750,7 @@ def relay_load_from_runtime_state(
             job_id = record.get("job_id")
             if job_id is not None:
                 bucket["job_ids"].add(str(job_id))
+            busy.add(int(relay))
     normalized: dict[int, dict[str, object]] = {}
     for relay, record in records.items():
         active_path_count = int(record["active_path_count"])
@@ -752,6 +764,7 @@ def relay_load_from_runtime_state(
         pressure += min(active_reservation_count, 8) * 0.06
         pressure += min(active_lease_count, 8) * 0.05
         pressure += min(staging_record_count, 8) * 0.08
+        directions = relay_direction_load_records(record)
         normalized[int(relay)] = {
             "relay_gpu": int(relay),
             "active_path_count": active_path_count,
@@ -763,8 +776,12 @@ def relay_load_from_runtime_state(
             "transfer_ids": tuple(sorted(record["transfer_ids"])),
             "job_ids": tuple(sorted(record["job_ids"])),
             "pressure": pressure,
+            "directions": directions,
         }
-    return normalized
+    return {
+        "busy_relays": busy,
+        "relay_load": normalized,
+    }
 
 
 def completion_source_pressure_from_runtime_state(
@@ -807,6 +824,10 @@ def completion_source_pressure_from_runtime_state(
                 + int(worker_async_pool.get("running", 0) or 0),
                 16,
             ) * 0.15
+            weighted_worker += min(
+                int(worker_async_pool.get("terminal_history_evictions", 0) or 0),
+                16,
+            ) * 0.02
         cuda_span = runtime_metrics.get("cuda_ipc_span_validation", {})
         if isinstance(cuda_span, Mapping):
             weighted_worker += min(int(cuda_span.get("failed", 0) or 0), 16) * 0.25
@@ -826,10 +847,55 @@ def completion_source_pressure_from_runtime_state(
                 16,
             ) * 0.04
             weighted_worker += min(
+                int(worker_runtime.get("runtime_cache_evictions", 0) or 0),
+                16,
+            ) * 0.08
+            weighted_worker += min(
+                int(worker_runtime.get("max_runtime_key_lock_count", 0) or 0),
+                16,
+            ) * 0.04
+            weighted_worker += min(
+                int(worker_runtime.get("max_runtime_key_waiter_count", 0) or 0),
+                16,
+            ) * 0.06
+            weighted_worker += min(
+                int(worker_runtime.get("terminal_history_evictions", 0) or 0),
+                16,
+            ) * 0.03
+            weighted_worker += min(
                 float(worker_runtime.get("max_submit_to_complete_ms", 0.0) or 0.0)
                 / 1000.0,
                 16.0,
             ) * 0.05
+        backend_runtime = runtime_metrics.get("backend_direct_runtime", {})
+        if isinstance(backend_runtime, Mapping):
+            backend_target_devices = backend_runtime.get("target_devices", ()) or ()
+            if not isinstance(backend_target_devices, list | tuple | set | frozenset):
+                backend_target_devices = ()
+            weighted_backend += min(
+                int(backend_runtime.get("runtime_created", 0) or 0),
+                16,
+            ) * 0.06
+            weighted_backend += min(
+                int(backend_runtime.get("max_runtime_cache_size", 0) or 0),
+                16,
+            ) * 0.03
+            weighted_backend += min(
+                int(backend_runtime.get("runtime_cache_evictions", 0) or 0),
+                16,
+            ) * 0.05
+            weighted_backend += min(
+                int(backend_runtime.get("max_runtime_key_lock_count", 0) or 0),
+                16,
+            ) * 0.03
+            weighted_backend += min(
+                int(backend_runtime.get("max_runtime_key_waiter_count", 0) or 0),
+                16,
+            ) * 0.05
+            weighted_backend += min(
+                len(backend_target_devices),
+                16,
+            ) * 0.02
     total = max(1.0, weighted_worker + weighted_backend)
     return {
         "worker": min(weighted_worker / total, 1.0),
@@ -858,8 +924,117 @@ def _relay_load_bucket(
             "staging_record_count": 0,
             "transfer_ids": set(),
             "job_ids": set(),
+            "directions": {},
         },
     )
+
+
+def _relay_direction_load_bucket(
+    relay_record: dict[str, object],
+    direction: str,
+) -> dict[str, int]:
+    directions = relay_record.setdefault("directions", {})
+    if not isinstance(directions, dict):
+        directions = {}
+        relay_record["directions"] = directions
+    normalized_direction = str(direction).lower()
+    return directions.setdefault(
+        normalized_direction,
+        {
+            "active_path_count": 0,
+            "active_chunk_count": 0,
+            "active_bytes": 0,
+        },
+    )
+
+
+def relay_direction_load_records(
+    record: Mapping[str, object],
+) -> dict[str, dict[str, int]]:
+    directions = record.get("directions", {})
+    if not isinstance(directions, Mapping):
+        return {}
+    return {
+        str(direction): {
+            "active_path_count": int(value.get("active_path_count", 0) or 0),
+            "active_chunk_count": int(value.get("active_chunk_count", 0) or 0),
+            "active_bytes": int(value.get("active_bytes", 0) or 0),
+            "pressure": relay_direction_path_pressure(value),
+        }
+        for direction, value in directions.items()
+        if isinstance(value, Mapping)
+    }
+
+
+def relay_record_direction_pressure(
+    record: Mapping[str, object],
+    direction: str | None,
+) -> float:
+    if direction is None:
+        return float(record.get("pressure", 0.0) or 0.0)
+    directions = record.get("directions", {})
+    if not isinstance(directions, Mapping):
+        return float(record.get("pressure", 0.0) or 0.0)
+    direction_record = directions.get(str(direction).lower(), {})
+    shared_pressure = 0.0
+    shared_pressure += min(int(record.get("active_reservation_count", 0) or 0), 8) * 0.06
+    shared_pressure += min(int(record.get("active_lease_count", 0) or 0), 8) * 0.05
+    shared_pressure += min(int(record.get("staging_record_count", 0) or 0), 8) * 0.08
+    if not isinstance(direction_record, Mapping):
+        return shared_pressure
+    return shared_pressure + relay_direction_path_pressure(direction_record)
+
+
+def relay_record_direction_bytes(
+    record: Mapping[str, object],
+    direction: str | None,
+) -> int | None:
+    if direction is None:
+        return int(record.get("active_bytes", 0) or 0)
+    directions = record.get("directions", {})
+    if not isinstance(directions, Mapping):
+        return None
+    direction_record = directions.get(str(direction).lower(), {})
+    if not isinstance(direction_record, Mapping):
+        return 0
+    return int(direction_record.get("active_bytes", 0) or 0)
+
+
+def relay_record_direction_count(
+    record: Mapping[str, object],
+    direction: str | None,
+) -> int:
+    if direction is None:
+        return int(record.get("active_path_count", 0) or 0)
+    directions = record.get("directions", {})
+    if not isinstance(directions, Mapping):
+        return int(record.get("active_path_count", 0) or 0)
+    direction_record = directions.get(str(direction).lower(), {})
+    if not isinstance(direction_record, Mapping):
+        return 0
+    return int(direction_record.get("active_path_count", 0) or 0)
+
+
+def relay_record_direction_chunk_count(
+    record: Mapping[str, object],
+    direction: str | None,
+) -> int:
+    if direction is None:
+        return int(record.get("active_chunk_count", 0) or 0)
+    directions = record.get("directions", {})
+    if not isinstance(directions, Mapping):
+        return int(record.get("active_chunk_count", 0) or 0)
+    direction_record = directions.get(str(direction).lower(), {})
+    if not isinstance(direction_record, Mapping):
+        return 0
+    return int(direction_record.get("active_chunk_count", 0) or 0)
+
+
+def relay_direction_path_pressure(record: Mapping[str, object]) -> float:
+    pressure = 0.0
+    pressure += min(int(record.get("active_path_count", 0) or 0), 8) * 0.20
+    pressure += min(int(record.get("active_chunk_count", 0) or 0), 32) * 0.015
+    return pressure
 
 
 def _runtime_records(value: object) -> TypingIterable[object]:
@@ -875,6 +1050,7 @@ __all__ = [
     "fairness_fallback_for_plan",
     "relay_admission_blocked_reason",
     "relay_fairness_admission_blocked_reason",
+    "relay_activity_from_runtime_state",
     "relay_load_from_runtime_state",
     "runtime_state_metadata",
     "runtime_view",

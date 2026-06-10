@@ -5,17 +5,20 @@ appending history.
 
 ## Current Main Target
 
-Runtime option config propagation is complete for the current production pass.
+vLLM adapter runtime option propagation is complete for the current production
+pass.
 
 `RuntimeOptions` now preserves worker runtime cache entries, terminal history
-entries, and relay staging clearing policy across JSON/profile ingestion and
-worker startup.
+entries, and relay staging clearing policy across JSON/profile ingestion,
+worker startup, and the vLLM connector path.
 
 ## Current Code Work
 
 - `turbobus/runtime_options.py`: runtime control option ingestion and native
   propagation.
 - `turbobus/worker/process.py`: worker startup CLI runtime option wiring.
+- `turbobus/adapters/vllm_config.py` and `turbobus/adapters/vllm_kv_connector.py`:
+  adapter-side runtime option propagation.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:

@@ -172,6 +172,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             job_id=self.job_id,
             runtime_options=RuntimeOptions(
                 chunk_bytes=int(self.config.chunk_bytes),
+                worker_runtime_cache_entries=int(self.config.runtime_cache_entries),
+                worker_terminal_history_entries=int(
+                    self.config.terminal_history_entries
+                ),
+                clear_relay_staging_on_chunk=bool(
+                    self.config.clear_relay_staging_on_chunk
+                ),
                 daemon_socket_path=self.config.daemon_socket_path,
                 worker_socket_path=self.config.worker_socket_path,
             ),

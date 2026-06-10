@@ -9,8 +9,8 @@
 - G1 through G54 are complete.
 - Runtime option config propagation is present:
   `RuntimeOptions` keeps worker runtime cache entries, terminal history entries,
-  and relay staging clearing policy consistent across JSON/profile ingestion and
-  worker startup.
+  and relay staging clearing policy consistent across JSON/profile ingestion,
+  worker startup, and the vLLM adapter path.
 - Auto-advance queue G43 through G54 is complete for the current code-function
   pass.
 

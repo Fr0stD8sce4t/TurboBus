@@ -11,6 +11,9 @@ class TurboBusConnectorConfig:
     cpu_buffer_id: str
     gpu_buffer_id: str
     chunk_bytes: int
+    runtime_cache_entries: int
+    terminal_history_entries: int
+    clear_relay_staging_on_chunk: bool
     daemon_socket_path: str
     worker_socket_path: str
     wait_timeout_seconds: float | None
@@ -46,6 +49,21 @@ class TurboBusConnectorConfig:
                 vllm_config,
                 "turbobus.chunk_bytes",
                 int(os.environ.get("TURBOBUS_CHUNK_BYTES", 4 * 1024 * 1024)),
+            ),
+            runtime_cache_entries=extra_config_int(
+                vllm_config,
+                "turbobus.runtime_cache_entries",
+                int(os.environ.get("TURBOBUS_RUNTIME_CACHE_ENTRIES", "8") or 8),
+            ),
+            terminal_history_entries=extra_config_int(
+                vllm_config,
+                "turbobus.terminal_history_entries",
+                int(os.environ.get("TURBOBUS_TERMINAL_HISTORY_ENTRIES", "128") or 128),
+            ),
+            clear_relay_staging_on_chunk=extra_config_bool(
+                vllm_config,
+                "turbobus.clear_relay_staging_on_chunk",
+                os.environ.get("TURBOBUS_CLEAR_RELAY_STAGING_ON_CHUNK", "0") == "1",
             ),
             daemon_socket_path=extra_config_str(
                 vllm_config,

@@ -11,6 +11,13 @@ class TurboBusConnectorConfig:
     cpu_buffer_id: str
     gpu_buffer_id: str
     chunk_bytes: int
+    profile_bytes: int
+    min_pool_bytes: int
+    min_chunks_for_relay: int
+    relay_min_effective_bw_gbps: float
+    relay_min_direct_ratio: float
+    enable_dynamic_weights: bool
+    dynamic_weight_alpha: float
     runtime_cache_entries: int
     terminal_history_entries: int
     clear_relay_staging_on_chunk: bool
@@ -49,6 +56,50 @@ class TurboBusConnectorConfig:
                 vllm_config,
                 "turbobus.chunk_bytes",
                 int(os.environ.get("TURBOBUS_CHUNK_BYTES", 4 * 1024 * 1024)),
+            ),
+            profile_bytes=extra_config_int(
+                vllm_config,
+                "turbobus.profile_bytes",
+                int(os.environ.get("TURBOBUS_PROFILE_BYTES", 256 * 1024 * 1024)),
+            ),
+            min_pool_bytes=extra_config_int(
+                vllm_config,
+                "turbobus.min_pool_bytes",
+                int(os.environ.get("TURBOBUS_MIN_POOL_BYTES", 12 * 1024 * 1024)),
+            ),
+            min_chunks_for_relay=extra_config_int(
+                vllm_config,
+                "turbobus.min_chunks_for_relay",
+                int(os.environ.get("TURBOBUS_MIN_CHUNKS_FOR_RELAY", "2") or 2),
+            ),
+            relay_min_effective_bw_gbps=extra_config_float(
+                vllm_config,
+                "turbobus.relay_min_effective_bw_gbps",
+                float(
+                    os.environ.get(
+                        "TURBOBUS_RELAY_MIN_EFFECTIVE_BW_GBPS",
+                        "0.0",
+                    )
+                    or 0.0
+                ),
+            ),
+            relay_min_direct_ratio=extra_config_float(
+                vllm_config,
+                "turbobus.relay_min_direct_ratio",
+                float(
+                    os.environ.get("TURBOBUS_RELAY_MIN_DIRECT_RATIO", "0.0")
+                    or 0.0
+                ),
+            ),
+            enable_dynamic_weights=extra_config_bool(
+                vllm_config,
+                "turbobus.enable_dynamic_weights",
+                os.environ.get("TURBOBUS_ENABLE_DYNAMIC_WEIGHTS", "0") == "1",
+            ),
+            dynamic_weight_alpha=extra_config_float(
+                vllm_config,
+                "turbobus.dynamic_weight_alpha",
+                float(os.environ.get("TURBOBUS_DYNAMIC_WEIGHT_ALPHA", "0.25") or 0.25),
             ),
             runtime_cache_entries=extra_config_int(
                 vllm_config,

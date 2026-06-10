@@ -172,6 +172,15 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             job_id=self.job_id,
             runtime_options=RuntimeOptions(
                 chunk_bytes=int(self.config.chunk_bytes),
+                profile_bytes=int(self.config.profile_bytes),
+                min_pool_bytes=int(self.config.min_pool_bytes),
+                min_chunks_for_relay=int(self.config.min_chunks_for_relay),
+                relay_min_effective_bw_gbps=float(
+                    self.config.relay_min_effective_bw_gbps
+                ),
+                relay_min_direct_ratio=float(self.config.relay_min_direct_ratio),
+                enable_dynamic_weights=bool(self.config.enable_dynamic_weights),
+                dynamic_weight_alpha=float(self.config.dynamic_weight_alpha),
                 worker_runtime_cache_entries=int(self.config.runtime_cache_entries),
                 worker_terminal_history_entries=int(
                     self.config.terminal_history_entries

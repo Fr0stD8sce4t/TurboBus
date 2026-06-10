@@ -10,7 +10,8 @@
 - Runtime option config propagation is present:
   `RuntimeOptions` keeps worker runtime cache entries, terminal history entries,
   and relay staging clearing policy consistent across JSON/profile ingestion,
-  worker startup, and the vLLM adapter path.
+  worker startup, and the vLLM adapter path, including pool tuning and relay
+  thresholds.
 - Auto-advance queue G43 through G54 is complete for the current code-function
   pass.
 

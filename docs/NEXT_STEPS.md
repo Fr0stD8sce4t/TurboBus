@@ -10,7 +10,8 @@ pass.
 
 `RuntimeOptions` now preserves worker runtime cache entries, terminal history
 entries, and relay staging clearing policy across JSON/profile ingestion,
-worker startup, and the vLLM connector path.
+worker startup, and the vLLM connector path, including pool tuning and relay
+thresholds.
 
 ## Current Code Work
 

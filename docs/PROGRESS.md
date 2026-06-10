@@ -7,11 +7,10 @@
   gates, fake evidence, synthetic evidence, and dry-run deliverables remain
   deferred.
 - G1 through G54 are complete.
-- G54 production safety boundary enhancement is present:
-  `TurboBusRuntimeSession` rejects application or adapter policy hints and
-  metadata that attempt to choose physical routes, relay GPUs, target GPUs, or
-  transfer modes before submitting generated or externally supplied
-  `TransferIntent` objects to the daemon.
+- Runtime option config propagation is present:
+  `RuntimeOptions` keeps worker runtime cache entries, terminal history entries,
+  and relay staging clearing policy consistent across JSON/profile ingestion and
+  worker startup.
 - Auto-advance queue G43 through G54 is complete for the current code-function
   pass.
 
@@ -23,7 +22,7 @@
 
 ## Next Main Target
 
-No current code-function target remains in the G43 through G54 queue.
+No current code-function target remains.
 
 Progress-file rule:
 

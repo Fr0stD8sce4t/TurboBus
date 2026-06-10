@@ -34,7 +34,7 @@ def build_worker_service_transport(
     backend=default_cuda_backend,
     runtime_options: RuntimeOptions | None = None,
 ) -> WorkerServiceUnixSocketTransport:
-    transport, _startup_evidence = _build_worker_service_runtime(
+    transport, _transfer_client, _startup_evidence = _build_worker_service_runtime(
         daemon_socket_path,
         socket_path,
         backend=backend,
@@ -49,7 +49,7 @@ def _build_worker_service_runtime(
     *,
     backend=default_cuda_backend,
     runtime_options: RuntimeOptions | None = None,
-) -> tuple[WorkerServiceUnixSocketTransport, dict[str, object]]:
+) -> tuple[WorkerServiceUnixSocketTransport, WorkerTransferClient, dict[str, object]]:
     options = runtime_options or RuntimeOptions()
     startup_evidence = worker_startup_evidence_from_daemon(daemon_socket_path)
     daemon_client = TurboBusDaemonExecutionClient(str(daemon_socket_path))
@@ -82,6 +82,7 @@ def _build_worker_service_runtime(
             endpoint=endpoint,
             socket_path=str(socket_path),
         ),
+        transfer_client,
         startup_evidence,
     )
 
@@ -184,14 +185,16 @@ def run_worker_service_process(
     startup_reporter: WorkerStartupReporter | None = None,
 ) -> None:
     startup_evidence: dict[str, object] | None = None
+    transfer_client: WorkerTransferClient | None = None
+    service_failed = False
     try:
         if backend is default_cuda_backend and runtime_options is None:
-            transport, startup_evidence = _build_worker_service_runtime(
+            transport, transfer_client, startup_evidence = _build_worker_service_runtime(
                 daemon_socket_path,
                 socket_path,
             )
         else:
-            transport, startup_evidence = _build_worker_service_runtime(
+            transport, transfer_client, startup_evidence = _build_worker_service_runtime(
                 daemon_socket_path,
                 socket_path,
                 backend=backend,
@@ -209,6 +212,7 @@ def run_worker_service_process(
         )
         transport.serve_forever(stop_event=stop_event)
     except Exception as exc:
+        service_failed = True
         _report_worker_service_startup(
             startup_reporter,
             {
@@ -224,6 +228,53 @@ def run_worker_service_process(
             },
         )
         raise
+    finally:
+        if transfer_client is not None:
+            try:
+                execution_pool_close = transfer_client.close_execution_pool(
+                    cancel_queued=True,
+                )
+            except Exception as close_exc:
+                _report_worker_service_startup(
+                    startup_reporter,
+                    {
+                        "service": "worker",
+                        "state": "failed" if service_failed else "shutdown_failed",
+                        "daemon_socket_path": str(daemon_socket_path),
+                        "socket_path": str(socket_path),
+                        "startup_evidence": (
+                            None
+                            if startup_evidence is None
+                            else dict(startup_evidence)
+                        ),
+                        "execution_pool_close_error": (
+                            str(close_exc) or close_exc.__class__.__name__
+                        ),
+                        "execution_pool_close_error_type": close_exc.__class__.__name__,
+                    },
+                )
+                if not service_failed:
+                    raise
+            else:
+                _report_worker_service_startup(
+                    startup_reporter,
+                    {
+                        "service": "worker",
+                        "state": (
+                            "failed"
+                            if service_failed
+                            else "execution_pool_closed"
+                        ),
+                        "daemon_socket_path": str(daemon_socket_path),
+                        "socket_path": str(socket_path),
+                        "startup_evidence": (
+                            None
+                            if startup_evidence is None
+                            else dict(startup_evidence)
+                        ),
+                        "execution_pool_close": execution_pool_close,
+                    },
+                )
 
 
 def _report_worker_service_startup(
@@ -252,6 +303,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--chunk-bytes", type=int, default=None)
     parser.add_argument("--staging-slots", type=int, default=None)
     parser.add_argument("--profile-bytes", type=int, default=None)
+    parser.add_argument("--runtime-cache-entries", type=int, default=None)
+    parser.add_argument("--terminal-history-entries", type=int, default=None)
+    parser.add_argument(
+        "--clear-relay-staging-on-chunk",
+        action="store_true",
+        default=None,
+    )
     args = parser.parse_args(argv)
     runtime_options = _runtime_options_from_args(args)
     try:
@@ -276,6 +334,9 @@ def _runtime_options_from_args(args) -> RuntimeOptions | None:
         args.chunk_bytes is None
         and args.staging_slots is None
         and args.profile_bytes is None
+        and args.runtime_cache_entries is None
+        and args.terminal_history_entries is None
+        and args.clear_relay_staging_on_chunk is None
     ):
         return None
     defaults = RuntimeOptions()
@@ -286,6 +347,21 @@ def _runtime_options_from_args(args) -> RuntimeOptions | None:
         ),
         profile_bytes=(
             defaults.profile_bytes if args.profile_bytes is None else args.profile_bytes
+        ),
+        worker_runtime_cache_entries=(
+            defaults.worker_runtime_cache_entries
+            if args.runtime_cache_entries is None
+            else args.runtime_cache_entries
+        ),
+        worker_terminal_history_entries=(
+            defaults.worker_terminal_history_entries
+            if args.terminal_history_entries is None
+            else args.terminal_history_entries
+        ),
+        clear_relay_staging_on_chunk=(
+            defaults.clear_relay_staging_on_chunk
+            if args.clear_relay_staging_on_chunk is None
+            else args.clear_relay_staging_on_chunk
         ),
     )
 

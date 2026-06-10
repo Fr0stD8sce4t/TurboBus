@@ -5,18 +5,17 @@ appending history.
 
 ## Current Main Target
 
-Code-function queue complete through G54.
+Runtime option config propagation is complete for the current production pass.
 
-G54 is complete: `TurboBusRuntimeSession` now enforces a runtime-level control
-plane boundary for generated intents, adapter transfer contexts, and externally
-supplied `TransferIntent` objects. Application and adapter metadata can no
-longer carry physical route choices such as direct, relay, pool, target GPU, or
-relay GPU selectors into daemon scheduling.
+`RuntimeOptions` now preserves worker runtime cache entries, terminal history
+entries, and relay staging clearing policy across JSON/profile ingestion and
+worker startup.
 
 ## Current Code Work
 
-- `turbobus/runtime_session.py`: runtime-level policy and metadata boundary for
-  generated intents, adapter contexts, and externally supplied intents.
+- `turbobus/runtime_options.py`: runtime control option ingestion and native
+  propagation.
+- `turbobus/worker/process.py`: worker startup CLI runtime option wiring.
 - `docs/PROGRESS.md`: current completed state and deferred validation risk.
 
 Round rules:

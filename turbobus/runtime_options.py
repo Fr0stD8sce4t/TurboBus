@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+from typing import Any
 
 from . import native_runtime
 
@@ -21,10 +22,13 @@ class RuntimeOptions:
     relay_min_direct_ratio: float = 0.0
     enable_dynamic_weights: bool = False
     dynamic_weight_alpha: float = 0.25
+    clear_relay_staging_on_chunk: bool = False
     daemon_socket_path: str | None = None
     worker_socket_path: str | None = None
     daemon_max_inflight_chunks: int = 8
     daemon_profile_max_age_seconds: float = 3600.0
+    worker_runtime_cache_entries: int = 8
+    worker_terminal_history_entries: int = 128
     admission_retry_timeout_seconds: float = 5.0
     admission_retry_interval_seconds: float = 0.05
 
@@ -34,9 +38,7 @@ class RuntimeOptions:
         best = data.get("best")
         if not isinstance(best, dict):
             raise ValueError("tuning JSON does not contain a 'best' object")
-        chunk_bytes = int(best["chunk_bytes"])
-        staging_slots = int(best["staging_slots"])
-        return cls(chunk_bytes=chunk_bytes, staging_slots=staging_slots)
+        return cls(**_runtime_option_values_from_mapping(best))
 
     @classmethod
     def from_profile_json(cls, path: str | Path) -> "RuntimeOptions":
@@ -44,12 +46,7 @@ class RuntimeOptions:
         config = data.get("config", {})
         if not isinstance(config, dict):
             raise ValueError("profile JSON contains an invalid 'config' object")
-        defaults = cls()
-        return cls(
-            chunk_bytes=int(config.get("chunk_bytes", defaults.chunk_bytes)),
-            staging_slots=int(config.get("staging_slots", defaults.staging_slots)),
-            profile_bytes=int(config.get("profile_bytes", defaults.profile_bytes)),
-        )
+        return cls(**_runtime_option_values_from_mapping(config))
 
     def to_native(self):
         native = native_runtime.native_module()
@@ -62,10 +59,12 @@ class RuntimeOptions:
         options.profile_cache_enabled = self.profile_cache_enabled
         options.transfer_mode = native.TransferMode.Pool
         options.min_chunks_for_relay = self.min_chunks_for_relay
+        options.min_pool_bytes = self.min_pool_bytes
         options.relay_min_effective_bw_gbps = self.relay_min_effective_bw_gbps
         options.relay_min_direct_ratio = self.relay_min_direct_ratio
         options.enable_dynamic_weights = self.enable_dynamic_weights
         options.dynamic_weight_alpha = self.dynamic_weight_alpha
+        options.clear_relay_staging_on_chunk = self.clear_relay_staging_on_chunk
         return options
 
 
@@ -75,6 +74,50 @@ def _read_json(path: str | Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     return data
+
+
+def _runtime_option_values_from_mapping(data: dict[str, Any]) -> dict[str, Any]:
+    defaults = RuntimeOptions()
+    option_fields = {field.name: field for field in fields(RuntimeOptions)}
+    aliases = {
+        "runtime_cache_entries": "worker_runtime_cache_entries",
+        "terminal_history_entries": "worker_terminal_history_entries",
+    }
+    values: dict[str, Any] = {}
+    for field_name, field in option_fields.items():
+        if field_name in data:
+            values[field_name] = _coerce_runtime_option_value(
+                data[field_name],
+                getattr(defaults, field_name),
+            )
+    for alias, field_name in aliases.items():
+        if alias in data and field_name not in values:
+            values[field_name] = _coerce_runtime_option_value(
+                data[alias],
+                getattr(defaults, field_name),
+            )
+    return values
+
+
+def _coerce_runtime_option_value(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(default, bool):
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+            raise ValueError(f"invalid boolean runtime option value: {value}")
+        return bool(value)
+    if isinstance(default, int) and not isinstance(default, bool):
+        return int(value)
+    if isinstance(default, float):
+        return float(value)
+    if isinstance(default, str) or default is None:
+        return None if value is None else str(value)
+    return value
 
 
 __all__ = ["RuntimeOptions"]

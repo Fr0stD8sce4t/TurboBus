@@ -5,8 +5,8 @@ appending history.
 
 ## Current Main Target
 
-vLLM adapter runtime option propagation is complete for the current production
-pass.
+worker startup and vLLM adapter runtime option propagation are complete for
+the current production pass.
 
 `RuntimeOptions` now preserves worker runtime cache entries, terminal history
 entries, and relay staging clearing policy across JSON/profile ingestion,

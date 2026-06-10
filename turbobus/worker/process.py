@@ -303,11 +303,36 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--chunk-bytes", type=int, default=None)
     parser.add_argument("--staging-slots", type=int, default=None)
     parser.add_argument("--profile-bytes", type=int, default=None)
+    parser.add_argument(
+        "--enable-peer-access",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--profile-cache-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument(
+        "--profile-on-first-transfer",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--min-pool-bytes", type=int, default=None)
+    parser.add_argument("--min-chunks-for-relay", type=int, default=None)
+    parser.add_argument("--relay-min-effective-bw-gbps", type=float, default=None)
+    parser.add_argument("--relay-min-direct-ratio", type=float, default=None)
+    parser.add_argument(
+        "--enable-dynamic-weights",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
+    parser.add_argument("--dynamic-weight-alpha", type=float, default=None)
     parser.add_argument("--runtime-cache-entries", type=int, default=None)
     parser.add_argument("--terminal-history-entries", type=int, default=None)
     parser.add_argument(
         "--clear-relay-staging-on-chunk",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=None,
     )
     args = parser.parse_args(argv)
@@ -334,6 +359,15 @@ def _runtime_options_from_args(args) -> RuntimeOptions | None:
         args.chunk_bytes is None
         and args.staging_slots is None
         and args.profile_bytes is None
+        and args.enable_peer_access is None
+        and args.profile_cache_enabled is None
+        and args.profile_on_first_transfer is None
+        and args.min_pool_bytes is None
+        and args.min_chunks_for_relay is None
+        and args.relay_min_effective_bw_gbps is None
+        and args.relay_min_direct_ratio is None
+        and args.enable_dynamic_weights is None
+        and args.dynamic_weight_alpha is None
         and args.runtime_cache_entries is None
         and args.terminal_history_entries is None
         and args.clear_relay_staging_on_chunk is None
@@ -347,6 +381,51 @@ def _runtime_options_from_args(args) -> RuntimeOptions | None:
         ),
         profile_bytes=(
             defaults.profile_bytes if args.profile_bytes is None else args.profile_bytes
+        ),
+        enable_peer_access=(
+            defaults.enable_peer_access
+            if args.enable_peer_access is None
+            else args.enable_peer_access
+        ),
+        profile_cache_enabled=(
+            defaults.profile_cache_enabled
+            if args.profile_cache_enabled is None
+            else args.profile_cache_enabled
+        ),
+        profile_on_first_transfer=(
+            defaults.profile_on_first_transfer
+            if args.profile_on_first_transfer is None
+            else args.profile_on_first_transfer
+        ),
+        min_pool_bytes=(
+            defaults.min_pool_bytes
+            if args.min_pool_bytes is None
+            else args.min_pool_bytes
+        ),
+        min_chunks_for_relay=(
+            defaults.min_chunks_for_relay
+            if args.min_chunks_for_relay is None
+            else args.min_chunks_for_relay
+        ),
+        relay_min_effective_bw_gbps=(
+            defaults.relay_min_effective_bw_gbps
+            if args.relay_min_effective_bw_gbps is None
+            else args.relay_min_effective_bw_gbps
+        ),
+        relay_min_direct_ratio=(
+            defaults.relay_min_direct_ratio
+            if args.relay_min_direct_ratio is None
+            else args.relay_min_direct_ratio
+        ),
+        enable_dynamic_weights=(
+            defaults.enable_dynamic_weights
+            if args.enable_dynamic_weights is None
+            else args.enable_dynamic_weights
+        ),
+        dynamic_weight_alpha=(
+            defaults.dynamic_weight_alpha
+            if args.dynamic_weight_alpha is None
+            else args.dynamic_weight_alpha
         ),
         worker_runtime_cache_entries=(
             defaults.worker_runtime_cache_entries

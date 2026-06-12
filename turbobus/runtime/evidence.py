@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
 from ..schema import TransferReceipt
 from .validation import validated_real_execution_evidence
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,18 @@ def _normalize_lifecycle_evidence(
 
 
 def _require_adapter_lifecycle_contract(lifecycle: Mapping[str, object]) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：校验适配器生命周期边界
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle evidence
+    #  * 操作：
+    #  *   1) 校验 RuntimeSession、TransferIntent、TransferReceipt 来源
+    #  *   2) 拒绝 fake evidence 和 route policy 暴露
+    #  */
+    logger.info("开始校验适配器生命周期边界...")
+
+    # // 1.1 校验生产来源字段
     required_sources = {
         "buffer_registration_source": "TurboBusRuntimeSession",
         "intent_source": "TransferIntent",
@@ -111,8 +126,57 @@ def _require_adapter_lifecycle_contract(lifecycle: Mapping[str, object]) -> None
                 "adapter lifecycle evidence "
                 f"{key} must be {expected}, got {observed!r}"
             )
+
+    # // 1.2 拒绝 adapter 可见物理路径策略
     if bool(lifecycle.get("route_policy_visible_to_adapter", True)):
         raise ValueError("adapter lifecycle exposes physical route policy")
+
+    # // 1.3 校验 RuntimeSession entrypoint 合约
+    _require_runtime_entrypoint_contract(lifecycle.get("runtime_entrypoint"))
+    logger.info("适配器生命周期边界校验完成")
+
+
+def _require_runtime_entrypoint_contract(value: object) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：校验 RuntimeSession 入口合约
+    #  * ========================================================================
+    #  * 数据源：runtime_entrypoint contract
+    #  * 操作：
+    #  *   1) 确认唯一入口是 TurboBusRuntimeSession
+    #  *   2) 确认 daemon_scheduler 是唯一 plan 来源
+    #  *   3) 确认 adapter intent/receipt 已被 RuntimeSession 记录
+    #  */
+    logger.info("开始校验 RuntimeSession 入口合约...")
+
+    # // 2.1 校验入口对象和 plan 来源
+    if not isinstance(value, Mapping):
+        raise ValueError("adapter lifecycle evidence missing runtime_entrypoint")
+    expected = {
+        "schema": "turbobus.runtime_session_entrypoint.v1",
+        "entrypoint": "TurboBusRuntimeSession",
+        "plan_source": "daemon_scheduler",
+    }
+    for key, expected_value in expected.items():
+        observed = value.get(key)
+        if str(observed) != expected_value:
+            raise ValueError(
+                "adapter lifecycle runtime_entrypoint "
+                f"{key} must be {expected_value}, got {observed!r}"
+            )
+    if bool(value.get("route_policy_visible_to_application", True)):
+        raise ValueError("runtime entrypoint exposes route policy to application")
+    if bool(value.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("runtime entrypoint exposes route policy to adapter")
+
+    # // 2.2 校验 RuntimeSession 已记录 adapter intent 与 receipt
+    if not bool(value.get("intents_recorded", False)):
+        raise ValueError("runtime entrypoint did not record adapter intents")
+    if not bool(value.get("receipts_recorded", False)):
+        raise ValueError("runtime entrypoint did not record adapter receipts")
+    if not bool(value.get("adapter_evidence_recorded", False)):
+        raise ValueError("runtime entrypoint did not record adapter lifecycle evidence")
+    logger.info("RuntimeSession 入口合约校验完成")
 
 
 def _receipt_views_from_lifecycle(

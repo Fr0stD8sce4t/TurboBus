@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats
-from ..offload.lifecycle import receipt_trace_from_receipts
+from ..offload.lifecycle import receipt_trace_from_receipts, runtime_entrypoint_contract
 from ..runtime.validation import validate_runtime_receipt
 from ..runtime_session import TurboBusRuntimeSession
 from ..runtime_options import RuntimeOptions
@@ -727,10 +727,21 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             ).as_dict()
-            receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
+            evidence_id = _vllm_kv_lifecycle_evidence_id(
+                "restore",
+                self.session_id,
+                request,
+            )
+            receipt_trace = _receipt_trace_from_handles(
+                handles,
+                self.runtime_session,
+                evidence_id=evidence_id,
+                operation="restore",
+            )
         finally:
             integration.forget_request(request.request_id)
         lifecycle_evidence = _vllm_kv_lifecycle_evidence(
+            evidence_id=evidence_id,
             operation="restore",
             request=request,
             job_id=self.job_id,
@@ -908,7 +919,17 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
-            receipt_trace = _receipt_trace_from_handles(handles, self.runtime_session)
+            evidence_id = _vllm_kv_lifecycle_evidence_id(
+                "save",
+                self.session_id,
+                request,
+            )
+            receipt_trace = _receipt_trace_from_handles(
+                handles,
+                self.runtime_session,
+                evidence_id=evidence_id,
+                operation="save",
+            )
         finally:
             context.integration.forget_request(request.request_id)
         context.bytes = stats.bytes
@@ -924,6 +945,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         context.ranges = len(range_names)
         register_start = time.perf_counter()
         lifecycle_evidence = _vllm_kv_lifecycle_evidence(
+            evidence_id=evidence_id,
             operation="save",
             request=request,
             job_id=self.job_id,
@@ -1267,6 +1289,9 @@ def _wait_transfer_handles(handles) -> list[object]:
 def _receipt_trace_from_handles(
     handles,
     runtime_session: TurboBusRuntimeSession,
+    *,
+    evidence_id: str,
+    operation: str,
 ) -> dict[str, Any]:
     receipts: list[TransferReceipt] = []
     seen = set()
@@ -1286,12 +1311,20 @@ def _receipt_trace_from_handles(
         receipts.append(receipt)
     if not receipts:
         raise RuntimeError("vLLM TurboBus transfer produced no receipts")
-    return _receipt_trace_from_receipts(receipts, runtime_session)
+    return _receipt_trace_from_receipts(
+        receipts,
+        runtime_session,
+        evidence_id=evidence_id,
+        operation=operation,
+    )
 
 
 def _receipt_trace_from_receipts(
     receipts: list[TransferReceipt],
     runtime_session: TurboBusRuntimeSession,
+    *,
+    evidence_id: str,
+    operation: str,
 ) -> dict[str, Any]:
     for receipt in receipts:
         validate_runtime_receipt(
@@ -1307,7 +1340,24 @@ def _receipt_trace_from_receipts(
     trace["daemon_recovery_sources"] = _join_unique(
         str(item.get("source", "")) for item in recovery if item.get("source")
     )
+    trace["runtime_entrypoint"] = runtime_entrypoint_contract(
+        runtime_session,
+        receipts=receipts,
+        evidence_id=evidence_id,
+        operation=operation,
+    )
     return trace
+
+
+def _vllm_kv_lifecycle_evidence_id(
+    operation: str,
+    session_id: str,
+    request: TurboBusRequestMetadata,
+) -> str:
+    return (
+        f"vllm-kv-{operation}-{session_id}-{request.prefix_key}-"
+        f"{request.request_id}"
+    )
 
 
 def _daemon_recovery_from_receipts(
@@ -1347,6 +1397,7 @@ def _daemon_recovery_from_receipts(
 
 def _vllm_kv_lifecycle_evidence(
     *,
+    evidence_id: str,
     operation: str,
     request: TurboBusRequestMetadata,
     job_id: str,
@@ -1362,11 +1413,9 @@ def _vllm_kv_lifecycle_evidence(
     receipt_contracts = receipt_trace.get("receipt_contracts")
     runtime_buffer_bindings = receipt_trace.get("runtime_buffer_bindings")
     daemon_recovery = receipt_trace.get("daemon_recovery")
+    runtime_entrypoint = receipt_trace.get("runtime_entrypoint")
     return {
-        "evidence_id": (
-            f"vllm-kv-{operation}-{session_id}-{request.prefix_key}-"
-            f"{request.request_id}"
-        ),
+        "evidence_id": str(evidence_id),
         "operation": str(operation),
         "request_id": request.request_id,
         "source_request_id": str(source_request_id),
@@ -1413,6 +1462,11 @@ def _vllm_kv_lifecycle_evidence(
             [dict(item) for item in daemon_recovery if isinstance(item, Mapping)]
             if isinstance(daemon_recovery, list)
             else []
+        ),
+        "runtime_entrypoint": (
+            dict(runtime_entrypoint)
+            if isinstance(runtime_entrypoint, Mapping)
+            else None
         ),
         "daemon_recovery_count": int(
             receipt_trace.get("daemon_recovery_count", 0) or 0

@@ -1,61 +1,66 @@
 # TurboBus Next Steps
 
-This is the only active per-round implementation plan. Replace state instead of
-appending history.
+This is the only active per-round implementation plan. Replace state instead
+of appending history.
 
 ## Goal Mode Rule
 
 Each round must derive one current main target from this file first, then
 `docs/PROGRESS.md`, then `AGENTS.md`, then `docs/TURBOBUS_ROADMAP.md`.
 
-If the files conflict, this file wins. Do not hard-code the target in prompts or
-agent instructions. Stop after the current main target is closed.
+If the files conflict, this file wins. Do not hard-code the target in prompts
+or agent instructions. Stop after the current main target is closed.
 
 Each round must deliver one complete system capability loop. A small bug fix,
-field rename, helper move, import cleanup, boundary tightening, or documentation
-update does not count as a completed round unless it is necessary to finish the
-same capability loop.
+field rename, helper move, import cleanup, boundary tightening, or
+documentation update does not count as a completed round unless it is necessary
+to finish the same capability loop.
 
 Use `docs/GOAL_MODE_PROMPT.md` as the repeatable prompt body for the next
 round. Keep it target-agnostic and let the four plan files choose the target.
 
 ## Current Main Target
 
-Build daemon-issued block runtime, tickets, leases, progress, cleanup, and
-receipts on top of block-level scheduling.
+Converge the production boundary around `TurboBusRuntimeSession` and adapter
+lifecycle evidence.
 
-The target is complete only when the daemon turns a block plan into per-block
-tickets or leases, tracks queued/running/completed/failed block state, records
-progress and cleanup ownership, and emits receipts from real block completion
-or explicit failure.
+Keep the single production entrypoint, remove duplicated runtime-looking paths,
+and keep adapter validation bound to `TurboBusRuntimeSession` adapter evidence
+records, snapshots, and real receipts. This is a system-code refactor target,
+not a validation target.
 
 ## Current Code Work
 
-- `turbobus/daemon/block_runtime.py`: define daemon-owned block runtime state
-  and per-block lifecycle transitions.
-- `turbobus/daemon/cleanup_helpers.py`: extend cleanup ownership handling for
-  block-scoped records.
-- `turbobus/daemon/server.py`: issue block runtime records, progress, and
-  receipts from block plans.
-- `turbobus/daemon/receipts.py`: convert block-level completion evidence into
+- `turbobus/runtime_session.py`: keep the production entrypoint record as the
+  source of session-level startup, registration, execution, receipt, adapter
+  evidence, and close evidence.
+- `turbobus/runtime/session_records.py`: keep session-entry snapshots and
+  production boundary records aligned with the single entrypoint, including
+  adapter intent/receipt evidence records.
+- `turbobus/offload/lifecycle.py`: keep adapter lifecycle evidence bound to
+  `TurboBusRuntimeSession` snapshots, adapter evidence records, and real
   receipts.
-- `turbobus/worker/lifecycle.py` and `turbobus/worker/cuda_executor.py`: carry
-  daemon-issued block runtime identifiers through execution and completion.
-- `turbobus/runtime_session.py`: keep block runtime hidden behind the
-  production session API.
+- `turbobus/runtime/evidence.py`: keep adapter lifecycle validation strict
+  about `TurboBusRuntimeSession`, `TransferIntent`, `TransferReceipt`, and
+  daemon scheduler policy source, and reject lifecycle evidence that was not
+  recorded by the RuntimeSession entrypoint.
+- `turbobus/adapters/`: remain consumers of `TurboBusRuntimeSession` evidence
+  and must not create route, plan, relay, pool, or target-GPU policy.
 
-Adapter migration is allowed only if one of these paths directly blocks the
-current target.
+Adapter migration is allowed only if it directly fixes a system-code boundary
+bug found before validation starts.
 
 ## Next Entry
 
-Start by defining daemon block runtime records and the ticket/lease lifecycle,
-then connect block completion and cleanup into receipt emission. Stop after the
-daemon can describe block progress and terminal receipts for direct-only,
-relay-only, and mixed pooled block plans.
+Continue the same production-boundary refactor in the current code path.
+Do not start benchmark, example, paper validation, server validation, vLLM
+validation, new tests, substitute validation entrypoints, fake receipt paths,
+synthetic evidence, or dry-run deliverables.
 
-The round should stay inside this loop until the daemon can show one coherent
-block runtime story from scheduling decision to terminal receipt.
+Next inspect remaining runtime-looking paths under `turbobus/adapters/`,
+`turbobus/offload/`, and `turbobus/runtime/`. If any path can produce adapter
+or receipt evidence without a RuntimeSession entrypoint record, tighten it back
+to `TurboBusRuntimeSession` before moving to the next boundary.
 
 ## Round Rules
 
@@ -69,7 +74,7 @@ block runtime story from scheduling decision to terminal receipt.
   in the current stage.
 - Keep daemon and scheduler as the only production source of transfer plans.
   Applications, benchmarks, adapters, workers, and CUDA executors must not
-  choose direct, relay, pool, target GPU, or relay GPU routes.
+  choose direct, relay, pool, target GPU, or relay GPU.
 - If a refactor or deletion is needed, continue to the same system capability
   loop instead of stopping at cleanup.
 - After closing a real system capability loop, update this file and
@@ -87,12 +92,18 @@ block runtime story from scheduling decision to terminal receipt.
 ## Auto-Advance Policy
 
 Auto-advance is allowed only within the current main target. After that target
-is closed, stop and update this file instead of starting the next target.
+is closed, stop the current round and update this file instead of starting the
+next target in the same round.
+
+In continuous goal mode, the next continuation must start a new round by
+reading `docs/GOAL_MODE_PROMPT.md`, `AGENTS.md`, `docs/TURBOBUS_ROADMAP.md`,
+`docs/NEXT_STEPS.md`, and `docs/PROGRESS.md`, then advance the newly selected
+current target. Do not mark the whole goal complete because one round closed.
 
 ## Round Completion Standard
 
-The current round is complete only when the daemon-owned block runtime can be
-described as one path from scheduled block plan to terminal receipt, and the
-final diff is limited to files needed for that path. If sub-agents are used,
-their work must stay in disjoint scopes and the lead agent must make the final
-completion decision.
+The current round is complete only when the plan files agree on a single
+production-boundary refactor target and no benchmark, example, server-
+validation, fake-evidence, synthetic-evidence, or dry-run path has been added.
+If sub-agents are used, their work must stay in disjoint scopes and the lead
+agent must make the final completion decision.

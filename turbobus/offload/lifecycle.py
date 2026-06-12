@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterable, Mapping
 
 from ..schema import TransferReceipt
+
+logger = logging.getLogger(__name__)
 
 
 def unique_receipts_from_handles(handles: Iterable[object]) -> list[TransferReceipt]:
@@ -87,25 +90,49 @@ def adapter_lifecycle_evidence_from_handles(
     item_names: Iterable[str],
     handles: Iterable[object],
     transfer_stats: Mapping[str, Any],
+    runtime_session,
     extra: Mapping[str, Any] | None = None,
-    runtime_session=None,
 ) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：生成 RuntimeSession 绑定证据
+    #  * ========================================================================
+    #  * 数据源：adapter transfer handles 与 TurboBusRuntimeSession snapshot
+    #  * 操作：
+    #  *   1) 从 handle 提取真实 TransferReceipt
+    #  *   2) 生成 RuntimeSession entrypoint 合约
+    #  *   3) 拒绝 adapter 覆盖核心生产边界字段
+    #  */
+    logger.info("开始生成 RuntimeSession 绑定证据...")
+
+    # // 1.1 归一化 adapter item 与 handle
     names = tuple(str(name) for name in item_names)
     handle_list = list(handles)
+
+    # // 1.2 提取唯一 TransferReceipt 证据
     receipts = unique_receipts_from_handles(handle_list)
     if names and not receipts:
         raise RuntimeError(
             f"{operation} completed without TransferReceipt evidence"
         )
+
+    # // 1.3 校验 RuntimeSession 入口并生成 receipt trace
+    _require_runtime_session_contract(runtime_session)
     trace = receipt_trace_from_receipts(receipts)
-    if runtime_session is not None:
-        recovery = _daemon_recovery_from_receipts(receipts, runtime_session)
-        trace["daemon_recovery"] = recovery
-        trace["daemon_recovery_count"] = len(recovery)
-        trace["daemon_recovery_sources"] = join_unique(
-            item.get("source") for item in recovery
-        )
-    return {
+    recovery = _daemon_recovery_from_receipts(receipts, runtime_session)
+    trace["daemon_recovery"] = recovery
+    trace["daemon_recovery_count"] = len(recovery)
+    trace["daemon_recovery_sources"] = join_unique(
+        item.get("source") for item in recovery
+    )
+    runtime_entrypoint = runtime_entrypoint_contract(
+        runtime_session,
+        receipts=receipts,
+        evidence_id=str(evidence_id),
+        operation=str(operation),
+    )
+    extra_payload = _adapter_extra_without_contract_overrides(extra)
+    evidence = {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
         "job_id": transfer_context.job_id,
@@ -115,14 +142,50 @@ def adapter_lifecycle_evidence_from_handles(
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
         "policy_source": "daemon_scheduler",
+        "route_policy_visible_to_adapter": False,
+        "physical_route_source": "daemon_scheduler",
+        "daemon_recovery_source": "TurboBusRuntimeSession",
         "cpu_buffer_id": transfer_context.cpu_buffer_id,
         "gpu_buffer_id": transfer_context.gpu_buffer_id,
         item_field: names,
         item_count_field: len(names),
+        "runtime_entrypoint": runtime_entrypoint,
         **trace,
         **dict(transfer_stats),
-        **({} if extra is None else dict(extra)),
+        **extra_payload,
     }
+    logger.info(
+        "RuntimeSession 绑定证据生成完成, evidence_id: %s, receipts: %s",
+        evidence_id,
+        len(receipts),
+    )
+    return evidence
+
+
+def _adapter_extra_without_contract_overrides(
+    extra: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if extra is None:
+        return {}
+    payload = dict(extra)
+    protected = {
+        "buffer_registration_source",
+        "intent_source",
+        "receipt_source",
+        "policy_source",
+        "physical_route_source",
+        "route_policy_visible_to_adapter",
+        "daemon_recovery_source",
+        "runtime_entrypoint",
+        "receipt_contracts",
+    }
+    overridden = sorted(key for key in payload if key in protected)
+    if overridden:
+        raise ValueError(
+            "adapter lifecycle extra must not override production boundary fields: "
+            + ", ".join(overridden)
+        )
+    return payload
 
 
 def join_unique(values: Iterable[object]) -> str:
@@ -175,6 +238,129 @@ def _daemon_recovery_from_receipts(
             }
         )
     return recovered
+
+
+def runtime_entrypoint_contract(
+    runtime_session,
+    *,
+    receipts: Iterable[TransferReceipt],
+    evidence_id: str | None = None,
+    operation: str | None = None,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：构造 RuntimeSession 入口合约
+    #  * ========================================================================
+    #  * 数据源：TurboBusRuntimeSession.runtime_entrypoint_snapshot
+    #  * 操作：
+    #  *   1) 读取 RuntimeSession snapshot
+    #  *   2) 核对 adapter receipt 与 intent 已进入 entrypoint record
+    #  *   3) 回写 adapter evidence 绑定快照
+    #  */
+    logger.info("开始构造 RuntimeSession 入口合约...")
+
+    # // 2.1 确认 runtime_session 暴露生产入口快照
+    _require_runtime_session_contract(runtime_session)
+    snapshotter = getattr(runtime_session, "runtime_entrypoint_snapshot", None)
+
+    # // 2.2 读取当前 RuntimeSession snapshot
+    snapshot = snapshotter()
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("runtime entrypoint snapshot must be a mapping")
+
+    # // 2.3 提取 receipt 与 intent 绑定
+    receipt_list = list(receipts)
+    receipt_ids = [receipt.receipt_id for receipt in receipt_list]
+    intent_ids = [receipt.intent_id for receipt in receipt_list]
+    receipts_view = snapshot.get("receipts")
+    intents_view = snapshot.get("intents")
+    contract = {
+        "schema": snapshot.get("schema"),
+        "entrypoint": snapshot.get("entrypoint"),
+        "job_id": snapshot.get("job_id"),
+        "session_id": snapshot.get("session", {}).get("session_id")
+        if isinstance(snapshot.get("session"), Mapping)
+        else None,
+        "plan_source": snapshot.get("plan_source"),
+        "route_policy_visible_to_application": bool(
+            snapshot.get("route_policy_visible_to_application", True)
+        ),
+        "route_policy_visible_to_adapter": bool(
+            snapshot.get("route_policy_visible_to_adapter", True)
+        ),
+        "receipt_ids": receipt_ids,
+        "intent_ids": intent_ids,
+        "receipts_recorded": _snapshot_receipts_contain_all(receipts_view, receipt_ids),
+        "intents_recorded": _snapshot_contains_all(intents_view, intent_ids),
+    }
+    if evidence_id is not None:
+        _record_runtime_adapter_evidence(
+            runtime_session,
+            evidence_id=str(evidence_id),
+            operation=str(operation or ""),
+            intent_ids=intent_ids,
+            receipt_ids=receipt_ids,
+        )
+        refreshed = snapshotter()
+        if isinstance(refreshed, Mapping):
+            adapter_evidence = refreshed.get("adapter_evidence")
+            contract["adapter_evidence_recorded"] = _snapshot_contains_all(
+                adapter_evidence,
+                [str(evidence_id)],
+            )
+    logger.info(
+        "RuntimeSession 入口合约构造完成, receipts: %s",
+        len(receipt_ids),
+    )
+    return contract
+
+
+def _require_runtime_session_contract(runtime_session) -> None:
+    snapshotter = getattr(runtime_session, "runtime_entrypoint_snapshot", None)
+    if not callable(snapshotter):
+        raise TypeError(
+            "adapter lifecycle evidence requires TurboBusRuntimeSession "
+            "entrypoint snapshots"
+        )
+
+
+def _record_runtime_adapter_evidence(
+    runtime_session,
+    *,
+    evidence_id: str,
+    operation: str,
+    intent_ids: Iterable[str],
+    receipt_ids: Iterable[str],
+) -> None:
+    recorder = getattr(runtime_session, "record_adapter_lifecycle_evidence", None)
+    if not callable(recorder):
+        raise TypeError(
+            "adapter lifecycle evidence requires TurboBusRuntimeSession "
+            "adapter evidence recording"
+        )
+    recorder(
+        evidence_id=evidence_id,
+        operation=operation,
+        intent_ids=tuple(str(intent_id) for intent_id in intent_ids),
+        receipt_ids=tuple(str(receipt_id) for receipt_id in receipt_ids),
+    )
+
+
+def _snapshot_contains_all(value: object, keys: Iterable[str]) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    return all(str(key) in value for key in keys)
+
+
+def _snapshot_receipts_contain_all(value: object, receipt_ids: Iterable[str]) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    observed = {
+        str(item.get("receipt_id"))
+        for item in value.values()
+        if isinstance(item, Mapping)
+    }
+    return all(str(receipt_id) in observed for receipt_id in receipt_ids)
 
 
 def _receipt_contract_summary(
@@ -265,5 +451,6 @@ __all__ = [
     "adapter_lifecycle_evidence_from_handles",
     "join_unique",
     "receipt_trace_from_receipts",
+    "runtime_entrypoint_contract",
     "unique_receipts_from_handles",
 ]

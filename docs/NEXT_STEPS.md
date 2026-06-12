@@ -45,8 +45,9 @@ not a validation target.
   submit/wait receipt consumption bound to RuntimeSession entrypoint records.
 - `turbobus/runtime/evidence.py`: keep adapter lifecycle validation strict
   about `TurboBusRuntimeSession`, `TransferIntent`, `TransferReceipt`, and
-  daemon scheduler policy source, and reject lifecycle evidence that was not
-  recorded by the RuntimeSession entrypoint.
+  daemon scheduler policy source. It must reject lifecycle evidence whose
+  evidence id, intent ids, and receipt ids are not present in the
+  RuntimeSession entrypoint adapter evidence record.
 - `turbobus/adapters/`: remain consumers of `TurboBusRuntimeSession` evidence
   and must not create route, plan, relay, pool, or target-GPU policy.
 
@@ -60,11 +61,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect the remaining adapter lifecycle evidence contract assembly and
-runtime evidence validation paths. Tighten any adapter evidence, receipt
-contract, or route-policy path that can still be produced without being
-present in the RuntimeSession entrypoint record before moving to the next
-boundary.
+Next inspect adapter consumers that build lifecycle payloads from receipt
+traces, especially vLLM KV connector evidence assembly. Tighten any adapter
+payload that can copy receipt contracts or RuntimeSession contracts without
+preserving the RuntimeSession entrypoint adapter evidence record and route
+policy rejection fields.
 
 ## Round Rules
 

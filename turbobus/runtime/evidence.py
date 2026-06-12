@@ -132,11 +132,18 @@ def _require_adapter_lifecycle_contract(lifecycle: Mapping[str, object]) -> None
         raise ValueError("adapter lifecycle exposes physical route policy")
 
     # // 1.3 校验 RuntimeSession entrypoint 合约
-    _require_runtime_entrypoint_contract(lifecycle.get("runtime_entrypoint"))
+    _require_runtime_entrypoint_contract(
+        lifecycle.get("runtime_entrypoint"),
+        lifecycle=lifecycle,
+    )
     logger.info("适配器生命周期边界校验完成")
 
 
-def _require_runtime_entrypoint_contract(value: object) -> None:
+def _require_runtime_entrypoint_contract(
+    value: object,
+    *,
+    lifecycle: Mapping[str, object],
+) -> None:
     # /*
     #  * ========================================================================
     #  * 步骤2：校验 RuntimeSession 入口合约
@@ -178,7 +185,124 @@ def _require_runtime_entrypoint_contract(value: object) -> None:
         raise ValueError("runtime entrypoint did not record adapter construction")
     if not bool(value.get("adapter_evidence_recorded", False)):
         raise ValueError("runtime entrypoint did not record adapter lifecycle evidence")
+    _require_runtime_entrypoint_adapter_evidence(value, lifecycle=lifecycle)
     logger.info("RuntimeSession 入口合约校验完成")
+
+
+def _require_runtime_entrypoint_adapter_evidence(
+    value: Mapping[str, object],
+    *,
+    lifecycle: Mapping[str, object],
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：校验 adapter evidence 记录明细
+    #  * ========================================================================
+    #  * 数据源：runtime_entrypoint.adapter_evidence_record
+    #  * 操作：
+    #  *   1) 核对 lifecycle evidence_id 已写入 RuntimeSession
+    #  *   2) 核对 intent 与 receipt 合约没有脱离 entrypoint record
+    #  */
+    logger.info("开始校验 adapter evidence 记录明细...")
+
+    # // 3.1 读取 lifecycle 标识与 RuntimeSession 记录
+    evidence_id = lifecycle.get("evidence_id")
+    if evidence_id is None:
+        raise ValueError("adapter lifecycle evidence missing evidence_id")
+    record = value.get("adapter_evidence_record")
+    if not isinstance(record, Mapping):
+        raise ValueError("runtime entrypoint missing adapter evidence record")
+    if str(record.get("evidence_id")) != str(evidence_id):
+        raise ValueError("runtime entrypoint adapter evidence_id mismatch")
+
+    # // 3.2 核对 RuntimeSession 记录内的 intent 与 receipt 明细
+    if not bool(record.get("intents_recorded", False)):
+        raise ValueError("runtime entrypoint adapter evidence missing intents")
+    if not bool(record.get("receipts_recorded", False)):
+        raise ValueError("runtime entrypoint adapter evidence missing receipts")
+    expected_intent_ids, expected_receipt_ids = _receipt_contract_identity_sets(
+        lifecycle
+    )
+    recorded_intent_ids = _string_set(record.get("intent_ids"))
+    recorded_receipt_ids = _string_set(record.get("receipt_ids"))
+    if not expected_intent_ids.issubset(recorded_intent_ids):
+        raise ValueError("runtime entrypoint adapter evidence intent_ids mismatch")
+    if not expected_receipt_ids.issubset(recorded_receipt_ids):
+        raise ValueError("runtime entrypoint adapter evidence receipt_ids mismatch")
+    logger.info("adapter evidence 记录明细校验完成, evidence_id: %s", evidence_id)
+
+
+def _receipt_contract_identity_sets(
+    lifecycle: Mapping[str, object],
+) -> tuple[set[str], set[str]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：提取 receipt contract 标识集合
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle receipt_contracts
+    #  * 操作：
+    #  *   1) 读取每个 receipt contract 的 intent_id 和 receipt_id
+    #  *   2) 返回用于 RuntimeSession adapter evidence 核对的集合
+    #  */
+    logger.info("开始提取 receipt contract 标识集合...")
+
+    # // 4.1 校验 receipt_contracts 结构
+    contracts = lifecycle.get("receipt_contracts")
+    if not isinstance(contracts, list | tuple):
+        raise ValueError("adapter lifecycle evidence missing receipt_contracts")
+
+    # // 4.2 收集 intent_id 与 receipt_id
+    intent_ids: set[str] = set()
+    receipt_ids: set[str] = set()
+    for index, contract in enumerate(contracts):
+        if not isinstance(contract, Mapping):
+            raise TypeError(
+                "adapter lifecycle receipt_contracts must be mappings; "
+                f"item {index} is {type(contract).__name__}"
+            )
+        intent_id = contract.get("intent_id")
+        receipt_id = contract.get("receipt_id")
+        if intent_id is None or receipt_id is None:
+            raise ValueError(
+                "adapter lifecycle receipt contract missing identity fields"
+            )
+        intent_ids.add(str(intent_id))
+        receipt_ids.add(str(receipt_id))
+
+    # // 4.3 拒绝空 receipt contract
+    if not receipt_ids:
+        raise ValueError("adapter lifecycle evidence contains no receipt contracts")
+    logger.info("receipt contract 标识集合提取完成, receipts: %s", len(receipt_ids))
+    return intent_ids, receipt_ids
+
+
+def _string_set(value: object) -> set[str]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤5：归一化字符串集合
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession adapter evidence 记录字段
+    #  * 操作：
+    #  *   1) 字符串按单个标识处理
+    #  *   2) 其他可迭代对象转为字符串集合
+    #  */
+    logger.info("开始归一化字符串集合...")
+
+    # // 5.1 字符串按单值处理
+    if isinstance(value, str):
+        result = {value}
+        logger.info("字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.2 可迭代对象转为字符串集合
+    if isinstance(value, Iterable):
+        result = {str(item) for item in value}
+        logger.info("字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.3 非序列值返回空集合
+    logger.info("字符串集合归一化完成, count: %s", 0)
+    return set()
 
 
 def _receipt_views_from_lifecycle(

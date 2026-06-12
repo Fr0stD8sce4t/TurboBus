@@ -39,7 +39,10 @@ completed system capability loop. Do not accumulate implementation history.
 - Adapter construction helpers now record `AdapterTransferContext` creation
   into the RuntimeSession entrypoint record. Adapter lifecycle validation now
   requires the RuntimeSession snapshot to prove both adapter construction and
-  adapter receipt evidence before accepting lifecycle evidence.
+  adapter receipt evidence before accepting lifecycle evidence. Runtime
+  evidence validation now also requires the lifecycle evidence id, intent ids,
+  and receipt ids to match the RuntimeSession entrypoint adapter evidence
+  record instead of trusting a loose recorded flag.
 - Runtime recovery and close now record daemon recovery, active intent wait
   results, close cleanup evidence, local CPU cleanup, managed-service
   shutdown, runtime-control shutdown, and direct cache shutdown into the
@@ -73,9 +76,10 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-This is a system-code refactor target. Next inspect adapter lifecycle evidence
-contract assembly and runtime evidence validation paths. Tighten any adapter
-evidence, receipt contract, or route-policy path that can still be produced
-without being present in the RuntimeSession entrypoint record. Validation may
+This is a system-code refactor target. Next inspect adapter consumers that
+build lifecycle payloads from receipt traces, especially vLLM KV connector
+evidence assembly. Tighten any adapter payload that can copy receipt contracts
+or RuntimeSession contracts without preserving the RuntimeSession entrypoint
+adapter evidence record and route policy rejection fields. Validation may
 resume only when benchmark, example, paper validation, server validation,
 vLLM validation, and multi-GPU execution are explicitly allowed.

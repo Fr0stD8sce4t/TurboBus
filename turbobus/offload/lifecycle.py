@@ -313,6 +313,10 @@ def runtime_entrypoint_contract(
                 adapter_evidence,
                 [str(evidence_id)],
             )
+            contract["adapter_evidence_record"] = _snapshot_adapter_evidence_record(
+                adapter_evidence,
+                evidence_id=str(evidence_id),
+            )
     logger.info(
         "RuntimeSession 入口合约构造完成, receipts: %s",
         len(receipt_ids),
@@ -355,6 +359,81 @@ def _snapshot_contains_all(value: object, keys: Iterable[str]) -> bool:
     if not isinstance(value, Mapping):
         return False
     return all(str(key) in value for key in keys)
+
+
+def _snapshot_adapter_evidence_record(
+    value: object,
+    *,
+    evidence_id: str,
+) -> dict[str, object] | None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：提取 adapter evidence 记录
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession entrypoint snapshot
+    #  * 操作：
+    #  *   1) 按 evidence_id 读取 RuntimeSession 记录
+    #  *   2) 只返回验证端需要的 intent/receipt 对齐摘要
+    #  */
+    logger.info("开始提取 adapter evidence 记录...")
+
+    # // 4.1 校验 adapter_evidence snapshot 结构
+    if not isinstance(value, Mapping):
+        logger.info("adapter evidence 记录提取完成, found: %s", False)
+        return None
+
+    # // 4.2 读取指定 evidence_id 的记录
+    record = value.get(str(evidence_id))
+    if not isinstance(record, Mapping):
+        logger.info("adapter evidence 记录提取完成, found: %s", False)
+        return None
+
+    # // 4.3 生成验证用摘要
+    summary = {
+        "evidence_id": str(record.get("evidence_id", evidence_id)),
+        "operation": str(record.get("operation", "")),
+        "intent_ids": [
+            str(intent_id)
+            for intent_id in _sequence_or_empty(record.get("intent_ids"))
+        ],
+        "receipt_ids": [
+            str(receipt_id)
+            for receipt_id in _sequence_or_empty(record.get("receipt_ids"))
+        ],
+        "intents_recorded": bool(record.get("intents_recorded", False)),
+        "receipts_recorded": bool(record.get("receipts_recorded", False)),
+    }
+    logger.info("adapter evidence 记录提取完成, found: %s", True)
+    return summary
+
+
+def _sequence_or_empty(value: object) -> tuple[object, ...]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤5：归一化序列字段
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession adapter evidence 字段
+    #  * 操作：
+    #  *   1) 保留字符串为单个标识
+    #  *   2) 将其他可迭代对象转为 tuple
+    #  */
+    logger.info("开始归一化序列字段...")
+
+    # // 5.1 字符串按单值处理
+    if isinstance(value, str):
+        result = (value,)
+        logger.info("序列字段归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.2 其他可迭代对象转为 tuple
+    if isinstance(value, Iterable):
+        result = tuple(value)
+        logger.info("序列字段归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.3 非序列值返回空 tuple
+    logger.info("序列字段归一化完成, count: %s", 0)
+    return ()
 
 
 def _snapshot_receipts_contain_all(value: object, receipt_ids: Iterable[str]) -> bool:

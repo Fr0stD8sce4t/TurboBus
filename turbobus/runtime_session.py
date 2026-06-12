@@ -76,11 +76,13 @@ from .runtime.session_records import (
     record_runtime_adapter_evidence,
     record_runtime_buffer_cleanup,
     record_runtime_buffer_registered,
+    record_runtime_close_recovery,
     record_runtime_daemon_execution,
     record_runtime_intent_submitted,
     record_runtime_receipt_finalized,
     record_runtime_session_close,
     record_runtime_session_open,
+    record_runtime_transfer_recovery,
     runtime_entrypoint_snapshot,
 )
 from .runtime_options import RuntimeOptions
@@ -796,6 +798,12 @@ class TurboBusRuntimeSession:
                     receipt,
                     intent_id=receipt.intent_id,
                 )
+        record_runtime_transfer_recovery(
+            self._runtime_entrypoint_record,
+            intent_id=intent_id,
+            transfer_id=transfer_id,
+            recovery=recovery,
+        )
         return dict(recovery)
 
     def bootstrap_profile(self, *, force: bool = False):
@@ -862,6 +870,20 @@ class TurboBusRuntimeSession:
         )
         if cleanup_errors:
             payload["buffer_cleanup_errors"] = cleanup_errors
+        record_runtime_close_recovery(
+            self._runtime_entrypoint_record,
+            intent_wait_evidence=intent_wait_evidence,
+            intent_recovery_evidence=intent_recovery_evidence,
+            cleanup_evidence=cleanup_evidence,
+            cleanup_errors=cleanup_errors,
+            local_cpu_cleanup=local_cpu_cleanup,
+            direct_runtime_cache_evidence=direct_runtime_cache_evidence,
+            managed_runtime_before_shutdown=managed_runtime_before_shutdown,
+            managed_runtime_after_shutdown=managed_runtime_after_shutdown,
+            runtime_control_evidence=runtime_control_evidence,
+            managed_service_evidence=managed_service_evidence,
+        )
+        if cleanup_errors:
             record_runtime_session_close(
                 self._runtime_entrypoint_record,
                 response_ok=response.ok,
@@ -916,6 +938,19 @@ class TurboBusRuntimeSession:
         self._closed = True
         payload = self._close_without_session_payload(
             buffer_lifecycle_before_shutdown=buffer_lifecycle_before_shutdown,
+            local_cpu_cleanup=local_cpu_cleanup,
+            direct_runtime_cache_evidence=direct_runtime_cache_evidence,
+            managed_runtime_before_shutdown=managed_runtime_before_shutdown,
+            managed_runtime_after_shutdown=managed_runtime_after_shutdown,
+            runtime_control_evidence=runtime_control_evidence,
+            managed_service_evidence=managed_service_evidence,
+        )
+        record_runtime_close_recovery(
+            self._runtime_entrypoint_record,
+            intent_wait_evidence=(),
+            intent_recovery_evidence=(),
+            cleanup_evidence=(),
+            cleanup_errors=(),
             local_cpu_cleanup=local_cpu_cleanup,
             direct_runtime_cache_evidence=direct_runtime_cache_evidence,
             managed_runtime_before_shutdown=managed_runtime_before_shutdown,

@@ -40,6 +40,11 @@ completed system capability loop. Do not accumulate implementation history.
   into the RuntimeSession entrypoint record. Adapter lifecycle validation now
   requires the RuntimeSession snapshot to prove both adapter construction and
   adapter receipt evidence before accepting lifecycle evidence.
+- Runtime recovery and close now record daemon recovery, active intent wait
+  results, close cleanup evidence, local CPU cleanup, managed-service
+  shutdown, runtime-control shutdown, and direct cache shutdown into the
+  RuntimeSession entrypoint record instead of leaving those facts only in
+  returned payloads.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -68,10 +73,9 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-This is a system-code refactor target. Next inspect remaining runtime-looking
-runtime lifecycle and close/recovery paths under `turbobus/runtime/` and
-`turbobus/runtime_session.py`. Tighten any path that can produce receipt
-evidence, recovery evidence, or lifecycle state without a RuntimeSession
-entrypoint record. Validation may resume only when benchmark, example, paper
-validation, server validation, vLLM validation, and multi-GPU execution are
-explicitly allowed.
+This is a system-code refactor target. Next inspect adapter lifecycle evidence
+contract assembly and runtime evidence validation paths. Tighten any adapter
+evidence, receipt contract, or route-policy path that can still be produced
+without being present in the RuntimeSession entrypoint record. Validation may
+resume only when benchmark, example, paper validation, server validation,
+vLLM validation, and multi-GPU execution are explicitly allowed.

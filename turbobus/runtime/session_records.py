@@ -276,12 +276,135 @@ def record_runtime_session_close(
     response_error: str | None,
     payload: Mapping[str, object],
 ) -> None:
-    record["close"] = {
-        "closed_at": time.time(),
-        "ok": bool(response_ok),
-        "error": response_error,
-        "payload_keys": sorted(str(key) for key in payload),
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：记录关闭结果
+    #  * ========================================================================
+    #  * 目标对象：RuntimeSession entrypoint record
+    #  * 操作：
+    #  *   1) 合并写入 close 总结果
+    #  *   2) 保留提前写入的恢复、清理和托管服务关闭证据
+    #  */
+    logger.info("开始记录关闭结果...")
+
+    # // 1.1 获取已有 close 记录，避免覆盖恢复证据
+    close_record = _entry(record, "close")
+
+    # // 1.2 合并关闭响应摘要
+    close_record.update(
+        {
+            "closed_at": time.time(),
+            "ok": bool(response_ok),
+            "error": response_error,
+            "payload_keys": sorted(str(key) for key in payload),
+        }
+    )
+    logger.info("关闭结果记录完成, ok: %s", bool(response_ok))
+
+
+def record_runtime_close_recovery(
+    record: dict[str, object],
+    *,
+    intent_wait_evidence: Sequence[Mapping[str, object]],
+    intent_recovery_evidence: Sequence[Mapping[str, object]],
+    cleanup_evidence: Sequence[Mapping[str, object]],
+    cleanup_errors: Sequence[Mapping[str, object]],
+    local_cpu_cleanup: Sequence[Mapping[str, object]],
+    direct_runtime_cache_evidence: Mapping[str, object] | None,
+    managed_runtime_before_shutdown: Mapping[str, object] | None,
+    managed_runtime_after_shutdown: Mapping[str, object] | None,
+    runtime_control_evidence: Mapping[str, object] | None,
+    managed_service_evidence: Sequence[Mapping[str, object]],
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：记录关闭恢复边界
+    #  * ========================================================================
+    #  * 目标对象：RuntimeSession entrypoint record
+    #  * 操作：
+    #  *   1) 记录 close 时 active intent wait/recovery 结果
+    #  *   2) 记录 close cleanup 结果，避免只存在 response payload 中
+    #  */
+    logger.info("开始记录关闭恢复边界...")
+
+    # // 1.1 获取 close 记录表
+    close_record = _entry(record, "close")
+
+    # // 1.2 写入 active intent wait/recovery 和 cleanup 证据
+    close_record["active_intent_receipts"] = [
+        dict(item) for item in intent_wait_evidence
+    ]
+    close_record["active_intent_recovery"] = [
+        dict(item) for item in intent_recovery_evidence
+    ]
+    close_record["buffer_cleanup_evidence"] = [dict(item) for item in cleanup_evidence]
+    close_record["buffer_cleanup_errors"] = [dict(item) for item in cleanup_errors]
+    close_record["local_cpu_buffer_cleanup"] = [
+        dict(item) for item in local_cpu_cleanup
+    ]
+    close_record["direct_runtime_cache_shutdown"] = (
+        None
+        if direct_runtime_cache_evidence is None
+        else dict(direct_runtime_cache_evidence)
+    )
+    close_record["managed_service_runtime_before_shutdown"] = (
+        None
+        if managed_runtime_before_shutdown is None
+        else copy_lifecycle_mapping(managed_runtime_before_shutdown)
+    )
+    close_record["managed_service_runtime_after_shutdown"] = (
+        None
+        if managed_runtime_after_shutdown is None
+        else copy_lifecycle_mapping(managed_runtime_after_shutdown)
+    )
+    close_record["runtime_control_shutdown"] = (
+        None if runtime_control_evidence is None else dict(runtime_control_evidence)
+    )
+    close_record["managed_service_shutdown"] = [
+        dict(item) for item in managed_service_evidence
+    ]
+    close_record["recovery_source"] = "TurboBusRuntimeSession.recover_transfer_state"
+    close_record["receipt_source"] = "TransferReceipt"
+    close_record["route_policy_visible_to_adapter"] = False
+    close_record["recorded_at"] = time.time()
+    logger.info("关闭恢复边界记录完成, recovered: %s", len(intent_recovery_evidence))
+
+
+def record_runtime_transfer_recovery(
+    record: dict[str, object],
+    *,
+    intent_id: str | None,
+    transfer_id: str | None,
+    recovery: Mapping[str, object],
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：记录主动恢复边界
+    #  * ========================================================================
+    #  * 目标对象：RuntimeSession entrypoint record
+    #  * 操作：
+    #  *   1) 记录 recover_transfer_state 返回的 daemon recovery
+    #  *   2) 绑定恢复入口来源，避免 recovery 只存在调用返回值中
+    #  */
+    logger.info("开始记录主动恢复边界...")
+
+    # // 1.1 获取 recovery 记录表
+    recoveries = _entry(record, "recoveries")
+
+    # // 1.2 写入 daemon recovery 摘要
+    key = str(intent_id or transfer_id or f"recovery-{len(recoveries) + 1}")
+    receipt = recovery.get("receipt")
+    recoveries[key] = {
+        "intent_id": None if intent_id is None else str(intent_id),
+        "transfer_id": None if transfer_id is None else str(transfer_id),
+        "source": "TurboBusRuntimeSession.recover_transfer_state",
+        "daemon_source": recovery.get("source"),
+        "state": recovery.get("state"),
+        "archived": bool(recovery.get("archived", False)),
+        "receipt_recorded": isinstance(receipt, Mapping),
+        "recorded_at": time.time(),
     }
+    logger.info("主动恢复边界记录完成, key: %s", key)
 
 
 def _entry(record: dict[str, object], key: str) -> dict[str, object]:
@@ -317,7 +440,9 @@ __all__ = [
     "record_runtime_adapter_evidence",
     "record_runtime_buffer_cleanup",
     "record_runtime_buffer_registered",
+    "record_runtime_close_recovery",
     "record_runtime_daemon_execution",
+    "record_runtime_transfer_recovery",
     "record_runtime_intent_submitted",
     "record_runtime_receipt_finalized",
     "record_runtime_session_close",

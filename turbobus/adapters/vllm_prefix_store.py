@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import Any
+import logging
+from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -265,6 +268,15 @@ class TurboBusPrefixStore:
         removed_count: int,
     ) -> dict[str, Any]:
         save_evidence = dict(prefix.save_lifecycle_evidence)
+        runtime_entrypoint = _runtime_entrypoint_for_prefix_store(
+            save_evidence,
+            source="save_lifecycle_evidence",
+        )
+        receipt_contracts = _receipt_contracts_for_prefix_store(
+            save_evidence,
+            runtime_entrypoint=runtime_entrypoint,
+            source="save_lifecycle_evidence",
+        )
         return {
             "mutation_id": f"prefix-put-{generation}",
             "action": "put",
@@ -283,6 +295,9 @@ class TurboBusPrefixStore:
                 "topology_snapshot_ids",
                 prefix.topology_snapshot_ids,
             ),
+            "runtime_entrypoint": runtime_entrypoint,
+            "receipt_contracts": receipt_contracts,
+            "route_policy_visible_to_adapter": False,
             "removed_count": int(removed_count),
             "capacity": self.max_prefixes,
             "store_size_after": len(self._prefixes),
@@ -297,6 +312,15 @@ class TurboBusPrefixStore:
         generation: int,
         mutation_reason: str,
     ) -> TurboBusPrefixStoreRemoval:
+        runtime_entrypoint = _runtime_entrypoint_for_prefix_store(
+            prefix.store_lifecycle_evidence,
+            source="store_lifecycle_evidence",
+        )
+        receipt_contracts = _receipt_contracts_for_prefix_store(
+            prefix.store_lifecycle_evidence,
+            runtime_entrypoint=runtime_entrypoint,
+            source="store_lifecycle_evidence",
+        )
         evidence = {
             "mutation_id": f"prefix-remove-{generation}-{prefix.key}",
             "action": "remove",
@@ -312,6 +336,9 @@ class TurboBusPrefixStore:
             "store_lifecycle_evidence_id": prefix.store_lifecycle_evidence.get(
                 "mutation_id"
             ),
+            "runtime_entrypoint": runtime_entrypoint,
+            "receipt_contracts": receipt_contracts,
+            "route_policy_visible_to_adapter": False,
             "created_at": time.time(),
         }
         prefix.cleanup_lifecycle_evidence = evidence
@@ -320,6 +347,192 @@ class TurboBusPrefixStore:
             reason=str(reason),
             cleanup_evidence=evidence,
         )
+
+
+def _runtime_entrypoint_for_prefix_store(
+    evidence: Mapping[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：提取 prefix store RuntimeSession 合约
+    #  * ========================================================================
+    #  * 数据源：vLLM save/store lifecycle evidence
+    #  * 操作：
+    #  *   1) 拒绝缺失 RuntimeSession entrypoint 的 prefix store evidence
+    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  */
+    logger.info("开始提取 prefix store RuntimeSession 合约...")
+
+    # // 1.1 读取 RuntimeSession entrypoint 合约
+    runtime_entrypoint = evidence.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError(f"{source} missing RuntimeSession entrypoint")
+    contract = dict(runtime_entrypoint)
+
+    # // 1.2 拒绝 route policy 暴露
+    if bool(contract.get("route_policy_visible_to_adapter", True)):
+        raise ValueError(f"{source} exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_application", True)):
+        raise ValueError(f"{source} exposes route policy to application")
+
+    # // 1.3 校验 adapter evidence 记录明细
+    adapter_record = contract.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
+    if not bool(adapter_record.get("intents_recorded", False)):
+        raise ValueError(f"{source} adapter intents were not recorded")
+    if not bool(adapter_record.get("receipts_recorded", False)):
+        raise ValueError(f"{source} adapter receipts were not recorded")
+
+    # // 1.4 保留 RuntimeSession 记录摘要
+    contract["adapter_evidence_record"] = dict(adapter_record)
+    logger.info("prefix store RuntimeSession 合约提取完成, source: %s", source)
+    return contract
+
+
+def _receipt_contracts_for_prefix_store(
+    evidence: Mapping[str, Any],
+    *,
+    runtime_entrypoint: Mapping[str, Any],
+    source: str,
+) -> list[dict[str, Any]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：提取 prefix store receipt contracts
+    #  * ========================================================================
+    #  * 数据源：vLLM save/store lifecycle evidence
+    #  * 操作：
+    #  *   1) 拒绝缺失 receipt contracts 的 prefix store evidence
+    #  *   2) 复制 receipt contracts 供 store/remove 证据链继续校验
+    #  */
+    logger.info("开始提取 prefix store receipt contracts...")
+
+    # // 2.1 校验 receipt contracts 结构
+    contracts = evidence.get("receipt_contracts")
+    if not isinstance(contracts, list):
+        raise ValueError(f"{source} missing receipt contracts")
+
+    # // 2.2 复制 receipt contracts
+    copied = [dict(item) for item in contracts if isinstance(item, Mapping)]
+    if len(copied) != len(contracts) or not copied:
+        raise ValueError(f"{source} contains invalid receipt contracts")
+
+    # // 2.3 核对 receipt contracts 与 RuntimeSession 记录
+    _require_prefix_store_adapter_record_receipts(
+        runtime_entrypoint,
+        receipt_contracts=copied,
+        source=source,
+    )
+    logger.info("prefix store receipt contracts 提取完成, count: %s", len(copied))
+    return copied
+
+
+def _require_prefix_store_adapter_record_receipts(
+    runtime_entrypoint: Mapping[str, Any],
+    *,
+    receipt_contracts: list[dict[str, Any]],
+    source: str,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：核对 prefix store receipt 记录
+    #  * ========================================================================
+    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
+    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  */
+    logger.info("开始核对 prefix store receipt 记录...")
+
+    # // 3.1 读取 RuntimeSession adapter evidence 记录
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
+
+    # // 3.2 提取 receipt contract 标识
+    expected_intent_ids, expected_receipt_ids = _prefix_store_receipt_contract_ids(
+        receipt_contracts,
+        source=source,
+    )
+
+    # // 3.3 提取 RuntimeSession adapter evidence 标识
+    recorded_intent_ids = _prefix_store_string_set(adapter_record.get("intent_ids"))
+    recorded_receipt_ids = _prefix_store_string_set(adapter_record.get("receipt_ids"))
+
+    # // 3.4 核对 receipt contract 是否都进入 RuntimeSession 记录
+    if not expected_intent_ids.issubset(recorded_intent_ids):
+        raise ValueError(f"{source} adapter intent_ids mismatch")
+    if not expected_receipt_ids.issubset(recorded_receipt_ids):
+        raise ValueError(f"{source} adapter receipt_ids mismatch")
+    logger.info("prefix store receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
+
+
+def _prefix_store_receipt_contract_ids(
+    receipt_contracts: list[dict[str, Any]],
+    *,
+    source: str,
+) -> tuple[set[str], set[str]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：提取 prefix store receipt contract 标识
+    #  * ========================================================================
+    #  * 数据源：prefix store receipt contracts
+    #  * 操作：
+    #  *   1) 读取每个 receipt contract 的 intent_id 和 receipt_id
+    #  *   2) 返回用于 RuntimeSession adapter evidence 核对的集合
+    #  */
+    logger.info("开始提取 prefix store receipt contract 标识...")
+
+    # // 4.1 收集 intent_id 与 receipt_id
+    intent_ids: set[str] = set()
+    receipt_ids: set[str] = set()
+    for contract in receipt_contracts:
+        intent_id = contract.get("intent_id")
+        receipt_id = contract.get("receipt_id")
+        if intent_id is None or receipt_id is None:
+            raise ValueError(f"{source} receipt contract missing identity fields")
+        intent_ids.add(str(intent_id))
+        receipt_ids.add(str(receipt_id))
+
+    # // 4.2 拒绝空 receipt contract
+    if not receipt_ids:
+        raise ValueError(f"{source} contains no receipt contracts")
+    logger.info(
+        "prefix store receipt contract 标识提取完成, receipts: %s",
+        len(receipt_ids),
+    )
+    return intent_ids, receipt_ids
+
+
+def _prefix_store_string_set(value: object) -> set[str]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤5：归一化 prefix store 字符串集合
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 字符串按单个标识处理
+    #  *   2) 列表和元组转为字符串集合
+    #  */
+    logger.info("开始归一化 prefix store 字符串集合...")
+
+    # // 5.1 字符串按单值处理
+    if isinstance(value, str):
+        result = {value}
+        logger.info("prefix store 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.2 列表和元组转为字符串集合
+    if isinstance(value, list | tuple):
+        result = {str(item) for item in value}
+        logger.info("prefix store 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 5.3 非序列值返回空集合
+    logger.info("prefix store 字符串集合归一化完成, count: %s", 0)
+    return set()
 
 
 _PREFIX_STORE = TurboBusPrefixStore()

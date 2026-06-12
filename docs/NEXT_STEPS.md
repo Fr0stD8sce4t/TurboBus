@@ -61,11 +61,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect adapter consumers that build lifecycle payloads from receipt
-traces, especially vLLM KV connector evidence assembly. Tighten any adapter
-payload that can copy receipt contracts or RuntimeSession contracts without
-preserving the RuntimeSession entrypoint adapter evidence record and route
-policy rejection fields.
+Next inspect the remaining adapter consumer payload builders outside the
+shared offload lifecycle helper. Tighten any custom model-loading, training,
+or vLLM payload that can copy receipt traces without preserving the
+RuntimeSession entrypoint adapter evidence record and route-policy rejection
+fields.
 
 ## Round Rules
 

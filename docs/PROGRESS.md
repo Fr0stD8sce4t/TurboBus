@@ -48,6 +48,9 @@ completed system capability loop. Do not accumulate implementation history.
   shutdown, runtime-control shutdown, and direct cache shutdown into the
   RuntimeSession entrypoint record instead of leaving those facts only in
   returned payloads.
+- vLLM KV connector lifecycle evidence now rejects RuntimeSession contracts
+  that lose the entrypoint adapter evidence record, expose route policy, or
+  fail to match receipt contract intent/receipt ids.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -76,10 +79,10 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-This is a system-code refactor target. Next inspect adapter consumers that
-build lifecycle payloads from receipt traces, especially vLLM KV connector
-evidence assembly. Tighten any adapter payload that can copy receipt contracts
-or RuntimeSession contracts without preserving the RuntimeSession entrypoint
-adapter evidence record and route policy rejection fields. Validation may
-resume only when benchmark, example, paper validation, server validation,
-vLLM validation, and multi-GPU execution are explicitly allowed.
+This is a system-code refactor target. Next inspect remaining adapter consumer
+payload builders outside the shared offload lifecycle helper. Tighten any
+custom model-loading, training, or vLLM payload that can copy receipt traces
+without preserving the RuntimeSession entrypoint adapter evidence record and
+route-policy rejection fields. Validation may resume only when benchmark,
+example, paper validation, server validation, vLLM validation, and multi-GPU
+execution are explicitly allowed.

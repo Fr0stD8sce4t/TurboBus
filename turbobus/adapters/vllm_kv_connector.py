@@ -1413,7 +1413,11 @@ def _vllm_kv_lifecycle_evidence(
     receipt_contracts = receipt_trace.get("receipt_contracts")
     runtime_buffer_bindings = receipt_trace.get("runtime_buffer_bindings")
     daemon_recovery = receipt_trace.get("daemon_recovery")
-    runtime_entrypoint = receipt_trace.get("runtime_entrypoint")
+    runtime_entrypoint = _runtime_entrypoint_for_vllm_kv_lifecycle(
+        receipt_trace,
+        evidence_id=str(evidence_id),
+        receipt_contracts=receipt_contracts,
+    )
     return {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
@@ -1463,11 +1467,7 @@ def _vllm_kv_lifecycle_evidence(
             if isinstance(daemon_recovery, list)
             else []
         ),
-        "runtime_entrypoint": (
-            dict(runtime_entrypoint)
-            if isinstance(runtime_entrypoint, Mapping)
-            else None
-        ),
+        "runtime_entrypoint": runtime_entrypoint,
         "daemon_recovery_count": int(
             receipt_trace.get("daemon_recovery_count", 0) or 0
         ),
@@ -1475,6 +1475,161 @@ def _vllm_kv_lifecycle_evidence(
             receipt_trace.get("daemon_recovery_sources", "")
         ),
     }
+
+
+def _runtime_entrypoint_for_vllm_kv_lifecycle(
+    receipt_trace: Mapping[str, Any],
+    *,
+    evidence_id: str,
+    receipt_contracts: object,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：提取 vLLM KV RuntimeSession 合约
+    #  * ========================================================================
+    #  * 数据源：receipt_trace.runtime_entrypoint
+    #  * 操作：
+    #  *   1) 拒绝缺失 RuntimeSession entrypoint 合约的 vLLM KV evidence
+    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  */
+    logger.info("开始提取 vLLM KV RuntimeSession 合约...")
+
+    # // 1.1 读取 RuntimeSession entrypoint 合约
+    runtime_entrypoint = receipt_trace.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError("vLLM KV evidence missing RuntimeSession entrypoint")
+    contract = dict(runtime_entrypoint)
+
+    # // 1.2 拒绝 route policy 暴露
+    if bool(contract.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("vLLM KV evidence exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_application", True)):
+        raise ValueError("vLLM KV evidence exposes route policy to application")
+
+    # // 1.3 校验 adapter evidence 记录明细
+    adapter_record = contract.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError("vLLM KV evidence missing adapter evidence record")
+    if str(adapter_record.get("evidence_id")) != str(evidence_id):
+        raise ValueError("vLLM KV evidence adapter evidence_id mismatch")
+    if not bool(adapter_record.get("intents_recorded", False)):
+        raise ValueError("vLLM KV evidence adapter intents were not recorded")
+    if not bool(adapter_record.get("receipts_recorded", False)):
+        raise ValueError("vLLM KV evidence adapter receipts were not recorded")
+
+    # // 1.4 核对 receipt contracts 与 RuntimeSession 记录
+    _require_vllm_kv_adapter_record_receipts(
+        adapter_record,
+        receipt_contracts=receipt_contracts,
+    )
+
+    # // 1.5 保留 RuntimeSession 记录摘要
+    contract["adapter_evidence_record"] = dict(adapter_record)
+    logger.info("vLLM KV RuntimeSession 合约提取完成, evidence_id: %s", evidence_id)
+    return contract
+
+
+def _require_vllm_kv_adapter_record_receipts(
+    adapter_record: Mapping[str, object],
+    *,
+    receipt_contracts: object,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：核对 vLLM KV receipt 记录
+    #  * ========================================================================
+    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
+    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  */
+    logger.info("开始核对 vLLM KV receipt 记录...")
+
+    # // 2.1 提取 receipt contract 标识
+    expected_intent_ids, expected_receipt_ids = _vllm_kv_receipt_contract_ids(
+        receipt_contracts
+    )
+
+    # // 2.2 提取 RuntimeSession adapter evidence 标识
+    recorded_intent_ids = _vllm_kv_string_set(adapter_record.get("intent_ids"))
+    recorded_receipt_ids = _vllm_kv_string_set(adapter_record.get("receipt_ids"))
+
+    # // 2.3 核对 receipt contract 是否都进入 RuntimeSession 记录
+    if not expected_intent_ids.issubset(recorded_intent_ids):
+        raise ValueError("vLLM KV evidence adapter intent_ids mismatch")
+    if not expected_receipt_ids.issubset(recorded_receipt_ids):
+        raise ValueError("vLLM KV evidence adapter receipt_ids mismatch")
+    logger.info("vLLM KV receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
+
+
+def _vllm_kv_receipt_contract_ids(
+    receipt_contracts: object,
+) -> tuple[set[str], set[str]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：提取 vLLM KV receipt contract 标识
+    #  * ========================================================================
+    #  * 数据源：receipt_trace.receipt_contracts
+    #  * 操作：
+    #  *   1) 校验 receipt_contracts 为列表
+    #  *   2) 提取 intent_id 和 receipt_id 集合
+    #  */
+    logger.info("开始提取 vLLM KV receipt contract 标识...")
+
+    # // 3.1 校验 receipt_contracts 结构
+    if not isinstance(receipt_contracts, list):
+        raise ValueError("vLLM KV evidence missing receipt contracts")
+
+    # // 3.2 收集 intent_id 与 receipt_id
+    intent_ids: set[str] = set()
+    receipt_ids: set[str] = set()
+    for index, contract in enumerate(receipt_contracts):
+        if not isinstance(contract, Mapping):
+            raise TypeError(
+                "vLLM KV receipt contracts must be mappings; "
+                f"item {index} is {type(contract).__name__}"
+            )
+        intent_id = contract.get("intent_id")
+        receipt_id = contract.get("receipt_id")
+        if intent_id is None or receipt_id is None:
+            raise ValueError("vLLM KV receipt contract missing identity fields")
+        intent_ids.add(str(intent_id))
+        receipt_ids.add(str(receipt_id))
+
+    # // 3.3 拒绝空 receipt contract
+    if not receipt_ids:
+        raise ValueError("vLLM KV evidence contains no receipt contracts")
+    logger.info("vLLM KV receipt contract 标识提取完成, receipts: %s", len(receipt_ids))
+    return intent_ids, receipt_ids
+
+
+def _vllm_kv_string_set(value: object) -> set[str]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：归一化 vLLM KV 字符串集合
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 字符串按单个标识处理
+    #  *   2) 列表和元组转为字符串集合
+    #  */
+    logger.info("开始归一化 vLLM KV 字符串集合...")
+
+    # // 4.1 字符串按单值处理
+    if isinstance(value, str):
+        result = {value}
+        logger.info("vLLM KV 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 4.2 列表和元组转为字符串集合
+    if isinstance(value, list | tuple):
+        result = {str(item) for item in value}
+        logger.info("vLLM KV 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 4.3 非序列值返回空集合
+    logger.info("vLLM KV 字符串集合归一化完成, count: %s", 0)
+    return set()
 
 
 def _csv_values(value: object) -> list[str]:

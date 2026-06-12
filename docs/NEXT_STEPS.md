@@ -40,6 +40,8 @@ not a validation target.
 - `turbobus/offload/lifecycle.py`: keep adapter lifecycle evidence bound to
   `TurboBusRuntimeSession` snapshots, adapter evidence records, and real
   receipts.
+- `turbobus/offload/handles.py`: keep low-level `ReceiptTransferHandle`
+  submit/wait receipt consumption bound to RuntimeSession entrypoint records.
 - `turbobus/runtime/evidence.py`: keep adapter lifecycle validation strict
   about `TurboBusRuntimeSession`, `TransferIntent`, `TransferReceipt`, and
   daemon scheduler policy source, and reject lifecycle evidence that was not
@@ -57,10 +59,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect remaining runtime-looking paths under `turbobus/adapters/`,
-`turbobus/offload/`, and `turbobus/runtime/`. If any path can produce adapter
-or receipt evidence without a RuntimeSession entrypoint record, tighten it back
-to `TurboBusRuntimeSession` before moving to the next boundary.
+Next inspect remaining runtime-looking paths under `turbobus/runtime/` and the
+adapter construction helpers. If any path can produce receipt evidence,
+adapter evidence, or lifecycle state without a RuntimeSession entrypoint
+record, tighten it back to `TurboBusRuntimeSession` before moving to the next
+boundary.
 
 ## Round Rules
 

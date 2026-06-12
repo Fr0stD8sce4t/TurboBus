@@ -32,6 +32,10 @@ completed system capability loop. Do not accumulate implementation history.
   the RuntimeSession entrypoint record. Runtime evidence validation rejects
   missing RuntimeSession, missing adapter evidence records, fake evidence, or
   exposed route policy.
+- The low-level `OffloadStore -> ReceiptTransferHandle` path now also records
+  submit and wait receipt bindings into the RuntimeSession entrypoint record,
+  so adapter code cannot consume direct receipt handles without RuntimeSession
+  evidence.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -61,8 +65,8 @@ Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
 This is a system-code refactor target. Next inspect remaining runtime-looking
-paths under `turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`.
-Tighten any path that can produce adapter or receipt evidence without a
-RuntimeSession entrypoint record. Validation may resume only when benchmark,
-example, paper validation, server validation, vLLM validation, and multi-GPU
-execution are explicitly allowed.
+paths under `turbobus/runtime/` and adapter construction helpers. Tighten any
+path that can produce receipt evidence, adapter evidence, or lifecycle state
+without a RuntimeSession entrypoint record. Validation may resume only when
+benchmark, example, paper validation, server validation, vLLM validation, and
+multi-GPU execution are explicitly allowed.

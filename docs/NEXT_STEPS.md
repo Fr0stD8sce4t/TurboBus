@@ -62,7 +62,7 @@ validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
 Next inspect adapter auxiliary evidence payloads that are derived from
-lifecycle evidence, especially backing-pool, integration, and adapter event
+lifecycle evidence, especially integration request binding and adapter event
 records. Tighten any payload that can summarize transfer or cleanup state
 without carrying the RuntimeSession entrypoint adapter evidence record or
 explicit route-policy rejection fields.

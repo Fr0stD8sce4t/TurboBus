@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any
+import logging
+from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
 
 from ..client import SharedPinnedCpuBuffer
 from .vllm_prefix_store import TurboBusSavedPrefix
@@ -48,12 +51,14 @@ class TurboBusCPUBackingPool:
         kv_caches: list[Any],
     ) -> dict[str, Any]:
         evidence = self.release(prefix.block_count, kv_caches, prefix.cpu_backings)
+        lifecycle = _prefix_lifecycle_for_backing_evidence(prefix)
         evidence.update(
             {
                 "prefix_key": prefix.key,
                 "job_id": prefix.job_id,
                 "session_id": prefix.session_id,
                 "source_request_id": prefix.source_request_id,
+                **lifecycle,
             }
         )
         return evidence
@@ -66,6 +71,7 @@ class TurboBusCPUBackingPool:
 
     def close_prefix(self, prefix: TurboBusSavedPrefix) -> dict[str, Any]:
         backing_evidence = self.close_backings(prefix.cpu_backings)
+        lifecycle = _prefix_lifecycle_for_backing_evidence(prefix)
         return {
             "action": "close_prefix_backings",
             "prefix_key": prefix.key,
@@ -74,6 +80,7 @@ class TurboBusCPUBackingPool:
             "source_request_id": prefix.source_request_id,
             "backing_count": len(prefix.cpu_backings),
             "backings": backing_evidence,
+            **lifecycle,
         }
 
     def close(self) -> list[dict[str, Any]]:
@@ -202,6 +209,262 @@ def _close_backing(backing: Any) -> dict[str, Any]:
     evidence["action"] = "none"
     evidence["closed"] = bool(getattr(backing, "closed", False))
     return evidence
+
+
+def _prefix_lifecycle_for_backing_evidence(
+    prefix: TurboBusSavedPrefix,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：提取 backing lifecycle 边界
+    #  * ========================================================================
+    #  * 数据源：vLLM prefix lifecycle evidence
+    #  * 操作：
+    #  *   1) 优先读取 cleanup/store/save lifecycle evidence
+    #  *   2) 保留 RuntimeSession entrypoint 和 receipt contract 证据链
+    #  */
+    logger.info("开始提取 backing lifecycle 边界...")
+
+    # // 1.1 选择可用 lifecycle evidence
+    source, evidence = _prefix_lifecycle_source(prefix)
+
+    # // 1.2 提取 RuntimeSession entrypoint 合约
+    runtime_entrypoint = _runtime_entrypoint_for_backing_evidence(
+        evidence,
+        source=source,
+    )
+
+    # // 1.3 提取 receipt contracts
+    receipt_contracts = _receipt_contracts_for_backing_evidence(
+        evidence,
+        runtime_entrypoint=runtime_entrypoint,
+        source=source,
+    )
+
+    # // 1.4 返回 backing evidence 继承字段
+    result = {
+        "lifecycle_source": source,
+        "runtime_entrypoint": runtime_entrypoint,
+        "receipt_contracts": receipt_contracts,
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info("backing lifecycle 边界提取完成, source: %s", source)
+    return result
+
+
+def _prefix_lifecycle_source(
+    prefix: TurboBusSavedPrefix,
+) -> tuple[str, Mapping[str, Any]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：选择 prefix lifecycle 来源
+    #  * ========================================================================
+    #  * 数据源：TurboBusSavedPrefix lifecycle evidence
+    #  * 操作：
+    #  *   1) 按 cleanup -> store -> save 的顺序选择证据
+    #  *   2) 拒绝没有 RuntimeSession 证据链的 prefix
+    #  */
+    logger.info("开始选择 prefix lifecycle 来源...")
+
+    # // 2.1 按优先级选择 lifecycle evidence
+    candidates = (
+        ("cleanup_lifecycle_evidence", prefix.cleanup_lifecycle_evidence),
+        ("store_lifecycle_evidence", prefix.store_lifecycle_evidence),
+        ("save_lifecycle_evidence", prefix.save_lifecycle_evidence),
+    )
+    for source, evidence in candidates:
+        if isinstance(evidence, Mapping) and evidence.get("runtime_entrypoint") is not None:
+            logger.info("prefix lifecycle 来源选择完成, source: %s", source)
+            return source, evidence
+
+    # // 2.2 拒绝缺失 RuntimeSession 证据链
+    raise ValueError("prefix backing evidence missing RuntimeSession lifecycle")
+
+
+def _runtime_entrypoint_for_backing_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：提取 backing RuntimeSession 合约
+    #  * ========================================================================
+    #  * 数据源：prefix lifecycle evidence
+    #  * 操作：
+    #  *   1) 拒绝缺失 RuntimeSession entrypoint 的 backing evidence
+    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  */
+    logger.info("开始提取 backing RuntimeSession 合约...")
+
+    # // 3.1 读取 RuntimeSession entrypoint 合约
+    runtime_entrypoint = evidence.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError(f"{source} missing RuntimeSession entrypoint")
+    contract = dict(runtime_entrypoint)
+
+    # // 3.2 拒绝 route policy 暴露
+    if bool(contract.get("route_policy_visible_to_adapter", True)):
+        raise ValueError(f"{source} exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_application", True)):
+        raise ValueError(f"{source} exposes route policy to application")
+
+    # // 3.3 校验 adapter evidence 记录明细
+    adapter_record = contract.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
+    if not bool(adapter_record.get("intents_recorded", False)):
+        raise ValueError(f"{source} adapter intents were not recorded")
+    if not bool(adapter_record.get("receipts_recorded", False)):
+        raise ValueError(f"{source} adapter receipts were not recorded")
+
+    # // 3.4 保留 RuntimeSession 记录摘要
+    contract["adapter_evidence_record"] = dict(adapter_record)
+    logger.info("backing RuntimeSession 合约提取完成, source: %s", source)
+    return contract
+
+
+def _receipt_contracts_for_backing_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    runtime_entrypoint: Mapping[str, Any],
+    source: str,
+) -> list[dict[str, Any]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：提取 backing receipt contracts
+    #  * ========================================================================
+    #  * 数据源：prefix lifecycle evidence
+    #  * 操作：
+    #  *   1) 拒绝缺失 receipt contracts 的 backing evidence
+    #  *   2) 核对 receipt contracts 已进入 RuntimeSession adapter evidence
+    #  */
+    logger.info("开始提取 backing receipt contracts...")
+
+    # // 4.1 校验 receipt contracts 结构
+    contracts = evidence.get("receipt_contracts")
+    if not isinstance(contracts, list):
+        raise ValueError(f"{source} missing receipt contracts")
+
+    # // 4.2 复制 receipt contracts
+    copied = [dict(item) for item in contracts if isinstance(item, Mapping)]
+    if len(copied) != len(contracts) or not copied:
+        raise ValueError(f"{source} contains invalid receipt contracts")
+
+    # // 4.3 核对 receipt contracts 与 RuntimeSession 记录
+    _require_backing_adapter_record_receipts(
+        runtime_entrypoint,
+        receipt_contracts=copied,
+        source=source,
+    )
+    logger.info("backing receipt contracts 提取完成, count: %s", len(copied))
+    return copied
+
+
+def _require_backing_adapter_record_receipts(
+    runtime_entrypoint: Mapping[str, Any],
+    *,
+    receipt_contracts: list[dict[str, Any]],
+    source: str,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤5：核对 backing receipt 记录
+    #  * ========================================================================
+    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
+    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  */
+    logger.info("开始核对 backing receipt 记录...")
+
+    # // 5.1 读取 RuntimeSession adapter evidence 记录
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
+
+    # // 5.2 提取 receipt contract 标识
+    expected_intent_ids, expected_receipt_ids = _backing_receipt_contract_ids(
+        receipt_contracts,
+        source=source,
+    )
+
+    # // 5.3 提取 RuntimeSession adapter evidence 标识
+    recorded_intent_ids = _backing_string_set(adapter_record.get("intent_ids"))
+    recorded_receipt_ids = _backing_string_set(adapter_record.get("receipt_ids"))
+
+    # // 5.4 核对 receipt contract 是否都进入 RuntimeSession 记录
+    if not expected_intent_ids.issubset(recorded_intent_ids):
+        raise ValueError(f"{source} adapter intent_ids mismatch")
+    if not expected_receipt_ids.issubset(recorded_receipt_ids):
+        raise ValueError(f"{source} adapter receipt_ids mismatch")
+    logger.info("backing receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
+
+
+def _backing_receipt_contract_ids(
+    receipt_contracts: list[dict[str, Any]],
+    *,
+    source: str,
+) -> tuple[set[str], set[str]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤6：提取 backing receipt contract 标识
+    #  * ========================================================================
+    #  * 数据源：backing receipt contracts
+    #  * 操作：
+    #  *   1) 读取每个 receipt contract 的 intent_id 和 receipt_id
+    #  *   2) 返回用于 RuntimeSession adapter evidence 核对的集合
+    #  */
+    logger.info("开始提取 backing receipt contract 标识...")
+
+    # // 6.1 收集 intent_id 与 receipt_id
+    intent_ids: set[str] = set()
+    receipt_ids: set[str] = set()
+    for contract in receipt_contracts:
+        intent_id = contract.get("intent_id")
+        receipt_id = contract.get("receipt_id")
+        if intent_id is None or receipt_id is None:
+            raise ValueError(f"{source} receipt contract missing identity fields")
+        intent_ids.add(str(intent_id))
+        receipt_ids.add(str(receipt_id))
+
+    # // 6.2 拒绝空 receipt contract
+    if not receipt_ids:
+        raise ValueError(f"{source} contains no receipt contracts")
+    logger.info(
+        "backing receipt contract 标识提取完成, receipts: %s",
+        len(receipt_ids),
+    )
+    return intent_ids, receipt_ids
+
+
+def _backing_string_set(value: object) -> set[str]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤7：归一化 backing 字符串集合
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession adapter evidence record
+    #  * 操作：
+    #  *   1) 字符串按单个标识处理
+    #  *   2) 列表和元组转为字符串集合
+    #  */
+    logger.info("开始归一化 backing 字符串集合...")
+
+    # // 7.1 字符串按单值处理
+    if isinstance(value, str):
+        result = {value}
+        logger.info("backing 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 7.2 列表和元组转为字符串集合
+    if isinstance(value, list | tuple):
+        result = {str(item) for item in value}
+        logger.info("backing 字符串集合归一化完成, count: %s", len(result))
+        return result
+
+    # // 7.3 非序列值返回空集合
+    logger.info("backing 字符串集合归一化完成, count: %s", 0)
+    return set()
 
 
 __all__ = [

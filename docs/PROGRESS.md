@@ -54,6 +54,9 @@ completed system capability loop. Do not accumulate implementation history.
 - vLLM prefix store and cleanup lifecycle evidence now preserve the
   RuntimeSession entrypoint adapter evidence record from save/store lifecycle
   evidence and reject receipt contract identity drift.
+- vLLM backing-pool release and close-prefix evidence now inherit the prefix
+  lifecycle RuntimeSession entrypoint adapter evidence record and reject
+  receipt contract identity drift before emitting backing cleanup summaries.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -83,8 +86,8 @@ Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
 This is a system-code refactor target. Next inspect adapter auxiliary evidence
-payloads derived from lifecycle evidence, especially backing-pool,
-integration, and adapter event records. Tighten any payload that can summarize
+payloads derived from lifecycle evidence, especially integration request
+binding and adapter event records. Tighten any payload that can summarize
 transfer or cleanup state without carrying the RuntimeSession entrypoint
 adapter evidence record or explicit route-policy rejection fields. Validation
 may resume only when benchmark, example, paper validation, server validation,

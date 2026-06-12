@@ -1,88 +1,159 @@
 # TurboBus Roadmap
 
 This roadmap describes the complete system-code route for reproducing
-TurboBus. It replaces the retired phase-by-phase and artifact-only plans.
-Use `docs/NEXT_STEPS.md` for the current implementation target.
+TurboBus. It replaces retired phase-by-phase, artifact-only, benchmark-first,
+and validation-first plans. Use `docs/NEXT_STEPS.md` for the current
+implementation target.
 
 ## Goal
 
 Reproduce TurboBus as a system that pools idle PCIe bandwidth for LLM memory
 movement by routing CPU-GPU transfers through relay GPUs over scale-up fabric.
 
-The code must prove:
+The code must prove through system structure and executed transfer paths that:
 
-- real H2D and D2H bytes move through daemon-issued plans;
-- direct, relay, and mixed pooled paths execute through worker/backend code;
-- chunk-level path split, timing, cleanup, and correctness are observable;
-- cross-job scheduling reacts to live load and respects ownership;
-- vLLM KV, model loading, and offload workloads run through
-  `TurboBusRuntimeSession` without application-side physical route control.
+- applications submit transfer intent, not physical routes;
+- daemon and scheduler produce all production transfer plans;
+- PCIe fabric capacity and live load feed direct, relay, and mixed pooled path
+  selection;
+- block-level transfer work is split, issued, executed, tracked, cleaned up,
+  and summarized by receipts;
+- workers and backend data planes execute daemon-issued tickets or exact
+  daemon-issued plans only;
+- model loading, KV cache, training state, and optimizer offload use
+  `TurboBusRuntimeSession` without route control.
 
-## System Implementation Sequence
+## Goal Mode Rules
 
-1. Runtime session authority
+Each implementation round must start from `docs/NEXT_STEPS.md`. If target
+state conflicts across files, use this priority:
 
-   `TurboBusRuntimeSession` owns production startup for daemon socket clients,
-   worker clients, profile bootstrap, session/job registration, buffer
-   registration, adapter construction, and receipt consumption.
+1. `docs/NEXT_STEPS.md`;
+2. `docs/PROGRESS.md`;
+3. `AGENTS.md`;
+4. this roadmap.
 
-2. Daemon-issued H2D / D2H execution lifecycle
+Each round must close one independently describable system capability loop.
+Do not count a local bug fix, field rename, helper move, import cleanup,
+boundary tightening, or documentation-only update as a system capability loop.
 
-   A `TransferIntent` must produce a daemon `SchedulingDecision`, a bound
-   `ExecutionTicket`, worker/backend execution, status updates, cleanup, and a
-   `TransferReceipt` from real completion or explicit failure.
+Stop when the current main target is closed. Do not auto-start the next roadmap
+item unless it is a minimal blocker for the active target.
 
-3. Native direct, relay, and mixed pooled data path closure
+The lead agent owns final judgement for each round. Sub-agents may inspect or
+edit disjoint areas in parallel, but the lead agent must integrate the result,
+verify the active target, and decide whether the system capability loop is
+actually closed.
 
-   Direct-only, relay-only, and mixed pooled plans must execute as exact
-   daemon-issued plans. Native runtime, backend conversion, worker execution,
-   and receipt evidence must agree on the same chunk-level contract.
+Suggested parallel split for large rounds:
 
-4. Buffer lifetime closure
+- scheduler/control-plane agent: scheduling decisions, tickets, leases, daemon
+  runtime records, and load feedback;
+- worker/data-plane agent: worker lifecycle, backend execution, CUDA executor
+  envelopes, completion evidence, and cleanup;
+- session/adapter-boundary agent: `TurboBusRuntimeSession`, buffer ownership,
+  adapter boundaries, and API surface contraction;
+- verification agent: minimal existing checks that directly cover the active
+  target, plus diff and staging audit.
 
-   Shared pinned CPU buffers and CUDA IPC GPU buffers must be registered,
-   opened by the correct process, used only inside daemon-issued plans, and
-   released on success, failure, cleanup, and session close.
+Use sub-agents only for bounded, non-overlapping work. Do not let a sub-agent
+choose the main target, change the roadmap order, add benchmark validation, or
+define architecture from examples.
 
-5. Production daemon and worker startup
+## Completion Judgement
 
-   Daemon and worker socket processes must start from production topology
-   discovery, reject synthetic production topology, bind peer identity where
-   available, and execute ticketed transfers without application-side relay
-   ownership.
+A round is complete only when all of the following are true:
 
-6. Scheduler and runtime load feedback
+- `docs/NEXT_STEPS.md` and `docs/PROGRESS.md` agree on the current target state;
+- the code change adds one independently describable system capability loop;
+- daemon/scheduler ownership of production plans remains intact;
+- applications, adapters, benchmarks, workers, and CUDA code do not gain route
+  choice over direct, relay, pool, target GPU, or relay GPU;
+- no benchmark, example, paper-validation, server-validation, mock, fake
+  receipt, synthetic evidence, or dry-run deliverable was added for the current
+  system-code stage;
+- the minimal relevant existing checks passed, or the failure is stated with a
+  concrete external blocker;
+- the staged diff contains only the active round's files;
+- the final answer reports the target, closed capability, key files, checks,
+  remaining validation risk, commit id, and push result.
 
-   Scheduler decisions must consume live queued/running/active transfer state,
-   relay leases, staging usage, completion sources, and job weights so
-   cross-job sharing is observable and isolated.
+## Architecture Guardrails
 
-7. Cross-job isolation and ownership hardening
+- The daemon and scheduler are the only production source of transfer plans.
+- Applications, benchmarks, examples, and adapters may submit
+  `TransferIntent` and consume `TransferReceipt` only.
+- Workers, data planes, and CUDA executors execute `ExecutionTicket` objects or
+  exact daemon-issued plans only.
+- Applications, benchmarks, examples, adapters, workers, and CUDA executors must
+  not choose direct, relay, pool, target GPU, or relay GPU routes.
+- Do not restore old `Runtime` or planner compatibility APIs.
+- Do not restore single-process, single-job, or manual relay production routes.
+- Synthetic topology, fake receipts, JSON artifacts, and dry-run output are not
+  reproduction evidence.
+- Benchmarks and examples must not define core architecture.
 
-   Job, session, buffer, lease, and cleanup ownership must stay bound to
-   authenticated peers or explicit daemon-owned identities so shared relay use
-   does not weaken isolation.
+## System Capability Sequence
 
-8. Framework adapter closure
+1. PCIe shared-fabric bandwidth pool
 
-   Offload, inference, model-loading, training, and vLLM adapters must register
-   real buffers through `TurboBusRuntimeSession`, submit H2D/D2H transfer
-   intent, and consume `TransferReceipt` without seeing route, relay, or target
-   policy.
+   Discover or import daemon-owned PCIe hierarchy, model shared roots and
+   upstream links, attach per-link capacity, sample or report PCIe load, and
+   expose available pooled bandwidth to daemon scheduling.
 
-9. Validation and evaluation
+2. Block-level scheduling and dynamic path allocation
 
-   After the system path is complete, add or repair tests, benchmarks, paper
-   validation, server validation, and paper experiments around real executed
+   Split large transfers into blocks, allocate blocks across direct, relay, and
+   mixed pooled paths using PCIe bandwidth-pool state plus runtime load, and
+   preserve a daemon-owned plan contract.
+
+3. Daemon block runtime, tickets, leases, progress, and receipts
+
+   Convert scheduled blocks into execution tickets, track block attempts and
+   leases, aggregate progress and partial failures, clean up ownership, and
+   produce receipts from real completion or explicit failure.
+
+4. Worker/backend block execution
+
+   Execute daemon-issued direct, relay, and mixed pooled block plans through
+   worker, backend, and CUDA paths. Completion evidence must match the issued
+   block plan.
+
+5. Buffer lifecycle closure
+
+   Register shared pinned CPU buffers and CUDA IPC GPU buffers, bind them to
+   job/session ownership, open them only for authorized tickets, and release
+   them on success, failure, cleanup, and session close.
+
+6. Runtime session production closure
+
+   Keep `TurboBusRuntimeSession` as the single production entry for daemon
+   socket clients, worker clients, profile/bootstrap state, session/job
+   registration, buffer registration, adapter construction, transfer
+   submission, and receipt consumption.
+
+7. Workload adapter closure
+
+   Connect model loading, KV cache, training state, and optimizer offload to
+   real buffer registration and transfer receipts. Optimizer and training state
+   paths must not remain workload-kind labels without real state movement.
+
+8. Validation and evaluation
+
+   After the system path is complete, add or repair tests, benchmarks, server
+   validation, paper validation, and paper experiments around real executed
    evidence. Do not use JSON artifacts, synthetic topology, fake receipts, or
    dry-run wrappers as reproduction proof.
 
-## Current Priority Interpretation
+## Current Stage Boundary
 
-Treat items 1 through 7 as system implementation work. Treat items 8 and 9 as
-follow-on work. If a change mainly improves benchmark usability, paper
-reporting, or comparison output but does not close a system contract above, it
-is out of order for the current pass.
+The current stage advances system-code reproduction only. Do not advance
+benchmark, example, paper validation, server validation, new tests, mock gates,
+fake receipts, synthetic evidence, dry-run deliverables, or comparison-only
+tools unless `docs/NEXT_STEPS.md` explicitly moves the project into that stage.
+
+Adapter migration is allowed only when it directly blocks the active system
+target.
 
 ## Deferred Direction
 

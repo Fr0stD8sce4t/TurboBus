@@ -14,6 +14,36 @@ planes execute exact daemon-issued plans.
 
 Use `docs/NEXT_STEPS.md` as the only active per-round implementation plan.
 Use `docs/TURBOBUS_ROADMAP.md` for the complete system reproduction route.
+Each goal-mode round must derive the single current main target from:
+
+1. `docs/NEXT_STEPS.md`;
+2. `docs/PROGRESS.md`;
+3. this file;
+4. `docs/TURBOBUS_ROADMAP.md`.
+
+If these files conflict, the earlier item in that list wins. Do not hard-code
+the current target in prompts or agent instructions.
+
+Use `docs/GOAL_MODE_PROMPT.md` as the reusable round prompt for repeated
+goal-mode passes. It must stay aligned with `docs/NEXT_STEPS.md` instead of
+restating a fixed target.
+
+Each round should close one complete system capability loop. Do not stop at a
+field rename, helper move, boundary tweak, or documentation sync unless that is
+the last step needed to finish the same loop.
+
+For large rounds, the lead agent may coordinate sub-agents on disjoint scopes,
+but the lead agent remains responsible for target selection, integration,
+verification, staging, commit, push, and final completion judgement.
+
+Before committing, inspect `git diff --cached` and ensure the staged files match
+the active round only. Do not stage unrelated dirty work. After a real system
+capability loop is complete, commit and push the current branch. If push fails
+for an external reason, state the reason and keep the local commit intact.
+
+Final round reports must include the selected main target, the completed system
+capability, key files and responsibility changes, checks run with results,
+deferred validation risk, commit id, and push result.
 
 The old phase-by-phase plan has been retired. Do not restart from Phase 0,
 Phase 6, or Phase 7 documents. Historical phase inventories are not current
@@ -22,19 +52,25 @@ plans and must not drive implementation.
 Current system priority: finish the system body before benchmark or paper
 evaluation work. The main implementation order is:
 
-1. make `TurboBusRuntimeSession` the single production authority;
-2. close the daemon-issued H2D / D2H execution lifecycle end to end;
-3. harden the native direct, relay, and mixed pooled data path;
-4. refine scheduler and topology-driven sharing policy;
-5. only then return to adapters, validation, benchmarks, and paper evidence.
+1. build PCIe shared-fabric discovery, capacity, load, and bandwidth-pool
+   feedback;
+2. add block-level scheduling and dynamic direct/relay/mixed path allocation;
+3. close daemon-issued block tickets, leases, progress, cleanup, and receipts;
+4. execute daemon-issued direct, relay, and mixed pooled blocks through
+   worker/backend/CUDA paths;
+5. connect real model loading, KV cache, training state, and optimizer offload
+   adapters through `TurboBusRuntimeSession`;
+6. only then return to validation, benchmarks, server runs, and paper evidence.
 
 Every code change should move the project closer to:
 
+- daemon-owned PCIe bandwidth-pool facts used by scheduling;
 - one clear production path centered on `TurboBusRuntimeSession`;
 - real daemon-issued H2D and D2H execution;
 - direct, relay, and mixed pooled worker/backend data movement;
+- block-level path allocation and completion evidence;
 - receipts created from worker/backend completion or explicit failure;
-- runtime load feedback into scheduling;
+- runtime load and PCIe bandwidth feedback into scheduling;
 - cross-job isolation during shared relay use;
 - framework adapters using real registered buffers through
   `TurboBusRuntimeSession` only after the core transfer path is stable.

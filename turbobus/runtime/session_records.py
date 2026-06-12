@@ -31,6 +31,7 @@ def initialize_runtime_entrypoint_record(session) -> None:
         "buffers": {},
         "intents": {},
         "receipts": {},
+        "adapter_contexts": {},
         "adapter_evidence": {},
         "close": {},
     }
@@ -200,6 +201,57 @@ def record_runtime_adapter_evidence(
     logger.info("适配器证据边界记录完成, evidence_id: %s", evidence_id)
 
 
+def record_runtime_adapter_context(
+    record: dict[str, object],
+    *,
+    context_id: str,
+    workload_kind: str,
+    cpu_buffer_id: str,
+    gpu_buffer_id: str,
+    intent_prefix: str,
+    priority: int,
+    policy_hints: Mapping[str, object],
+    metadata: Mapping[str, object],
+    state: str = "created",
+    error: str | None = None,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：记录适配器构造边界
+    #  * ========================================================================
+    #  * 目标对象：RuntimeSession entrypoint record
+    #  * 操作：
+    #  *   1) 记录 AdapterTransferContext 来源和 buffer 绑定
+    #  *   2) 记录 policy/metadata 已由 RuntimeSession 去物理路径
+    #  */
+    logger.info("开始记录适配器构造边界...")
+
+    # // 1.1 获取 adapter context 记录表
+    adapter_contexts = _entry(record, "adapter_contexts")
+
+    # // 1.2 写入 RuntimeSession 构造记录
+    adapter_contexts[str(context_id)] = {
+        "context_id": str(context_id),
+        "factory": "TurboBusRuntimeSession.make_adapter_transfer_context",
+        "state": str(state),
+        "workload_kind": str(workload_kind),
+        "cpu_buffer_id": str(cpu_buffer_id),
+        "gpu_buffer_id": str(gpu_buffer_id),
+        "intent_prefix": str(intent_prefix),
+        "priority": int(priority),
+        "policy_hints": dict(policy_hints),
+        "metadata": dict(metadata),
+        "policy_source": "daemon_scheduler",
+        "buffer_registration_source": "TurboBusRuntimeSession",
+        "route_policy_visible_to_adapter": False,
+        "physical_route_control": False,
+        "recorded_at": time.time(),
+    }
+    if error is not None:
+        adapter_contexts[str(context_id)]["error"] = str(error)
+    logger.info("适配器构造边界记录完成, context_id: %s", context_id)
+
+
 def record_runtime_buffer_cleanup(
     record: dict[str, object],
     *,
@@ -261,6 +313,7 @@ def _receipt_entries_contain_all(
 
 __all__ = [
     "initialize_runtime_entrypoint_record",
+    "record_runtime_adapter_context",
     "record_runtime_adapter_evidence",
     "record_runtime_buffer_cleanup",
     "record_runtime_buffer_registered",

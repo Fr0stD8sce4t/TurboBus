@@ -72,6 +72,7 @@ from .runtime.session_state import (
 )
 from .runtime.session_records import (
     initialize_runtime_entrypoint_record,
+    record_runtime_adapter_context,
     record_runtime_adapter_evidence,
     record_runtime_buffer_cleanup,
     record_runtime_buffer_registered,
@@ -629,6 +630,50 @@ class TurboBusRuntimeSession:
             receipt_ids=tuple(str(receipt_id) for receipt_id in receipt_ids),
         )
         logger.info("适配器生命周期证据绑定完成, evidence_id: %s", evidence_id)
+
+    def record_adapter_transfer_context(
+        self,
+        *,
+        context_id: str,
+        workload_kind: str,
+        cpu_buffer_id: str,
+        gpu_buffer_id: str,
+        intent_prefix: str,
+        priority: int,
+        policy_hints: Mapping[str, object],
+        metadata: Mapping[str, object],
+        state: str = "created",
+        error: str | None = None,
+    ) -> None:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：绑定适配器构造证据
+        #  * ========================================================================
+        #  * 目标对象：TurboBusRuntimeSession entrypoint record
+        #  * 操作：
+        #  *   1) 接收 AdapterTransferContext 的构造绑定
+        #  *   2) 写入 RuntimeSession 生产入口快照
+        #  */
+        logger.info("开始绑定适配器构造证据...")
+
+        # // 1.1 确认 RuntimeSession 仍处于打开状态
+        self._require_open()
+
+        # // 1.2 写入 RuntimeSession entrypoint record
+        record_runtime_adapter_context(
+            self._runtime_entrypoint_record,
+            context_id=context_id,
+            workload_kind=workload_kind,
+            cpu_buffer_id=cpu_buffer_id,
+            gpu_buffer_id=gpu_buffer_id,
+            intent_prefix=intent_prefix,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            state=state,
+            error=error,
+        )
+        logger.info("适配器构造证据绑定完成, context_id: %s", context_id)
 
     def fetch_h2d(
         self,
@@ -1193,6 +1238,7 @@ class TurboBusRuntimeSession:
         cpu_buffer_was_registered = cpu_buffer_id in self._buffers
         gpu_buffer_was_registered = gpu_buffer_id in self._buffers
         session_id: str | None = None
+        context_id: str | None = None
         try:
             gpu_buffer = self.register_cuda_buffer(gpu_buffer)
             session_id = self.open_session()
@@ -1205,7 +1251,7 @@ class TurboBusRuntimeSession:
                     getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
                 )
             resolved_metadata = runtime_metadata_without_physical_routes(metadata)
-            return AdapterTransferContext(
+            context = AdapterTransferContext(
                 job_id=self.job_id,
                 session_id=session_id,
                 cpu_buffer_id=cpu_buffer.buffer_id,
@@ -1219,7 +1265,54 @@ class TurboBusRuntimeSession:
                 intent_prefix=intent_prefix,
                 wait_timeout_seconds=wait_timeout_seconds,
             )
-        except Exception:
+            context_id = _adapter_transfer_context_id(context)
+            self.record_adapter_transfer_context(
+                context_id=context_id,
+                workload_kind=str(context.workload_kind.value),
+                cpu_buffer_id=context.cpu_buffer_id,
+                gpu_buffer_id=context.gpu_buffer_id,
+                intent_prefix=context.intent_prefix,
+                priority=context.priority,
+                policy_hints=context.policy_hints,
+                metadata=context.metadata,
+            )
+            return context
+        except Exception as exc:
+            if context_id is None:
+                context_id = _adapter_transfer_context_id_from_parts(
+                    session_id=session_id or self._session_id or "unopened",
+                    cpu_buffer_id=cpu_buffer_id or "unknown-cpu-buffer",
+                    gpu_buffer_id=gpu_buffer_id or "unknown-gpu-buffer",
+                    intent_prefix=intent_prefix,
+                    workload_kind=workload_kind,
+                )
+            try:
+                self.record_adapter_transfer_context(
+                    context_id=context_id,
+                    workload_kind=str(WorkloadKind(workload_kind).value),
+                    cpu_buffer_id=cpu_buffer_id or "unknown-cpu-buffer",
+                    gpu_buffer_id=gpu_buffer_id or "unknown-gpu-buffer",
+                    intent_prefix=(
+                        str(intent_prefix)
+                        if intent_prefix is not None
+                        else str(context_id)
+                    ),
+                    priority=int(priority),
+                    policy_hints=(
+                        runtime_policy_hints_without_physical_routes(policy_hints)
+                        if policy_hints is not None
+                        else {}
+                    ),
+                    metadata=(
+                        runtime_metadata_without_physical_routes(metadata)
+                        if metadata is not None
+                        else {}
+                    ),
+                    state="failed",
+                    error=str(exc) or exc.__class__.__name__,
+                )
+            except Exception:
+                pass
             self._rollback_adapter_transfer_context_buffer(
                 cpu_buffer_id,
                 was_registered=cpu_buffer_was_registered,
@@ -2286,6 +2379,48 @@ def _daemon_startup_config_with_runtime_planner_options(
         relay_min_effective_bw_gbps=float(options.relay_min_effective_bw_gbps),
         relay_min_direct_ratio=float(options.relay_min_direct_ratio),
     )
+
+
+def _adapter_transfer_context_id(context) -> str:
+    return _adapter_transfer_context_id_from_parts(
+        session_id=context.session_id,
+        cpu_buffer_id=context.cpu_buffer_id,
+        gpu_buffer_id=context.gpu_buffer_id,
+        intent_prefix=context.intent_prefix,
+        workload_kind=context.workload_kind,
+    )
+
+
+def _adapter_transfer_context_id_from_parts(
+    *,
+    session_id: str,
+    cpu_buffer_id: str,
+    gpu_buffer_id: str,
+    intent_prefix: str | None,
+    workload_kind: object,
+) -> str:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：生成适配器构造证据标识
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession session/buffer/context 字段
+    #  * 操作：
+    #  *   1) 归一化构造上下文关键字段
+    #  *   2) 生成稳定的 RuntimeSession entrypoint record key
+    #  */
+    logger.info("开始生成适配器构造证据标识...")
+
+    # // 1.1 归一化 workload 与 intent 前缀
+    workload = str(getattr(workload_kind, "value", workload_kind))
+    prefix = str(intent_prefix or "adapter")
+
+    # // 1.2 生成稳定 context_id
+    context_id = (
+        f"adapter-context-{session_id}-{workload}-{prefix}-"
+        f"{cpu_buffer_id}-{gpu_buffer_id}"
+    )
+    logger.info("适配器构造证据标识生成完成, context_id: %s", context_id)
+    return context_id
 
 
 

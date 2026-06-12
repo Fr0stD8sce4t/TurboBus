@@ -274,6 +274,7 @@ def runtime_entrypoint_contract(
     intent_ids = [receipt.intent_id for receipt in receipt_list]
     receipts_view = snapshot.get("receipts")
     intents_view = snapshot.get("intents")
+    adapter_contexts_view = snapshot.get("adapter_contexts")
     contract = {
         "schema": snapshot.get("schema"),
         "entrypoint": snapshot.get("entrypoint"),
@@ -292,6 +293,10 @@ def runtime_entrypoint_contract(
         "intent_ids": intent_ids,
         "receipts_recorded": _snapshot_receipts_contain_all(receipts_view, receipt_ids),
         "intents_recorded": _snapshot_contains_all(intents_view, intent_ids),
+        "adapter_context_recorded": _snapshot_adapter_context_for_receipts(
+            adapter_contexts_view,
+            receipt_list,
+        ),
     }
     if evidence_id is not None:
         _record_runtime_adapter_evidence(
@@ -361,6 +366,55 @@ def _snapshot_receipts_contain_all(value: object, receipt_ids: Iterable[str]) ->
         if isinstance(item, Mapping)
     }
     return all(str(receipt_id) in observed for receipt_id in receipt_ids)
+
+
+def _snapshot_adapter_context_for_receipts(
+    value: object,
+    receipts: Iterable[TransferReceipt],
+) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    contexts = [item for item in value.values() if isinstance(item, Mapping)]
+    if not contexts:
+        return False
+    receipt_list = list(receipts)
+    if not receipt_list:
+        return False
+    for receipt in receipt_list:
+        metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
+        lifetime = metadata.get("buffer_lifetime_evidence")
+        if not isinstance(lifetime, Mapping):
+            return False
+        source_id = _runtime_buffer_id_from_lifetime(lifetime.get("source_buffer"))
+        destination_id = _runtime_buffer_id_from_lifetime(
+            lifetime.get("destination_buffer")
+        )
+        if not _contexts_include_buffer_pair(contexts, source_id, destination_id):
+            return False
+    return True
+
+
+def _runtime_buffer_id_from_lifetime(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    buffer_id = value.get("buffer_id")
+    return None if buffer_id is None else str(buffer_id)
+
+
+def _contexts_include_buffer_pair(
+    contexts: Iterable[Mapping[str, object]],
+    source_id: str | None,
+    destination_id: str | None,
+) -> bool:
+    if source_id is None or destination_id is None:
+        return False
+    for context in contexts:
+        cpu_buffer_id = str(context.get("cpu_buffer_id"))
+        gpu_buffer_id = str(context.get("gpu_buffer_id"))
+        pair = {cpu_buffer_id, gpu_buffer_id}
+        if source_id in pair and destination_id in pair:
+            return True
+    return False
 
 
 def _receipt_contract_summary(

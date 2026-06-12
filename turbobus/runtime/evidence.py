@@ -174,6 +174,8 @@ def _require_runtime_entrypoint_contract(value: object) -> None:
         raise ValueError("runtime entrypoint did not record adapter intents")
     if not bool(value.get("receipts_recorded", False)):
         raise ValueError("runtime entrypoint did not record adapter receipts")
+    if not bool(value.get("adapter_context_recorded", False)):
+        raise ValueError("runtime entrypoint did not record adapter construction")
     if not bool(value.get("adapter_evidence_recorded", False)):
         raise ValueError("runtime entrypoint did not record adapter lifecycle evidence")
     logger.info("RuntimeSession 入口合约校验完成")

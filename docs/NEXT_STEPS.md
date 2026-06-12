@@ -33,13 +33,13 @@ not a validation target.
 
 - `turbobus/runtime_session.py`: keep the production entrypoint record as the
   source of session-level startup, registration, execution, receipt, adapter
-  evidence, and close evidence.
+  construction, adapter evidence, and close evidence.
 - `turbobus/runtime/session_records.py`: keep session-entry snapshots and
   production boundary records aligned with the single entrypoint, including
-  adapter intent/receipt evidence records.
+  adapter context and adapter intent/receipt evidence records.
 - `turbobus/offload/lifecycle.py`: keep adapter lifecycle evidence bound to
-  `TurboBusRuntimeSession` snapshots, adapter evidence records, and real
-  receipts.
+  `TurboBusRuntimeSession` snapshots, adapter construction records, adapter
+  evidence records, and real receipts.
 - `turbobus/offload/handles.py`: keep low-level `ReceiptTransferHandle`
   submit/wait receipt consumption bound to RuntimeSession entrypoint records.
 - `turbobus/runtime/evidence.py`: keep adapter lifecycle validation strict
@@ -59,11 +59,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect remaining runtime-looking paths under `turbobus/runtime/` and the
-adapter construction helpers. If any path can produce receipt evidence,
-adapter evidence, or lifecycle state without a RuntimeSession entrypoint
-record, tighten it back to `TurboBusRuntimeSession` before moving to the next
-boundary.
+Next inspect remaining runtime lifecycle and close/recovery paths under
+`turbobus/runtime/` and `turbobus/runtime_session.py`. If any path can produce
+receipt evidence, recovery evidence, or lifecycle state without a
+RuntimeSession entrypoint record, tighten it back to `TurboBusRuntimeSession`
+before moving to the next boundary.
 
 ## Round Rules
 

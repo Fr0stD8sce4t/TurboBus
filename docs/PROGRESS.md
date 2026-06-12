@@ -57,6 +57,10 @@ completed system capability loop. Do not accumulate implementation history.
 - vLLM backing-pool release and close-prefix evidence now inherit the prefix
   lifecycle RuntimeSession entrypoint adapter evidence record and reject
   receipt contract identity drift before emitting backing cleanup summaries.
+- vLLM KV integration request bindings and adapter event records now inherit
+  RuntimeSession entrypoint adapter evidence records from lifecycle evidence,
+  while console events keep only scalar receipt summaries and explicit route
+  policy rejection fields.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -85,10 +89,11 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-This is a system-code refactor target. Next inspect adapter auxiliary evidence
-payloads derived from lifecycle evidence, especially integration request
-binding and adapter event records. Tighten any payload that can summarize
-transfer or cleanup state without carrying the RuntimeSession entrypoint
-adapter evidence record or explicit route-policy rejection fields. Validation
-may resume only when benchmark, example, paper validation, server validation,
-vLLM validation, and multi-GPU execution are explicitly allowed.
+This is a system-code refactor target. Next inspect remaining adapter
+runtime-looking paths and public exports. Tighten any path that can expose
+transfer, lifecycle, or cleanup summaries without consuming
+`TurboBusRuntimeSession` evidence records, and remove or redirect duplicated
+runtime-looking adapter helpers if they bypass the shared entrypoint evidence
+contract. Validation may resume only when benchmark, example, paper
+validation, server validation, vLLM validation, and multi-GPU execution are
+explicitly allowed.

@@ -778,6 +778,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "layers": len(kv_caches),
                 "ranges": len(range_names),
                 "lifecycle_evidence": lifecycle_evidence,
+                "adapter_evidence_record": _adapter_evidence_record_for_event(
+                    lifecycle_evidence
+                ),
+                "route_policy_visible_to_adapter": False,
                 **stats,
                 **receipt_trace,
             }
@@ -800,7 +804,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             ranges=len(range_names),
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             **stats,
-            **receipt_trace,
+            **_event_receipt_trace_fields(receipt_trace),
         )
 
     def _start_layer_save_context(
@@ -1073,6 +1077,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "ranges": context.ranges,
                 "lifecycle_evidence": lifecycle_evidence,
                 "store_lifecycle_evidence": mutation.evidence,
+                "adapter_evidence_record": _adapter_evidence_record_for_event(
+                    lifecycle_evidence
+                ),
+                "route_policy_visible_to_adapter": False,
                 **stats,
                 **receipt_trace,
             }
@@ -1100,7 +1108,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             store_mutation_id=mutation.evidence["mutation_id"],
             **stats,
-            **receipt_trace,
+            **_event_receipt_trace_fields(receipt_trace),
         )
 
     def _make_integration(
@@ -1155,6 +1163,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "reason": removal.reason,
                     "cleanup_lifecycle_evidence": removal.cleanup_evidence,
                     "backing_lifecycle": backing_evidence,
+                    "adapter_evidence_record": _adapter_evidence_record_for_event(
+                        removal.cleanup_evidence
+                    ),
+                    "route_policy_visible_to_adapter": False,
                 }
             )
             _emit_event(
@@ -1166,6 +1178,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
                 backing_lifecycle_action=backing_evidence["action"],
+                route_policy_visible_to_adapter=False,
             )
         return mutation
 
@@ -1191,6 +1204,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "reason": removal.reason,
                     "cleanup_lifecycle_evidence": removal.cleanup_evidence,
                     "backing_lifecycle": backing_evidence,
+                    "adapter_evidence_record": _adapter_evidence_record_for_event(
+                        removal.cleanup_evidence
+                    ),
+                    "route_policy_visible_to_adapter": False,
                 }
             )
             _emit_event(
@@ -1202,6 +1219,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
                 backing_lifecycle_action=backing_evidence["action"],
+                route_policy_visible_to_adapter=False,
             )
         return {
             "count": len(drained.prefixes),
@@ -1360,6 +1378,70 @@ def _vllm_kv_lifecycle_evidence_id(
     )
 
 
+def _event_receipt_trace_fields(receipt_trace: Mapping[str, Any]) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：构造 adapter event receipt 摘要
+    #  * ========================================================================
+    #  * 数据源：RuntimeSession receipt trace
+    #  * 操作：
+    #  *   1) 只保留控制台事件需要的标量摘要
+    #  *   2) 显式拒绝在 event 输出中暴露 route policy 或大块证据对象
+    #  */
+    logger.info("开始构造 adapter event receipt 摘要...")
+
+    # // 1.1 保留标量 receipt trace 字段
+    allowed_keys = (
+        "direct_bytes",
+        "relay_bytes",
+        "receipt_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+        "ticket_ids",
+        "fallback_reason",
+        "receipt_count",
+        "receipt_states",
+        "completion_sources",
+        "transfer_ids",
+    )
+    event_fields = {key: receipt_trace.get(key) for key in allowed_keys}
+
+    # // 1.2 写入 route policy 拒绝字段
+    event_fields["route_policy_visible_to_adapter"] = False
+    logger.info("adapter event receipt 摘要构造完成, fields: %s", len(event_fields))
+    return event_fields
+
+
+def _adapter_evidence_record_for_event(
+    lifecycle_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：提取 adapter event 证据记录
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle evidence
+    #  * 操作：
+    #  *   1) 从 lifecycle runtime_entrypoint 提取 adapter evidence record
+    #  *   2) 拒绝缺失 RuntimeSession 证据链的 adapter event
+    #  */
+    logger.info("开始提取 adapter event 证据记录...")
+
+    # // 2.1 读取 RuntimeSession entrypoint 合约
+    runtime_entrypoint = lifecycle_evidence.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError("adapter event missing RuntimeSession entrypoint")
+
+    # // 2.2 提取 adapter evidence record
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError("adapter event missing adapter evidence record")
+
+    # // 2.3 返回事件摘要
+    result = dict(adapter_record)
+    logger.info("adapter event 证据记录提取完成, evidence_id: %s", result.get("evidence_id"))
+    return result
+
+
 def _daemon_recovery_from_receipts(
     receipts: list[TransferReceipt],
     runtime_session: TurboBusRuntimeSession,
@@ -1418,6 +1500,11 @@ def _vllm_kv_lifecycle_evidence(
         evidence_id=str(evidence_id),
         receipt_contracts=receipt_contracts,
     )
+    request_binding_evidence = _request_binding_for_vllm_kv_lifecycle(
+        request_binding,
+        runtime_entrypoint=runtime_entrypoint,
+        evidence_id=str(evidence_id),
+    )
     return {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
@@ -1450,7 +1537,7 @@ def _vllm_kv_lifecycle_evidence(
         "direct_bytes": int(receipt_trace.get("direct_bytes", 0) or 0),
         "relay_bytes": int(receipt_trace.get("relay_bytes", 0) or 0),
         "fallback_reason": str(receipt_trace.get("fallback_reason", "")),
-        "request_binding": dict(request_binding),
+        "request_binding": request_binding_evidence,
         "block_ids": list(request.block_ids),
         "runtime_buffer_bindings": (
             [dict(item) for item in runtime_buffer_bindings if isinstance(item, Mapping)]
@@ -1475,6 +1562,41 @@ def _vllm_kv_lifecycle_evidence(
             receipt_trace.get("daemon_recovery_sources", "")
         ),
     }
+
+
+def _request_binding_for_vllm_kv_lifecycle(
+    request_binding: Mapping[str, Any],
+    *,
+    runtime_entrypoint: Mapping[str, Any],
+    evidence_id: str,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：绑定 vLLM KV request evidence
+    #  * ========================================================================
+    #  * 数据源：integration request binding 与 RuntimeSession entrypoint
+    #  * 操作：
+    #  *   1) 复制 integration request binding
+    #  *   2) 绑定 RuntimeSession adapter evidence record 和 route policy 拒绝字段
+    #  */
+    logger.info("开始绑定 vLLM KV request evidence...")
+
+    # // 1.1 复制 integration request binding
+    binding = dict(request_binding)
+
+    # // 1.2 校验 RuntimeSession adapter evidence record
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError("vLLM KV request binding missing adapter evidence record")
+    if str(adapter_record.get("evidence_id")) != str(evidence_id):
+        raise ValueError("vLLM KV request binding adapter evidence_id mismatch")
+
+    # // 1.3 写入 RuntimeSession 边界字段
+    binding["runtime_entrypoint"] = dict(runtime_entrypoint)
+    binding["adapter_evidence_record"] = dict(adapter_record)
+    binding["route_policy_visible_to_adapter"] = False
+    logger.info("vLLM KV request evidence 绑定完成, evidence_id: %s", evidence_id)
+    return binding
 
 
 def _runtime_entrypoint_for_vllm_kv_lifecycle(

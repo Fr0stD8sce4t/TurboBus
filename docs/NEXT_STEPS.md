@@ -61,11 +61,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect adapter auxiliary evidence payloads that are derived from
-lifecycle evidence, especially integration request binding and adapter event
-records. Tighten any payload that can summarize transfer or cleanup state
-without carrying the RuntimeSession entrypoint adapter evidence record or
-explicit route-policy rejection fields.
+Next inspect remaining adapter runtime-looking paths and public exports.
+Tighten any path that can expose transfer, lifecycle, or cleanup summaries
+without consuming `TurboBusRuntimeSession` evidence records, and remove or
+redirect duplicated runtime-looking adapter helpers if they bypass the shared
+entrypoint evidence contract.
 
 ## Round Rules
 

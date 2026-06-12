@@ -23,10 +23,11 @@ from .vllm_prefix_store import (
     TurboBusPrefixStore,
     TurboBusRequestMetadata,
     TurboBusSavedPrefix,
-    clear_saved_prefixes,
+    _clear_saved_prefixes_for_connector,
+    _get_saved_prefix_for_connector,
+    _remove_saved_prefix_for_connector,
+    _store_saved_prefix_for_connector,
     get_saved_prefix,
-    remove_saved_prefix as _remove_saved_prefix,
-    store_saved_prefix as _store_saved_prefix,
 )
 
 try:  # pragma: no cover - depends on an installed vLLM build
@@ -219,7 +220,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         closed_pending_saves = self._close_pending_save_contexts()
         closed_pending_metadata = self._close_pending_metadata()
         free_backing_cleanup = self._backing_pool.close()
-        clear_saved_prefixes(self.session_id, job_id=self.job_id)
+        _clear_saved_prefixes_for_connector(self.session_id, job_id=self.job_id)
         clear_metadata = getattr(self, "clear_connector_metadata", None)
         if callable(clear_metadata):
             clear_metadata()
@@ -232,6 +233,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "connector_session_id": self.connector_session_id,
                 "prefixes": closed_prefixes["count"],
                 "prefix_cleanup_mutation_ids": closed_prefixes["cleanup_mutation_ids"],
+                "adapter_evidence_records": closed_prefixes[
+                    "adapter_evidence_records"
+                ],
                 "free_backing_cleanup": free_backing_cleanup,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
@@ -245,6 +249,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             connector_session_id=self.connector_session_id,
             prefixes=closed_prefixes["count"],
             prefix_cleanup_mutation_ids=",".join(closed_prefixes["cleanup_mutation_ids"]),
+            adapter_evidence_records=closed_prefixes["adapter_evidence_records"],
             free_backing_cleanup_groups=len(free_backing_cleanup),
             pending_saves=closed_pending_saves,
             **closed_pending_metadata,
@@ -293,7 +298,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             )
             return 0, False
         prefix_key = _request_prefix_key(params)
-        saved = get_saved_prefix(prefix_key, self.session_id, job_id=self.job_id)
+        saved = _get_saved_prefix_for_connector(
+            prefix_key,
+            self.session_id,
+            job_id=self.job_id,
+        )
         if saved is None:
             self.state.events.append(
                 {
@@ -348,7 +357,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         if num_external_tokens <= 0:
             return
         prefix_key = _request_prefix_key(params)
-        saved = get_saved_prefix(prefix_key, self.session_id, job_id=self.job_id)
+        saved = _get_saved_prefix_for_connector(
+            prefix_key,
+            self.session_id,
+            job_id=self.job_id,
+        )
         if saved is None:
             _emit_event(
                 "alloc_miss",
@@ -689,7 +702,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
 
     def _restore_request(self, request: TurboBusRequestMetadata) -> None:
         total_start = time.perf_counter()
-        saved = get_saved_prefix(
+        saved = _get_saved_prefix_for_connector(
             request.prefix_key,
             self.session_id,
             job_id=self.job_id,
@@ -803,6 +816,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             layers=len(kv_caches),
             ranges=len(range_names),
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
+            adapter_evidence_record=_adapter_evidence_record_for_event(
+                lifecycle_evidence
+            ),
             **stats,
             **_event_receipt_trace_fields(receipt_trace),
         )
@@ -1005,11 +1021,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             },
         )
         mutation = self._store_prefix(prefix)
-        _store_saved_prefix(prefix)
+        _store_saved_prefix_for_connector(prefix)
         for removal in mutation.removals:
             removed = removal.prefix
             if removed.key != prefix.key:
-                _remove_saved_prefix(
+                _remove_saved_prefix_for_connector(
                     removed.key,
                     removed.session_id,
                     job_id=removed.job_id,
@@ -1023,12 +1039,15 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             source_request_id=request.request_id,
             layers=len(context.cpu_backings),
             store_mutation_id=mutation.evidence["mutation_id"],
+            adapter_evidence_record=_adapter_evidence_record_for_event(
+                mutation.evidence
+            ),
             removed_prefixes=len(mutation.removals),
         )
         self.state.saved_request_ids.add(request.request_id)
         register_ms = (time.perf_counter() - register_start) * 1000.0
         total_ms = (time.perf_counter() - context.total_start) * 1000.0
-        saved = get_saved_prefix(
+        saved = _get_saved_prefix_for_connector(
             request.prefix_key,
             self.session_id,
             job_id=self.job_id,
@@ -1107,6 +1126,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             ranges=context.ranges,
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             store_mutation_id=mutation.evidence["mutation_id"],
+            adapter_evidence_record=_adapter_evidence_record_for_event(
+                lifecycle_evidence
+            ),
             **stats,
             **_event_receipt_trace_fields(receipt_trace),
         )
@@ -1177,6 +1199,9 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 source_request_id=removed.source_request_id,
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
+                adapter_evidence_record=_adapter_evidence_record_for_event(
+                    removal.cleanup_evidence
+                ),
                 backing_lifecycle_action=backing_evidence["action"],
                 route_policy_visible_to_adapter=False,
             )
@@ -1189,11 +1214,15 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             reason="connector_close",
         )
         cleanup_mutation_ids: list[str] = []
+        adapter_evidence_records: list[dict[str, Any]] = []
         for removal in drained.removals:
             prefix = removal.prefix
             backing_evidence = self._backing_pool.close_prefix(prefix)
             removal.cleanup_evidence["backing_lifecycle"] = backing_evidence
             cleanup_mutation_ids.append(str(removal.cleanup_evidence["mutation_id"]))
+            adapter_evidence_records.append(
+                _adapter_evidence_record_for_event(removal.cleanup_evidence)
+            )
             self.state.events.append(
                 {
                     "event": "close_prefix",
@@ -1218,12 +1247,16 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 source_request_id=prefix.source_request_id,
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
+                adapter_evidence_record=_adapter_evidence_record_for_event(
+                    removal.cleanup_evidence
+                ),
                 backing_lifecycle_action=backing_evidence["action"],
                 route_policy_visible_to_adapter=False,
             )
         return {
             "count": len(drained.prefixes),
             "cleanup_mutation_ids": cleanup_mutation_ids,
+            "adapter_evidence_records": adapter_evidence_records,
             "drain_mutation_id": drained.evidence["mutation_id"],
         }
 
@@ -1888,7 +1921,6 @@ __all__ = [
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
     "clear_connector_events",
-    "clear_saved_prefixes",
     "get_connector_events",
     "get_saved_prefix",
 ]

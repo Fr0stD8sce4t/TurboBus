@@ -61,6 +61,11 @@ completed system capability loop. Do not accumulate implementation history.
   RuntimeSession entrypoint adapter evidence records from lifecycle evidence,
   while console events keep only scalar receipt summaries and explicit route
   policy rejection fields.
+- vLLM connector public event and saved-prefix exports now reject
+  runtime-looking receipt, store, and cleanup summaries unless they carry
+  RuntimeSession adapter evidence records. Public saved-prefix reads return
+  RuntimeSession-bound snapshots instead of mutable prefix objects; public
+  prefix write, clear, and remove helpers reject bypassing connector lifecycle.
 - The next work stays inside system-code refactoring. The active direction is
   to converge production boundaries around `TurboBusRuntimeSession`, adapter
   lifecycle evidence, and daemon-issued receipts without starting validation or
@@ -90,10 +95,8 @@ Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
 This is a system-code refactor target. Next inspect remaining adapter
-runtime-looking paths and public exports. Tighten any path that can expose
-transfer, lifecycle, or cleanup summaries without consuming
-`TurboBusRuntimeSession` evidence records, and remove or redirect duplicated
-runtime-looking adapter helpers if they bypass the shared entrypoint evidence
-contract. Validation may resume only when benchmark, example, paper
-validation, server validation, vLLM validation, and multi-GPU execution are
-explicitly allowed.
+runtime-looking paths in `turbobus/offload/` and `turbobus/runtime/` public
+exports. Tighten any path that can expose receipt, lifecycle, cleanup, or
+runtime summaries without consuming `TurboBusRuntimeSession` evidence records.
+Validation may resume only when benchmark, example, paper validation, server
+validation, vLLM validation, and multi-GPU execution are explicitly allowed.

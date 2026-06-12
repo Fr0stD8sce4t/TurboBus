@@ -542,27 +542,260 @@ def clear_saved_prefixes(
     session_id: str | None = None,
     job_id: str | None = None,
 ) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤6：拒绝公共 prefix 清空
+    #  * ========================================================================
+    #  * 目标：防止外部代码绕过 connector cleanup lifecycle
+    #  * 数据源：公共 adapter API
+    #  * 操作：
+    #  *   1) 统一拒绝公共清空
+    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  */
+    logger.info("开始拒绝公共 prefix 清空...")
+
+    # // 6.1 拒绝公共清空
+    raise RuntimeError(
+        "saved prefix cleanup must go through TurboBusRuntimeSession connector lifecycle"
+    )
+
+
+def _clear_saved_prefixes_for_connector(
+    session_id: str | None = None,
+    job_id: str | None = None,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤7：清空 connector 内部 prefix 缓存
+    #  * ========================================================================
+    #  * 目标：只供 connector 完成 lifecycle cleanup 后删除全局缓存
+    #  * 数据源：全局 prefix store
+    #  * 操作：
+    #  *   1) 按 session/job 清空内部缓存
+    #  *   2) 不作为公共导出暴露
+    #  */
+    logger.info("开始清空 connector 内部 prefix 缓存...")
+
+    # // 7.1 清理内部缓存
     _PREFIX_STORE.clear(session_id, job_id=job_id)
+    logger.info("connector 内部 prefix 缓存清空完成")
 
 
 def get_saved_prefix(
     key: str,
     session_id: str = "default",
     job_id: str | None = None,
+) -> dict[str, Any] | None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤8：读取 saved prefix 公开快照
+    #  * ========================================================================
+    #  * 目标：禁止公共入口返回可变 prefix 对象和完整 lifecycle evidence
+    #  * 数据源：全局 prefix store
+    #  * 操作：
+    #  *   1) 读取 connector 私有 prefix 记录
+    #  *   2) 返回 RuntimeSession adapter evidence 绑定后的标量快照
+    #  */
+    logger.info("开始读取 saved prefix 公开快照...")
+
+    # // 8.1 读取内部 prefix 对象
+    prefix = _get_saved_prefix_for_connector(str(key), str(session_id), job_id=job_id)
+    if prefix is None:
+        logger.info("saved prefix 公开快照读取完成, found: %s", False)
+        return None
+
+    # // 8.2 构造公开快照
+    snapshot = saved_prefix_runtime_snapshot(prefix)
+    logger.info("saved prefix 公开快照读取完成, found: %s", True)
+    return snapshot
+
+
+def _get_saved_prefix_for_connector(
+    key: str,
+    session_id: str = "default",
+    job_id: str | None = None,
 ) -> TurboBusSavedPrefix | None:
-    return _PREFIX_STORE.get(str(key), str(session_id), job_id=job_id)
+    # /*
+    #  * ========================================================================
+    #  * 步骤9：读取 connector 内部 prefix 对象
+    #  * ========================================================================
+    #  * 目标：只供 vLLM connector 内部继续执行 restore/save lifecycle
+    #  * 数据源：全局 prefix store
+    #  * 操作：
+    #  *   1) 按 job/session/key 精确读取对象
+    #  *   2) 不作为公共导出暴露
+    #  */
+    logger.info("开始读取 connector 内部 prefix 对象...")
+
+    # // 9.1 读取内部对象
+    prefix = _PREFIX_STORE.get(str(key), str(session_id), job_id=job_id)
+    logger.info("connector 内部 prefix 对象读取完成, found: %s", prefix is not None)
+    return prefix
 
 
-def store_saved_prefix(prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
-    return _PREFIX_STORE.put(prefix)
+def _store_saved_prefix_for_connector(prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤10：写入 connector 内部 prefix 对象
+    #  * ========================================================================
+    #  * 目标：只允许已带 RuntimeSession lifecycle evidence 的 connector 对象进入全局缓存
+    #  * 数据源：TurboBusSavedPrefix.save_lifecycle_evidence
+    #  * 操作：
+    #  *   1) 校验 save evidence 继承 RuntimeSession entrypoint
+    #  *   2) 写入全局 prefix store
+    #  */
+    logger.info("开始写入 connector 内部 prefix 对象...")
+
+    # // 10.1 校验 save lifecycle evidence
+    save_entrypoint = _runtime_entrypoint_for_prefix_store(
+        prefix.save_lifecycle_evidence,
+        source="save_lifecycle_evidence",
+    )
+    _receipt_contracts_for_prefix_store(
+        prefix.save_lifecycle_evidence,
+        runtime_entrypoint=save_entrypoint,
+        source="save_lifecycle_evidence",
+    )
+
+    # // 10.2 写入全局 store
+    evicted = _PREFIX_STORE.put(prefix)
+    logger.info("connector 内部 prefix 对象写入完成, evicted: %s", len(evicted))
+    return evicted
+
+
+def store_saved_prefix(prefix: TurboBusSavedPrefix) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤11：拒绝公共 prefix 写入
+    #  * ========================================================================
+    #  * 目标：防止外部代码伪造 saved prefix 和 receipt evidence
+    #  * 数据源：公共 adapter API
+    #  * 操作：
+    #  *   1) 统一拒绝公共写入
+    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  */
+    logger.info("开始拒绝公共 prefix 写入...")
+
+    # // 11.1 拒绝公共写入
+    raise RuntimeError(
+        "saved prefix writes must go through TurboBusRuntimeSession connector lifecycle"
+    )
+
+
+def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤12：构造 saved prefix RuntimeSession 快照
+    #  * ========================================================================
+    #  * 目标：公开只含标量摘要和 adapter evidence record 的 prefix 视图
+    #  * 数据源：TurboBusSavedPrefix save/store lifecycle evidence
+    #  * 操作：
+    #  *   1) 校验 save/store evidence 继承 RuntimeSession entrypoint
+    #  *   2) 复制 adapter evidence record 并删除完整 runtime_entrypoint
+    #  */
+    logger.info("开始构造 saved prefix RuntimeSession 快照...")
+
+    # // 12.1 校验 store lifecycle evidence
+    store_entrypoint = _runtime_entrypoint_for_prefix_store(
+        prefix.store_lifecycle_evidence,
+        source="store_lifecycle_evidence",
+    )
+    store_receipt_contracts = _receipt_contracts_for_prefix_store(
+        prefix.store_lifecycle_evidence,
+        runtime_entrypoint=store_entrypoint,
+        source="store_lifecycle_evidence",
+    )
+
+    # // 12.2 校验 save lifecycle evidence
+    save_entrypoint = _runtime_entrypoint_for_prefix_store(
+        prefix.save_lifecycle_evidence,
+        source="save_lifecycle_evidence",
+    )
+    _receipt_contracts_for_prefix_store(
+        prefix.save_lifecycle_evidence,
+        runtime_entrypoint=save_entrypoint,
+        source="save_lifecycle_evidence",
+    )
+
+    # // 12.3 返回公开标量快照
+    snapshot = {
+        "schema": "turbobus.vllm_saved_prefix.runtime_snapshot.v1",
+        "key": prefix.key,
+        "job_id": prefix.job_id,
+        "session_id": prefix.session_id,
+        "source_request_id": prefix.source_request_id,
+        "block_count": int(prefix.block_count),
+        "matched_tokens": int(prefix.matched_tokens),
+        "bytes": int(prefix.bytes),
+        "direct_chunks": int(prefix.direct_chunks),
+        "relay_chunks": int(prefix.relay_chunks),
+        "direct_bytes": int(prefix.direct_bytes),
+        "relay_bytes": int(prefix.relay_bytes),
+        "receipt_ids": str(prefix.receipt_ids),
+        "decision_ids": str(prefix.decision_ids),
+        "topology_snapshot_ids": str(prefix.topology_snapshot_ids),
+        "ticket_ids": str(prefix.ticket_ids),
+        "fallback_reason": str(prefix.fallback_reason),
+        "save_lifecycle_evidence_id": str(
+            prefix.save_lifecycle_evidence.get("evidence_id", "")
+        ),
+        "store_mutation_id": str(
+            prefix.store_lifecycle_evidence.get("mutation_id", "")
+        ),
+        "adapter_evidence_record": dict(
+            store_entrypoint["adapter_evidence_record"]
+        ),
+        "receipt_contract_count": len(store_receipt_contracts),
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info("saved prefix RuntimeSession 快照构造完成, key: %s", prefix.key)
+    return snapshot
+
+
+def _remove_saved_prefix_for_connector(
+    key: str,
+    session_id: str = "default",
+    job_id: str | None = None,
+) -> TurboBusSavedPrefix | None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤13：删除 connector 内部 prefix 对象
+    #  * ========================================================================
+    #  * 目标：只供 connector 在 lifecycle cleanup 后移除全局对象
+    #  * 数据源：全局 prefix store
+    #  * 操作：
+    #  *   1) 按 job/session/key 删除对象
+    #  *   2) 不作为公共导出暴露
+    #  */
+    logger.info("开始删除 connector 内部 prefix 对象...")
+
+    # // 13.1 删除内部对象
+    prefix = _PREFIX_STORE.remove(key, session_id, job_id=job_id)
+    logger.info("connector 内部 prefix 对象删除完成, found: %s", prefix is not None)
+    return prefix
 
 
 def remove_saved_prefix(
     key: str,
     session_id: str = "default",
     job_id: str | None = None,
-) -> TurboBusSavedPrefix | None:
-    return _PREFIX_STORE.remove(key, session_id, job_id=job_id)
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤14：拒绝公共 prefix 删除
+    #  * ========================================================================
+    #  * 目标：防止外部代码绕过 connector cleanup lifecycle
+    #  * 数据源：公共 adapter API
+    #  * 操作：
+    #  *   1) 统一拒绝公共删除
+    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  */
+    logger.info("开始拒绝公共 prefix 删除...")
+
+    # // 14.1 拒绝公共删除
+    raise RuntimeError(
+        "saved prefix removal must go through TurboBusRuntimeSession connector lifecycle"
+    )
 
 
 __all__ = [
@@ -572,8 +805,6 @@ __all__ = [
     "TurboBusPrefixStoreRemoval",
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
-    "clear_saved_prefixes",
     "get_saved_prefix",
-    "remove_saved_prefix",
-    "store_saved_prefix",
+    "saved_prefix_runtime_snapshot",
 ]

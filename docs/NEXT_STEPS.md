@@ -61,11 +61,11 @@ Do not start benchmark, example, paper validation, server validation, vLLM
 validation, new tests, substitute validation entrypoints, fake receipt paths,
 synthetic evidence, or dry-run deliverables.
 
-Next inspect remaining adapter runtime-looking paths and public exports.
-Tighten any path that can expose transfer, lifecycle, or cleanup summaries
-without consuming `TurboBusRuntimeSession` evidence records, and remove or
-redirect duplicated runtime-looking adapter helpers if they bypass the shared
-entrypoint evidence contract.
+Next inspect the remaining `turbobus/offload/` and `turbobus/runtime/` public
+exports used by adapters. Tighten any helper that can expose receipt,
+lifecycle, cleanup, or runtime summaries without a `TurboBusRuntimeSession`
+entrypoint record, and keep adapter-facing APIs limited to intent submission,
+receipt consumption, and RuntimeSession-bound evidence snapshots.
 
 ## Round Rules
 

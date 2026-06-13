@@ -44,6 +44,7 @@ def native_transfer_plan(plan):
 
     assignments = []
     chunk_total_bytes = 0
+    plan_direction: str | None = None
     for assignment_payload in payload.get("assignments", []) or []:
         if not isinstance(assignment_payload, Mapping):
             raise ValueError("transfer plan assignment must be an object")
@@ -57,6 +58,12 @@ def native_transfer_plan(plan):
         native_path = native.Path()
         direction = str(path_payload.get("direction", "h2d")).lower()
         kind = str(path_payload.get("kind", "")).lower()
+        plan_direction = _validate_assignment_path(
+            kind=kind,
+            direction=direction,
+            relay_device=int(path_payload.get("relay_device", -1)),
+            plan_direction=plan_direction,
+        )
         _set_native_field(native_path, "kind", _native_path_kind(native, kind, direction))
         _set_native_field(
             native_path,
@@ -74,6 +81,7 @@ def native_transfer_plan(plan):
         native_path.enabled = True
 
         chunks = []
+        assignment_chunk_bytes = 0
         for chunk_payload in assignment_payload.get("chunks", []) or []:
             if not isinstance(chunk_payload, Mapping):
                 raise ValueError("transfer plan chunk must be an object")
@@ -89,9 +97,15 @@ def native_transfer_plan(plan):
             native_chunk.dst_offset = dst_offset
             native_chunk.bytes = bytes_
             chunks.append(native_chunk)
+            assignment_chunk_bytes += bytes_
             chunk_total_bytes += bytes_
         if not chunks:
             continue
+        _validate_assignment_totals(
+            assignment_payload,
+            chunk_bytes=assignment_chunk_bytes,
+            chunk_count=len(chunks),
+        )
         native_assignment.path = native_path
         native_assignment.chunks = chunks
         assignments.append(native_assignment)
@@ -147,6 +161,42 @@ def _native_transfer_direction(native, direction: str):
     if direction == "d2h":
         return transfer_direction.D2H
     raise ValueError(f"unsupported transfer plan direction: {direction}")
+
+
+def _validate_assignment_path(
+    *,
+    kind: str,
+    direction: str,
+    relay_device: int,
+    plan_direction: str | None,
+) -> str:
+    if direction not in {"h2d", "d2h"}:
+        raise ValueError(f"unsupported transfer plan direction: {direction}")
+    if plan_direction is not None and direction != plan_direction:
+        raise ValueError("transfer plan assignments must use one direction")
+    if kind == "direct":
+        if relay_device >= 0:
+            raise ValueError("direct transfer plan path must not set relay_device")
+    elif kind == "relay":
+        if relay_device < 0:
+            raise ValueError("relay transfer plan path requires relay_device")
+    else:
+        raise ValueError(f"unsupported transfer plan path kind: {kind}")
+    return direction
+
+
+def _validate_assignment_totals(
+    assignment_payload: Mapping[str, object],
+    *,
+    chunk_bytes: int,
+    chunk_count: int,
+) -> None:
+    declared_bytes = assignment_payload.get("bytes")
+    if declared_bytes is not None and int(declared_bytes) != int(chunk_bytes):
+        raise ValueError("transfer plan assignment bytes must match chunk bytes")
+    declared_chunks = assignment_payload.get("chunk_count")
+    if declared_chunks is not None and int(declared_chunks) != int(chunk_count):
+        raise ValueError("transfer plan assignment chunk_count must match chunks")
 
 
 def _set_native_field(obj, field_name: str, value) -> None:

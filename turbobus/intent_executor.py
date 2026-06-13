@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 import os
 import time
+from threading import Lock
 
 from .backends.cuda import default_cuda_backend
 from .buffer_registration import ExecutableBuffer
@@ -65,6 +67,34 @@ class WorkerIntentTransferExecutor:
     worker_client: object | None
     backend: object = default_cuda_backend
     runtime_options: RuntimeOptions = field(default_factory=RuntimeOptions)
+    _direct_runtime_cache: OrderedDict[tuple[object, ...], object] = field(
+        default_factory=OrderedDict,
+        init=False,
+        repr=False,
+    )
+    _direct_runtime_cache_evictions: int = field(default=0, init=False, repr=False)
+    _direct_runtime_cache_eviction_keys: OrderedDict[tuple[object, ...], None] = field(
+        default_factory=OrderedDict,
+        init=False,
+        repr=False,
+    )
+    _direct_runtime_cache_lock: Lock = field(
+        default_factory=Lock,
+        init=False,
+        repr=False,
+    )
+    _direct_runtime_key_locks: dict[tuple[object, ...], Lock] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _direct_runtime_key_lock_users: dict[tuple[object, ...], int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _direct_runtime_max_key_lock_count: int = field(default=0, init=False, repr=False)
+    _direct_runtime_max_key_waiter_count: int = field(default=0, init=False, repr=False)
 
     def execute_transfer_intent(
         self,
@@ -99,19 +129,204 @@ class WorkerIntentTransferExecutor:
         if admission_error is not None:
             raise RuntimeError(admission_error)
         if is_direct_only_worker_plan(payload):
-            _trace_runtime_stage("intent_executor_direct_only_start", intent_id=intent.intent_id)
-            execute_direct_fallback_transfer(
-                daemon_client=daemon_client,
-                backend=self.backend,
-                runtime_options=self.runtime_options,
-                intent=intent,
-                planned_payload=payload,
+            return self._execute_direct_only_intent(
+                intent,
+                payload,
+                daemon_client,
                 source=source,
                 target=target,
-                result_factory=WorkerIntentTransferResult,
             )
-            _trace_runtime_stage("intent_executor_direct_only_done", intent_id=intent.intent_id)
-            return _receipt_from_status_query(daemon_client, intent.intent_id)
+        return self._execute_worker_managed_intent(
+            intent,
+            payload,
+            daemon_client,
+        )
+
+    def _execute_direct_only_intent(
+        self,
+        intent: TransferIntent,
+        payload: Mapping[str, object],
+        daemon_client,
+        *,
+        source: ExecutableBuffer,
+        target: ExecutableBuffer,
+    ) -> TransferReceipt:
+        _trace_runtime_stage(
+            "intent_executor_direct_only_start",
+            intent_id=intent.intent_id,
+        )
+        execute_direct_fallback_transfer(
+            daemon_client=daemon_client,
+            backend=self.backend,
+            runtime_options=self.runtime_options,
+            runtime_provider=lambda: self._direct_runtime_for_intent(intent),
+            runtime_cache_evidence_provider=self._direct_runtime_cache_evidence,
+            intent=intent,
+            planned_payload=payload,
+            source=source,
+            target=target,
+            result_factory=WorkerIntentTransferResult,
+        )
+        _trace_runtime_stage(
+            "intent_executor_direct_only_done",
+            intent_id=intent.intent_id,
+        )
+        return _receipt_from_status_query(daemon_client, intent.intent_id)
+
+    def _direct_runtime_for_intent(self, intent: TransferIntent) -> tuple[object, bool]:
+        target_device = _direct_target_device_for_intent(
+            intent,
+            self.buffers,
+        )
+        key = _direct_runtime_cache_key(
+            self.runtime_options,
+            target_device=target_device,
+        )
+        with self._direct_runtime_cache_lock:
+            runtime = self._direct_runtime_cache.get(key)
+            if runtime is not None:
+                self._direct_runtime_cache.move_to_end(key)
+                return runtime, True
+            key_lock = self._acquire_direct_runtime_key_lock_locked(key)
+        try:
+            with key_lock:
+                with self._direct_runtime_cache_lock:
+                    runtime = self._direct_runtime_cache.get(key)
+                    if runtime is not None:
+                        self._direct_runtime_cache.move_to_end(key)
+                        return runtime, True
+                runtime = self.backend.create_runtime(self.runtime_options)
+                self.backend.initialize_runtime(runtime, int(target_device), [])
+                if int(self.runtime_options.worker_runtime_cache_entries) == 0:
+                    return runtime, False
+                with self._direct_runtime_cache_lock:
+                    current = self._direct_runtime_cache.get(key)
+                    if current is not None:
+                        self._direct_runtime_cache.move_to_end(key)
+                        return current, True
+                    self._direct_runtime_cache[key] = runtime
+                    self._trim_direct_runtime_cache_locked(protected_key=key)
+                return runtime, False
+        finally:
+            with self._direct_runtime_cache_lock:
+                self._release_direct_runtime_key_lock_locked(key)
+
+    def _acquire_direct_runtime_key_lock_locked(self, key: tuple[object, ...]) -> Lock:
+        key_lock = self._direct_runtime_key_locks.setdefault(key, Lock())
+        self._direct_runtime_key_lock_users[key] = (
+            int(self._direct_runtime_key_lock_users.get(key, 0)) + 1
+        )
+        self._direct_runtime_max_key_lock_count = max(
+            int(self._direct_runtime_max_key_lock_count),
+            len(self._direct_runtime_key_locks),
+        )
+        self._direct_runtime_max_key_waiter_count = max(
+            int(self._direct_runtime_max_key_waiter_count),
+            _direct_runtime_key_waiter_count(self._direct_runtime_key_lock_users),
+        )
+        return key_lock
+
+    def _release_direct_runtime_key_lock_locked(self, key: tuple[object, ...]) -> None:
+        users = int(self._direct_runtime_key_lock_users.get(key, 0)) - 1
+        if users > 0:
+            self._direct_runtime_key_lock_users[key] = users
+            return
+        self._direct_runtime_key_lock_users.pop(key, None)
+        self._direct_runtime_key_locks.pop(key, None)
+
+    def _trim_direct_runtime_cache_locked(
+        self,
+        *,
+        protected_key: tuple[object, ...],
+    ) -> None:
+        limit = int(self.runtime_options.worker_runtime_cache_entries)
+        if limit < 0:
+            return
+        protected_key = tuple(protected_key)
+        while len(self._direct_runtime_cache) > limit:
+            for key in tuple(self._direct_runtime_cache):
+                if tuple(key) == protected_key:
+                    continue
+                self._direct_runtime_cache.pop(key, None)
+                self._direct_runtime_cache_evictions += 1
+                self._record_direct_runtime_cache_eviction_locked(tuple(key))
+                break
+            else:
+                break
+
+    def _record_direct_runtime_cache_eviction_locked(
+        self,
+        key: tuple[object, ...],
+    ) -> None:
+        self._direct_runtime_cache_eviction_keys[tuple(key)] = None
+        self._direct_runtime_cache_eviction_keys.move_to_end(tuple(key))
+        while len(self._direct_runtime_cache_eviction_keys) > 8:
+            self._direct_runtime_cache_eviction_keys.popitem(last=False)
+
+    def _direct_runtime_cache_evidence(self) -> dict[str, object]:
+        with self._direct_runtime_cache_lock:
+            return self._direct_runtime_cache_snapshot_locked()
+
+    def _direct_runtime_cache_snapshot_locked(
+        self,
+        *,
+        include_cache_records: bool = False,
+    ) -> dict[str, object]:
+        cache_size = len(self._direct_runtime_cache)
+        cache_limit = int(self.runtime_options.worker_runtime_cache_entries)
+        cache_over_limit = 0 if cache_limit < 0 else max(0, cache_size - cache_limit)
+        snapshot = {
+            "cache_size": cache_size,
+            "cache_limit": cache_limit,
+            "cache_over_limit": cache_over_limit,
+            "cache_evictions": int(self._direct_runtime_cache_evictions),
+            "cache_eviction_records": tuple(
+                _direct_runtime_cache_record_from_key(key)
+                for key in self._direct_runtime_cache_eviction_keys
+            ),
+            "key_lock_count": len(self._direct_runtime_key_locks),
+            "key_waiter_count": _direct_runtime_key_waiter_count(
+                self._direct_runtime_key_lock_users
+            ),
+            "max_key_lock_count": int(self._direct_runtime_max_key_lock_count),
+            "max_key_waiter_count": int(self._direct_runtime_max_key_waiter_count),
+        }
+        if include_cache_records:
+            snapshot["cache_records"] = tuple(
+                _direct_runtime_cache_record_from_key(key)
+                for key in self._direct_runtime_cache
+            )
+        return snapshot
+
+    def close_direct_runtime_cache(self) -> dict[str, object]:
+        with self._direct_runtime_cache_lock:
+            snapshot = self._direct_runtime_cache_snapshot_locked(
+                include_cache_records=True,
+            )
+            self._direct_runtime_cache.clear()
+            self._direct_runtime_key_locks.clear()
+            self._direct_runtime_key_lock_users.clear()
+        return {
+            "source": "runtime_session_direct_backend_cache",
+            "closed": True,
+            "runtime_count": int(snapshot["cache_size"]),
+            "runtime_cache_limit": int(snapshot["cache_limit"]),
+            "runtime_cache_over_limit": int(snapshot["cache_over_limit"]),
+            "runtime_cache_evictions": int(snapshot["cache_evictions"]),
+            "runtime_cache_eviction_records": snapshot["cache_eviction_records"],
+            "runtime_key_lock_count": int(snapshot["key_lock_count"]),
+            "runtime_key_waiter_count": int(snapshot["key_waiter_count"]),
+            "max_runtime_key_lock_count": int(snapshot["max_key_lock_count"]),
+            "max_runtime_key_waiter_count": int(snapshot["max_key_waiter_count"]),
+            "runtime_cache_records": snapshot.get("cache_records", ()),
+        }
+
+    def _execute_worker_managed_intent(
+        self,
+        intent: TransferIntent,
+        payload: Mapping[str, object],
+        daemon_client,
+    ) -> TransferReceipt:
         direct_plan_bytes = _plan_assignment_bytes(payload, "direct")
         relay_plan_bytes = _plan_assignment_bytes(payload, "relay")
         direct_completion_evidence: Mapping[str, object] | None = None
@@ -138,6 +353,50 @@ class WorkerIntentTransferExecutor:
             )
             return _receipt_from_status_query(daemon_client, intent.intent_id)
         _validate_intent_lease_tokens(daemon_client, intent, lease_tokens)
+        worker_execution = self._submit_worker_managed_execution(
+            intent,
+            payload,
+            lease_tokens,
+            daemon_client,
+            report_terminal_status=not (mixed_mode or relay_only_mode),
+            direct_completion_evidence=direct_completion_evidence,
+        )
+        terminal_receipt = self._receipt_for_worker_terminal_state(
+            intent,
+            payload,
+            daemon_client,
+            worker_execution=worker_execution,
+            lease_tokens=lease_tokens,
+            direct_completion_evidence=direct_completion_evidence,
+            direct_plan_bytes=int(direct_plan_bytes),
+            relay_only_mode=relay_only_mode,
+            mixed_mode=mixed_mode,
+        )
+        if terminal_receipt is not None:
+            return terminal_receipt
+        self._report_worker_completion(
+            intent,
+            payload,
+            daemon_client,
+            worker_execution=worker_execution,
+            direct_completion_evidence=direct_completion_evidence,
+            direct_plan_bytes=int(direct_plan_bytes),
+            relay_plan_bytes=int(relay_plan_bytes),
+            relay_only_mode=relay_only_mode,
+            mixed_mode=mixed_mode,
+        )
+        return _receipt_from_status_query(daemon_client, intent.intent_id)
+
+    def _submit_worker_managed_execution(
+        self,
+        intent: TransferIntent,
+        payload: Mapping[str, object],
+        lease_tokens: tuple[Mapping[str, object], ...],
+        daemon_client,
+        *,
+        report_terminal_status: bool,
+        direct_completion_evidence: Mapping[str, object] | None,
+    ):
         primary_lease_token = lease_tokens[0]
         try:
             require_worker_plan_matches_leases(
@@ -145,17 +404,10 @@ class WorkerIntentTransferExecutor:
                 lease_tokens,
                 direction=intent.direction,
             )
-            authorization_request = WorkerTransferAuthorizationRequest(
-                transfer_id=str(payload["transfer_id"]),
-                lease_id=str(primary_lease_token["lease_id"]),
-                token=str(primary_lease_token["token"]),
-                session_id=intent.session_id,
-                job_id=intent.job_id,
-                src_buffer_id=intent.source_buffer_id,
-                dst_buffer_id=intent.destination_buffer_id,
-                direction=intent.direction,
-                ranges=(),
-                relay_gpu=int(primary_lease_token["relay_gpu"]),
+            authorization_request = _worker_authorization_request(
+                intent,
+                payload,
+                primary_lease_token,
             )
             _trace_runtime_stage(
                 "intent_executor_worker_submit_start",
@@ -167,103 +419,82 @@ class WorkerIntentTransferExecutor:
                 self.worker_client,
                 authorization_request,
                 expected_bytes=int(intent.total_bytes),
-                report_terminal_status=not (mixed_mode or relay_only_mode),
+                report_terminal_status=report_terminal_status,
             )
             _trace_runtime_stage(
                 "intent_executor_worker_submit_done",
                 intent_id=intent.intent_id,
                 final_state=worker_execution.final_state,
             )
+            return worker_execution
         except WorkerCompletionEnvelopeError:
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_completion_invalid",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
+            _fail_worker_execution_exception(
+                daemon_client=daemon_client,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                cleanup_reason="worker_completion_invalid",
                 error="mixed pooled worker completion invalid",
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
+                direct_completion_evidence=direct_completion_evidence,
             )
             raise
         except Exception as exc:
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_execution_exception",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
+            _fail_worker_execution_exception(
+                daemon_client=daemon_client,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                cleanup_reason="worker_execution_exception",
                 error=str(exc) or exc.__class__.__name__,
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
+                direct_completion_evidence=direct_completion_evidence,
             )
             raise
+
+    def _receipt_for_worker_terminal_state(
+        self,
+        intent: TransferIntent,
+        payload: Mapping[str, object],
+        daemon_client,
+        *,
+        worker_execution,
+        lease_tokens: tuple[Mapping[str, object], ...],
+        direct_completion_evidence: Mapping[str, object] | None,
+        direct_plan_bytes: int,
+        relay_only_mode: bool,
+        mixed_mode: bool,
+    ) -> TransferReceipt | None:
+        if worker_execution.final_state == "complete":
+            return None
         if worker_execution.final_state == "authorization_failed":
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_authorization_failed",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
+            _fail_worker_terminal_state(
+                daemon_client=daemon_client,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                cleanup_reason="worker_authorization_failed",
                 error=worker_execution.error or "worker authorization failed",
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
+                direct_completion_evidence=direct_completion_evidence,
             )
-            raise RuntimeError(
-                worker_execution.error or "worker authorization failed"
-            )
+            raise RuntimeError(worker_execution.error or "worker authorization failed")
         if worker_execution.final_state == "parse_failed":
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_parse_failed",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
+            _fail_worker_terminal_state(
+                daemon_client=daemon_client,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                cleanup_reason="worker_parse_failed",
                 error=worker_execution.error or "worker transfer parse failed",
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
+                direct_completion_evidence=direct_completion_evidence,
             )
-            raise RuntimeError(
-                worker_execution.error or "worker transfer parse failed"
-            )
+            raise RuntimeError(worker_execution.error or "worker transfer parse failed")
         if worker_execution.final_state == "cleanup_failed":
-            completion = worker_execution.completion
-            if (
-                completion is not None
-                and (
-                    completion.worker_result is not None
-                    or completion.daemon_status_update is not None
-                )
-            ):
+            if _worker_cleanup_failure_has_status(worker_execution):
                 return _receipt_from_status_query(daemon_client, intent.intent_id)
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_cleanup_failed",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
+            _fail_worker_terminal_state(
+                daemon_client=daemon_client,
+                payload=payload,
+                lease_tokens=lease_tokens,
+                cleanup_reason="worker_cleanup_failed",
                 error=worker_execution.error or "worker cleanup failed",
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
+                direct_completion_evidence=direct_completion_evidence,
             )
-            raise RuntimeError(
-                worker_execution.error or "worker cleanup failed"
-            )
+            raise RuntimeError(worker_execution.error or "worker cleanup failed")
         if worker_execution.final_state in {"failed", "status_failed"}:
             if relay_only_mode or mixed_mode:
                 _report_deferred_worker_failure(
@@ -275,24 +506,32 @@ class WorkerIntentTransferExecutor:
                     direct_bytes_completed=int(direct_plan_bytes),
                 )
             return _receipt_from_status_query(daemon_client, intent.intent_id)
-        if worker_execution.final_state != "complete":
-            cleanup_evidence = cleanup_planned_relay_leases(
-                daemon_client,
-                lease_tokens,
-                reason="worker_completion_not_complete",
-                strict=False,
-            )
-            _mark_transfer_failed(
-                daemon_client,
-                payload,
-                error=worker_execution.error
-                or "worker-managed intent transfer did not complete",
-                completion_evidence=direct_completion_evidence,
-                cleanup_evidence=cleanup_evidence,
-            )
-            raise RuntimeError(
-                worker_execution.error or "worker-managed intent transfer did not complete"
-            )
+        _fail_worker_terminal_state(
+            daemon_client=daemon_client,
+            payload=payload,
+            lease_tokens=lease_tokens,
+            cleanup_reason="worker_completion_not_complete",
+            error=worker_execution.error
+            or "worker-managed intent transfer did not complete",
+            direct_completion_evidence=direct_completion_evidence,
+        )
+        raise RuntimeError(
+            worker_execution.error or "worker-managed intent transfer did not complete"
+        )
+
+    def _report_worker_completion(
+        self,
+        intent: TransferIntent,
+        payload: Mapping[str, object],
+        daemon_client,
+        *,
+        worker_execution,
+        direct_completion_evidence: Mapping[str, object] | None,
+        direct_plan_bytes: int,
+        relay_plan_bytes: int,
+        relay_only_mode: bool,
+        mixed_mode: bool,
+    ) -> None:
         if relay_only_mode:
             worker_evidence = _worker_completion_evidence(worker_execution.completion)
             completion = daemon_client.transfer_status(
@@ -322,7 +561,8 @@ class WorkerIntentTransferExecutor:
                 ),
             )
             require_ok(completion, "daemon mixed-pooled completion update failed")
-        return _receipt_from_status_query(daemon_client, intent.intent_id)
+        elif not mixed_mode:
+            raise RuntimeError("worker-managed transfer has no relay path")
 
 
 def _intent_buffers(
@@ -337,6 +577,67 @@ def _intent_buffers(
     if source.job_id != intent.job_id or target.job_id != intent.job_id:
         raise ValueError("intent buffers must belong to the intent job")
     return source, target
+
+
+def _direct_target_device_for_intent(
+    intent: TransferIntent,
+    buffers: Mapping[str, ExecutableBuffer],
+) -> int:
+    source, target = _intent_buffers(buffers, intent)
+    if str(intent.direction).lower() == "h2d":
+        if not isinstance(target, CudaIpcDeviceBuffer):
+            raise TypeError("direct h2d target must be a CUDA device buffer")
+        return int(target.device_index)
+    if not isinstance(source, CudaIpcDeviceBuffer):
+        raise TypeError("direct d2h source must be a CUDA device buffer")
+    return int(source.device_index)
+
+
+def _direct_runtime_cache_key(
+    runtime_options: RuntimeOptions,
+    *,
+    target_device: int,
+) -> tuple[object, ...]:
+    return (
+        int(target_device),
+        int(runtime_options.chunk_bytes),
+        int(runtime_options.staging_slots),
+        bool(runtime_options.enable_peer_access),
+        int(runtime_options.profile_bytes),
+        bool(runtime_options.profile_on_first_transfer),
+        bool(runtime_options.profile_cache_enabled),
+        int(runtime_options.min_chunks_for_relay),
+        int(runtime_options.min_pool_bytes),
+        float(runtime_options.relay_min_effective_bw_gbps),
+        float(runtime_options.relay_min_direct_ratio),
+        bool(runtime_options.enable_dynamic_weights),
+        float(runtime_options.dynamic_weight_alpha),
+        bool(runtime_options.clear_relay_staging_on_chunk),
+    )
+
+
+def _direct_runtime_cache_record_from_key(
+    key: tuple[object, ...],
+) -> dict[str, object]:
+    if len(key) < 14:
+        return {"source": "runtime_session_direct_backend_cache", "key_width": len(key)}
+    return {
+        "source": "runtime_session_direct_backend_cache",
+        "target_device": int(key[0]),
+        "chunk_bytes": int(key[1]),
+        "staging_slots": int(key[2]),
+        "peer_access_enabled": bool(key[3]),
+        "profile_bytes": int(key[4]),
+        "profile_cache_enabled": bool(key[6]),
+        "dynamic_weights_enabled": bool(key[11]),
+        "clear_relay_staging_on_chunk": bool(key[13]),
+    }
+
+
+def _direct_runtime_key_waiter_count(
+    key_lock_users: Mapping[tuple[object, ...], int],
+) -> int:
+    return sum(max(0, int(value) - 1) for value in key_lock_users.values())
 
 
 def _intent_execution_payload(payload: Mapping[str, object]) -> dict[str, object]:
@@ -424,6 +725,84 @@ def _validate_intent_lease_tokens(
             raise TypeError("daemon lease validation must return a DaemonResponse")
         if not response.ok:
             raise RuntimeError(response.error or "intent lease validation failed")
+
+
+def _worker_authorization_request(
+    intent: TransferIntent,
+    payload: Mapping[str, object],
+    primary_lease_token: Mapping[str, object],
+) -> WorkerTransferAuthorizationRequest:
+    return WorkerTransferAuthorizationRequest(
+        transfer_id=str(payload["transfer_id"]),
+        lease_id=str(primary_lease_token["lease_id"]),
+        token=str(primary_lease_token["token"]),
+        session_id=intent.session_id,
+        job_id=intent.job_id,
+        src_buffer_id=intent.source_buffer_id,
+        dst_buffer_id=intent.destination_buffer_id,
+        direction=intent.direction,
+        ranges=(),
+        relay_gpu=int(primary_lease_token["relay_gpu"]),
+    )
+
+
+def _worker_cleanup_failure_has_status(worker_execution) -> bool:
+    completion = worker_execution.completion
+    return bool(
+        completion is not None
+        and (
+            completion.worker_result is not None
+            or completion.daemon_status_update is not None
+        )
+    )
+
+
+def _fail_worker_execution_exception(
+    *,
+    daemon_client,
+    payload: Mapping[str, object],
+    lease_tokens: Iterable[Mapping[str, object]],
+    cleanup_reason: str,
+    error: str,
+    direct_completion_evidence: Mapping[str, object] | None,
+) -> None:
+    cleanup_evidence = cleanup_planned_relay_leases(
+        daemon_client,
+        lease_tokens,
+        reason=cleanup_reason,
+        strict=False,
+    )
+    _mark_transfer_failed(
+        daemon_client,
+        payload,
+        error=error,
+        completion_evidence=direct_completion_evidence,
+        cleanup_evidence=cleanup_evidence,
+    )
+
+
+def _fail_worker_terminal_state(
+    *,
+    daemon_client,
+    payload: Mapping[str, object],
+    lease_tokens: Iterable[Mapping[str, object]],
+    cleanup_reason: str,
+    error: str,
+    direct_completion_evidence: Mapping[str, object] | None,
+) -> None:
+    cleanup_evidence = cleanup_planned_relay_leases(
+        daemon_client,
+        lease_tokens,
+        reason=cleanup_reason,
+        strict=False,
+    )
+    _mark_transfer_failed(
+        daemon_client,
+        payload,
+        error=error,
+        completion_evidence=direct_completion_evidence,
+        cleanup_evidence=cleanup_evidence,
+    )
 
 
 def _plan_assignment_bytes(
@@ -599,9 +978,7 @@ def _relay_only_completion_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
-    worker_startup = worker_evidence.get("worker_startup")
-    if isinstance(worker_startup, Mapping):
-        evidence["worker_startup"] = dict(worker_startup)
+    _copy_worker_lifecycle_evidence(evidence, worker_evidence)
     _copy_path_level_evidence(evidence, worker_evidence)
     evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
@@ -662,6 +1039,7 @@ def _merge_mixed_completion_evidence(
             "worker": dict(worker_resource) if isinstance(worker_resource, Mapping) else {},
         },
         "worker_completion_evidence": dict(worker_evidence),
+        "relay_completion_evidence": dict(worker_evidence),
     }
     _copy_path_level_evidence(evidence, worker_evidence)
     if isinstance(direct_evidence, Mapping):
@@ -678,9 +1056,7 @@ def _merge_mixed_completion_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
-    worker_startup = worker_evidence.get("worker_startup")
-    if isinstance(worker_startup, Mapping):
-        evidence["worker_startup"] = dict(worker_startup)
+    _copy_worker_lifecycle_evidence(evidence, worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
         expected_bytes=expected,
@@ -760,9 +1136,7 @@ def _relay_only_failure_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
-    worker_startup = worker_evidence.get("worker_startup")
-    if isinstance(worker_startup, Mapping):
-        evidence["worker_startup"] = dict(worker_startup)
+    _copy_worker_lifecycle_evidence(evidence, worker_evidence)
     evidence["worker_completion_evidence"] = dict(worker_evidence)
     evidence["relay_completion_evidence"] = dict(worker_evidence)
     _copy_path_level_evidence(evidence, worker_evidence)
@@ -842,6 +1216,7 @@ def _merge_mixed_worker_failure_evidence(
             ),
         },
         "worker_completion_evidence": dict(worker_evidence),
+        "relay_completion_evidence": dict(worker_evidence),
         "failure_source": "mixed_worker_backend",
     }
     _copy_path_level_evidence(evidence, worker_evidence)
@@ -869,9 +1244,7 @@ def _merge_mixed_worker_failure_evidence(
     cleanup = _cleanup_evidence_from_mapping(worker_evidence)
     if cleanup is not None:
         evidence["cleanup"] = cleanup
-    worker_startup = worker_evidence.get("worker_startup")
-    if isinstance(worker_startup, Mapping):
-        evidence["worker_startup"] = dict(worker_startup)
+    _copy_worker_lifecycle_evidence(evidence, worker_evidence)
     evidence["execution_path_evidence"] = _execution_path_evidence(
         evidence,
         expected_bytes=expected,
@@ -1005,6 +1378,7 @@ def _planned_execution_failure_evidence(
         cleanup = _cleanup_evidence_from_mapping(completion_evidence)
         if cleanup is not None:
             evidence["cleanup"] = cleanup
+        _copy_path_level_evidence(evidence, completion_evidence)
     else:
         evidence = {
             "expected_bytes": int(expected_bytes),
@@ -1169,6 +1543,21 @@ def _copy_path_level_evidence(
         evidence["relay_device_stats"] = tuple(
             dict(item) for item in relay_device_stats if isinstance(item, Mapping)
         )
+
+
+def _copy_worker_lifecycle_evidence(
+    evidence: dict[str, object],
+    worker_evidence: Mapping[str, object],
+) -> None:
+    for key in (
+        "worker_startup",
+        "worker_async_pool",
+        "worker_runtime_feedback",
+        "async_data_plane",
+    ):
+        value = worker_evidence.get(key)
+        if isinstance(value, Mapping):
+            evidence[key] = dict(value)
 
 
 def _fail_transfer_without_worker_client(

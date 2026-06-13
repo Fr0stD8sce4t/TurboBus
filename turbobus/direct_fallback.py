@@ -36,6 +36,11 @@ def execute_direct_fallback_transfer(
     daemon_client,
     backend,
     runtime_options: RuntimeOptions,
+    runtime=None,
+    runtime_reused: bool | None = None,
+    runtime_cache_evidence: Mapping[str, object] | None = None,
+    runtime_provider: Callable[[], tuple[object, bool]] | None = None,
+    runtime_cache_evidence_provider: Callable[[], Mapping[str, object]] | None = None,
     intent: TransferIntent,
     planned_payload: Mapping[str, object],
     source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
@@ -44,6 +49,9 @@ def execute_direct_fallback_transfer(
 ):
     transfer_id = str(planned_payload["transfer_id"])
     ticket: ExecutionTicket | None = None
+    direct_runtime = runtime
+    direct_runtime_reused = runtime_reused
+    direct_runtime_cache_evidence = runtime_cache_evidence
     try:
         ticket = _direct_ticket_from_planned_payload(
             planned_payload,
@@ -53,9 +61,19 @@ def execute_direct_fallback_transfer(
             source_buffer_id=source.buffer_id,
             target_buffer_id=target.buffer_id,
         )
+        if runtime_provider is not None:
+            direct_runtime, direct_runtime_reused = runtime_provider()
+        if runtime_cache_evidence_provider is not None:
+            try:
+                direct_runtime_cache_evidence = runtime_cache_evidence_provider()
+            except Exception:
+                direct_runtime_cache_evidence = None
         bytes_completed, completion_evidence = _execute_direct_ticket_plan(
             backend=backend,
             runtime_options=runtime_options,
+            runtime=direct_runtime,
+            runtime_reused=direct_runtime_reused,
+            runtime_cache_evidence=direct_runtime_cache_evidence,
             direction=intent.direction,
             ticket=ticket,
             planned_payload=planned_payload,
@@ -69,6 +87,13 @@ def execute_direct_fallback_transfer(
             )
     except Exception as exc:
         failure_payload = {"failure_source": "direct_fallback"}
+        if ticket is not None:
+            failure_payload["direct_runtime"] = _direct_runtime_evidence(
+                runtime_reused=direct_runtime_reused,
+                runtime=direct_runtime,
+                runtime_cache_evidence=direct_runtime_cache_evidence,
+                target_device=_direct_failure_target_device(intent, source, target),
+            )
         failure_resource_evidence = _direct_endpoint_resource_evidence(
             direction=intent.direction,
             source=source,
@@ -167,6 +192,9 @@ def _execute_direct_ticket_plan(
     *,
     backend,
     runtime_options: RuntimeOptions,
+    runtime,
+    runtime_reused: bool | None,
+    runtime_cache_evidence: Mapping[str, object] | None,
     direction: str,
     ticket: ExecutionTicket,
     planned_payload: Mapping[str, object],
@@ -188,6 +216,9 @@ def _execute_direct_ticket_plan(
         return _run_direct_plan(
             backend=backend,
             runtime_options=runtime_options,
+            runtime=runtime,
+            runtime_reused=runtime_reused,
+            runtime_cache_evidence=runtime_cache_evidence,
             target_device=target.device_index,
             plan_payload=plan_payload,
             ticket=ticket,
@@ -206,6 +237,9 @@ def _execute_direct_ticket_plan(
     return _run_direct_plan(
         backend=backend,
         runtime_options=runtime_options,
+        runtime=runtime,
+        runtime_reused=runtime_reused,
+        runtime_cache_evidence=runtime_cache_evidence,
         target_device=source.device_index,
         plan_payload=plan_payload,
         ticket=ticket,
@@ -222,6 +256,9 @@ def _run_direct_plan(
     *,
     backend,
     runtime_options: RuntimeOptions,
+    runtime,
+    runtime_reused: bool | None,
+    runtime_cache_evidence: Mapping[str, object] | None,
     target_device: int,
     plan_payload: Mapping[str, object],
     ticket: ExecutionTicket,
@@ -240,8 +277,12 @@ def _run_direct_plan(
         device_bytes=int(device_bytes),
     )
     _set_cuda_device_for_direct_plan(backend, int(target_device))
-    runtime = backend.create_runtime(runtime_options)
-    backend.initialize_runtime(runtime, int(target_device), [])
+    direct_runtime_reused = (
+        runtime is not None if runtime_reused is None else bool(runtime_reused)
+    )
+    if runtime is None:
+        runtime = backend.create_runtime(runtime_options)
+        backend.initialize_runtime(runtime, int(target_device), [])
     _install_daemon_profile_if_available(
         backend=backend,
         runtime=runtime,
@@ -295,6 +336,12 @@ def _run_direct_plan(
             ranges=_plan_transfer_ranges(plan_payload),
             expected_bytes=int(plan_payload["total_bytes"]),
             resource_evidence=resource_evidence,
+        )
+        completion_evidence["direct_runtime"] = _direct_runtime_evidence(
+            runtime_reused=direct_runtime_reused,
+            runtime=runtime,
+            runtime_cache_evidence=runtime_cache_evidence,
+            target_device=int(target_device),
         )
     finally:
         unregister_evidence = _direct_cuda_unregister_evidence(
@@ -633,6 +680,43 @@ def _direct_handle_type(
     if isinstance(buffer, CudaIpcDeviceBuffer):
         return "cuda_ipc_device"
     return "unknown"
+
+
+def _direct_runtime_evidence(
+    *,
+    runtime_reused: bool | None,
+    runtime,
+    runtime_cache_evidence: Mapping[str, object] | None,
+    target_device: int | None,
+) -> dict[str, object]:
+    evidence = {
+        "source": "direct_backend_runtime_cache",
+        "runtime_reused": bool(
+            runtime is not None if runtime_reused is None else runtime_reused
+        ),
+        **dict(runtime_cache_evidence or {}),
+    }
+    if target_device is not None:
+        evidence["target_device"] = int(target_device)
+    return evidence
+
+
+def _direct_failure_target_device(
+    intent: TransferIntent,
+    source: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+    target: SharedPinnedCpuBuffer | CudaIpcDeviceBuffer,
+) -> int | None:
+    if str(intent.direction).lower() == "h2d" and isinstance(
+        target,
+        CudaIpcDeviceBuffer,
+    ):
+        return int(target.device_index)
+    if str(intent.direction).lower() == "d2h" and isinstance(
+        source,
+        CudaIpcDeviceBuffer,
+    ):
+        return int(source.device_index)
+    return None
 
 
 def _completion_evidence_with_ticket_binding(

@@ -28,51 +28,49 @@ def runtime_active_path_records_for_transfer(
         if assignment["kind"] == "relay"
     )
     completion_source = str(record.get("completion_source", "")).lower()
-    active_kind = active_path_kind_for_record(
+    active_kinds = active_path_kinds_for_record(
         completion_source=completion_source,
         bytes_completed=int(record.get("bytes_completed", 0) or 0),
         direct_total=direct_total,
         relay_total=relay_total,
     )
-    if active_kind is None:
+    if not active_kinds:
         return ()
-    if active_kind == "direct":
-        completed_in_kind = min(
-            int(record.get("bytes_completed", 0) or 0),
-            direct_total,
-        )
-    else:
-        completed_in_kind = max(
-            0,
-            int(record.get("bytes_completed", 0) or 0) - direct_total,
-        )
-    remaining_phase_cursor = completed_in_kind
+    completed_by_kind = completed_bytes_by_path_kind(
+        completion_source=completion_source,
+        bytes_completed=int(record.get("bytes_completed", 0) or 0),
+        direct_total=direct_total,
+        relay_total=relay_total,
+    )
     records: list[dict[str, object]] = []
-    for assignment in assignments:
-        if assignment["kind"] != active_kind:
-            continue
-        bytes_total = int(assignment["bytes_total"])
-        bytes_remaining, chunk_count = remaining_assignment_load(
-            assignment,
-            completed_bytes=remaining_phase_cursor,
-        )
-        remaining_phase_cursor = max(0, remaining_phase_cursor - bytes_total)
-        if bytes_remaining <= 0 or chunk_count <= 0:
-            continue
-        path = assignment["path"]
-        records.append(
-            {
-                "transfer_id": str(record.get("transfer_id")),
-                "kind": assignment["kind"],
-                "direction": assignment["direction"],
-                "target_device": path.get("target_device"),
-                "relay_device": path.get("relay_device"),
-                "bytes_total": bytes_remaining,
-                "chunk_count": chunk_count,
-                "completion_source": completion_source,
-                "phase": "running",
-            }
-        )
+    for active_kind in active_kinds:
+        completed_in_kind = int(completed_by_kind.get(active_kind, 0))
+        remaining_phase_cursor = completed_in_kind
+        for assignment in assignments:
+            if assignment["kind"] != active_kind:
+                continue
+            bytes_total = int(assignment["bytes_total"])
+            bytes_remaining, chunk_count = remaining_assignment_load(
+                assignment,
+                completed_bytes=remaining_phase_cursor,
+            )
+            remaining_phase_cursor = max(0, remaining_phase_cursor - bytes_total)
+            if bytes_remaining <= 0 or chunk_count <= 0:
+                continue
+            path = assignment["path"]
+            records.append(
+                {
+                    "transfer_id": str(record.get("transfer_id")),
+                    "kind": assignment["kind"],
+                    "direction": assignment["direction"],
+                    "target_device": path.get("target_device"),
+                    "relay_device": path.get("relay_device"),
+                    "bytes_total": bytes_remaining,
+                    "chunk_count": chunk_count,
+                    "completion_source": completion_source,
+                    "phase": "running",
+                }
+            )
     return tuple(records)
 
 
@@ -119,19 +117,75 @@ def active_path_kind_for_record(
     direct_total: int,
     relay_total: int,
 ) -> str | None:
-    if completion_source == "worker":
-        if relay_total > 0:
-            return "relay"
-        if direct_total > 0:
-            return "direct"
+    active_kinds = active_path_kinds_for_record(
+        completion_source=completion_source,
+        bytes_completed=bytes_completed,
+        direct_total=direct_total,
+        relay_total=relay_total,
+    )
+    if not active_kinds:
         return None
+    return active_kinds[-1]
+
+
+def active_path_kinds_for_record(
+    *,
+    completion_source: str,
+    bytes_completed: int,
+    direct_total: int,
+    relay_total: int,
+) -> tuple[str, ...]:
+    if completion_source == "worker":
+        active = []
+        if direct_total > 0:
+            active.append("direct")
+        if relay_total > 0:
+            active.append("relay")
+        return tuple(active)
     if completion_source == "backend":
         if direct_total <= 0:
-            return None
+            return ()
         if relay_total > 0 and bytes_completed >= direct_total:
-            return None
-        return "direct"
-    return None
+            return ()
+        return ("direct",)
+    return ()
+
+
+def completed_bytes_by_path_kind(
+    *,
+    completion_source: str,
+    bytes_completed: int,
+    direct_total: int,
+    relay_total: int,
+) -> dict[str, int]:
+    completed = max(0, int(bytes_completed))
+    direct = max(0, int(direct_total))
+    relay = max(0, int(relay_total))
+    total = direct + relay
+    if completed <= 0 or total <= 0:
+        return {"direct": 0, "relay": 0}
+    if completion_source == "worker" and direct > 0 and relay > 0:
+        capped = min(completed, total)
+        direct_completed = min(direct, (capped * direct) // total)
+        relay_completed = min(relay, capped - direct_completed)
+        return {
+            "direct": int(direct_completed),
+            "relay": int(relay_completed),
+        }
+    if completion_source == "backend":
+        return {
+            "direct": min(completed, direct),
+            "relay": 0,
+        }
+    if direct > 0:
+        return {
+            "direct": min(completed, direct),
+            "relay": max(0, min(relay, completed - direct)),
+        }
+    return {
+        "direct": 0,
+        "relay": min(completed, relay),
+    }
 
 
 def remaining_assignment_load(
@@ -161,6 +215,8 @@ def remaining_assignment_load(
 
 __all__ = [
     "active_path_kind_for_record",
+    "active_path_kinds_for_record",
+    "completed_bytes_by_path_kind",
     "normalized_plan_assignments",
     "remaining_assignment_load",
     "runtime_active_path_records_for_transfer",

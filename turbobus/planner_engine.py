@@ -16,6 +16,7 @@ from .schema import TransferMode
 @dataclass(frozen=True)
 class PlannerEngineOptions:
     min_chunks_for_relay: int = 2
+    min_pool_bytes: int = 12 * 1024 * 1024
     relay_min_effective_bw_gbps: float = 0.0
     relay_min_direct_ratio: float = 0.0
 
@@ -42,13 +43,28 @@ class PlannerEngine:
 
         chunks = _make_chunks(total_bytes, chunk_bytes)
         transfer_mode = TransferMode(mode)
+        pool_disabled_reason = None
         if transfer_mode is TransferMode.POOL and len(chunks) < self.options.min_chunks_for_relay:
             transfer_mode = TransferMode.DIRECT
+            pool_disabled_reason = "below_min_chunks_for_relay"
+        if (
+            transfer_mode is TransferMode.POOL
+            and int(self.options.min_pool_bytes) > 0
+            and total_bytes < int(self.options.min_pool_bytes)
+        ):
+            transfer_mode = TransferMode.DIRECT
+            pool_disabled_reason = "below_min_pool_bytes"
 
         paths = self._build_paths(profile, transfer_mode, direction)
         if not paths:
             raise RuntimeError("no enabled transfer path is available")
-        return self._plan_chunks(chunks, total_bytes, chunk_bytes, paths)
+        return self._plan_chunks(
+            chunks,
+            total_bytes,
+            chunk_bytes,
+            paths,
+            pool_disabled_reason=pool_disabled_reason,
+        )
 
     def plan_ranges(
         self,
@@ -85,13 +101,28 @@ class PlannerEngine:
             return PlannerTransferPlan()
 
         transfer_mode = TransferMode(mode)
+        pool_disabled_reason = None
         if transfer_mode is TransferMode.POOL and len(chunks) < self.options.min_chunks_for_relay:
             transfer_mode = TransferMode.DIRECT
+            pool_disabled_reason = "below_min_chunks_for_relay"
+        if (
+            transfer_mode is TransferMode.POOL
+            and int(self.options.min_pool_bytes) > 0
+            and total_bytes < int(self.options.min_pool_bytes)
+        ):
+            transfer_mode = TransferMode.DIRECT
+            pool_disabled_reason = "below_min_pool_bytes"
 
         paths = self._build_paths(profile, transfer_mode, direction)
         if not paths:
             raise RuntimeError("no enabled transfer path is available")
-        return self._plan_chunks(chunks, total_bytes, chunk_bytes, paths)
+        return self._plan_chunks(
+            chunks,
+            total_bytes,
+            chunk_bytes,
+            paths,
+            pool_disabled_reason=pool_disabled_reason,
+        )
 
     def _build_paths(
         self,
@@ -162,35 +193,50 @@ class PlannerEngine:
         total_bytes: int,
         chunk_bytes: int,
         paths: Sequence[PlannerPath],
+        pool_disabled_reason: str | None = None,
     ) -> PlannerTransferPlan:
-        total_bw = sum(_scheduler_weight(path) for path in paths)
+        path_weights = tuple(_scheduler_weight(path) for path in paths)
+        total_bw = sum(path_weights)
         if total_bw <= 0.0:
             raise RuntimeError("enabled paths have zero effective bandwidth")
 
-        assignments = [PlannerPathAssignment(path=path, chunks=tuple()) for path in paths]
+        assignment_chunks: list[list[PlannerChunk]] = [[] for _ in paths]
         assigned_scores = [0.0 for _ in paths]
 
         for chunk in chunks:
             selected = 0
             best_score = math.inf
+            best_weight = -1.0
             for index, path in enumerate(paths):
-                score = assigned_scores[index] / max(_scheduler_weight(path), 1e-12)
-                if score < best_score:
+                weight = max(path_weights[index], 1e-12)
+                score = (assigned_scores[index] + float(chunk.bytes)) / weight
+                if score < best_score or (
+                    math.isclose(score, best_score) and weight > best_weight
+                ):
                     best_score = score
+                    best_weight = weight
                     selected = index
-            assignments[selected] = PlannerPathAssignment(
-                path=assignments[selected].path,
-                chunks=assignments[selected].chunks + (chunk,),
-            )
+            assignment_chunks[selected].append(chunk)
             assigned_scores[selected] += float(chunk.bytes)
 
+        assignments = tuple(
+            PlannerPathAssignment(
+                path=path,
+                chunks=_coalesced_path_chunks(path, assignment_chunks[index]),
+            )
+            for index, path in enumerate(paths)
+            if assignment_chunks[index]
+        )
         return PlannerTransferPlan(
             total_bytes=int(total_bytes),
             chunk_bytes=int(chunk_bytes),
-            assignments=tuple(
-                assignment for assignment in assignments if assignment.chunks
+            assignments=assignments,
+            cost_metadata=_plan_cost_metadata(
+                paths,
+                assignments,
+                path_weights=path_weights,
+                pool_disabled_reason=pool_disabled_reason,
             ),
-            cost_metadata=_plan_cost_metadata(paths),
         )
 
 
@@ -219,7 +265,7 @@ def _direct_scheduler_weight(profile, direction: str) -> float:
     weight = float(getattr(profile, attr, 0.0) or 0.0)
     if weight > 0.0:
         return weight
-    return _direct_bandwidth(profile, direction)
+    return 0.0
 
 
 def _relay_scheduler_weight(relay, direction: str) -> float:
@@ -231,7 +277,7 @@ def _relay_scheduler_weight(relay, direction: str) -> float:
     weight = float(getattr(relay, attr, 0.0) or 0.0)
     if weight > 0.0:
         return weight
-    return _relay_effective_bandwidth(relay, direction)
+    return 0.0
 
 
 def _direct_runtime_pressure(profile, direction: str) -> float:
@@ -249,22 +295,85 @@ def _relay_runtime_pressure(relay, direction: str) -> float:
 
 
 def _scheduler_weight(path: PlannerPath) -> float:
-    if path.scheduler_weight_gbps is not None:
+    if path.scheduler_weight_gbps is not None and float(path.scheduler_weight_gbps) > 0.0:
         return max(0.0, float(path.scheduler_weight_gbps))
-    return max(0.0, float(path.effective_bw_gbps))
+    pressure = min(max(0.0, float(path.runtime_pressure)), 4.0)
+    return max(0.0, float(path.effective_bw_gbps)) / (1.0 + pressure)
 
 
-def _plan_cost_metadata(paths: Sequence[PlannerPath]) -> dict[str, object]:
+def _coalesced_path_chunks(
+    path: PlannerPath,
+    chunks: Sequence[PlannerChunk],
+) -> tuple[PlannerChunk, ...]:
+    if path.kind != "direct":
+        return tuple(chunks)
+    merged: list[PlannerChunk] = []
+    for chunk in chunks:
+        if not merged or not _chunks_are_contiguous(merged[-1], chunk):
+            merged.append(chunk)
+            continue
+        previous = merged[-1]
+        merged[-1] = PlannerChunk(
+            src_offset=previous.src_offset,
+            dst_offset=previous.dst_offset,
+            bytes=previous.bytes + chunk.bytes,
+            relay_device=previous.relay_device,
+        )
+    return tuple(merged)
+
+
+def _chunks_are_contiguous(left: PlannerChunk, right: PlannerChunk) -> bool:
+    return (
+        left.relay_device == right.relay_device
+        and left.src_offset + left.bytes == right.src_offset
+        and left.dst_offset + left.bytes == right.dst_offset
+    )
+
+
+def _plan_cost_metadata(
+    paths: Sequence[PlannerPath],
+    assignments: Sequence[PlannerPathAssignment],
+    *,
+    path_weights: Sequence[float],
+    pool_disabled_reason: str | None,
+) -> dict[str, object]:
+    if len(path_weights) != len(paths):
+        raise RuntimeError("planner path weight snapshot does not match paths")
     path_records = []
-    for path in paths:
+    assigned_by_path = {
+        _planner_path_key(assignment.path): assignment
+        for assignment in assignments
+    }
+    for index, path in enumerate(paths):
+        assignment = assigned_by_path.get(_planner_path_key(path))
+        assigned_bytes = (
+            0
+            if assignment is None
+            else sum(chunk.bytes for chunk in assignment.chunks)
+        )
+        assigned_chunks = 0 if assignment is None else len(assignment.chunks)
+        weight = max(0.0, float(path_weights[index]))
         path_records.append(
             {
                 "kind": path.kind,
                 "target_device": int(path.target_device),
                 "relay_device": None if path.kind != "relay" else int(path.relay_device),
                 "effective_bw_gbps": float(path.effective_bw_gbps),
-                "scheduler_weight_gbps": _scheduler_weight(path),
+                "scheduler_weight_gbps": weight,
+                "scheduler_weight_source": (
+                    "explicit"
+                    if path.scheduler_weight_gbps is not None
+                    and float(path.scheduler_weight_gbps) > 0.0
+                    else "runtime_pressure_fallback"
+                ),
                 "runtime_pressure": float(path.runtime_pressure),
+                "assigned_bytes": int(assigned_bytes),
+                "assigned_chunks": int(assigned_chunks),
+                "estimated_finish_seconds": (
+                    0.0
+                    if assigned_bytes <= 0
+                    else float(assigned_bytes) / (max(weight, 1e-12) * 1_000_000_000.0)
+                ),
                 "source": dict(path.cost_metadata).get(
                     "source",
                     "planner_path_weight",
@@ -272,10 +381,22 @@ def _plan_cost_metadata(paths: Sequence[PlannerPath]) -> dict[str, object]:
             }
         )
     return {
-        "source": "planner_engine_scheduler_weighted_assignment",
+        "source": "planner_engine_minimax_finish_time_assignment",
+        "assignment_policy": "minimize_projected_path_finish_time",
+        "weight_snapshot_source": "planner_runtime_pressure_snapshot",
+        "pool_disabled_reason": pool_disabled_reason,
         "path_count": len(path_records),
         "paths": tuple(path_records),
     }
+
+
+def _planner_path_key(path: PlannerPath) -> tuple[object, ...]:
+    return (
+        str(path.kind),
+        str(path.direction),
+        int(path.target_device),
+        int(path.relay_device),
+    )
 
 
 def _make_chunks(total_bytes: int, chunk_bytes: int) -> list[PlannerChunk]:

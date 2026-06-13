@@ -1,8 +1,22 @@
 #include "turbobus/runtime.h"
 
+#include <algorithm>
+#include <mutex>
 #include <stdexcept>
 
 namespace turbobus {
+
+namespace {
+
+std::vector<int> CanonicalRelayDevices(const std::vector<int>& relay_devices) {
+  std::vector<int> normalized = relay_devices;
+  std::sort(normalized.begin(), normalized.end());
+  normalized.erase(std::unique(normalized.begin(), normalized.end()),
+                   normalized.end());
+  return normalized;
+}
+
+}  // namespace
 
 TurboBusRuntime::TurboBusRuntime(RuntimeOptions options) : options_(options) {}
 
@@ -10,10 +24,13 @@ TurboBusRuntime::~TurboBusRuntime() = default;
 
 void TurboBusRuntime::Init(int target_device, const std::vector<int>& relay_devices) {
   target_device_ = target_device;
-  requested_relays_ = relay_devices;
+  requested_relays_ = CanonicalRelayDevices(relay_devices);
   profile_ = {};
   planner_profile_ = {};
-  last_plan_ = {};
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_plan_ = {};
+  }
   has_profile_ = false;
 
   topology_ = topology_manager_.Discover(target_device_, requested_relays_,
@@ -69,8 +86,11 @@ TransferHandle TurboBusRuntime::FetchPlanToGpu(void* host_ptr, std::size_t host_
   destination.device = target_device_;
   destination.kind = MemoryKind::Device;
 
-  last_plan_ = plan;
-  return executor_.Submit(source, destination, last_plan_);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_plan_ = plan;
+  }
+  return executor_.Submit(source, destination, plan);
 }
 
 TransferHandle TurboBusRuntime::OffloadPlanToCpu(void* target_gpu_ptr,
@@ -93,8 +113,11 @@ TransferHandle TurboBusRuntime::OffloadPlanToCpu(void* target_gpu_ptr,
   destination.device = kHostDevice;
   destination.kind = MemoryKind::HostPinned;
 
-  last_plan_ = plan;
-  return executor_.SubmitD2H(source, destination, last_plan_);
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    last_plan_ = plan;
+  }
+  return executor_.SubmitD2H(source, destination, plan);
 }
 
 DummyComputeStats TurboBusRuntime::RunDummyCompute(void* device_ptr, std::size_t elements,
@@ -109,7 +132,7 @@ void TurboBusRuntime::Wait(const TransferHandle& handle) {
   executor_.Wait(handle);
 }
 
-TransferStats TurboBusRuntime::GetStats(const TransferHandle& handle) const {
+TransferStats TurboBusRuntime::GetStats(const TransferHandle& handle) {
   return executor_.GetStats(handle);
 }
 
@@ -121,7 +144,8 @@ const ProfileResult& TurboBusRuntime::PlannerProfile() const {
   return planner_profile_;
 }
 
-const TransferPlan& TurboBusRuntime::LastPlan() const {
+TransferPlan TurboBusRuntime::LastPlan() const {
+  std::lock_guard<std::mutex> lock(state_mutex_);
   return last_plan_;
 }
 

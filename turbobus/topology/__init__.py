@@ -528,11 +528,23 @@ def _partition_candidates(
     return kept, removed
 
 
+from .pcie_fabric import (  # noqa: E402
+    PcieFabricEdge,
+    PcieFabricPath,
+    PcieFabricSnapshot,
+    pcie_fabric_snapshot_from_inventory,
+)
+
+
 __all__ = [
     "DaemonResourceInventory",
     "FabricLinkRecord",
     "GpuInventoryRecord",
+    "PcieFabricEdge",
+    "PcieFabricPath",
+    "PcieFabricSnapshot",
     "PciePathRecord",
     "TopologyProvider",
     "fabric_capability_summary",
+    "pcie_fabric_snapshot_from_inventory",
 ]

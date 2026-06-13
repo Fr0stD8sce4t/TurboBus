@@ -45,11 +45,23 @@ def scheduler_cost_model_metadata(
     runtime_view: RuntimeLoadView,
     direction: str,
     total_bytes: int,
+    pressure_summaries: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     normalized_direction = str(direction).lower()
     direct_bw = profile_direct_bandwidth(profile, normalized_direction)
+    pressure_summary = _pressure_summary_for_direction(
+        runtime_view,
+        normalized_direction,
+        pressure_summaries,
+    )
+    direct_pressure = runtime_view.direct_cost_pressure(
+        normalized_direction,
+        pressure_summary=pressure_summary,
+    )
+    relay_pressures: dict[int, float] = {}
     path_costs: list[dict[str, object]] = []
-    total_estimated_seconds = 0.0
+    serial_estimated_seconds = 0.0
+    parallel_estimated_seconds = 0.0
     direct_bytes = 0
     relay_bytes = 0
     for assignment in plan.assignments:
@@ -57,22 +69,21 @@ def scheduler_cost_model_metadata(
         bytes_count = sum(chunk.bytes for chunk in assignment.chunks)
         bandwidth = max(path_scheduler_weight(path), 1e-12)
         estimated_seconds = estimated_transfer_seconds(bytes_count, bandwidth)
-        total_estimated_seconds += estimated_seconds
+        serial_estimated_seconds += estimated_seconds
+        parallel_estimated_seconds = max(parallel_estimated_seconds, estimated_seconds)
         if path.kind == "relay":
             relay_bytes += bytes_count
-            relay_pressure = runtime_view.relay_cost_pressure(
-                int(path.relay_device),
-                normalized_direction,
-            )
-            pressure_summary = runtime_view.scheduler_pressure_summary(
-                normalized_direction,
-            )
+            relay_device = int(path.relay_device)
+            if relay_device not in relay_pressures:
+                relay_pressures[relay_device] = runtime_view.relay_cost_pressure(
+                    relay_device,
+                    normalized_direction,
+                    pressure_summary=pressure_summary,
+                )
+            relay_pressure = relay_pressures[relay_device]
         else:
             direct_bytes += bytes_count
-            relay_pressure = runtime_view.direct_cost_pressure(normalized_direction)
-            pressure_summary = runtime_view.scheduler_pressure_summary(
-                normalized_direction,
-            )
+            relay_pressure = direct_pressure
         path_costs.append(
             {
                 "kind": str(path.kind),
@@ -103,7 +114,7 @@ def scheduler_cost_model_metadata(
             "relay_device": None,
             "effective_bw_gbps": direct_bw,
             "scheduler_weight_gbps": direct_weight,
-            "runtime_pressure": runtime_view.direct_cost_pressure(normalized_direction),
+            "runtime_pressure": direct_pressure,
             "estimated_full_transfer_seconds": estimated_transfer_seconds(
                 total_bytes,
                 max(direct_weight, 1e-12),
@@ -114,6 +125,12 @@ def scheduler_cost_model_metadata(
     for relay_device, relay in sorted(relay_profiles.items()):
         relay_bw = profile_relay_bandwidth(relay, normalized_direction)
         relay_weight = profile_relay_scheduler_weight(relay, normalized_direction)
+        if relay_device not in relay_pressures:
+            relay_pressures[relay_device] = runtime_view.relay_cost_pressure(
+                relay_device,
+                normalized_direction,
+                pressure_summary=pressure_summary,
+            )
         candidate_paths.append(
             {
                 "kind": "relay",
@@ -121,10 +138,7 @@ def scheduler_cost_model_metadata(
                 "relay_device": int(relay_device),
                 "effective_bw_gbps": relay_bw,
                 "scheduler_weight_gbps": relay_weight,
-                "runtime_pressure": runtime_view.relay_cost_pressure(
-                    relay_device,
-                    normalized_direction,
-                ),
+                "runtime_pressure": relay_pressures[relay_device],
                 "estimated_full_transfer_seconds": estimated_transfer_seconds(
                     total_bytes,
                     max(relay_weight, 1e-12),
@@ -141,12 +155,12 @@ def scheduler_cost_model_metadata(
         "total_bytes": int(total_bytes),
         "direct_bytes": int(direct_bytes),
         "relay_bytes": int(relay_bytes),
-        "estimated_seconds": total_estimated_seconds,
+        "estimated_seconds": parallel_estimated_seconds,
+        "estimated_parallel_makespan_seconds": parallel_estimated_seconds,
+        "estimated_serial_path_seconds": serial_estimated_seconds,
         "path_costs": tuple(path_costs),
         "candidate_paths": tuple(candidate_paths),
-        "runtime_pressure_summary": runtime_view.scheduler_pressure_summary(
-            normalized_direction,
-        ),
+        "runtime_pressure_summary": pressure_summary,
         "fabric_abstraction": fabric_abstraction_metadata(profile),
         "profile_binding": profile_topology_binding(profile),
         "profile_import": profile_import_metadata(profile),
@@ -154,9 +168,7 @@ def scheduler_cost_model_metadata(
         "planner_cost_metadata": dict(getattr(plan, "cost_metadata", {}) or {}),
         "cost_inputs": {
             "profile_measurements": profile_measurement_metadata(profile),
-            "runtime_pressure": runtime_view.scheduler_pressure_summary(
-                normalized_direction,
-            ),
+            "runtime_pressure": pressure_summary,
             "workload_kind": runtime_view.workload_kind,
             "priority": int(runtime_view.priority),
         },
@@ -170,45 +182,56 @@ def estimated_transfer_seconds(bytes_count: int, bandwidth_gbps: float) -> float
 
 def path_scheduler_weight(path) -> float:
     weight = getattr(path, "scheduler_weight_gbps", None)
-    if weight is not None:
+    if weight is not None and float(weight) > 0.0:
         return max(0.0, float(weight))
-    return max(0.0, float(getattr(path, "effective_bw_gbps", 0.0) or 0.0))
+    pressure = min(max(0.0, float(getattr(path, "runtime_pressure", 0.0) or 0.0)), 4.0)
+    return max(0.0, float(getattr(path, "effective_bw_gbps", 0.0) or 0.0)) / (
+        1.0 + pressure
+    )
 
 
 def profile_direct_scheduler_weight(profile: Profile, direction: str) -> float:
     if str(direction).lower() == "d2h":
+        explicit = profile.direct_scheduler_weight_d2h_gbps or profile.direct_scheduler_weight_h2d_gbps
+        if explicit:
+            return max(0.0, float(explicit))
         return max(
             0.0,
-            float(
-                profile.direct_scheduler_weight_d2h_gbps
-                or profile.direct_scheduler_weight_h2d_gbps
-                or profile_direct_bandwidth(profile, direction)
+            bandwidth_after_pressure(
+                profile_direct_bandwidth(profile, direction),
+                profile.direct_runtime_pressure_d2h or profile.direct_runtime_pressure_h2d,
             ),
         )
+    if profile.direct_scheduler_weight_h2d_gbps:
+        return max(0.0, float(profile.direct_scheduler_weight_h2d_gbps))
     return max(
         0.0,
-        float(
-            profile.direct_scheduler_weight_h2d_gbps
-            or profile_direct_bandwidth(profile, direction)
+        bandwidth_after_pressure(
+            profile_direct_bandwidth(profile, direction),
+            profile.direct_runtime_pressure_h2d,
         ),
     )
 
 
 def profile_relay_scheduler_weight(relay: RelayProfile, direction: str) -> float:
     if str(direction).lower() == "d2h":
+        explicit = relay.scheduler_weight_d2h_gbps or relay.scheduler_weight_h2d_gbps
+        if explicit:
+            return max(0.0, float(explicit))
         return max(
             0.0,
-            float(
-                relay.scheduler_weight_d2h_gbps
-                or relay.scheduler_weight_h2d_gbps
-                or profile_relay_bandwidth(relay, direction)
+            bandwidth_after_pressure(
+                profile_relay_bandwidth(relay, direction),
+                relay.runtime_pressure_d2h or relay.runtime_pressure_h2d,
             ),
         )
+    if relay.scheduler_weight_h2d_gbps:
+        return max(0.0, float(relay.scheduler_weight_h2d_gbps))
     return max(
         0.0,
-        float(
-            relay.scheduler_weight_h2d_gbps
-            or profile_relay_bandwidth(relay, direction)
+        bandwidth_after_pressure(
+            profile_relay_bandwidth(relay, direction),
+            relay.runtime_pressure_h2d,
         ),
     )
 
@@ -439,18 +462,40 @@ def direct_scheduler_weights(
     *,
     runtime_view: RuntimeLoadView,
     admission_state: str,
+    target_device: int | None = None,
+    pressure_summaries: Mapping[str, Mapping[str, object]] | None = None,
 ) -> tuple[float, float, dict[str, object]]:
-    h2d_pressure = runtime_view.direct_cost_pressure("h2d")
-    d2h_pressure = runtime_view.direct_cost_pressure("d2h")
+    h2d_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "h2d",
+        pressure_summaries,
+    )
+    d2h_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "d2h",
+        pressure_summaries,
+    )
+    h2d_pressure = runtime_view.direct_cost_pressure(
+        "h2d",
+        pressure_summary=h2d_summary,
+    )
+    d2h_pressure = runtime_view.direct_cost_pressure(
+        "d2h",
+        pressure_summary=d2h_summary,
+    )
     h2d_policy = runtime_view.adaptive_policy_for_path(
         path_kind="direct",
         direction="h2d",
         admission_state=admission_state,
+        pressure_summary=h2d_summary,
+        path_pressure=h2d_pressure,
     )
     d2h_policy = runtime_view.adaptive_policy_for_path(
         path_kind="direct",
         direction="d2h",
         admission_state=admission_state,
+        pressure_summary=d2h_summary,
+        path_pressure=d2h_pressure,
     )
     adjusted_h2d, h2d_score = scheduler_cost_adjusted_bandwidth(
         direct_h2d,
@@ -468,6 +513,16 @@ def direct_scheduler_weights(
         admission_state=admission_state,
         adaptive_policy=d2h_policy,
     )
+    pcie_pool_adjustment = _pcie_pool_adjustment(
+        runtime_view,
+        path_kind="direct",
+        target_device=target_device,
+        relay_device=None,
+        h2d_weight=adjusted_h2d,
+        d2h_weight=adjusted_d2h,
+    )
+    adjusted_h2d = float(pcie_pool_adjustment["scheduler_weight_h2d_gbps"])
+    adjusted_d2h = float(pcie_pool_adjustment["scheduler_weight_d2h_gbps"])
     return (
         adjusted_h2d,
         adjusted_d2h,
@@ -482,10 +537,11 @@ def direct_scheduler_weights(
             "d2h_pressure": d2h_pressure,
             "h2d_cost_score": h2d_score,
             "d2h_cost_score": d2h_score,
+            "pcie_bandwidth_pool": pcie_pool_adjustment,
             "adaptive_policy_h2d": h2d_policy,
             "adaptive_policy_d2h": d2h_policy,
-            "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
-            "d2h_pressure_summary": runtime_view.scheduler_pressure_summary("d2h"),
+            "h2d_pressure_summary": h2d_summary,
+            "d2h_pressure_summary": d2h_summary,
             "admission_state": str(admission_state),
             "workload_kind": runtime_view.workload_kind,
             "priority": int(runtime_view.priority),
@@ -500,14 +556,27 @@ def relay_profile_with_load_feedback(
     runtime_view: RuntimeLoadView,
     admission_state: str,
     admission_reason: str | None,
+    pressure_summaries: Mapping[str, Mapping[str, object]] | None = None,
 ) -> tuple[RelayProfile, dict[str, object]]:
+    h2d_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "h2d",
+        pressure_summaries,
+    )
+    d2h_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "d2h",
+        pressure_summaries,
+    )
     h2d_pressure = runtime_view.relay_cost_pressure(
         relay_profile.relay_device,
         "h2d",
+        pressure_summary=h2d_summary,
     )
     d2h_pressure = runtime_view.relay_cost_pressure(
         relay_profile.relay_device,
         "d2h",
+        pressure_summary=d2h_summary,
     )
     directionless_pressure = max(h2d_pressure, d2h_pressure)
     h2d_policy = runtime_view.adaptive_policy_for_path(
@@ -515,12 +584,16 @@ def relay_profile_with_load_feedback(
         direction="h2d",
         relay_device=relay_profile.relay_device,
         admission_state=admission_state,
+        pressure_summary=h2d_summary,
+        path_pressure=h2d_pressure,
     )
     d2h_policy = runtime_view.adaptive_policy_for_path(
         path_kind="relay",
         direction="d2h",
         relay_device=relay_profile.relay_device,
         admission_state=admission_state,
+        pressure_summary=d2h_summary,
+        path_pressure=d2h_pressure,
     )
     adjusted_h2d, h2d_score = scheduler_cost_adjusted_bandwidth(
         relay_profile.effective_bw_gbps,
@@ -538,12 +611,23 @@ def relay_profile_with_load_feedback(
         admission_state=admission_state,
         adaptive_policy=d2h_policy,
     )
+    pcie_pool_adjustment = _pcie_pool_adjustment(
+        runtime_view,
+        path_kind="relay",
+        target_device=relay_profile.target_device,
+        relay_device=relay_profile.relay_device,
+        h2d_weight=adjusted_h2d,
+        d2h_weight=adjusted_d2h,
+    )
+    adjusted_h2d = float(pcie_pool_adjustment["scheduler_weight_h2d_gbps"])
+    adjusted_d2h = float(pcie_pool_adjustment["scheduler_weight_d2h_gbps"])
     path_cost_model = {
         "source": "daemon_scheduler_unified_cost_model",
         "admission_state": str(admission_state),
         "admission_reason": admission_reason,
         "h2d_cost_score": h2d_score,
         "d2h_cost_score": d2h_score,
+        "pcie_bandwidth_pool": pcie_pool_adjustment,
         "adaptive_policy_h2d": h2d_policy,
         "adaptive_policy_d2h": d2h_policy,
         "workload_kind": runtime_view.workload_kind,
@@ -587,8 +671,9 @@ def relay_profile_with_load_feedback(
             "d2h_pressure": d2h_pressure,
             "h2d_cost_score": h2d_score,
             "d2h_cost_score": d2h_score,
-            "h2d_pressure_summary": runtime_view.scheduler_pressure_summary("h2d"),
-            "d2h_pressure_summary": runtime_view.scheduler_pressure_summary("d2h"),
+            "pcie_bandwidth_pool": pcie_pool_adjustment,
+            "h2d_pressure_summary": h2d_summary,
+            "d2h_pressure_summary": d2h_summary,
             "relay_load": dict(runtime_view.relay_load.get(relay, {})),
             "admission_state": str(admission_state),
             "admission_reason": admission_reason,
@@ -604,14 +689,27 @@ def relay_filtered_cost_record(
     *,
     runtime_view: RuntimeLoadView,
     admission_reason: str,
+    pressure_summaries: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
+    h2d_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "h2d",
+        pressure_summaries,
+    )
+    d2h_summary = _pressure_summary_for_direction(
+        runtime_view,
+        "d2h",
+        pressure_summaries,
+    )
     h2d_pressure = runtime_view.relay_cost_pressure(
         relay_profile.relay_device,
         "h2d",
+        pressure_summary=h2d_summary,
     )
     d2h_pressure = runtime_view.relay_cost_pressure(
         relay_profile.relay_device,
         "d2h",
+        pressure_summary=d2h_summary,
     )
     return {
         "kind": "relay",
@@ -646,6 +744,22 @@ def relay_filtered_cost_record(
         "priority": int(runtime_view.priority),
         "source": "daemon_scheduler_unified_cost_model",
     }
+
+
+def _pressure_summary_for_direction(
+    runtime_view: RuntimeLoadView,
+    direction: str,
+    pressure_summaries: Mapping[str, Mapping[str, object]] | None,
+) -> Mapping[str, object]:
+    normalized_direction = str(direction).lower()
+    if isinstance(pressure_summaries, Mapping):
+        summary = pressure_summaries.get(normalized_direction)
+        if (
+            isinstance(summary, Mapping)
+            and str(summary.get("direction", "")).lower() == normalized_direction
+        ):
+            return summary
+    return runtime_view.scheduler_pressure_summary(normalized_direction)
 
 
 def scheduler_cost_adjusted_bandwidth(
@@ -685,12 +799,100 @@ def scheduler_cost_score(
     elif str(admission_state).lower() not in {"available", "admitted"}:
         admission_penalty = 1.35
     workload_multiplier = runtime_view.workload_path_multiplier(path_kind)
-    priority_discount = runtime_view.priority_pressure_discount()
+    priority_discount = runtime_view.priority_cost_discount()
     pressure_component = 1.0 + min(max(0.0, float(pressure)), 4.0)
     return max(
         1e-12,
         pressure_component * admission_penalty * priority_discount / workload_multiplier,
     )
+
+
+def _pcie_pool_adjustment(
+    runtime_view: RuntimeLoadView,
+    *,
+    path_kind: str,
+    target_device: int | None,
+    relay_device: int | None,
+    h2d_weight: float,
+    d2h_weight: float,
+) -> dict[str, object]:
+    pool = dict(getattr(runtime_view, "pcie_bandwidth_pool", {}) or {})
+    paths = pool.get("paths", {})
+    if not isinstance(paths, Mapping):
+        paths = {}
+    target_record = _pcie_pool_path_record(paths, target_device)
+    relay_record = _pcie_pool_path_record(paths, relay_device)
+    h2d_limit = _path_pcie_limit(
+        target_record=target_record,
+        relay_record=relay_record,
+        direction="h2d",
+        path_kind=path_kind,
+    )
+    d2h_limit = _path_pcie_limit(
+        target_record=target_record,
+        relay_record=relay_record,
+        direction="d2h",
+        path_kind=path_kind,
+    )
+    return {
+        "source": "daemon_pcie_bandwidth_pool_scheduler_weight",
+        "available": bool(pool.get("available", False)),
+        "path_kind": str(path_kind),
+        "target_device": target_device,
+        "relay_device": relay_device,
+        "topology_snapshot_id": pool.get("topology_snapshot_id"),
+        "topology_version": pool.get("topology_version"),
+        "input_scheduler_weight_h2d_gbps": float(h2d_weight),
+        "input_scheduler_weight_d2h_gbps": float(d2h_weight),
+        "scheduler_weight_h2d_gbps": (
+            min(float(h2d_weight), h2d_limit)
+            if h2d_limit > 0.0
+            else float(h2d_weight)
+        ),
+        "scheduler_weight_d2h_gbps": (
+            min(float(d2h_weight), d2h_limit)
+            if d2h_limit > 0.0
+            else float(d2h_weight)
+        ),
+        "available_h2d_gbps": h2d_limit,
+        "available_d2h_gbps": d2h_limit,
+        "target_path": target_record,
+        "relay_path": relay_record,
+    }
+
+
+def _path_pcie_limit(
+    *,
+    target_record: Mapping[str, object],
+    relay_record: Mapping[str, object],
+    direction: str,
+    path_kind: str,
+) -> float:
+    field_name = (
+        "available_d2h_gbps"
+        if str(direction).lower() == "d2h"
+        else "available_h2d_gbps"
+    )
+    candidates = []
+    if target_record:
+        candidates.append(float(target_record.get(field_name, 0.0) or 0.0))
+    if str(path_kind).lower() == "relay" and relay_record:
+        candidates.append(float(relay_record.get(field_name, 0.0) or 0.0))
+    candidates = [value for value in candidates if value > 0.0]
+    return min(candidates) if candidates else 0.0
+
+
+def _pcie_pool_path_record(
+    paths: Mapping[object, object],
+    device_id: int | None,
+) -> dict[str, object]:
+    if device_id is None:
+        return {}
+    for key in (int(device_id), str(int(device_id))):
+        record = paths.get(key)
+        if isinstance(record, Mapping):
+            return dict(record)
+    return {}
 
 
 def bandwidth_after_pressure(bandwidth: float, pressure: float) -> float:

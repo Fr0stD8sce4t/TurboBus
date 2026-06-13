@@ -15,6 +15,8 @@ from ..scheduler.load_feedback import (
 )
 from .runtime_state_summary import (
     job_runtime_state_from_records as _job_runtime_state_from_records,
+    runtime_mapping_records,
+    runtime_mapping_records_from_sources,
 )
 
 
@@ -48,10 +50,12 @@ def daemon_runtime_telemetry_snapshot(
         "execution": runtime_telemetry_execution_snapshot(runtime_state, summary),
         "terminal": runtime_telemetry_terminal_snapshot(runtime_state, summary),
         "relays": runtime_telemetry_relay_snapshot(
+            runtime_state=runtime_state,
             busy_relays=relay_activity["busy_relays"],
             relay_load=relay_activity["relay_load"],
             relay_quotas=relay_quotas,
         ),
+        "pcie_bandwidth_pool": runtime_telemetry_pcie_bandwidth_pool(runtime_state),
         "jobs": runtime_telemetry_jobs_snapshot(runtime_state, jobs),
         "sessions": runtime_telemetry_sessions_snapshot(sessions),
         "worker_feedback": dict(summary.get("runtime_feedback_metrics", {}) or {}),
@@ -122,6 +126,7 @@ def runtime_telemetry_terminal_snapshot(
 
 def runtime_telemetry_relay_snapshot(
     *,
+    runtime_state: Mapping[str, object],
     busy_relays: object,
     relay_load: Mapping[int, Mapping[str, object]],
     relay_quotas: Mapping[int, RelayQuota],
@@ -148,17 +153,34 @@ def runtime_telemetry_relay_snapshot(
     }
 
 
+def runtime_telemetry_pcie_bandwidth_pool(
+    runtime_state: Mapping[str, object],
+) -> dict[str, object]:
+    pool = runtime_state.get("pcie_bandwidth_pool", {})
+    if not isinstance(pool, Mapping):
+        return {
+            "source": "daemon_pcie_bandwidth_pool",
+            "available": False,
+            "reason": "missing_pcie_bandwidth_pool",
+            "paths": {},
+            "edges": {},
+        }
+    return {
+        "source": str(pool.get("source", "daemon_pcie_bandwidth_pool")),
+        "available": bool(pool.get("available", False)),
+        "reason": pool.get("reason"),
+        "topology_snapshot_id": pool.get("topology_snapshot_id"),
+        "topology_version": pool.get("topology_version"),
+        "paths": _mapping_records_by_key(pool.get("paths", {})),
+        "edges": _mapping_records_by_key(pool.get("edges", {})),
+    }
+
+
 def runtime_telemetry_jobs_snapshot(
     runtime_state: Mapping[str, object],
     jobs: Mapping[str, JobIdentity],
 ) -> dict[str, object]:
-    job_runtime_state = runtime_state.get("job_runtime_state", {})
-    if not isinstance(job_runtime_state, Mapping):
-        job_runtime_state = {}
-    job_runtime_state = _job_runtime_state_from_records(
-        job_runtime_state,
-        runtime_state.get("transfers", ()),
-    )
+    job_runtime_state = _runtime_state_job_summary(runtime_state)
     return {
         "runtime_state": job_runtime_state,
         "registered": {
@@ -166,6 +188,27 @@ def runtime_telemetry_jobs_snapshot(
             for job_id, job in sorted(jobs.items())
         },
     }
+
+
+def _runtime_state_job_summary(
+    runtime_state: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    summary = runtime_state.get("summary", {})
+    if isinstance(summary, Mapping):
+        job_summary = summary.get("job_runtime_state")
+        if isinstance(job_summary, Mapping):
+            return {
+                str(job_id): dict(record)
+                for job_id, record in job_summary.items()
+                if isinstance(record, Mapping)
+            }
+    job_runtime_state = runtime_state.get("job_runtime_state", {})
+    if not isinstance(job_runtime_state, Mapping):
+        job_runtime_state = {}
+    return _job_runtime_state_from_records(
+        job_runtime_state,
+        runtime_state.get("transfers", ()),
+    )
 
 
 def runtime_telemetry_sessions_snapshot(
@@ -278,6 +321,16 @@ def runtime_telemetry_transfer_record(record: Mapping[str, object]) -> dict[str,
         "admission_reason": record.get("admission_reason"),
         "completion_source": record.get("completion_source"),
         "plan_generation": int(record.get("plan_generation", 0) or 0),
+        "block_plan": (
+            dict(record["block_plan"])
+            if isinstance(record.get("block_plan"), Mapping)
+            else {}
+        ),
+        "block_queue": (
+            dict(record["block_queue"])
+            if isinstance(record.get("block_queue"), Mapping)
+            else {}
+        ),
         "queued_at": record.get("queued_at"),
         "started_at": record.get("started_at"),
         "completed_at": record.get("completed_at"),
@@ -306,31 +359,28 @@ def refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
     summary_copy = dict(summary)
     transfers = runtime_state.get("transfers", ())
     recent_terminal_transfers = runtime_state.get("recent_terminal_transfers", ())
+    terminal_records = runtime_mapping_records_from_sources(
+        transfers,
+        recent_terminal_transfers,
+    )
+    terminal_feedback = terminal_runtime_feedback_from_records(terminal_records)
     (
         path_summary,
         relay_path_summary,
         active_execution_evidence,
         active_execution_evidence_by_source,
     ) = active_path_runtime_feedback(runtime_state.get("active_paths", ()))
-    terminal_execution_evidence = terminal_execution_evidence_from_records(
-        (*runtime_mapping_records(transfers), *runtime_mapping_records(recent_terminal_transfers))
-    )
-    terminal_execution_evidence_by_source = terminal_execution_evidence_by_source_from_records(
-        (*runtime_mapping_records(transfers), *runtime_mapping_records(recent_terminal_transfers))
-    )
-    runtime_feedback_metrics = runtime_feedback_metrics_from_records(
-        (*runtime_mapping_records(transfers), *runtime_mapping_records(recent_terminal_transfers))
-    )
-    active_by_direction = transfer_bytes_by_direction(
-        runtime_state.get("active_transfers", ()),
+    active_by_direction = direction_bytes_from_summary_or_records(
+        summary_copy,
+        field_name="active_bytes_by_direction",
+        records=runtime_state.get("active_transfers", ()),
         include_remaining=True,
     )
-    queued_by_direction = transfer_bytes_by_direction(
-        runtime_state.get("queued_transfers", ()),
+    queued_by_direction = direction_bytes_from_summary_or_records(
+        summary_copy,
+        field_name="queued_bytes_by_direction",
+        records=runtime_state.get("queued_transfers", ()),
         include_remaining=False,
-    )
-    completion_source_counts, terminal_completion_source_counts = (
-        completion_source_count_summary(transfers, recent_terminal_transfers)
     )
     active_resource_usage = active_resource_usage_summary(
         summary_copy,
@@ -339,21 +389,29 @@ def refresh_runtime_feedback_summary(runtime_state: dict[str, object]) -> None:
         path_summary=path_summary,
         relay_path_summary=relay_path_summary,
     )
+    relay_activity = relay_activity_from_runtime_state(runtime_state)
     summary_copy.update(
         runtime_feedback_summary_update(
             runtime_state=runtime_state,
+            relay_activity=relay_activity,
             relay_path_summary=relay_path_summary,
             queued_by_direction=queued_by_direction,
             active_by_direction=active_by_direction,
             path_summary=path_summary,
             active_resource_usage=active_resource_usage,
-            completion_source_counts=completion_source_counts,
-            terminal_completion_source_counts=terminal_completion_source_counts,
+            completion_source_counts=terminal_feedback["completion_source_counts"],
+            terminal_completion_source_counts=terminal_feedback[
+                "terminal_completion_source_counts"
+            ],
             active_execution_evidence=active_execution_evidence,
             active_execution_evidence_by_source=active_execution_evidence_by_source,
-            terminal_execution_evidence=terminal_execution_evidence,
-            terminal_execution_evidence_by_source=terminal_execution_evidence_by_source,
-            runtime_feedback_metrics=runtime_feedback_metrics,
+            terminal_execution_evidence=terminal_feedback[
+                "terminal_execution_evidence"
+            ],
+            terminal_execution_evidence_by_source=terminal_feedback[
+                "terminal_execution_evidence_by_source"
+            ],
+            runtime_feedback_metrics=terminal_feedback["runtime_feedback_metrics"],
         )
     )
     runtime_state["active_resource_usage"] = active_resource_usage
@@ -437,23 +495,15 @@ def completion_source_count_summary(
     transfers: object,
     recent_terminal_transfers: object,
 ) -> tuple[dict[str, int], dict[str, int]]:
-    completion_source_counts: dict[str, int] = {}
-    terminal_completion_source_counts: dict[str, int] = {}
-    for record in (
-        *runtime_mapping_records(transfers),
-        *runtime_mapping_records(recent_terminal_transfers),
-    ):
-        completion_source = str(record.get("completion_source", "")).lower()
-        if not completion_source:
-            continue
-        completion_source_counts[completion_source] = (
-            completion_source_counts.get(completion_source, 0) + 1
-        )
-        if str(record.get("state")) in _TERMINAL_TRANSFER_STATE_VALUES:
-            terminal_completion_source_counts[completion_source] = (
-                terminal_completion_source_counts.get(completion_source, 0) + 1
-            )
-    return completion_source_counts, terminal_completion_source_counts
+    terminal_records = runtime_mapping_records_from_sources(
+        transfers,
+        recent_terminal_transfers,
+    )
+    feedback = terminal_runtime_feedback_from_records(terminal_records)
+    return (
+        dict(feedback["completion_source_counts"]),
+        dict(feedback["terminal_completion_source_counts"]),
+    )
 
 
 def active_resource_usage_summary(
@@ -528,6 +578,7 @@ def direct_path_resource_usage_by_direction(
 def runtime_feedback_summary_update(
     *,
     runtime_state: Mapping[str, object],
+    relay_activity: Mapping[str, object] | None = None,
     relay_path_summary: Mapping[str, int],
     queued_by_direction: Mapping[str, object],
     active_by_direction: Mapping[str, object],
@@ -541,6 +592,8 @@ def runtime_feedback_summary_update(
     terminal_execution_evidence_by_source: Mapping[str, Mapping[str, int]],
     runtime_feedback_metrics: Mapping[str, object],
 ) -> dict[str, object]:
+    if not isinstance(relay_activity, Mapping):
+        relay_activity = relay_activity_from_runtime_state(runtime_state)
     return {
         "queued_transfer_count": len(runtime_state.get("queued_transfers", ()) or ()),
         "admitted_transfer_count": len(
@@ -559,8 +612,8 @@ def runtime_feedback_summary_update(
         "relay_staging_count": len(runtime_state.get("relay_staging", ()) or ()),
         "relay_path_count": int(relay_path_summary["path_count"]),
         "relay_path_bytes_total": int(relay_path_summary["bytes_total"]),
-        "busy_relays": tuple(sorted(busy_relays_from_runtime_state(runtime_state))),
-        "relay_load": relay_load_from_runtime_state(runtime_state),
+        "busy_relays": tuple(sorted(relay_activity["busy_relays"])),
+        "relay_load": dict(relay_activity["relay_load"]),
         "queued_bytes_by_direction": dict(queued_by_direction),
         "active_bytes_by_direction": dict(active_by_direction),
         "active_paths": dict(path_summary),
@@ -609,40 +662,44 @@ def accumulate_execution_path_evidence(
 def terminal_execution_evidence_from_records(
     records: object,
 ) -> dict[str, int]:
-    result = empty_execution_path_evidence()
-    for record in runtime_mapping_records(records):
-        if str(record.get("state")) not in {
-            TransferStatusState.COMPLETE.value,
-            TransferStatusState.FAILED.value,
-            TransferStatusState.CANCELED.value,
-        }:
-            continue
-        evidence = record.get("completion_evidence")
-        if not isinstance(evidence, Mapping):
-            continue
-        path_evidence = evidence.get("execution_path_evidence")
-        if not isinstance(path_evidence, Mapping):
-            continue
-        result["direct_bytes"] += int(path_evidence.get("direct_bytes", 0) or 0)
-        result["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
-        result["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
-        result["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
-    return result
+    feedback = terminal_runtime_feedback_from_records(records)
+    return dict(feedback["terminal_execution_evidence"])
 
 
 def terminal_execution_evidence_by_source_from_records(
     records: object,
 ) -> dict[str, dict[str, int]]:
-    result: dict[str, dict[str, int]] = {}
+    feedback = terminal_runtime_feedback_from_records(records)
+    return {
+        str(source): dict(record)
+        for source, record in feedback["terminal_execution_evidence_by_source"].items()
+    }
+
+
+def terminal_runtime_feedback_from_records(records: object) -> dict[str, object]:
+    terminal_execution_evidence = empty_execution_path_evidence()
+    terminal_execution_evidence_by_source: dict[str, dict[str, int]] = {}
+    completion_source_counts: dict[str, int] = {}
+    terminal_completion_source_counts: dict[str, int] = {}
+    metrics = _empty_runtime_feedback_metrics()
     for record in runtime_mapping_records(records):
-        if str(record.get("state")) not in {
-            TransferStatusState.COMPLETE.value,
-            TransferStatusState.FAILED.value,
-            TransferStatusState.CANCELED.value,
-        }:
-            continue
         completion_source = str(record.get("completion_source", "")).lower()
-        if not completion_source:
+        terminal_state = str(record.get("state")) in _TERMINAL_TRANSFER_STATE_VALUES
+        if completion_source:
+            completion_source_counts[completion_source] = (
+                completion_source_counts.get(completion_source, 0) + 1
+            )
+            if terminal_state:
+                terminal_completion_source_counts[completion_source] = (
+                    terminal_completion_source_counts.get(completion_source, 0) + 1
+                )
+        _accumulate_runtime_feedback_metrics(
+            metrics,
+            record,
+            completion_source=completion_source,
+            terminal_state=terminal_state,
+        )
+        if not terminal_state:
             continue
         evidence = record.get("completion_evidence")
         if not isinstance(evidence, Mapping):
@@ -650,18 +707,53 @@ def terminal_execution_evidence_by_source_from_records(
         path_evidence = evidence.get("execution_path_evidence")
         if not isinstance(path_evidence, Mapping):
             continue
-        bucket = result.setdefault(completion_source, empty_execution_path_evidence())
-        bucket["direct_bytes"] += int(path_evidence.get("direct_bytes", 0) or 0)
-        bucket["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
-        bucket["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
-        bucket["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
-    return result
+        _accumulate_terminal_path_evidence(
+            terminal_execution_evidence,
+            path_evidence,
+        )
+        if completion_source:
+            source_bucket = terminal_execution_evidence_by_source.setdefault(
+                completion_source,
+                empty_execution_path_evidence(),
+            )
+            _accumulate_terminal_path_evidence(source_bucket, path_evidence)
+    return {
+        "terminal_execution_evidence": terminal_execution_evidence,
+        "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
+        "completion_source_counts": completion_source_counts,
+        "terminal_completion_source_counts": terminal_completion_source_counts,
+        "runtime_feedback_metrics": metrics,
+    }
+
+
+def _accumulate_terminal_path_evidence(
+    bucket: dict[str, int],
+    path_evidence: Mapping[str, object],
+) -> None:
+    bucket["direct_bytes"] += int(path_evidence.get("direct_bytes", 0) or 0)
+    bucket["direct_chunks"] += int(path_evidence.get("direct_chunks", 0) or 0)
+    bucket["relay_bytes"] += int(path_evidence.get("relay_bytes", 0) or 0)
+    bucket["relay_chunks"] += int(path_evidence.get("relay_chunks", 0) or 0)
 
 
 def runtime_feedback_metrics_from_records(
     records: object,
 ) -> dict[str, object]:
-    metrics = {
+    metrics = _empty_runtime_feedback_metrics()
+    for record in runtime_mapping_records(records):
+        completion_source = str(record.get("completion_source", "")).lower()
+        terminal_state = str(record.get("state")) in _TERMINAL_TRANSFER_STATE_VALUES
+        _accumulate_runtime_feedback_metrics(
+            metrics,
+            record,
+            completion_source=completion_source,
+            terminal_state=terminal_state,
+        )
+    return metrics
+
+
+def _empty_runtime_feedback_metrics() -> dict[str, object]:
+    return {
         "source": "daemon_runtime_feedback_metrics",
         "worker_completion_count": 0,
         "backend_completion_count": 0,
@@ -685,6 +777,9 @@ def runtime_feedback_metrics_from_records(
             "runtime_created": 0,
             "max_runtime_cache_size": 0,
             "max_runtime_cache_limit": 0,
+            "max_runtime_cache_over_limit": 0,
+            "max_active_runtime_cache_key_count": 0,
+            "max_active_cached_runtime_key_count": 0,
             "runtime_cache_evictions": 0,
             "runtime_cache_eviction_records": (),
             "max_runtime_key_lock_count": 0,
@@ -703,6 +798,7 @@ def runtime_feedback_metrics_from_records(
             "runtime_created": 0,
             "max_runtime_cache_size": 0,
             "max_runtime_cache_limit": 0,
+            "max_runtime_cache_over_limit": 0,
             "runtime_cache_evictions": 0,
             "max_runtime_key_lock_count": 0,
             "max_runtime_key_waiter_count": 0,
@@ -715,61 +811,63 @@ def runtime_feedback_metrics_from_records(
         },
         "recent_terminal_count": 0,
     }
-    for record in runtime_mapping_records(records):
-        completion_source = str(record.get("completion_source", "")).lower()
-        if completion_source == "worker":
-            metrics["worker_completion_count"] = int(metrics["worker_completion_count"]) + 1
-        elif completion_source == "backend":
-            metrics["backend_completion_count"] = int(metrics["backend_completion_count"]) + 1
-        if str(record.get("state")) in {
-            TransferStatusState.COMPLETE.value,
-            TransferStatusState.FAILED.value,
-            TransferStatusState.CANCELED.value,
-        }:
-            metrics["recent_terminal_count"] = int(metrics["recent_terminal_count"]) + 1
-        evidence = record.get("completion_evidence")
-        if not isinstance(evidence, Mapping):
-            continue
-        cleanup = evidence.get("cleanup")
-        if isinstance(cleanup, Mapping):
-            if bool(cleanup.get("ok", False)):
-                metrics["cleanup_ok_count"] = int(metrics["cleanup_ok_count"]) + 1
-            else:
-                metrics["cleanup_failed_count"] = int(metrics["cleanup_failed_count"]) + 1
-        worker_async_pool = evidence.get("worker_async_pool")
-        if isinstance(worker_async_pool, Mapping):
-            state = str(worker_async_pool.get("state", "unknown")).lower()
-            pool_metrics = dict(metrics["worker_async_pool"])
-            if state not in pool_metrics:
-                state = "unknown"
-            pool_metrics[state] = int(pool_metrics.get(state, 0)) + 1
-            pool_metrics["max_terminal_history_limit"] = max(
-                int(pool_metrics.get("max_terminal_history_limit", 0) or 0),
-                int(worker_async_pool.get("terminal_history_limit", 0) or 0),
-            )
-            pool_metrics["terminal_history_evictions"] = max(
-                int(pool_metrics.get("terminal_history_evictions", 0) or 0),
-                int(worker_async_pool.get("terminal_history_evictions", 0) or 0),
-            )
-            metrics["worker_async_pool"] = pool_metrics
-        worker_runtime_feedback = evidence.get("worker_runtime_feedback")
-        if isinstance(worker_runtime_feedback, Mapping):
-            metrics["worker_executor_runtime"] = merge_worker_runtime_feedback_metrics(
-                metrics["worker_executor_runtime"],
-                worker_runtime_feedback,
-            )
-        direct_runtime = evidence.get("direct_runtime")
-        if isinstance(direct_runtime, Mapping):
-            metrics["backend_direct_runtime"] = merge_backend_direct_runtime_metrics(
-                metrics["backend_direct_runtime"],
-                direct_runtime,
-            )
-        span_state = cuda_ipc_span_validation_state(evidence)
-        if span_state is not None:
-            span_metrics = dict(metrics["cuda_ipc_span_validation"])
-            span_metrics[span_state] = int(span_metrics.get(span_state, 0)) + 1
-            metrics["cuda_ipc_span_validation"] = span_metrics
-    return metrics
+
+
+def _accumulate_runtime_feedback_metrics(
+    metrics: dict[str, object],
+    record: Mapping[str, object],
+    *,
+    completion_source: str,
+    terminal_state: bool,
+) -> None:
+    if completion_source == "worker":
+        metrics["worker_completion_count"] = int(metrics["worker_completion_count"]) + 1
+    elif completion_source == "backend":
+        metrics["backend_completion_count"] = int(metrics["backend_completion_count"]) + 1
+    if terminal_state:
+        metrics["recent_terminal_count"] = int(metrics["recent_terminal_count"]) + 1
+    evidence = record.get("completion_evidence")
+    if not isinstance(evidence, Mapping):
+        return
+    cleanup = evidence.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        if bool(cleanup.get("ok", False)):
+            metrics["cleanup_ok_count"] = int(metrics["cleanup_ok_count"]) + 1
+        else:
+            metrics["cleanup_failed_count"] = int(metrics["cleanup_failed_count"]) + 1
+    worker_async_pool = evidence.get("worker_async_pool")
+    if isinstance(worker_async_pool, Mapping):
+        state = str(worker_async_pool.get("state", "unknown")).lower()
+        pool_metrics = dict(metrics["worker_async_pool"])
+        if state not in pool_metrics:
+            state = "unknown"
+        pool_metrics[state] = int(pool_metrics.get(state, 0)) + 1
+        pool_metrics["max_terminal_history_limit"] = max(
+            int(pool_metrics.get("max_terminal_history_limit", 0) or 0),
+            int(worker_async_pool.get("terminal_history_limit", 0) or 0),
+        )
+        pool_metrics["terminal_history_evictions"] = max(
+            int(pool_metrics.get("terminal_history_evictions", 0) or 0),
+            int(worker_async_pool.get("terminal_history_evictions", 0) or 0),
+        )
+        metrics["worker_async_pool"] = pool_metrics
+    worker_runtime_feedback = evidence.get("worker_runtime_feedback")
+    if isinstance(worker_runtime_feedback, Mapping):
+        metrics["worker_executor_runtime"] = merge_worker_runtime_feedback_metrics(
+            metrics["worker_executor_runtime"],
+            worker_runtime_feedback,
+        )
+    direct_runtime = evidence.get("direct_runtime")
+    if isinstance(direct_runtime, Mapping):
+        metrics["backend_direct_runtime"] = merge_backend_direct_runtime_metrics(
+            metrics["backend_direct_runtime"],
+            direct_runtime,
+        )
+    span_state = cuda_ipc_span_validation_state(evidence)
+    if span_state is not None:
+        span_metrics = dict(metrics["cuda_ipc_span_validation"])
+        span_metrics[span_state] = int(span_metrics.get(span_state, 0)) + 1
+        metrics["cuda_ipc_span_validation"] = span_metrics
 
 
 def merge_backend_direct_runtime_metrics(
@@ -789,6 +887,16 @@ def merge_backend_direct_runtime_metrics(
     metrics["max_runtime_cache_limit"] = max(
         int(metrics.get("max_runtime_cache_limit", 0) or 0),
         int(feedback.get("cache_limit", 0) or 0),
+    )
+    metrics["max_runtime_cache_over_limit"] = max(
+        int(metrics.get("max_runtime_cache_over_limit", 0) or 0),
+        int(
+            feedback.get(
+                "cache_over_limit",
+                feedback.get("runtime_cache_over_limit", 0),
+            )
+            or 0
+        ),
     )
     metrics["runtime_cache_evictions"] = max(
         int(metrics.get("runtime_cache_evictions", 0) or 0),
@@ -851,6 +959,15 @@ def merge_worker_runtime_feedback_metrics(
             "executor_id": executor_id,
             "runtime_cache_size": int(feedback.get("runtime_cache_size", 0) or 0),
             "runtime_cache_limit": int(feedback.get("runtime_cache_limit", 0) or 0),
+            "runtime_cache_over_limit": int(
+                feedback.get("runtime_cache_over_limit", 0) or 0
+            ),
+            "active_runtime_cache_key_count": int(
+                feedback.get("active_runtime_cache_key_count", 0) or 0
+            ),
+            "active_cached_runtime_key_count": int(
+                feedback.get("active_cached_runtime_key_count", 0) or 0
+            ),
             "runtime_cache_evictions": int(
                 feedback.get("runtime_cache_evictions", 0) or 0
             ),
@@ -885,6 +1002,18 @@ def merge_worker_runtime_feedback_metrics(
     metrics["max_runtime_cache_limit"] = max(
         int(metrics.get("max_runtime_cache_limit", 0) or 0),
         int(feedback.get("runtime_cache_limit", 0) or 0),
+    )
+    metrics["max_runtime_cache_over_limit"] = max(
+        int(metrics.get("max_runtime_cache_over_limit", 0) or 0),
+        int(feedback.get("runtime_cache_over_limit", 0) or 0),
+    )
+    metrics["max_active_runtime_cache_key_count"] = max(
+        int(metrics.get("max_active_runtime_cache_key_count", 0) or 0),
+        int(feedback.get("active_runtime_cache_key_count", 0) or 0),
+    )
+    metrics["max_active_cached_runtime_key_count"] = max(
+        int(metrics.get("max_active_cached_runtime_key_count", 0) or 0),
+        int(feedback.get("active_cached_runtime_key_count", 0) or 0),
     )
     metrics["runtime_cache_evictions"] = sum(
         int(record.get("runtime_cache_evictions", 0) or 0)
@@ -1115,10 +1244,40 @@ def transfer_bytes_by_direction(
     return result
 
 
-def runtime_mapping_records(value: object) -> tuple[Mapping[str, object], ...]:
-    if not isinstance(value, list | tuple):
-        return ()
-    return tuple(item for item in value if isinstance(item, Mapping))
+def direction_bytes_from_summary_or_records(
+    summary: Mapping[str, object],
+    *,
+    field_name: str,
+    records: object,
+    include_remaining: bool,
+) -> dict[str, dict[str, int]]:
+    existing = summary.get(field_name)
+    if isinstance(existing, Mapping):
+        normalized = _direction_bytes_mapping(existing, include_remaining)
+        if normalized:
+            return normalized
+    return transfer_bytes_by_direction(
+        records,
+        include_remaining=include_remaining,
+    )
+
+
+def _direction_bytes_mapping(
+    value: Mapping[str, object],
+    include_remaining: bool,
+) -> dict[str, dict[str, int]]:
+    normalized: dict[str, dict[str, int]] = {}
+    for direction, record in value.items():
+        if not isinstance(record, Mapping):
+            continue
+        bucket = {
+            "transfer_count": int(record.get("transfer_count", 0) or 0),
+            "bytes_total": int(record.get("bytes_total", 0) or 0),
+        }
+        if include_remaining:
+            bucket["bytes_remaining"] = int(record.get("bytes_remaining", 0) or 0)
+        normalized[str(direction)] = bucket
+    return normalized
 
 
 __all__ = [
@@ -1128,6 +1287,7 @@ __all__ = [
     "refresh_runtime_feedback_summary",
     "runtime_feedback_metrics_from_records",
     "runtime_mapping_records",
+    "runtime_mapping_records_from_sources",
     "terminal_execution_evidence_by_source_from_records",
     "terminal_execution_evidence_from_records",
     "terminal_feedback_record_from_record",

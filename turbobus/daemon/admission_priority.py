@@ -75,11 +75,13 @@ def admission_priority_record(
     wait_seconds = max(0.0, float(now) - delayed_at)
     runtime_jobs = runtime_state.get("job_runtime_state", {})
     job_active_bytes = 0
+    job_backlog_bytes = 0
     job_running_count = 0
     if job_id is not None and isinstance(runtime_jobs, Mapping):
         job_record = runtime_jobs.get(str(job_id), {})
         if isinstance(job_record, Mapping):
             job_active_bytes = int(job_record.get("active_bytes_remaining", 0) or 0)
+            job_backlog_bytes = _job_delayed_backlog_bytes(job_record)
             job_running_count = int(job_record.get("running_transfer_count", 0) or 0)
     readiness_bonus = admission_runtime_readiness_bonus(
         admission=admission_map,
@@ -94,6 +96,7 @@ def admission_priority_record(
     score -= fairness_penalty
     score -= min(max(requested_chunks, 0), 1024) * 0.35
     score -= min(job_active_bytes / (64.0 * 1024 * 1024), 64.0) * 2.0
+    score -= min(job_backlog_bytes / (64.0 * 1024 * 1024), 64.0) * 1.0
     score -= min(max(job_running_count, 0), 32) * 3.0
     return {
         "transfer_id": transfer_id,
@@ -105,6 +108,7 @@ def admission_priority_record(
         "requested_chunks": requested_chunks,
         "bytes_total": bytes_total,
         "job_active_bytes": job_active_bytes,
+        "job_backlog_bytes": job_backlog_bytes,
         "job_running_count": job_running_count,
         "runtime_readiness_bonus": readiness_bonus,
         "fairness_penalty": fairness_penalty,
@@ -151,12 +155,27 @@ def admission_fairness_penalty(
     if not isinstance(fairness, Mapping):
         return 0.0
     threshold = max(1.0, float(fairness.get("fairness_threshold_bytes", 0.0) or 0.0))
-    projected = float(fairness.get("projected_weighted_active_bytes", 0.0) or 0.0)
+    projected = float(
+        fairness.get(
+            "projected_weighted_fairness_bytes",
+            fairness.get("projected_weighted_active_bytes", 0.0),
+        )
+        or 0.0
+    )
     overage = max(0.0, projected - threshold)
     penalty = min(overage / threshold, 4.0) * 20.0
     if fairness.get("blocked_reason") is not None:
         penalty += 10.0
     return penalty
+
+
+def _job_delayed_backlog_bytes(job_record: Mapping[str, object]) -> int:
+    delayed = job_record.get("delayed_bytes_total")
+    if delayed is not None:
+        return max(0, int(delayed or 0))
+    queued = int(job_record.get("queued_bytes_total", 0) or 0)
+    admitted = int(job_record.get("admitted_bytes_total", 0) or 0)
+    return max(0, queued - admitted)
 
 
 __all__ = [

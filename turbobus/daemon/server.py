@@ -15,23 +15,40 @@ from .admission_priority import (
     ordered_delayed_admission_records as _ordered_delayed_admission_records,
 )
 from . import leases as daemon_leases
+from .cleanup_helpers import (
+    buffer_snapshot_with_retention_evidence as _buffer_snapshot_with_retention_evidence,
+    empty_removed_summary as _empty_removed_summary,
+    jsonable_cleanup_target_record as _jsonable_cleanup_target_record,
+    merge_removed as _merge_removed,
+    merge_retention_evidence as _merge_retention_evidence,
+    session_cleanup_target_payload as _session_cleanup_target_payload,
+)
 from . import peer_auth
 from . import planning_helpers
 from . import profiles as daemon_profiles
 from . import receipts as daemon_receipts
+from . import block_runtime as daemon_block_runtime
+from . import transfer_lifecycle as daemon_transfer_lifecycle
+from .pcie_load_sampler import pcie_load_from_active_paths as _pcie_load_from_active_paths
 from .runtime_paths import (
     runtime_active_path_records_for_transfer as _runtime_active_path_records_for_transfer,
 )
 from .runtime_telemetry import (
-    accumulate_execution_path_evidence as _accumulate_execution_path_evidence,
     daemon_runtime_telemetry_snapshot as _daemon_runtime_telemetry_snapshot,
     empty_execution_path_evidence as _empty_execution_path_evidence,
     refresh_runtime_feedback_summary as _refresh_runtime_feedback_summary,
-    runtime_feedback_metrics_from_records as _runtime_feedback_metrics_from_records,
     runtime_mapping_records as _runtime_mapping_records,
-    terminal_execution_evidence_by_source_from_records as _terminal_execution_evidence_by_source_from_records,
-    terminal_execution_evidence_from_records as _terminal_execution_evidence_from_records,
     terminal_feedback_record_from_record as _terminal_feedback_record_from_record,
+)
+from .runtime_state_summary import (
+    job_runtime_state_from_records as _job_runtime_state_from_records,
+    runtime_transfer_summary_from_records as _runtime_transfer_summary_from_records,
+)
+from .evidence import (
+    merge_completion_evidence,
+    normalize_completion_evidence,
+    normalize_execution_path_evidence,
+    normalize_status_ticket_evidence,
 )
 from ..schema import (
     BufferRegistration,
@@ -53,18 +70,25 @@ from ..schema import (
     WorkerTransferAuthorization,
     WorkerTransferAuthorizationRequest,
 )
+from ..planner_engine import PlannerEngineOptions
 from ..socket_security import secure_unix_socket, unlink_stale_socket
 from ..topology import TopologyProvider
+from ..topology.pcie_fabric import pcie_fabric_snapshot_from_inventory
+from ..scheduler.bandwidth_pool import build_bandwidth_pool_snapshot as _build_bandwidth_pool_snapshot
+from ..scheduler.block_plan import block_plan_from_mapping as _block_plan_from_mapping
+from ..scheduler.block_queue import (
+    queue_records_for_block_plan as _queue_records_for_block_plan,
+    queue_summary as _block_queue_summary,
+)
 from ..scheduler import (
     DaemonScheduler,
     SchedulingDecision,
     scheduling_decision_leases,
 )
 from ..scheduler.load_feedback import (
-    busy_relays_from_runtime_state,
     relay_admission_blocked_reason,
+    relay_activity_from_runtime_state,
     relay_fairness_admission_blocked_reason,
-    relay_load_from_runtime_state,
     runtime_view,
 )
 
@@ -100,6 +124,10 @@ class TurboBusDaemon:
         max_inflight_chunks_per_relay: int = 8,
         session_timeout_seconds: float = 0.0,
         profile_max_age_seconds: float = 0.0,
+        min_pool_bytes: int = 12 * 1024 * 1024,
+        min_chunks_for_relay: int = 2,
+        relay_min_effective_bw_gbps: float = 0.0,
+        relay_min_direct_ratio: float = 0.0,
         topology_provider: TopologyProvider | None = None,
         require_authenticated_peers: bool = False,
     ) -> None:
@@ -123,6 +151,7 @@ class TurboBusDaemon:
         self._transfer_admissions: dict[str, dict[str, object]] = {}
         self._lease_plan_generations: dict[str, int] = {}
         self._transfer_plans: dict[str, dict[str, object]] = {}
+        self._block_runtime_records: dict[str, tuple[dict[str, object], ...]] = {}
         self._scheduling_decisions: dict[str, SchedulingDecision] = {}
         self._execution_tickets: dict[str, ExecutionTicket] = {}
         self._transfer_tickets: dict[str, str] = {}
@@ -146,7 +175,14 @@ class TurboBusDaemon:
         self._cleanup_events: list[CleanupRequest] = []
         self._system_cleanup_events: list[CleanupRequest] = []
         self._profile_cache: dict[str, dict] = {}
-        self._scheduler = DaemonScheduler()
+        self._scheduler = DaemonScheduler(
+            planner_options=PlannerEngineOptions(
+                min_pool_bytes=int(min_pool_bytes),
+                min_chunks_for_relay=int(min_chunks_for_relay),
+                relay_min_effective_bw_gbps=float(relay_min_effective_bw_gbps),
+                relay_min_direct_ratio=float(relay_min_direct_ratio),
+            )
+        )
         self._topology_provider = topology_provider
         self._session_timeout_seconds = max(0.0, float(session_timeout_seconds))
         self._profile_max_age_seconds = max(0.0, float(profile_max_age_seconds))
@@ -462,379 +498,578 @@ class TurboBusDaemon:
                 )
             )
             removed = _empty_removed_summary()
-            cleanup_result: dict[str, object] = {}
-            retention_recorded = False
             if cleanup.target_kind == "job":
-                archived_target = self._retired_cleanup_target_record_locked(
-                    target_kind=cleanup.target_kind,
-                    target_id=cleanup.target_id,
-                )
-                if cleanup.target_id not in self._jobs and not cleanup.force:
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown job")
-                    try:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
-                    return DaemonResponse(
-                        ok=True,
-                        payload={
-                            "cleanup": asdict(cleanup),
-                            "removed": removed,
-                        },
-                    )
-                try:
-                    if cleanup.target_id in self._jobs:
-                        self._validate_peer_owns_job_locked(
-                            job_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    else:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                except ValueError as exc:
-                    return DaemonResponse(ok=False, error=str(exc))
-                _merge_removed(
-                    removed,
-                    self._cleanup_job_locked(
-                        cleanup.target_id,
-                        reason=cleanup.reason,
-                    ),
+                return self._cleanup_job_target_locked(
+                    cleanup,
+                    peer_identity=peer_identity,
+                    removed=removed,
+                    validated_owner_binding=validated_owner_binding,
                 )
             elif cleanup.target_kind == "buffer":
-                archived_target = self._retired_cleanup_target_record_locked(
-                    target_kind=cleanup.target_kind,
-                    target_id=cleanup.target_id,
-                )
-                if cleanup.target_id not in self._buffers and not cleanup.force:
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown buffer")
-                    try:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
-                    if isinstance(cleanup.retention_evidence, Mapping):
-                        retention_recorded = self._record_cleanup_retention_evidence_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            retention_evidence=cleanup.retention_evidence,
-                        )
-                    return DaemonResponse(
-                        ok=True,
-                        payload={
-                            "cleanup": asdict(cleanup),
-                            "removed": removed,
-                            **(
-                                {}
-                                if not retention_recorded
-                                else {"retention_evidence_recorded": True}
-                            ),
-                        },
-                    )
-                try:
-                    if cleanup.target_id in self._buffers:
-                        self._validate_peer_owns_buffer_locked(
-                            buffer_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    else:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                except ValueError as exc:
-                    return DaemonResponse(ok=False, error=str(exc))
-                buffer = self._buffers.get(cleanup.target_id)
-                if buffer is not None:
-                    protection = self._active_buffer_protection_record_locked(
-                        cleanup.target_id
-                    )
-                    if bool(protection.get("protected", False)):
-                        return DaemonResponse(
-                            ok=False,
-                            error="buffer has active daemon-issued execution",
-                            payload={
-                                "cleanup": asdict(cleanup),
-                                "buffer_ownership": self._buffer_ownership_record_locked(
-                                    cleanup.target_id
-                                ),
-                                "buffer_protection": protection,
-                            },
-                        )
-                    self._archive_cleanup_target_locked(
-                        target_kind=cleanup.target_kind,
-                        target_id=cleanup.target_id,
-                        peer_identity=peer_identity,
-                        reason=cleanup.reason,
-                        transfer_ids=self._transfer_ids_for_buffer_locked(
-                            cleanup.target_id
-                        ),
-                        buffer_snapshot=planning_helpers.buffer_snapshot_record(buffer),
-                        retention_evidence=_merge_retention_evidence(
-                            self._buffer_cleanup_ownership_evidence_locked(
-                                cleanup.target_id,
-                                reason=cleanup.reason,
-                            ),
-                            cleanup.retention_evidence,
-                        ),
-                    )
-                transfer_ids = self._transfer_ids_for_buffer_locked(cleanup.target_id)
-                for lease_id in self._active_buffer_lease_ids_locked(cleanup.target_id):
-                    _merge_removed(
-                        removed,
-                        self._release_reservation_and_count_locked(
-                            lease_id,
-                            final_state=TransferStatusState.CANCELED,
-                            cleanup_reason=cleanup.reason,
-                        ),
-                    )
-                buffer = self._buffers.pop(cleanup.target_id, None)
-                if buffer is not None:
-                    removed["buffers"] = int(removed["buffers"]) + 1
-                for transfer_id in transfer_ids:
-                    status = self._transfer_statuses.get(transfer_id)
-                    if (
-                        status is not None
-                        and status.state not in _TERMINAL_TRANSFER_STATES
-                    ):
-                        self._mark_transfer_terminal_locked(
-                            transfer_id,
-                            TransferStatusState.CANCELED,
-                            error=cleanup.reason,
-                        )
-                        removed["transfers"] = int(removed["transfers"]) + 1
-                    self._retire_transfer_runtime_state_locked(transfer_id)
-                cleanup_retention = _merge_retention_evidence(
-                    self._buffer_cleanup_ownership_evidence_for_removed_locked(
-                        cleanup.target_id,
-                        reason=cleanup.reason,
-                    ),
-                    cleanup.retention_evidence,
-                )
-                if isinstance(cleanup_retention, Mapping):
-                    retention_recorded = self._record_cleanup_retention_evidence_locked(
-                        target_kind=cleanup.target_kind,
-                        target_id=cleanup.target_id,
-                        retention_evidence=cleanup_retention,
-                    )
-            elif cleanup.target_kind == "session":
-                archived_target = self._retired_cleanup_target_record_locked(
-                    target_kind=cleanup.target_kind,
-                    target_id=cleanup.target_id,
-                )
-                owned_cleanup_targets = (
-                    None
-                    if cleanup.target_id not in self._sessions
-                    else self._session_owned_cleanup_targets_locked(cleanup.target_id)
-                )
-                try:
-                    if cleanup.target_id in self._sessions:
-                        self._validate_peer_owns_session_locked(
-                            session_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    elif cleanup.force:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                except ValueError as exc:
-                    return DaemonResponse(ok=False, error=str(exc))
-                if cleanup.target_id not in self._sessions and not cleanup.force:
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown session")
-                    try:
-                        self._validate_peer_owns_missing_cleanup_target_locked(
-                            target_kind=cleanup.target_kind,
-                            target_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
-                    return DaemonResponse(
-                        ok=True,
-                        payload={
-                            "cleanup": asdict(cleanup),
-                            "removed": removed,
-                        },
-                    )
-                session = self._close_session_locked(
-                    cleanup.target_id,
-                    reason=cleanup.reason,
+                return self._cleanup_buffer_target_locked(
+                    cleanup,
+                    peer_identity=peer_identity,
                     removed=removed,
-                    owned_cleanup_targets=owned_cleanup_targets,
                 )
-                if session is None and not cleanup.force:
-                    return DaemonResponse(ok=False, error="unknown session")
-                cleanup_result = _session_cleanup_target_payload(owned_cleanup_targets)
+            elif cleanup.target_kind == "session":
+                return self._cleanup_session_target_locked(
+                    cleanup,
+                    peer_identity=peer_identity,
+                    removed=removed,
+                    validated_owner_binding=validated_owner_binding,
+                    retention_recorded=False,
+                )
             elif cleanup.target_kind == "reservation":
-                archived_target = self._retired_cleanup_target_record_locked(
-                    target_kind=cleanup.target_kind,
-                    target_id=cleanup.target_id,
+                return self._cleanup_reservation_target_locked(
+                    cleanup,
+                    peer_identity=peer_identity,
+                    removed=removed,
+                    validated_owner_binding=validated_owner_binding,
                 )
-                if validated_owner_binding is None:
-                    try:
-                        self._validate_peer_owns_lease_locked(
-                            lease_id=cleanup.target_id,
-                            peer_identity=peer_identity,
-                        )
-                    except ValueError as exc:
-                        if str(exc) != "unknown lease":
-                            return DaemonResponse(ok=False, error=str(exc))
-                        staging_record = self._staging_records.get(cleanup.target_id)
-                        if staging_record is not None and cleanup.force:
-                            try:
-                                self._validate_peer_owns_staging_record_locked(
-                                    staging_record=staging_record,
-                                    peer_identity=peer_identity,
-                                )
-                            except ValueError as staging_exc:
-                                return DaemonResponse(ok=False, error=str(staging_exc))
-                        elif archived_target is None or not cleanup.force:
-                            if archived_target is None:
-                                return DaemonResponse(ok=False, error=str(exc))
-                            try:
-                                self._validate_peer_owns_missing_cleanup_target_locked(
-                                    target_kind=cleanup.target_kind,
-                                    target_id=cleanup.target_id,
-                                    peer_identity=peer_identity,
-                                )
-                            except ValueError as owner_exc:
-                                return DaemonResponse(ok=False, error=str(owner_exc))
-                            return DaemonResponse(
-                                ok=True,
-                                payload={
-                                    "cleanup": asdict(cleanup),
-                                    "removed": removed,
-                                    "reservation_id": cleanup.target_id,
-                                    "cleaned_reservation_ids": (),
-                                    "cleanup_kind": cleanup.target_kind,
-                                    "cleanup_mode": "noop",
-                                },
-                            )
-                if (
-                    cleanup.target_id not in self._reservations
-                    and cleanup.target_id not in self._staging_records
-                ):
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown reservation")
-                    if validated_owner_binding is None:
-                        try:
-                            self._validate_peer_owns_missing_cleanup_target_locked(
-                                target_kind=cleanup.target_kind,
-                                target_id=cleanup.target_id,
-                                peer_identity=peer_identity,
-                            )
-                        except ValueError as owner_exc:
-                            return DaemonResponse(ok=False, error=str(owner_exc))
-                    return DaemonResponse(
-                        ok=True,
-                        payload={
-                            "cleanup": asdict(cleanup),
-                            "removed": removed,
-                            "reservation_id": cleanup.target_id,
-                            "cleaned_reservation_ids": (),
-                            "cleanup_kind": cleanup.target_kind,
-                            "cleanup_mode": "noop",
-                        },
-                    )
-                if (
-                    cleanup.target_id not in self._reservations
-                    and cleanup.target_id not in self._staging_records
-                    and not cleanup.force
-                ):
-                    if archived_target is None:
-                        return DaemonResponse(ok=False, error="unknown reservation")
-                    if validated_owner_binding is None:
-                        try:
-                            self._validate_peer_owns_missing_cleanup_target_locked(
-                                target_kind=cleanup.target_kind,
-                                target_id=cleanup.target_id,
-                                peer_identity=peer_identity,
-                            )
-                        except ValueError as exc:
-                            return DaemonResponse(ok=False, error=str(exc))
-                    cleanup_result = {
-                        "reservation_id": cleanup.target_id,
-                        "cleaned_reservation_ids": (),
-                        "cleanup_kind": cleanup.target_kind,
-                        "cleanup_mode": "noop",
-                    }
-                    return DaemonResponse(
-                        ok=True,
-                        payload={
-                            "cleanup": asdict(cleanup),
-                            "removed": removed,
-                            **cleanup_result,
-                        },
-                    )
-                cleanup_marks_transfer_terminal = cleanup.reason != "worker_complete"
-                released = self._release_reservation_and_count_locked(
-                    cleanup.target_id,
-                    final_state=(
-                        TransferStatusState.CANCELED
-                        if cleanup_marks_transfer_terminal
-                        else TransferStatusState.COMPLETE
-                    ),
-                    cleanup_reason=cleanup.reason,
-                    mark_terminal=cleanup_marks_transfer_terminal,
-                )
-                if (
-                    int(released["reservations"]) == 0
-                    and int(released["staging_records"]) == 0
-                    and not cleanup.force
-                ):
-                    return DaemonResponse(ok=False, error="unknown reservation")
-                _merge_removed(removed, released)
-                cleaned = (
-                    int(released["reservations"]) > 0
-                    or int(released["staging_records"]) > 0
-                )
-                cleanup_result = {
-                    "reservation_id": cleanup.target_id,
-                    "cleaned_reservation_ids": (
-                        (cleanup.target_id,) if cleaned else ()
-                    ),
-                    "cleanup_kind": cleanup.target_kind,
-                    "cleanup_mode": "cleanup" if cleaned else "noop",
-                }
             else:
                 return DaemonResponse(ok=False, error="unsupported cleanup target")
-            self._cleanup_events.append(cleanup)
-            admission_refresh = self._refresh_admission_state_locked(now=time.time())
+
+    def _finalize_cleanup_response_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        removed: dict[str, int],
+        validated_owner_binding: dict[str, object] | None,
+        retention_recorded: bool,
+        cleanup_result: dict[str, object],
+    ) -> DaemonResponse:
+        self._cleanup_events.append(cleanup)
+        admission_refresh = self._refresh_admission_state_locked(now=time.time())
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "cleanup": asdict(cleanup),
+                "removed": removed,
+                "promoted_transfers": admission_refresh["promoted_transfers"],
+                "admission_refresh": admission_refresh,
+                **(
+                    {}
+                    if validated_owner_binding is None
+                    else {"owner_binding": validated_owner_binding}
+                ),
+                **(
+                    {}
+                    if not retention_recorded
+                    else {"retention_evidence_recorded": True}
+                ),
+                **cleanup_result,
+            },
+        )
+
+    def _cleanup_job_target_locked(
+        self,
+        cleanup: CleanupRequest,
+        *,
+        peer_identity: PeerIdentity | None,
+        removed: dict[str, int],
+        validated_owner_binding: dict[str, object] | None,
+    ) -> DaemonResponse:
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+        )
+        if cleanup.target_id not in self._jobs and not cleanup.force:
+            if archived_target is None:
+                return DaemonResponse(ok=False, error="unknown job")
+            try:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
             return DaemonResponse(
                 ok=True,
                 payload={
                     "cleanup": asdict(cleanup),
                     "removed": removed,
-                    "promoted_transfers": admission_refresh["promoted_transfers"],
-                    "admission_refresh": admission_refresh,
-                    **(
-                        {}
-                        if validated_owner_binding is None
-                        else {"owner_binding": validated_owner_binding}
-                    ),
-                    **(
-                        {}
-                        if not retention_recorded
-                        else {"retention_evidence_recorded": True}
-                    ),
-                    **cleanup_result,
                 },
             )
+        try:
+            if cleanup.target_id in self._jobs:
+                self._validate_peer_owns_job_locked(
+                    job_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            else:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        _merge_removed(
+            removed,
+            self._cleanup_job_locked(
+                cleanup.target_id,
+                reason=cleanup.reason,
+            ),
+        )
+        return self._finalize_cleanup_response_locked(
+            cleanup=cleanup,
+            removed=removed,
+            validated_owner_binding=validated_owner_binding,
+            retention_recorded=False,
+            cleanup_result={},
+        )
+
+    def _cleanup_session_target_locked(
+        self,
+        cleanup: CleanupRequest,
+        *,
+        peer_identity: PeerIdentity | None,
+        removed: dict[str, int],
+        validated_owner_binding: dict[str, object] | None,
+        retention_recorded: bool,
+    ) -> DaemonResponse:
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+        )
+        owned_cleanup_targets = (
+            None
+            if cleanup.target_id not in self._sessions
+            else self._session_owned_cleanup_targets_locked(cleanup.target_id)
+        )
+        try:
+            if cleanup.target_id in self._sessions:
+                self._validate_peer_owns_session_locked(
+                    session_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            elif cleanup.force:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        if cleanup.target_id not in self._sessions and not cleanup.force:
+            if archived_target is None:
+                return DaemonResponse(ok=False, error="unknown session")
+            try:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
+            return DaemonResponse(
+                ok=True,
+                payload={
+                    "cleanup": asdict(cleanup),
+                    "removed": removed,
+                },
+            )
+        session = self._close_session_locked(
+            cleanup.target_id,
+            reason=cleanup.reason,
+            removed=removed,
+            owned_cleanup_targets=owned_cleanup_targets,
+        )
+        if session is None and not cleanup.force:
+            return DaemonResponse(ok=False, error="unknown session")
+        return self._finalize_cleanup_response_locked(
+            cleanup=cleanup,
+            removed=removed,
+            validated_owner_binding=validated_owner_binding,
+            retention_recorded=retention_recorded,
+            cleanup_result=_session_cleanup_target_payload(owned_cleanup_targets),
+        )
+
+    def _cleanup_reservation_target_locked(
+        self,
+        cleanup: CleanupRequest,
+        *,
+        peer_identity: PeerIdentity | None,
+        removed: dict[str, int],
+        validated_owner_binding: dict[str, object] | None,
+    ) -> DaemonResponse:
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+        )
+        if validated_owner_binding is None:
+            owner_response = self._validate_reservation_cleanup_owner_locked(
+                cleanup=cleanup,
+                archived_target=archived_target,
+                peer_identity=peer_identity,
+            )
+            if not owner_response.ok:
+                return owner_response
+            if owner_response.payload.get("cleanup_mode") == "noop":
+                return self._noop_reservation_cleanup_response(
+                    cleanup=cleanup,
+                    removed=removed,
+                )
+        if self._reservation_cleanup_target_is_missing(cleanup.target_id):
+            if archived_target is None:
+                return DaemonResponse(ok=False, error="unknown reservation")
+            if validated_owner_binding is None:
+                try:
+                    self._validate_peer_owns_missing_cleanup_target_locked(
+                        target_kind=cleanup.target_kind,
+                        target_id=cleanup.target_id,
+                        peer_identity=peer_identity,
+                    )
+                except ValueError as owner_exc:
+                    return DaemonResponse(ok=False, error=str(owner_exc))
+            retention_recorded = self._record_reservation_cleanup_retention_locked(
+                cleanup
+            )
+            return self._noop_reservation_cleanup_response(
+                cleanup=cleanup,
+                removed=removed,
+                retention_recorded=retention_recorded,
+            )
+        released = self._cleanup_existing_reservation_target_locked(cleanup)
+        if self._reservation_cleanup_release_is_empty(released) and not cleanup.force:
+            return DaemonResponse(ok=False, error="unknown reservation")
+        _merge_removed(removed, released)
+        retention_recorded = self._record_reservation_cleanup_retention_locked(
+            cleanup
+        )
+        cleanup_result = self._reservation_cleanup_result(
+            cleanup=cleanup,
+            released=released,
+        )
+        return self._finalize_cleanup_response_locked(
+            cleanup=cleanup,
+            removed=removed,
+            validated_owner_binding=validated_owner_binding,
+            retention_recorded=retention_recorded,
+            cleanup_result=cleanup_result,
+        )
+
+    def _validate_reservation_cleanup_owner_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        archived_target: Mapping[str, object] | None,
+        peer_identity: PeerIdentity | None,
+    ) -> DaemonResponse:
+        try:
+            self._validate_peer_owns_lease_locked(
+                lease_id=cleanup.target_id,
+                peer_identity=peer_identity,
+            )
+            return DaemonResponse(ok=True, payload={})
+        except ValueError as exc:
+            if str(exc) != "unknown lease":
+                return DaemonResponse(ok=False, error=str(exc))
+            staging_record = self._staging_records.get(cleanup.target_id)
+            if staging_record is not None and cleanup.force:
+                try:
+                    self._validate_peer_owns_staging_record_locked(
+                        staging_record=staging_record,
+                        peer_identity=peer_identity,
+                    )
+                except ValueError as staging_exc:
+                    return DaemonResponse(ok=False, error=str(staging_exc))
+                return DaemonResponse(ok=True, payload={})
+            if archived_target is None:
+                return DaemonResponse(ok=False, error=str(exc))
+            if cleanup.force:
+                return DaemonResponse(ok=True, payload={})
+            try:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            except ValueError as owner_exc:
+                return DaemonResponse(ok=False, error=str(owner_exc))
+            return DaemonResponse(ok=True, payload={"cleanup_mode": "noop"})
+
+    def _reservation_cleanup_target_is_missing(self, target_id: str) -> bool:
+        return target_id not in self._reservations and target_id not in self._staging_records
+
+    def _noop_reservation_cleanup_response(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        removed: dict[str, int],
+        retention_recorded: bool = False,
+    ) -> DaemonResponse:
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "cleanup": asdict(cleanup),
+                "removed": removed,
+                "reservation_id": cleanup.target_id,
+                "cleaned_reservation_ids": (),
+                "cleanup_kind": cleanup.target_kind,
+                "cleanup_mode": "noop",
+                **(
+                    {}
+                    if not retention_recorded
+                    else {"retention_evidence_recorded": True}
+                ),
+            },
+        )
+
+    def _record_reservation_cleanup_retention_locked(
+        self,
+        cleanup: CleanupRequest,
+    ) -> bool:
+        if not isinstance(cleanup.retention_evidence, Mapping):
+            return False
+        return self._record_cleanup_retention_evidence_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+            retention_evidence=cleanup.retention_evidence,
+        )
+
+    def _cleanup_existing_reservation_target_locked(
+        self,
+        cleanup: CleanupRequest,
+    ) -> dict[str, int]:
+        cleanup_marks_transfer_terminal = cleanup.reason != "worker_complete"
+        return self._release_reservation_and_count_locked(
+            cleanup.target_id,
+            final_state=(
+                TransferStatusState.CANCELED
+                if cleanup_marks_transfer_terminal
+                else TransferStatusState.COMPLETE
+            ),
+            cleanup_reason=cleanup.reason,
+            mark_terminal=cleanup_marks_transfer_terminal,
+        )
+
+    def _reservation_cleanup_release_is_empty(
+        self,
+        released: Mapping[str, object],
+    ) -> bool:
+        return (
+            int(released["reservations"]) == 0
+            and int(released["staging_records"]) == 0
+        )
+
+    def _reservation_cleanup_result(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        released: Mapping[str, object],
+    ) -> dict[str, object]:
+        cleaned = not self._reservation_cleanup_release_is_empty(released)
+        return {
+            "reservation_id": cleanup.target_id,
+            "cleaned_reservation_ids": (cleanup.target_id,) if cleaned else (),
+            "cleanup_kind": cleanup.target_kind,
+            "cleanup_mode": "cleanup" if cleaned else "noop",
+        }
+
+    def _cleanup_buffer_target_locked(
+        self,
+        cleanup: CleanupRequest,
+        *,
+        peer_identity: PeerIdentity | None,
+        removed: dict[str, int],
+    ) -> DaemonResponse:
+        retention_recorded = False
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+        )
+        if cleanup.target_id not in self._buffers and not cleanup.force:
+            return self._cleanup_missing_buffer_target_locked(
+                cleanup=cleanup,
+                peer_identity=peer_identity,
+                removed=removed,
+                archived_target=archived_target,
+            )
+        owner_response = self._validate_buffer_cleanup_owner_locked(
+            cleanup=cleanup,
+            peer_identity=peer_identity,
+        )
+        if not owner_response.ok:
+            return owner_response
+        buffer = self._buffers.get(cleanup.target_id)
+        if buffer is not None:
+            protection_response = self._protect_active_buffer_cleanup_locked(
+                cleanup=cleanup,
+                buffer=buffer,
+                peer_identity=peer_identity,
+            )
+            if not protection_response.ok:
+                return protection_response
+        transfer_ids = self._transfer_ids_for_buffer_locked(cleanup.target_id)
+        self._release_buffer_cleanup_leases_locked(cleanup=cleanup, removed=removed)
+        self._remove_buffer_cleanup_state_locked(
+            cleanup=cleanup,
+            transfer_ids=transfer_ids,
+            removed=removed,
+        )
+        retention_recorded = self._record_removed_buffer_retention_locked(cleanup)
+        return self._finalize_cleanup_response_locked(
+            cleanup=cleanup,
+            removed=removed,
+            validated_owner_binding=None,
+            retention_recorded=retention_recorded,
+            cleanup_result={},
+        )
+
+    def _cleanup_missing_buffer_target_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        peer_identity: PeerIdentity | None,
+        removed: dict[str, int],
+        archived_target: Mapping[str, object] | None,
+    ) -> DaemonResponse:
+        if archived_target is None:
+            return DaemonResponse(ok=False, error="unknown buffer")
+        try:
+            self._validate_peer_owns_missing_cleanup_target_locked(
+                target_kind=cleanup.target_kind,
+                target_id=cleanup.target_id,
+                peer_identity=peer_identity,
+            )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        retention_recorded = False
+        if isinstance(cleanup.retention_evidence, Mapping):
+            retention_recorded = self._record_cleanup_retention_evidence_locked(
+                target_kind=cleanup.target_kind,
+                target_id=cleanup.target_id,
+                retention_evidence=cleanup.retention_evidence,
+            )
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "cleanup": asdict(cleanup),
+                "removed": removed,
+                **(
+                    {}
+                    if not retention_recorded
+                    else {"retention_evidence_recorded": True}
+                ),
+            },
+        )
+
+    def _validate_buffer_cleanup_owner_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        peer_identity: PeerIdentity | None,
+    ) -> DaemonResponse:
+        try:
+            if cleanup.target_id in self._buffers:
+                self._validate_peer_owns_buffer_locked(
+                    buffer_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+            else:
+                self._validate_peer_owns_missing_cleanup_target_locked(
+                    target_kind=cleanup.target_kind,
+                    target_id=cleanup.target_id,
+                    peer_identity=peer_identity,
+                )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        return DaemonResponse(ok=True)
+
+    def _protect_active_buffer_cleanup_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        buffer: BufferRegistration,
+        peer_identity: PeerIdentity | None,
+    ) -> DaemonResponse:
+        protection = self._active_buffer_protection_record_locked(cleanup.target_id)
+        if bool(protection.get("protected", False)):
+            return DaemonResponse(
+                ok=False,
+                error="buffer has active daemon-issued execution",
+                payload={
+                    "cleanup": asdict(cleanup),
+                    "buffer_ownership": self._buffer_ownership_record_locked(
+                        cleanup.target_id
+                    ),
+                    "buffer_protection": protection,
+                },
+            )
+        self._archive_cleanup_target_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+            peer_identity=peer_identity,
+            reason=cleanup.reason,
+            transfer_ids=self._transfer_ids_for_buffer_locked(cleanup.target_id),
+            buffer_snapshot=planning_helpers.buffer_snapshot_record(buffer),
+            retention_evidence=_merge_retention_evidence(
+                self._buffer_cleanup_ownership_evidence_locked(
+                    cleanup.target_id,
+                    reason=cleanup.reason,
+                ),
+                cleanup.retention_evidence,
+            ),
+        )
+        return DaemonResponse(ok=True)
+
+    def _release_buffer_cleanup_leases_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        removed: dict[str, int],
+    ) -> None:
+        for lease_id in self._active_buffer_lease_ids_locked(cleanup.target_id):
+            _merge_removed(
+                removed,
+                self._release_reservation_and_count_locked(
+                    lease_id,
+                    final_state=TransferStatusState.CANCELED,
+                    cleanup_reason=cleanup.reason,
+                ),
+            )
+
+    def _remove_buffer_cleanup_state_locked(
+        self,
+        *,
+        cleanup: CleanupRequest,
+        transfer_ids: tuple[str, ...],
+        removed: dict[str, int],
+    ) -> None:
+        buffer = self._buffers.pop(cleanup.target_id, None)
+        if buffer is not None:
+            removed["buffers"] = int(removed["buffers"]) + 1
+        for transfer_id in transfer_ids:
+            status = self._transfer_statuses.get(transfer_id)
+            if status is not None and status.state not in _TERMINAL_TRANSFER_STATES:
+                self._mark_transfer_terminal_locked(
+                    transfer_id,
+                    TransferStatusState.CANCELED,
+                    error=cleanup.reason,
+                )
+                removed["transfers"] = int(removed["transfers"]) + 1
+            self._retire_transfer_runtime_state_locked(transfer_id)
+
+    def _record_removed_buffer_retention_locked(
+        self,
+        cleanup: CleanupRequest,
+    ) -> bool:
+        cleanup_retention = _merge_retention_evidence(
+            self._buffer_cleanup_ownership_evidence_for_removed_locked(
+                cleanup.target_id,
+                reason=cleanup.reason,
+            ),
+            cleanup.retention_evidence,
+        )
+        if not isinstance(cleanup_retention, Mapping):
+            return False
+        return self._record_cleanup_retention_evidence_locked(
+            target_kind=cleanup.target_kind,
+            target_id=cleanup.target_id,
+            retention_evidence=cleanup_retention,
+        )
 
     def close_session(
         self,
@@ -924,30 +1159,13 @@ class TurboBusDaemon:
             except ValueError as exc:
                 return DaemonResponse(ok=False, error=str(exc))
             if status.state in _TERMINAL_TRANSFER_STATES:
-                if (
-                    requested_state == status.state
-                    and _status_bytes_match(status, bytes_completed)
-                    and (error is None or error == status.error)
-                ):
-                    supplemental = self._supplement_terminal_completion_evidence_locked(
-                        status,
-                        completion_source=completion_source,
-                        completion_evidence=completion_evidence,
-                    )
-                    if not supplemental.ok:
-                        return supplemental
-                    if status.state is TransferStatusState.COMPLETE:
-                        evidence_error = (
-                            self._completion_release_blocked_reason_locked(
-                                status.transfer_id
-                            )
-                        )
-                        if evidence_error is not None:
-                            return DaemonResponse(ok=False, error=evidence_error)
-                    return DaemonResponse(ok=True, payload={"status": asdict(status)})
-                return DaemonResponse(
-                    ok=False,
-                    error="terminal transfer status cannot be updated",
+                return self._handle_terminal_transfer_status_update_locked(
+                    status,
+                    requested_state=requested_state,
+                    bytes_completed=bytes_completed,
+                    error=error,
+                    completion_source=completion_source,
+                    completion_evidence=completion_evidence,
                 )
             checked_at = time.time()
             admission_error = self._transfer_status_update_blocked_reason_locked(
@@ -975,106 +1193,261 @@ class TurboBusDaemon:
                 )
             except ValueError as exc:
                 if requested_state is TransferStatusState.COMPLETE:
-                    mismatch = str(exc)
-                    failed = self._mark_transfer_terminal_locked(
-                        status.transfer_id,
-                        TransferStatusState.FAILED,
-                        error=mismatch,
-                    )
-                    self._append_transfer_audit_records_locked(
-                        event_type="detected_mismatch",
-                        transfer_id=status.transfer_id,
-                        state=TransferStatusState.FAILED,
-                        reason="transfer_status_mismatch",
-                        failure_reason=mismatch,
-                    )
-                    removed = self._release_reservations_for_transfer_locked(
-                        status.transfer_id,
-                        final_state=TransferStatusState.FAILED,
-                        cleanup_reason="transfer_status_mismatch",
-                    )
-                    _merge_removed(
-                        removed,
-                        self._retire_terminal_transfer_without_reservations_locked(
-                            status.transfer_id,
-                            reason="transfer_status_mismatch",
-                        ),
-                    )
-                    admission_refresh = self._refresh_admission_state_locked(
-                        now=time.time(),
-                        reap_expired=False,
-                    )
-                    self._refresh_transfer_queue_record_locked(status.transfer_id)
-                    return DaemonResponse(
-                        ok=False,
-                        error=mismatch,
-                        payload={
-                            "status": asdict(failed),
-                            "removed": removed,
-                            "promoted_transfers": admission_refresh["promoted_transfers"],
-                            "admission_refresh": admission_refresh,
-                        },
+                    return self._handle_transfer_status_mismatch_locked(
+                        status,
+                        error=str(exc),
                     )
                 return DaemonResponse(ok=False, error=str(exc))
-            normalized_completion_source = str(completion_source or "").lower()
-            normalized_completion_evidence: dict[str, object] | None = None
-            completion_ticket: ExecutionTicket | None = None
-            requires_execution_evidence = (
-                self._intent_requires_execution_evidence_locked(updated.transfer_id)
+            evidence_update = self._normalize_transfer_status_evidence_update_locked(
+                updated,
+                completion_source=completion_source,
+                completion_evidence=completion_evidence,
             )
-            if updated.state is TransferStatusState.COMPLETE:
-                if requires_execution_evidence:
-                    if not _is_execution_completion_source(normalized_completion_source):
-                        return DaemonResponse(
-                            ok=False,
-                            error=(
-                                "intent transfer completion requires worker/backend "
-                                "execution evidence"
-                            ),
-                        )
-                    try:
-                        ticket = self._current_execution_ticket_for_transfer_locked(
-                            updated.transfer_id
-                        )
-                        completion_ticket = ticket
-                        normalized_completion_evidence = _normalize_completion_evidence(
-                            completion_evidence,
-                            expected_bytes=updated.bytes_total,
-                            completion_source=normalized_completion_source,
-                            expected_ticket=ticket,
-                        )
-                    except ValueError as exc:
-                        return DaemonResponse(ok=False, error=str(exc))
-                elif completion_evidence is not None:
-                    if isinstance(completion_evidence, Mapping):
-                        try:
-                            normalized_completion_evidence = (
-                                _normalize_completion_evidence(
-                                    completion_evidence,
-                                    expected_bytes=updated.bytes_total,
-                                    completion_source=normalized_completion_source,
-                                )
-                            )
-                        except ValueError:
-                            normalized_completion_evidence = dict(completion_evidence)
-                    else:
-                        normalized_completion_evidence = {
-                            "raw_completion_evidence": str(completion_evidence)
-                        }
-            elif (
-                requires_execution_evidence
-                and updated.state
-                in {
-                    TransferStatusState.RUNNING,
-                    TransferStatusState.FAILED,
-                    TransferStatusState.CANCELED,
-                }
-            ):
+            if not evidence_update.ok:
+                return evidence_update
+            normalized_completion_source = str(
+                evidence_update.payload["completion_source"]
+            )
+            normalized_completion_evidence = evidence_update.payload.get(
+                "completion_evidence"
+            )
+            block_progress_evidence = self._advance_block_runtime_for_status_locked(
+                updated,
+                completion_source=normalized_completion_source,
+                completion_evidence=normalized_completion_evidence,
+                now=checked_at,
+            )
+            if block_progress_evidence is not None:
+                normalized_completion_evidence = merge_completion_evidence(
+                    normalized_completion_evidence,
+                    {"block_runtime": block_progress_evidence},
+                )
+                normalized_completion_evidence = (
+                    self._completion_evidence_with_block_cleanup_locked(
+                        updated.transfer_id,
+                        normalized_completion_evidence,
+                    )
+                )
+            completion_ticket = evidence_update.payload.get("completion_ticket")
+            self._persist_transfer_status_update_locked(
+                updated,
+                completion_source=normalized_completion_source,
+                completion_evidence=normalized_completion_evidence,
+                completion_ticket=completion_ticket,
+            )
+            return self._finalize_transfer_status_update_locked(
+                updated,
+            )
+
+    def _handle_terminal_transfer_status_update_locked(
+        self,
+        status: TransferStatus,
+        *,
+        requested_state: TransferStatusState,
+        bytes_completed: int | None,
+        error: str | None,
+        completion_source: str | None,
+        completion_evidence: Mapping[str, object] | None,
+    ) -> DaemonResponse:
+        if (
+            requested_state == status.state
+            and _status_bytes_match(status, bytes_completed)
+            and (error is None or error == status.error)
+        ):
+            supplemental = self._supplement_terminal_completion_evidence_locked(
+                status,
+                completion_source=completion_source,
+                completion_evidence=completion_evidence,
+            )
+            if not supplemental.ok:
+                return supplemental
+            if status.state is TransferStatusState.COMPLETE:
+                evidence_error = self._completion_release_blocked_reason_locked(
+                    status.transfer_id
+                )
+                if evidence_error is not None:
+                    return DaemonResponse(ok=False, error=evidence_error)
+            return DaemonResponse(ok=True, payload={"status": asdict(status)})
+        return DaemonResponse(
+            ok=False,
+            error="terminal transfer status cannot be updated",
+        )
+
+    def _persist_transfer_status_update_locked(
+        self,
+        updated: TransferStatus,
+        *,
+        completion_source: str,
+        completion_evidence: Mapping[str, object] | None,
+        completion_ticket: ExecutionTicket | None,
+    ) -> None:
+        self._transfer_statuses[updated.transfer_id] = updated
+        actions = daemon_transfer_lifecycle.status_persistence_actions(
+            status=updated,
+            completion_evidence=completion_evidence,
+            completion_ticket=completion_ticket,
+        )
+        if bool(actions["store_completion_ticket"]) and completion_ticket is not None:
+            self._transfer_completion_tickets[updated.transfer_id] = (
+                completion_ticket
+            )
+        if bool(actions["mark_admission_terminal"]):
+            self._mark_transfer_admission_terminal_locked(
+                updated.transfer_id,
+                updated.state,
+                reason=updated.error,
+            )
+        if bool(actions["drop_active_ticket"]):
+            self._drop_execution_ticket_for_transfer_locked(updated.transfer_id)
+        if bool(actions["store_completion_source"]):
+            self._transfer_completion_sources[updated.transfer_id] = completion_source
+        if bool(actions["merge_completion_evidence"]):
+            existing_evidence = self._transfer_completion_evidence.get(
+                updated.transfer_id
+            )
+            self._transfer_completion_evidence[updated.transfer_id] = (
+                merge_completion_evidence(
+                    existing_evidence,
+                    completion_evidence,
+                )
+            )
+        self._refresh_transfer_queue_record_locked(updated.transfer_id)
+        if bool(actions["record_terminal_feedback"]):
+            self._record_terminal_runtime_feedback_locked(updated.transfer_id)
+
+    def _finalize_transfer_status_update_locked(
+        self,
+        updated: TransferStatus,
+    ) -> DaemonResponse:
+        removed = _empty_removed_summary()
+        promoted = ()
+        plan = daemon_transfer_lifecycle.terminal_finalization_plan(updated)
+        event_type = plan.get("event_type")
+        if event_type is not None:
+            audit_kwargs = {
+                "event_type": str(event_type),
+                "transfer_id": updated.transfer_id,
+                "state": updated.state,
+                "bytes_completed": updated.bytes_completed,
+            }
+            if plan.get("reason") is not None:
+                audit_kwargs["reason"] = str(plan["reason"])
+            if plan.get("failure_reason") is not None:
+                audit_kwargs["failure_reason"] = str(plan["failure_reason"])
+            self._append_transfer_audit_records_locked(
+                **audit_kwargs,
+            )
+        if bool(plan.get("release_reservations", False)):
+            _merge_removed(
+                removed,
+                self._release_reservations_for_transfer_locked(
+                    updated.transfer_id,
+                    final_state=updated.state,
+                    cleanup_reason=str(plan["reason"]),
+                ),
+            )
+        if plan.get("retire_reason") is not None:
+            _merge_removed(
+                removed,
+                self._retire_terminal_transfer_without_reservations_locked(
+                    updated.transfer_id,
+                    reason=str(plan["retire_reason"]),
+                ),
+            )
+        refresh_admission = str(plan.get("refresh_admission", "never"))
+        if refresh_admission == "always" or (
+            refresh_admission == "if_transfer_removed"
+            and int(removed["transfers"]) > 0
+        ):
+            admission_refresh = self._refresh_admission_state_locked(
+                now=time.time(),
+                reap_expired=False,
+            )
+            promoted = admission_refresh["promoted_transfers"]
+        if bool(plan.get("record_failure_cleanup_contract", False)):
+            self._record_failure_cleanup_contract_locked(
+                transfer_id=updated.transfer_id,
+                final_state=updated.state,
+                error=str(plan["reason"]),
+                removed=removed,
+                promoted=promoted,
+            )
+        return DaemonResponse(
+            ok=True,
+            payload=daemon_transfer_lifecycle.terminal_status_payload(
+                status=updated,
+                removed=removed,
+                promoted_transfers=promoted,
+            ),
+        )
+
+    def _handle_transfer_status_mismatch_locked(
+        self,
+        status: TransferStatus,
+        *,
+        error: str,
+    ) -> DaemonResponse:
+        mismatch = str(error)
+        failed = self._mark_transfer_terminal_locked(
+            status.transfer_id,
+            TransferStatusState.FAILED,
+            error=mismatch,
+        )
+        self._append_transfer_audit_records_locked(
+            event_type="detected_mismatch",
+            transfer_id=status.transfer_id,
+            state=TransferStatusState.FAILED,
+            reason="transfer_status_mismatch",
+            failure_reason=mismatch,
+        )
+        removed = self._release_reservations_for_transfer_locked(
+            status.transfer_id,
+            final_state=TransferStatusState.FAILED,
+            cleanup_reason="transfer_status_mismatch",
+        )
+        _merge_removed(
+            removed,
+            self._retire_terminal_transfer_without_reservations_locked(
+                status.transfer_id,
+                reason="transfer_status_mismatch",
+            ),
+        )
+        admission_refresh = self._refresh_admission_state_locked(
+            now=time.time(),
+            reap_expired=False,
+        )
+        self._refresh_transfer_queue_record_locked(status.transfer_id)
+        return DaemonResponse(
+            ok=False,
+            error=mismatch,
+            payload={
+                "status": asdict(failed),
+                "removed": removed,
+                "promoted_transfers": admission_refresh["promoted_transfers"],
+                "admission_refresh": admission_refresh,
+            },
+        )
+
+    def _normalize_transfer_status_evidence_update_locked(
+        self,
+        updated: TransferStatus,
+        *,
+        completion_source: str | None,
+        completion_evidence: Mapping[str, object] | None,
+    ) -> DaemonResponse:
+        normalized_completion_source = str(completion_source or "").lower()
+        normalized_completion_evidence: dict[str, object] | None = None
+        completion_ticket: ExecutionTicket | None = None
+        requires_execution_evidence = (
+            self._intent_requires_execution_evidence_locked(updated.transfer_id)
+        )
+        if updated.state is TransferStatusState.COMPLETE:
+            if requires_execution_evidence:
                 if not _is_execution_completion_source(normalized_completion_source):
                     return DaemonResponse(
                         ok=False,
                         error=(
-                            "intent transfer status update requires worker/backend "
+                            "intent transfer completion requires worker/backend "
                             "execution evidence"
                         ),
                     )
@@ -1082,161 +1455,108 @@ class TurboBusDaemon:
                     ticket = self._current_execution_ticket_for_transfer_locked(
                         updated.transfer_id
                     )
-                    normalized_completion_evidence = (
-                        _normalize_status_ticket_evidence(
-                            completion_evidence,
-                            expected_ticket=ticket,
-                        )
+                    completion_ticket = ticket
+                    normalized_completion_evidence = normalize_completion_evidence(
+                        completion_evidence,
+                        expected_bytes=updated.bytes_total,
+                        completion_source=normalized_completion_source,
+                        expected_ticket=ticket,
                     )
-                    if updated.state in {
-                        TransferStatusState.FAILED,
-                        TransferStatusState.CANCELED,
-                    }:
-                        completion_ticket = ticket
                 except ValueError as exc:
                     return DaemonResponse(ok=False, error=str(exc))
-            self._transfer_statuses[updated.transfer_id] = updated
-            if updated.state in {
+            elif completion_evidence is not None:
+                if isinstance(completion_evidence, Mapping):
+                    try:
+                        normalized_completion_evidence = normalize_completion_evidence(
+                            completion_evidence,
+                            expected_bytes=updated.bytes_total,
+                            completion_source=normalized_completion_source,
+                        )
+                    except ValueError:
+                        normalized_completion_evidence = dict(completion_evidence)
+                else:
+                    normalized_completion_evidence = {
+                        "raw_completion_evidence": str(completion_evidence)
+                    }
+        elif (
+            requires_execution_evidence
+            and updated.state
+            in {
+                TransferStatusState.RUNNING,
                 TransferStatusState.FAILED,
                 TransferStatusState.CANCELED,
-            }:
-                if completion_ticket is not None:
-                    self._transfer_completion_tickets[updated.transfer_id] = (
-                        completion_ticket
-                    )
-                self._mark_transfer_admission_terminal_locked(
-                    updated.transfer_id,
-                    updated.state,
-                    reason=updated.error,
+            }
+        ):
+            if not _is_execution_completion_source(normalized_completion_source):
+                return DaemonResponse(
+                    ok=False,
+                    error=(
+                        "intent transfer status update requires worker/backend "
+                        "execution evidence"
+                    ),
                 )
-                self._drop_execution_ticket_for_transfer_locked(updated.transfer_id)
-            if updated.state is TransferStatusState.COMPLETE:
-                self._transfer_completion_sources[updated.transfer_id] = (
-                    normalized_completion_source
-                )
-                if completion_ticket is not None:
-                    self._transfer_completion_tickets[updated.transfer_id] = (
-                        completion_ticket
-                    )
-                    self._drop_execution_ticket_for_transfer_locked(updated.transfer_id)
-            if normalized_completion_evidence is not None:
-                self._transfer_completion_sources[updated.transfer_id] = (
-                    normalized_completion_source
-                )
-                existing_evidence = self._transfer_completion_evidence.get(
+            try:
+                ticket = self._current_execution_ticket_for_transfer_locked(
                     updated.transfer_id
                 )
-                self._transfer_completion_evidence[updated.transfer_id] = (
-                    _merge_completion_evidence(
-                        existing_evidence,
-                        normalized_completion_evidence,
-                    )
+                normalized_completion_evidence = normalize_status_ticket_evidence(
+                    completion_evidence,
+                    expected_ticket=ticket,
                 )
-            self._refresh_transfer_queue_record_locked(updated.transfer_id)
-            if updated.state in _TERMINAL_TRANSFER_STATES:
-                self._record_terminal_runtime_feedback_locked(updated.transfer_id)
-            removed = _empty_removed_summary()
-            promoted = ()
-            if updated.state is TransferStatusState.COMPLETE:
-                self._append_transfer_audit_records_locked(
-                    event_type="worker_completion",
-                    transfer_id=updated.transfer_id,
-                    state=updated.state,
-                    bytes_completed=updated.bytes_completed,
-                )
-                _merge_removed(
-                    removed,
-                    self._retire_terminal_transfer_without_reservations_locked(
-                        updated.transfer_id,
-                        reason="worker_complete",
-                    ),
-                )
-                if int(removed["transfers"]) > 0:
-                    admission_refresh = self._refresh_admission_state_locked(
-                        now=time.time(),
-                        reap_expired=False,
-                    )
-                    promoted = admission_refresh["promoted_transfers"]
-            elif updated.state is TransferStatusState.FAILED:
-                self._append_transfer_audit_records_locked(
-                    event_type="worker_failure",
-                    transfer_id=updated.transfer_id,
-                    state=updated.state,
-                    reason=updated.error or "worker_failed",
-                    failure_reason=updated.error or "worker_failed",
-                    bytes_completed=updated.bytes_completed,
-                )
-                _merge_removed(
-                    removed,
-                    self._release_reservations_for_transfer_locked(
-                        updated.transfer_id,
-                        final_state=TransferStatusState.FAILED,
-                        cleanup_reason=updated.error or "worker_failed",
-                    ),
-                )
-                _merge_removed(
-                    removed,
-                    self._retire_terminal_transfer_without_reservations_locked(
-                        updated.transfer_id,
-                        reason=updated.error or "worker_failed",
-                    ),
-                )
-                admission_refresh = self._refresh_admission_state_locked(
-                    now=time.time(),
-                    reap_expired=False,
-                )
-                promoted = admission_refresh["promoted_transfers"]
-                self._record_failure_cleanup_contract_locked(
-                    transfer_id=updated.transfer_id,
-                    final_state=updated.state,
-                    error=updated.error or "worker_failed",
-                    removed=removed,
-                    promoted=promoted,
-                )
-            elif updated.state is TransferStatusState.CANCELED:
-                self._append_transfer_audit_records_locked(
-                    event_type="transfer_canceled",
-                    transfer_id=updated.transfer_id,
-                    state=updated.state,
-                    reason=updated.error or "transfer_canceled",
-                    failure_reason=updated.error or "transfer_canceled",
-                    bytes_completed=updated.bytes_completed,
-                )
-                _merge_removed(
-                    removed,
-                    self._release_reservations_for_transfer_locked(
-                        updated.transfer_id,
-                        final_state=TransferStatusState.CANCELED,
-                        cleanup_reason=updated.error or "transfer_canceled",
-                    ),
-                )
-                _merge_removed(
-                    removed,
-                    self._retire_terminal_transfer_without_reservations_locked(
-                        updated.transfer_id,
-                        reason=updated.error or "transfer_canceled",
-                    ),
-                )
-                admission_refresh = self._refresh_admission_state_locked(
-                    now=time.time(),
-                    reap_expired=False,
-                )
-                promoted = admission_refresh["promoted_transfers"]
-                self._record_failure_cleanup_contract_locked(
-                    transfer_id=updated.transfer_id,
-                    final_state=updated.state,
-                    error=updated.error or "transfer_canceled",
-                    removed=removed,
-                    promoted=promoted,
-                )
-            return DaemonResponse(
-                ok=True,
-                payload={
-                    "status": asdict(updated),
-                    "removed": removed,
-                    "promoted_transfers": promoted,
-                },
+                if updated.state in {
+                    TransferStatusState.FAILED,
+                    TransferStatusState.CANCELED,
+                }:
+                    completion_ticket = ticket
+            except ValueError as exc:
+                return DaemonResponse(ok=False, error=str(exc))
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "completion_source": normalized_completion_source,
+                "completion_evidence": normalized_completion_evidence,
+                "completion_ticket": completion_ticket,
+            },
+        )
+
+    def _advance_block_runtime_for_status_locked(
+        self,
+        status: TransferStatus,
+        *,
+        completion_source: str | None,
+        completion_evidence: Mapping[str, object] | None,
+        now: float,
+    ) -> dict[str, object] | None:
+        records = self._block_runtime_records.get(status.transfer_id)
+        if not records:
+            return None
+        block_progress = (
+            completion_evidence.get("block_progress")
+            if isinstance(completion_evidence, Mapping)
+            else None
+        )
+        if isinstance(block_progress, Mapping):
+            updated, evidence = daemon_block_runtime.advance_from_worker_progress(
+                records,
+                progress=block_progress,
+                completion_source=completion_source,
+                completion_evidence=completion_evidence,
+                now=float(now),
             )
+        else:
+            updated, evidence = daemon_block_runtime.advance_for_status(
+                records,
+                state=status.state,
+                bytes_completed=status.bytes_completed,
+                completion_source=completion_source,
+                completion_evidence=completion_evidence,
+                now=float(now),
+            )
+        self._block_runtime_records[status.transfer_id] = tuple(
+            record.as_dict() for record in updated
+        )
+        self._runtime_state_version += 1
+        return evidence
 
     def _supplement_terminal_completion_evidence_locked(
         self,
@@ -1263,23 +1583,38 @@ class TurboBusDaemon:
             )
         try:
             if status.state is TransferStatusState.COMPLETE:
-                supplemental = _normalize_completion_evidence(
+                supplemental = normalize_completion_evidence(
                     completion_evidence,
                     expected_bytes=status.bytes_total,
                     completion_source=normalized_completion_source,
                     expected_ticket=ticket,
                 )
             else:
-                supplemental = _normalize_status_ticket_evidence(
+                supplemental = normalize_status_ticket_evidence(
                     completion_evidence,
                     expected_ticket=ticket,
                 )
         except ValueError as exc:
             return DaemonResponse(ok=False, error=str(exc))
         existing = dict(self._transfer_completion_evidence.get(status.transfer_id, {}))
+        block_progress_evidence = self._advance_block_runtime_for_status_locked(
+            status,
+            completion_source=normalized_completion_source,
+            completion_evidence=supplemental,
+            now=time.time(),
+        )
+        if block_progress_evidence is not None:
+            supplemental = merge_completion_evidence(
+                supplemental,
+                {"block_runtime": block_progress_evidence},
+            )
+            supplemental = self._completion_evidence_with_block_cleanup_locked(
+                status.transfer_id,
+                supplemental,
+            )
         self._transfer_completion_sources[status.transfer_id] = normalized_completion_source
         self._transfer_completion_evidence[status.transfer_id] = (
-            _merge_completion_evidence(existing, supplemental)
+            merge_completion_evidence(existing, supplemental)
         )
         self._archive_transfer_receipt_state_locked(status.transfer_id)
         self._refresh_transfer_queue_record_locked(status.transfer_id)
@@ -1633,233 +1968,450 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         now = time.time()
         with self._lock:
-            cleanup_payload: dict[str, object] | None = None
+            preflight = self._authorize_worker_transfer_preflight_locked(
+                request,
+                peer_identity=peer_identity,
+                now=now,
+            )
+            if not preflight.ok:
+                return preflight
+            status = preflight.payload["status"]
+            lease = preflight.payload["lease"]
+            cleanup_payload = preflight.payload["cleanup_payload"]
 
             def authorization_failure(error: str) -> DaemonResponse:
-                if cleanup_payload is None:
-                    return DaemonResponse(ok=False, error=error)
                 return DaemonResponse(ok=False, error=error, payload=cleanup_payload)
 
-            self._reap_stale_sessions_locked(now)
-            status = self._transfer_statuses.get(request.transfer_id)
-            if status is None:
-                return DaemonResponse(ok=False, error="unknown transfer")
-            if status.session_id != request.session_id:
-                return DaemonResponse(ok=False, error="transfer session mismatch")
-            if status.job_id != request.job_id:
-                return DaemonResponse(ok=False, error="transfer job mismatch")
-            try:
-                self._validate_peer_owns_job_locked(
-                    job_id=request.job_id,
-                    peer_identity=peer_identity,
-                )
-            except ValueError as exc:
-                return DaemonResponse(ok=False, error=str(exc))
-            if status.state in _TERMINAL_TRANSFER_STATES:
-                return DaemonResponse(ok=False, error="transfer is terminal")
-            lease = self._lease_tokens.get(request.lease_id)
-            if lease is None:
-                return DaemonResponse(ok=False, error="unknown lease")
-            if lease.token != request.token:
-                return DaemonResponse(ok=False, error="invalid lease token")
-            if lease.session_id != request.session_id:
-                return DaemonResponse(ok=False, error="lease session mismatch")
-            if lease.job_id != request.job_id:
-                return DaemonResponse(ok=False, error="lease job mismatch")
-            if request.relay_gpu is not None and lease.relay_gpu != request.relay_gpu:
-                return DaemonResponse(ok=False, error="lease relay mismatch")
-            if lease.expires_at and now > lease.expires_at:
-                self._release_expired_lease_locked(lease.lease_id)
-                return DaemonResponse(ok=False, error="lease expired")
-            if lease.lease_id not in self._reservations:
-                return DaemonResponse(ok=False, error="lease is not active")
-            cleanup_payload = self._authorization_cleanup_payload_locked(
-                transfer_id=request.transfer_id,
-                job_id=request.job_id,
-                session_id=request.session_id,
-                lease_id=request.lease_id,
-            )
-            admission_error = self._validate_transfer_admission_locked(
-                request.transfer_id,
-                lease_id=lease.lease_id,
-                now=now,
-            )
-            if admission_error is not None:
-                return authorization_failure(admission_error)
-            reservation = self._reservations[lease.lease_id]
-            if reservation.direction not in {"unknown", request.direction}:
-                return authorization_failure("reservation direction mismatch")
-            plan = self._transfer_plans.get(request.transfer_id)
-            if plan is None:
-                return authorization_failure("transfer plan is unavailable")
-            related_leases = self._leases_for_worker_plan_locked(
+            context_response = self._worker_authorization_context_locked(
                 request,
-                primary_lease=lease,
+                lease=lease,
+                peer_identity=peer_identity,
+                now=now,
             )
-            if len(related_leases) > 1:
-                related_lease_ids = {item.lease_id for item in related_leases}
-                admission_error = self._validate_transfer_admission_locked(
-                    request.transfer_id,
-                    lease_id=None,
+            if not context_response.ok:
+                return authorization_failure(str(context_response.error))
+            context = context_response.payload["context"]
+            execution = self._issue_worker_authorization_execution_locked(
+                request=request,
+                status=status,
+                context=context,
+                now=now,
+            )
+            return DaemonResponse(
+                ok=True,
+                payload=self._worker_authorization_payload_locked(
+                    request=request,
+                    ticket=execution["ticket"],
+                    src_buffer=context["src_buffer"],
+                    dst_buffer=context["dst_buffer"],
+                    lease=lease,
+                    related_leases=context["related_leases"],
+                    session=context["session"],
+                    planning_relays=context["planning_relays"],
+                    relay_eligibility=context["relay_eligibility"],
+                    profile_entry=context["profile_entry"],
+                    staging_records=execution["staging_records"],
                     now=now,
-                )
-                if admission_error is not None:
-                    return authorization_failure(admission_error)
-                for related_lease in related_leases:
-                    if related_lease.lease_id == lease.lease_id:
-                        continue
-                    admission_error = self._validate_transfer_admission_locked(
-                        request.transfer_id,
-                        lease_id=related_lease.lease_id,
-                        now=now,
-                    )
-                    if admission_error is not None:
-                        return authorization_failure(admission_error)
-                    if related_lease.expires_at and now > related_lease.expires_at:
-                        self._release_expired_lease_locked(related_lease.lease_id)
-                        return authorization_failure("lease expired")
-                    if related_lease.lease_id not in self._reservations:
-                        return authorization_failure("lease is not active")
-                    if related_lease.session_id != request.session_id:
-                        return authorization_failure("lease session mismatch")
-                    if related_lease.job_id != request.job_id:
-                        return authorization_failure("lease job mismatch")
-                    if related_lease.buffer_ids != lease.buffer_ids:
-                        return authorization_failure("lease buffer mismatch")
-                admission = self._transfer_admissions.get(request.transfer_id, {})
-                admission_lease_ids = set(
-                    str(item) for item in admission.get("lease_ids", ()) or ()
-                )
-                if admission_lease_ids and admission_lease_ids != related_lease_ids:
-                    return authorization_failure("worker lease set mismatch")
-            else:
-                related_leases = (lease,)
-            try:
-                authorized_ranges = daemon_receipts.ticket_ranges_for_plan(
-                    plan,
-                    direction=request.direction,
-                )
-                authorized_relay_ranges = planning_helpers.relay_ranges_from_plan(
-                    plan,
-                    relay_gpu=tuple(item.relay_gpu for item in related_leases),
-                    direction=request.direction,
-                )
-            except ValueError as exc:
-                return authorization_failure(str(exc))
-            if request.ranges and request.ranges != authorized_ranges:
-                return authorization_failure("worker ranges do not match daemon plan")
-            requested_bytes = sum(item["bytes"] for item in authorized_relay_ranges)
-            reservation_bytes = sum(
-                int(self._reservations[item.lease_id].bytes)
-                for item in related_leases
-                if item.lease_id in self._reservations
+                ),
             )
-            if requested_bytes > reservation_bytes:
-                return authorization_failure("authorization exceeds reservation bytes")
-            required_buffers = (request.src_buffer_id, request.dst_buffer_id)
-            if required_buffers != lease.buffer_ids:
-                return authorization_failure("lease buffer mismatch")
-            src_buffer = self._buffers.get(request.src_buffer_id)
-            dst_buffer = self._buffers.get(request.dst_buffer_id)
-            if src_buffer is None or dst_buffer is None:
-                return authorization_failure("unknown buffer")
-            session = self._sessions.get(request.session_id)
-            if session is None:
-                return authorization_failure("transfer session is unavailable")
-            relay_eligibility = self._relay_eligibility_for_session_locked(session)
-            planning_relays = tuple(
-                int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
-            )
-            try:
-                self._validate_peer_owns_buffer_locked(
-                    buffer_id=src_buffer.buffer_id,
-                    peer_identity=peer_identity,
-                )
-                self._validate_peer_owns_buffer_locked(
-                    buffer_id=dst_buffer.buffer_id,
-                    peer_identity=peer_identity,
-                )
-            except ValueError as exc:
-                return authorization_failure(str(exc))
-            authorization = WorkerTransferAuthorization(
-                transfer_id=request.transfer_id,
-                lease_id=request.lease_id,
-                session_id=request.session_id,
-                job_id=request.job_id,
-                src_buffer=src_buffer,
-                dst_buffer=dst_buffer,
+
+    def _worker_authorization_context_locked(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        *,
+        lease: LeaseToken,
+        peer_identity: PeerIdentity | None,
+        now: float,
+    ) -> DaemonResponse:
+        admission_error = self._validate_transfer_admission_locked(
+            request.transfer_id,
+            lease_id=lease.lease_id,
+            now=now,
+        )
+        if admission_error is not None:
+            return DaemonResponse(ok=False, error=admission_error)
+        reservation = self._reservations[lease.lease_id]
+        if reservation.direction not in {"unknown", request.direction}:
+            return DaemonResponse(ok=False, error="reservation direction mismatch")
+        plan = self._transfer_plans.get(request.transfer_id)
+        if plan is None:
+            return DaemonResponse(ok=False, error="transfer plan is unavailable")
+        related_leases_response = self._authorize_worker_related_leases_locked(
+            request,
+            primary_lease=lease,
+            now=now,
+        )
+        if not related_leases_response.ok:
+            return DaemonResponse(ok=False, error=str(related_leases_response.error))
+        related_leases = related_leases_response.payload["related_leases"]
+        ranges_response = self._worker_authorized_ranges_locked(
+            request=request,
+            plan=plan,
+            related_leases=related_leases,
+        )
+        if not ranges_response.ok:
+            return ranges_response
+        buffer_response = self._worker_authorization_buffers_locked(
+            request=request,
+            lease=lease,
+            peer_identity=peer_identity,
+        )
+        if not buffer_response.ok:
+            return buffer_response
+        session = self._sessions.get(request.session_id)
+        if session is None:
+            return DaemonResponse(ok=False, error="transfer session is unavailable")
+        relay_eligibility = self._relay_eligibility_for_session_locked(session)
+        planning_relays = tuple(
+            int(item["relay_gpu"]) for item in relay_eligibility["eligible_relays"]
+        )
+        profile_entry = self._trusted_profile_entry_locked(
+            target_gpu=session.target_gpu,
+            planning_relays=planning_relays,
+            fallback_relays=tuple(session.relay_gpus),
+        )
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "context": {
+                    "reservation": reservation,
+                    "plan": plan,
+                    "related_leases": related_leases,
+                    "authorized_ranges": ranges_response.payload["authorized_ranges"],
+                    "src_buffer": buffer_response.payload["src_buffer"],
+                    "dst_buffer": buffer_response.payload["dst_buffer"],
+                    "session": session,
+                    "relay_eligibility": relay_eligibility,
+                    "planning_relays": planning_relays,
+                    "profile_entry": profile_entry,
+                }
+            },
+        )
+
+    def _completion_evidence_with_block_cleanup_locked(
+        self,
+        transfer_id: str,
+        completion_evidence: Mapping[str, object] | None,
+    ) -> dict[str, object] | None:
+        if completion_evidence is None:
+            return None
+        records = self._block_runtime_records.get(str(transfer_id))
+        if not records:
+            return dict(completion_evidence)
+        updated = dict(completion_evidence)
+        cleanup = dict(updated.get("cleanup") or {})
+        cleanup["block_runtime_cleanup"] = daemon_block_runtime.block_cleanup_summary(
+            records
+        )
+        updated["cleanup"] = cleanup
+        return updated
+
+    def _worker_authorized_ranges_locked(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        plan: Mapping[str, object],
+        related_leases: Iterable[LeaseToken],
+    ) -> DaemonResponse:
+        related_leases_tuple = tuple(related_leases)
+        try:
+            authorized_ranges = daemon_receipts.ticket_ranges_for_plan(
+                plan,
                 direction=request.direction,
-                ranges=authorized_ranges,
-                relay_gpu=lease.relay_gpu,
-                plan=plan,
             )
-            ticket = self._execution_ticket_for_worker_locked(
-                authorization,
-                leases=related_leases,
-                transfer_id=request.transfer_id,
-                now=now,
-            )
-            self._execution_tickets[ticket.ticket_id] = ticket
-            self._transfer_tickets[request.transfer_id] = ticket.ticket_id
-            staging_records = self._register_worker_staging_records_locked(
-                leases=related_leases,
-                transfer_id=request.transfer_id,
+            authorized_relay_ranges = planning_helpers.relay_ranges_from_plan(
+                plan,
+                relay_gpu=tuple(item.relay_gpu for item in related_leases_tuple),
                 direction=request.direction,
-                plan=plan,
-                now=now,
             )
-            for related_lease in related_leases:
-                related_reservation = self._reservations.get(related_lease.lease_id)
-                if related_reservation is None:
-                    continue
-                self._append_audit_record_locked(
-                    event_type="relay_authorized",
-                    transfer_id=request.transfer_id,
-                    reservation=related_reservation,
-                    lease=related_lease,
-                    staging_record=staging_records[related_lease.lease_id],
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        if request.ranges and request.ranges != authorized_ranges:
+            return DaemonResponse(
+                ok=False,
+                error="worker ranges do not match daemon plan",
+            )
+        requested_bytes = sum(item["bytes"] for item in authorized_relay_ranges)
+        reservation_bytes = sum(
+            int(self._reservations[item.lease_id].bytes)
+            for item in related_leases_tuple
+            if item.lease_id in self._reservations
+        )
+        if requested_bytes > reservation_bytes:
+            return DaemonResponse(
+                ok=False,
+                error="authorization exceeds reservation bytes",
+            )
+        return DaemonResponse(
+            ok=True,
+            payload={"authorized_ranges": authorized_ranges},
+        )
+
+    def _worker_authorization_buffers_locked(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        lease: LeaseToken,
+        peer_identity: PeerIdentity | None,
+    ) -> DaemonResponse:
+        required_buffers = (request.src_buffer_id, request.dst_buffer_id)
+        if required_buffers != lease.buffer_ids:
+            return DaemonResponse(ok=False, error="lease buffer mismatch")
+        src_buffer = self._buffers.get(request.src_buffer_id)
+        dst_buffer = self._buffers.get(request.dst_buffer_id)
+        if src_buffer is None or dst_buffer is None:
+            return DaemonResponse(ok=False, error="unknown buffer")
+        try:
+            self._validate_peer_owns_buffer_locked(
+                buffer_id=src_buffer.buffer_id,
+                peer_identity=peer_identity,
+            )
+            self._validate_peer_owns_buffer_locked(
+                buffer_id=dst_buffer.buffer_id,
+                peer_identity=peer_identity,
+            )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "src_buffer": src_buffer,
+                "dst_buffer": dst_buffer,
+            },
+        )
+
+    def _issue_worker_authorization_execution_locked(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        status: TransferStatus,
+        context: Mapping[str, object],
+        now: float,
+    ) -> dict[str, object]:
+        authorization = WorkerTransferAuthorization(
+            transfer_id=request.transfer_id,
+            lease_id=request.lease_id,
+            session_id=request.session_id,
+            job_id=request.job_id,
+            src_buffer=context["src_buffer"],
+            dst_buffer=context["dst_buffer"],
+            direction=request.direction,
+            ranges=context["authorized_ranges"],
+            relay_gpu=context["reservation"].relay_gpu,
+            plan=context["plan"],
+        )
+        related_leases = context["related_leases"]
+        ticket = self._execution_ticket_for_worker_locked(
+            authorization,
+            leases=related_leases,
+            transfer_id=request.transfer_id,
+            now=now,
+        )
+        self._execution_tickets[ticket.ticket_id] = ticket
+        self._transfer_tickets[request.transfer_id] = ticket.ticket_id
+        staging_records = self._register_worker_staging_records_locked(
+            leases=related_leases,
+            transfer_id=request.transfer_id,
+            direction=request.direction,
+            plan=context["plan"],
+            now=now,
+        )
+        self._append_worker_authorization_audit_records_locked(
+            request=request,
+            status=status,
+            ticket=ticket,
+            related_leases=related_leases,
+            staging_records=staging_records,
+            now=now,
+        )
+        return {
+            "ticket": ticket,
+            "staging_records": staging_records,
+        }
+
+    def _append_worker_authorization_audit_records_locked(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        status: TransferStatus,
+        ticket: ExecutionTicket,
+        related_leases: Iterable[LeaseToken],
+        staging_records: Mapping[str, Mapping[str, object]],
+        now: float,
+    ) -> None:
+        for related_lease in related_leases:
+            related_reservation = self._reservations.get(related_lease.lease_id)
+            if related_reservation is None:
+                continue
+            self._append_audit_record_locked(
+                event_type="relay_authorized",
+                transfer_id=request.transfer_id,
+                reservation=related_reservation,
+                lease=related_lease,
+                staging_record=staging_records[related_lease.lease_id],
                 ticket=ticket,
                 state=status.state,
                 reason="worker_authorized",
                 bytes_completed=status.bytes_completed,
                 now=now,
-                )
-            decision = self._scheduling_decisions.get(request.transfer_id)
+            )
+
+    def _worker_authorization_payload_locked(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        ticket: ExecutionTicket,
+        src_buffer: BufferRegistration,
+        dst_buffer: BufferRegistration,
+        lease: LeaseToken,
+        related_leases: Iterable[LeaseToken],
+        session: Session,
+        planning_relays: tuple[int, ...],
+        relay_eligibility: Mapping[str, object],
+        profile_entry: Mapping[str, object] | None,
+        staging_records: Mapping[str, Mapping[str, object]],
+        now: float,
+    ) -> dict[str, object]:
+        related_leases_tuple = tuple(related_leases)
+        decision = self._scheduling_decisions.get(request.transfer_id)
+        return {
+            "ticket": asdict(ticket),
+            "decision": None if decision is None else asdict(decision),
+            "src_buffer": asdict(src_buffer),
+            "dst_buffer": asdict(dst_buffer),
+            "relay_gpu": lease.relay_gpu,
+            "relay_gpus": tuple(item.relay_gpu for item in related_leases_tuple),
+            "lease_id": request.lease_id,
+            "lease_ids": tuple(item.lease_id for item in related_leases_tuple),
+            "transfer_id": request.transfer_id,
+            "authorized_at": now,
+            "plan_generation": self._transfer_plan_generations.get(
+                request.transfer_id,
+                0,
+            ),
+            "planning": {
+                "target_gpu": session.target_gpu,
+                "profile_key": self._profile_key(session.target_gpu, planning_relays),
+                "profile_entry": None if profile_entry is None else dict(profile_entry),
+                "relay_eligibility": dict(relay_eligibility),
+            },
+            "staging_record": dict(staging_records[lease.lease_id]),
+            "staging_records": [
+                dict(staging_records[item.lease_id])
+                for item in related_leases_tuple
+            ],
+        }
+
+    def _authorize_worker_transfer_preflight_locked(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        *,
+        peer_identity: PeerIdentity | None,
+        now: float,
+    ) -> DaemonResponse:
+        self._reap_stale_sessions_locked(now)
+        status = self._transfer_statuses.get(request.transfer_id)
+        if status is None:
+            return DaemonResponse(ok=False, error="unknown transfer")
+        if status.session_id != request.session_id:
+            return DaemonResponse(ok=False, error="transfer session mismatch")
+        if status.job_id != request.job_id:
+            return DaemonResponse(ok=False, error="transfer job mismatch")
+        try:
+            self._validate_peer_owns_job_locked(
+                job_id=request.job_id,
+                peer_identity=peer_identity,
+            )
+        except ValueError as exc:
+            return DaemonResponse(ok=False, error=str(exc))
+        if status.state in _TERMINAL_TRANSFER_STATES:
+            return DaemonResponse(ok=False, error="transfer is terminal")
+        lease = self._lease_tokens.get(request.lease_id)
+        if lease is None:
+            return DaemonResponse(ok=False, error="unknown lease")
+        if lease.token != request.token:
+            return DaemonResponse(ok=False, error="invalid lease token")
+        if lease.session_id != request.session_id:
+            return DaemonResponse(ok=False, error="lease session mismatch")
+        if lease.job_id != request.job_id:
+            return DaemonResponse(ok=False, error="lease job mismatch")
+        if request.relay_gpu is not None and lease.relay_gpu != request.relay_gpu:
+            return DaemonResponse(ok=False, error="lease relay mismatch")
+        if lease.expires_at and now > lease.expires_at:
+            self._release_expired_lease_locked(lease.lease_id)
+            return DaemonResponse(ok=False, error="lease expired")
+        if lease.lease_id not in self._reservations:
+            return DaemonResponse(ok=False, error="lease is not active")
+        cleanup_payload = self._authorization_cleanup_payload_locked(
+            transfer_id=request.transfer_id,
+            job_id=request.job_id,
+            session_id=request.session_id,
+            lease_id=request.lease_id,
+        )
+        return DaemonResponse(
+            ok=True,
+            payload={
+                "status": status,
+                "lease": lease,
+                "cleanup_payload": cleanup_payload,
+            },
+        )
+
+    def _authorize_worker_related_leases_locked(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        *,
+        primary_lease: LeaseToken,
+        now: float,
+    ) -> DaemonResponse:
+        related_leases = self._leases_for_worker_plan_locked(
+            request,
+            primary_lease=primary_lease,
+        )
+        if len(related_leases) <= 1:
             return DaemonResponse(
                 ok=True,
-                payload={
-                    "ticket": asdict(ticket),
-                    "decision": None if decision is None else asdict(decision),
-                    "src_buffer": asdict(src_buffer),
-                    "dst_buffer": asdict(dst_buffer),
-                    "relay_gpu": lease.relay_gpu,
-                    "relay_gpus": tuple(item.relay_gpu for item in related_leases),
-                    "lease_id": request.lease_id,
-                    "lease_ids": tuple(item.lease_id for item in related_leases),
-                    "transfer_id": request.transfer_id,
-                    "authorized_at": now,
-                    "plan_generation": self._transfer_plan_generations.get(
-                        request.transfer_id,
-                        0,
-                    ),
-                    "planning": {
-                        "target_gpu": session.target_gpu,
-                        "profile_key": self._profile_key(
-                            session.target_gpu,
-                            planning_relays,
-                        ),
-                        "profile_entry": (
-                            None if profile_entry is None else dict(profile_entry)
-                        ),
-                        "relay_eligibility": relay_eligibility,
-                    },
-                    "staging_record": dict(staging_records[lease.lease_id]),
-                    "staging_records": [
-                        dict(staging_records[item.lease_id])
-                        for item in related_leases
-                    ],
-                },
+                payload={"related_leases": (primary_lease,)},
             )
+        related_lease_ids = {item.lease_id for item in related_leases}
+        admission_error = self._validate_transfer_admission_locked(
+            request.transfer_id,
+            lease_id=None,
+            now=now,
+        )
+        if admission_error is not None:
+            return DaemonResponse(ok=False, error=admission_error)
+        for related_lease in related_leases:
+            if related_lease.lease_id == primary_lease.lease_id:
+                continue
+            admission_error = self._validate_transfer_admission_locked(
+                request.transfer_id,
+                lease_id=related_lease.lease_id,
+                now=now,
+            )
+            if admission_error is not None:
+                return DaemonResponse(ok=False, error=admission_error)
+            if related_lease.expires_at and now > related_lease.expires_at:
+                self._release_expired_lease_locked(related_lease.lease_id)
+                return DaemonResponse(ok=False, error="lease expired")
+            if related_lease.lease_id not in self._reservations:
+                return DaemonResponse(ok=False, error="lease is not active")
+            if related_lease.session_id != request.session_id:
+                return DaemonResponse(ok=False, error="lease session mismatch")
+            if related_lease.job_id != request.job_id:
+                return DaemonResponse(ok=False, error="lease job mismatch")
+            if related_lease.buffer_ids != primary_lease.buffer_ids:
+                return DaemonResponse(ok=False, error="lease buffer mismatch")
+        admission = self._transfer_admissions.get(request.transfer_id, {})
+        admission_lease_ids = set(
+            str(item) for item in admission.get("lease_ids", ()) or ()
+        )
+        if admission_lease_ids and admission_lease_ids != related_lease_ids:
+            return DaemonResponse(ok=False, error="worker lease set mismatch")
+        return DaemonResponse(
+            ok=True,
+            payload={"related_leases": related_leases},
+        )
 
     def _plan_transfer(
         self,
@@ -1926,117 +2478,24 @@ class TurboBusDaemon:
                         _TOPOLOGY_UNAVAILABLE_ERROR,
                     )
                 return DaemonResponse(ok=False, error=str(exc))
-            transfer_id = str(uuid.uuid4())
-            self._transfer_plan_generations[transfer_id] = 1
-            admission = self._admission_for_decision_locked(
+            transfer_id, status, reservations = self._register_planned_transfer_state_locked(
                 decision,
                 session=session,
+                intent_id=intent_id,
+                buffer_ids=buffer_ids_tuple,
                 job_id=plan_job_id,
                 total_bytes=int(total_bytes),
+                chunk_bytes=int(chunk_bytes),
+                ranges=normalized_ranges,
+                direction=direction,
+                mode=mode,
+                topology_snapshot_id=topology_snapshot_id,
                 workload_kind=str(workload_kind),
                 priority=int(priority),
                 allow_delayed=allow_delayed_admission,
-                now=now,
-            )
-            reservations = []
-            if admission["state"] == _ADMISSION_ADMITTED:
-                reservations = self._commit_scheduler_leases_locked(
-                    session,
-                    decision,
-                    transfer_id=transfer_id,
-                    buffer_ids=buffer_ids_tuple,
-                )
-                admission["lease_ids"] = tuple(
-                    reservation.reservation_id for reservation in reservations
-                )
-            status = TransferStatus(
-                transfer_id=transfer_id,
-                job_id=str(plan_job_id or session.session_id),
-                state=TransferStatusState.SUBMITTED,
-                bytes_total=int(total_bytes),
-                bytes_completed=0,
-                session_id=session.session_id,
-            )
-            self._transfer_statuses[transfer_id] = status
-            transfer_peer_identity = self._transfer_peer_identity_for_owner_locked(
-                job_id=status.job_id,
-                session_id=session.session_id,
                 peer_identity=peer_identity,
-            )
-            if transfer_peer_identity is not None:
-                self._transfer_peer_identities[transfer_id] = transfer_peer_identity
-            self._transfer_plans[transfer_id] = dict(decision.plan)
-            self._scheduling_decisions[transfer_id] = decision
-            self._transfer_plan_requests[transfer_id] = {
-                "session_id": session.session_id,
-                "total_bytes": int(total_bytes),
-                "chunk_bytes": int(chunk_bytes),
-                "mode": str(mode),
-                "direction": str(direction).lower(),
-                "job_id": None if plan_job_id is None else str(plan_job_id),
-                "buffer_ids": buffer_ids_tuple,
-                "ranges": normalized_ranges,
-                "intent_id": None if intent_id is None else str(intent_id),
-                "topology_snapshot_id": topology_snapshot_id,
-                "workload_kind": str(workload_kind),
-                "priority": int(priority),
-            }
-            self._transfer_plan_expirations[transfer_id] = (
-                self._plan_expires_at_for_decision(decision, now=now)
-            )
-            admission = {
-                **admission,
-                "plan_generation": 1,
-                "plan_expires_at": self._transfer_plan_expirations[transfer_id],
-            }
-            self._transfer_admissions[transfer_id] = admission
-            self._record_planned_transfer_locked(
-                transfer_id=transfer_id,
-                status=status,
-                intent_id=intent_id,
-                buffer_ids=buffer_ids_tuple,
-                total_bytes=total_bytes,
-                chunk_bytes=chunk_bytes,
-                ranges=normalized_ranges,
-                direction=direction,
-                decision=decision,
                 now=now,
             )
-            admission_order = _admission_priority_record(
-                transfer_id=transfer_id,
-                admission=admission,
-                queue_record=self._transfer_queue_records.get(transfer_id, {}),
-                runtime_state=self._runtime_resource_state_locked(now=float(now)),
-                now=float(now),
-            )
-            admission = _admission_with_priority_evidence(
-                {
-                    **admission,
-                    "priority_order": admission_order,
-                },
-                admission_order,
-            )
-            self._transfer_admissions[transfer_id] = admission
-            self._refresh_transfer_queue_record_locked(transfer_id, now=now)
-            self._transfer_buffer_snapshots[transfer_id] = self._buffer_snapshots_for_ids_locked(
-                buffer_ids_tuple
-            )
-            self._touch_session_locked(session.session_id, now)
-            if (
-                not reservations
-                and len(buffer_ids_tuple) >= 2
-                and planning_helpers.decision_is_direct_only(decision)
-            ):
-                ticket = self._execution_ticket_for_plan_locked(
-                    transfer_id=transfer_id,
-                    decision=decision,
-                    source_buffer_id=buffer_ids_tuple[0],
-                    destination_buffer_id=buffer_ids_tuple[1],
-                    now=now,
-                    lease_ids=(),
-                )
-                self._execution_tickets[ticket.ticket_id] = ticket
-                self._transfer_tickets[transfer_id] = ticket.ticket_id
             payload = self._planned_transfer_payload_locked(
                 transfer_id=transfer_id,
                 decision=decision,
@@ -2128,82 +2587,150 @@ class TurboBusDaemon:
         reservation_key = str(reservation_id)
         reservation = self._reservations.get(reservation_key)
         if reservation is None:
-            staging_record = self._staging_records.pop(reservation_key, None)
-            if staging_record is not None and cleanup_reason is not None:
-                archived_peer = None
-                job_id = staging_record.get("job_id")
-                if job_id is not None:
-                    archived_peer = self._job_peer_identities.get(str(job_id))
-                if archived_peer is None:
-                    for buffer_id in staging_record.get("buffer_ids", ()) or ():
-                        buffer = self._buffers.get(str(buffer_id))
-                        if buffer is None:
-                            continue
-                        archived_peer = self._job_peer_identities.get(buffer.job_id)
-                        if archived_peer is not None:
-                            break
-                self._archive_cleanup_target_locked(
-                    target_kind="reservation",
-                    target_id=reservation_key,
-                    peer_identity=archived_peer,
-                    reason=cleanup_reason,
-                    transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
-                )
-                self._append_audit_record_locked(
-                    event_type="cleanup",
-                    staging_record=staging_record,
-                    state=final_state,
-                    reason=cleanup_reason,
-                    failure_reason=(
-                        cleanup_reason
-                        if final_state
-                        in {TransferStatusState.FAILED, TransferStatusState.CANCELED}
-                        else None
-                    ),
-                    cleanup_kind="reservation",
-                    cleanup_target_id=reservation_key,
-                )
-                self._system_cleanup_events.append(
-                    CleanupRequest(
-                        target_kind="reservation",
-                        target_id=reservation_id,
-                        reason=cleanup_reason,
-                        force=True,
-                    )
-                )
+            self._release_staging_only_reservation_locked(
+                reservation_id=reservation_id,
+                reservation_key=reservation_key,
+                final_state=final_state,
+                cleanup_reason=cleanup_reason,
+            )
             return None
         transfer_id = self._reservation_transfers.get(reservation_key)
         lease = self._lease_tokens.get(reservation_key)
         staging_record = self._staging_records.get(reservation_key)
-        if reservation is not None:
-            self._archive_cleanup_target_locked(
-                target_kind="reservation",
-                target_id=reservation_key,
-                peer_identity=(
-                    None
-                    if lease is None or lease.job_id is None
-                    else self._job_peer_identities.get(str(lease.job_id))
-                ),
-                reason=cleanup_reason,
-                transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
-            )
+        self._archive_active_reservation_cleanup_locked(
+            reservation_key=reservation_key,
+            lease=lease,
+            transfer_id=transfer_id,
+            cleanup_reason=cleanup_reason,
+        )
         if cleanup_reason is not None:
-            self._append_audit_record_locked(
-                event_type="cleanup",
+            self._append_reservation_cleanup_audit_locked(
                 transfer_id=transfer_id,
                 reservation=reservation,
                 lease=lease,
                 staging_record=staging_record,
-                state=final_state,
-                reason=cleanup_reason,
-                failure_reason=(
-                    cleanup_reason
-                    if final_state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}
-                    else None
-                ),
-                cleanup_kind="reservation",
+                final_state=final_state,
+                cleanup_reason=cleanup_reason,
                 cleanup_target_id=reservation_key,
             )
+        transfer_id = self._drop_active_reservation_state_locked(
+            reservation_key=reservation_key,
+            reservation=reservation,
+        )
+        if transfer_id is not None and mark_terminal:
+            self._finalize_transfer_after_reservation_release_locked(
+                transfer_id=transfer_id,
+                final_state=final_state,
+                cleanup_reason=cleanup_reason,
+            )
+        if cleanup_reason is not None:
+            self._record_system_reservation_cleanup_event(
+                reservation_id=reservation_id,
+                cleanup_reason=cleanup_reason,
+            )
+        return reservation
+
+    def _release_staging_only_reservation_locked(
+        self,
+        *,
+        reservation_id: str,
+        reservation_key: str,
+        final_state: TransferStatusState,
+        cleanup_reason: str | None,
+    ) -> None:
+        staging_record = self._staging_records.pop(reservation_key, None)
+        if staging_record is None or cleanup_reason is None:
+            return
+        transfer_id = staging_record.get("transfer_id")
+        self._archive_cleanup_target_locked(
+            target_kind="reservation",
+            target_id=reservation_key,
+            peer_identity=self._staging_cleanup_peer_identity_locked(staging_record),
+            reason=cleanup_reason,
+            transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
+        )
+        self._append_audit_record_locked(
+            event_type="cleanup",
+            staging_record=staging_record,
+            state=final_state,
+            reason=cleanup_reason,
+            failure_reason=self._cleanup_failure_reason(final_state, cleanup_reason),
+            cleanup_kind="reservation",
+            cleanup_target_id=reservation_key,
+        )
+        self._record_system_reservation_cleanup_event(
+            reservation_id=reservation_id,
+            cleanup_reason=cleanup_reason,
+        )
+
+    def _staging_cleanup_peer_identity_locked(
+        self,
+        staging_record: Mapping[str, object],
+    ) -> PeerIdentity | None:
+        job_id = staging_record.get("job_id")
+        if job_id is not None:
+            archived_peer = self._job_peer_identities.get(str(job_id))
+            if archived_peer is not None:
+                return archived_peer
+        for buffer_id in staging_record.get("buffer_ids", ()) or ():
+            buffer = self._buffers.get(str(buffer_id))
+            if buffer is None:
+                continue
+            archived_peer = self._job_peer_identities.get(buffer.job_id)
+            if archived_peer is not None:
+                return archived_peer
+        return None
+
+    def _archive_active_reservation_cleanup_locked(
+        self,
+        *,
+        reservation_key: str,
+        lease: LeaseToken | None,
+        transfer_id: str | None,
+        cleanup_reason: str | None,
+    ) -> None:
+        self._archive_cleanup_target_locked(
+            target_kind="reservation",
+            target_id=reservation_key,
+            peer_identity=(
+                None
+                if lease is None or lease.job_id is None
+                else self._job_peer_identities.get(str(lease.job_id))
+            ),
+            reason=cleanup_reason,
+            transfer_ids=(() if transfer_id is None else (str(transfer_id),)),
+        )
+
+    def _append_reservation_cleanup_audit_locked(
+        self,
+        *,
+        transfer_id: str | None,
+        reservation: TransferReservation,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+        final_state: TransferStatusState,
+        cleanup_reason: str,
+        cleanup_target_id: str,
+    ) -> None:
+        self._append_audit_record_locked(
+            event_type="cleanup",
+            transfer_id=transfer_id,
+            reservation=reservation,
+            lease=lease,
+            staging_record=staging_record,
+            state=final_state,
+            reason=cleanup_reason,
+            failure_reason=self._cleanup_failure_reason(final_state, cleanup_reason),
+            cleanup_kind="reservation",
+            cleanup_target_id=cleanup_target_id,
+        )
+
+    def _drop_active_reservation_state_locked(
+        self,
+        *,
+        reservation_key: str,
+        reservation: TransferReservation,
+    ) -> str | None:
         self._reservations.pop(reservation_key, None)
         self._lease_tokens.pop(reservation_key, None)
         self._lease_plan_generations.pop(reservation_key, None)
@@ -2215,39 +2742,58 @@ class TurboBusDaemon:
         quota = self._relay_quotas.get(reservation.relay_gpu)
         if quota is not None:
             quota.active_chunks = max(0, quota.active_chunks - reservation.chunks)
-        if transfer_id is not None and mark_terminal:
-            self._mark_transfer_terminal_if_unblocked_locked(
+        return transfer_id
+
+    def _finalize_transfer_after_reservation_release_locked(
+        self,
+        *,
+        transfer_id: str,
+        final_state: TransferStatusState,
+        cleanup_reason: str | None,
+    ) -> None:
+        self._mark_transfer_terminal_if_unblocked_locked(
+            transfer_id,
+            final_state,
+            error=self._cleanup_failure_reason(final_state, cleanup_reason),
+        )
+        status_after = self._transfer_statuses.get(transfer_id)
+        if (
+            status_after is None
+            or status_after.state not in _TERMINAL_TRANSFER_STATES
+            or self._transfer_has_reservations_locked(transfer_id)
+        ):
+            return
+        if status_after.state is TransferStatusState.COMPLETE:
+            self._retire_completed_transfer_lease_state_locked(
                 transfer_id,
-                final_state,
-                error=(
-                    cleanup_reason
-                    if final_state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}
-                    else None
-                ),
+                reason=cleanup_reason,
             )
-            status_after = self._transfer_statuses.get(transfer_id)
-            if (
-                status_after is not None
-                and status_after.state in _TERMINAL_TRANSFER_STATES
-                and not self._transfer_has_reservations_locked(transfer_id)
-            ):
-                if status_after.state is TransferStatusState.COMPLETE:
-                    self._retire_completed_transfer_lease_state_locked(
-                        transfer_id,
-                        reason=cleanup_reason,
-                    )
-                else:
-                    self._retire_transfer_runtime_state_locked(transfer_id)
-        if cleanup_reason is not None:
-            self._system_cleanup_events.append(
-                CleanupRequest(
-                    target_kind="reservation",
-                    target_id=reservation_id,
-                    reason=cleanup_reason,
-                    force=True,
-                )
+        else:
+            self._retire_transfer_runtime_state_locked(transfer_id)
+
+    def _cleanup_failure_reason(
+        self,
+        final_state: TransferStatusState,
+        cleanup_reason: str | None,
+    ) -> str | None:
+        if final_state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
+            return cleanup_reason
+        return None
+
+    def _record_system_reservation_cleanup_event(
+        self,
+        *,
+        reservation_id: str,
+        cleanup_reason: str,
+    ) -> None:
+        self._system_cleanup_events.append(
+            CleanupRequest(
+                target_kind="reservation",
+                target_id=reservation_id,
+                reason=cleanup_reason,
+                force=True,
             )
-        return reservation
+        )
 
     def _release_reservation_and_count_locked(
         self,
@@ -2479,31 +3025,21 @@ class TurboBusDaemon:
         leases = scheduling_decision_leases(decision)
         if not leases:
             fallback_reason = decision.fallback_reason
-            admission = {
-                "state": _ADMISSION_ADMITTED,
-                "reason": fallback_reason or "direct_or_fallback_plan",
-                "decision_state": str(decision.state.value),
-                "fallback_reason": fallback_reason,
-                "requested_lease_count": 0,
-                "requested_chunks": 0,
-                "lease_ids": (),
-                "admitted_at": float(now),
-            }
-            admission["multi_tenant_admission"] = (
-                self._multi_tenant_admission_evidence_locked(
-                    state=_ADMISSION_ADMITTED,
-                    reason=str(admission["reason"]),
-                    session=session,
-                    job_id=job_id,
-                    total_bytes=int(total_bytes),
-                    workload_kind=str(workload_kind),
-                    priority=int(priority),
-                    leases=(),
-                    fairness=None,
-                    now=now,
-                )
+            return self._admission_record_locked(
+                state=_ADMISSION_ADMITTED,
+                reason=fallback_reason or "direct_or_fallback_plan",
+                decision=decision,
+                session=session,
+                job_id=job_id,
+                total_bytes=total_bytes,
+                workload_kind=workload_kind,
+                priority=priority,
+                leases=(),
+                requested_chunks=0,
+                fairness=None,
+                timestamp_field="admitted_at",
+                now=now,
             )
-            return admission
         requested_chunks = sum(lease.chunk_limit for lease in leases)
         reason = self._relay_admission_blocked_reason_locked(
             session=session,
@@ -2524,74 +3060,86 @@ class TurboBusDaemon:
             now=now,
         )
         if reason is None:
-            admission = {
-                "state": _ADMISSION_ADMITTED,
-                "reason": "relay_resources_available",
-                "decision_state": str(decision.state.value),
-                "fallback_reason": decision.fallback_reason,
-                "requested_lease_count": len(leases),
-                "requested_chunks": requested_chunks,
-                "lease_ids": (),
-                "admitted_at": float(now),
-                "fairness": fairness,
-            }
-            admission["multi_tenant_admission"] = (
-                self._multi_tenant_admission_evidence_locked(
-                    state=_ADMISSION_ADMITTED,
-                    reason=str(admission["reason"]),
-                    session=session,
-                    job_id=job_id,
-                    total_bytes=int(total_bytes),
-                    workload_kind=str(workload_kind),
-                    priority=int(priority),
-                    leases=leases,
-                    fairness=fairness,
-                    now=now,
-                )
+            return self._admission_record_locked(
+                state=_ADMISSION_ADMITTED,
+                reason="relay_resources_available",
+                decision=decision,
+                session=session,
+                job_id=job_id,
+                total_bytes=total_bytes,
+                workload_kind=workload_kind,
+                priority=priority,
+                leases=leases,
+                requested_chunks=requested_chunks,
+                fairness=fairness,
+                timestamp_field="admitted_at",
+                now=now,
             )
-            return admission
         if allow_delayed:
-            admission = {
-                "state": _ADMISSION_DELAYED,
-                "reason": reason,
-                "decision_state": str(decision.state.value),
-                "fallback_reason": decision.fallback_reason,
-                "requested_lease_count": len(leases),
-                "requested_chunks": requested_chunks,
-                "lease_ids": (),
-                "delayed_at": float(now),
-                "fairness": fairness,
-            }
-            admission["multi_tenant_admission"] = (
-                self._multi_tenant_admission_evidence_locked(
-                    state=_ADMISSION_DELAYED,
-                    reason=str(reason),
-                    session=session,
-                    job_id=job_id,
-                    total_bytes=int(total_bytes),
-                    workload_kind=str(workload_kind),
-                    priority=int(priority),
-                    leases=leases,
-                    fairness=fairness,
-                    now=now,
-                )
+            return self._admission_record_locked(
+                state=_ADMISSION_DELAYED,
+                reason=reason,
+                decision=decision,
+                session=session,
+                job_id=job_id,
+                total_bytes=total_bytes,
+                workload_kind=workload_kind,
+                priority=priority,
+                leases=leases,
+                requested_chunks=requested_chunks,
+                fairness=fairness,
+                timestamp_field="delayed_at",
+                now=now,
             )
-            return admission
+        return self._admission_record_locked(
+            state=_ADMISSION_ADMITTED,
+            reason="scheduler_fallback_or_rejection",
+            decision=decision,
+            session=session,
+            job_id=job_id,
+            total_bytes=total_bytes,
+            workload_kind=workload_kind,
+            priority=priority,
+            leases=leases,
+            requested_chunks=0,
+            fairness=fairness,
+            timestamp_field="admitted_at",
+            now=now,
+        )
+
+    def _admission_record_locked(
+        self,
+        *,
+        state: str,
+        reason: str | None,
+        decision: SchedulingDecision,
+        session: Session,
+        job_id: str | None,
+        total_bytes: int,
+        workload_kind: str,
+        priority: int,
+        leases,
+        requested_chunks: int,
+        fairness: Mapping[str, object] | None,
+        timestamp_field: str,
+        now: float,
+    ) -> dict[str, object]:
         admission = {
-            "state": _ADMISSION_ADMITTED,
-            "reason": "scheduler_fallback_or_rejection",
+            "state": state,
+            "reason": reason,
             "decision_state": str(decision.state.value),
             "fallback_reason": decision.fallback_reason,
-            "requested_lease_count": 0,
-            "requested_chunks": 0,
+            "requested_lease_count": len(leases),
+            "requested_chunks": int(requested_chunks),
             "lease_ids": (),
-            "admitted_at": float(now),
-            "fairness": fairness,
+            timestamp_field: float(now),
         }
+        if fairness is not None:
+            admission["fairness"] = fairness
         admission["multi_tenant_admission"] = (
             self._multi_tenant_admission_evidence_locked(
-                state=_ADMISSION_ADMITTED,
-                reason=str(admission["reason"]),
+                state=state,
+                reason=str(reason),
                 session=session,
                 job_id=job_id,
                 total_bytes=int(total_bytes),
@@ -2645,6 +3193,7 @@ class TurboBusDaemon:
             runtime_blocked = relay_admission_blocked_reason(
                 load_view,
                 int(lease.relay_device),
+                direction=str(lease.direction),
             )
             if runtime_blocked is not None:
                 return f"relay admission is delayed by {runtime_blocked}"
@@ -2682,6 +3231,8 @@ class TurboBusDaemon:
             "request_charge_bytes": float(load_view.request_charge_bytes),
             "current_job_active_bytes": int(load_view.current_job_active_bytes),
             "total_active_bytes": int(load_view.total_active_bytes),
+            "current_job_backlog_bytes": int(load_view.current_job_backlog_bytes),
+            "total_backlog_bytes": int(load_view.total_backlog_bytes),
             "current_weighted_active_bytes": float(
                 load_view.current_weighted_active_bytes
             ),
@@ -2690,6 +3241,15 @@ class TurboBusDaemon:
             ),
             "average_weighted_active_bytes": float(
                 load_view.average_weighted_active_bytes
+            ),
+            "current_weighted_fairness_bytes": float(
+                load_view.current_weighted_fairness_bytes
+            ),
+            "projected_weighted_fairness_bytes": float(
+                load_view.projected_weighted_fairness_bytes
+            ),
+            "average_weighted_fairness_bytes": float(
+                load_view.average_weighted_fairness_bytes
             ),
             "fairness_threshold_bytes": float(load_view.fairness_threshold_bytes),
             "resource_pressure": float(load_view.resource_pressure),
@@ -2818,6 +3378,297 @@ class TurboBusDaemon:
         if expires_at:
             return min(expires_at)
         return float(now) + _DEFAULT_PLAN_TTL_SECONDS
+
+    def _register_planned_transfer_state_locked(
+        self,
+        decision: SchedulingDecision,
+        *,
+        session: Session,
+        intent_id: str | None,
+        buffer_ids: tuple[str, ...],
+        job_id: str | None,
+        total_bytes: int,
+        chunk_bytes: int,
+        ranges: tuple[dict[str, int], ...] | None,
+        direction: str,
+        mode: str,
+        topology_snapshot_id: str | None,
+        workload_kind: str,
+        priority: int,
+        allow_delayed: bool,
+        peer_identity: PeerIdentity | None,
+        now: float,
+    ) -> tuple[str, TransferStatus, list[TransferReservation]]:
+        transfer_id = str(uuid.uuid4())
+        self._transfer_plan_generations[transfer_id] = 1
+        admission = self._admission_for_decision_locked(
+            decision,
+            session=session,
+            job_id=job_id,
+            total_bytes=int(total_bytes),
+            workload_kind=str(workload_kind),
+            priority=int(priority),
+            allow_delayed=allow_delayed,
+            now=now,
+        )
+        reservations = self._admitted_transfer_reservations_locked(
+            admission=admission,
+            session=session,
+            decision=decision,
+            transfer_id=transfer_id,
+            buffer_ids=buffer_ids,
+        )
+        status = self._planned_transfer_status_locked(
+            transfer_id=transfer_id,
+            session=session,
+            job_id=job_id,
+            total_bytes=total_bytes,
+        )
+        self._register_transfer_owner_peer_locked(
+            transfer_id=transfer_id,
+            status=status,
+            peer_identity=peer_identity,
+        )
+        self._register_transfer_plan_contract_locked(
+            transfer_id=transfer_id,
+            decision=decision,
+            session=session,
+            job_id=job_id,
+            total_bytes=total_bytes,
+            chunk_bytes=chunk_bytes,
+            mode=mode,
+            direction=direction,
+            buffer_ids=buffer_ids,
+            ranges=ranges,
+            intent_id=intent_id,
+            topology_snapshot_id=topology_snapshot_id,
+            workload_kind=workload_kind,
+            priority=priority,
+            admission=admission,
+            now=now,
+        )
+        self._register_block_runtime_records_locked(
+            transfer_id=transfer_id,
+            decision=decision,
+        )
+        self._record_planned_transfer_locked(
+            transfer_id=transfer_id,
+            status=status,
+            intent_id=intent_id,
+            buffer_ids=buffer_ids,
+            total_bytes=total_bytes,
+            chunk_bytes=chunk_bytes,
+            ranges=ranges,
+            direction=direction,
+            decision=decision,
+            now=now,
+        )
+        self._attach_admission_priority_evidence_locked(transfer_id, now=now)
+        self._transfer_buffer_snapshots[transfer_id] = self._buffer_snapshots_for_ids_locked(
+            buffer_ids
+        )
+        self._touch_session_locked(session.session_id, now)
+        self._issue_direct_plan_ticket_if_needed_locked(
+            transfer_id=transfer_id,
+            decision=decision,
+            buffer_ids=buffer_ids,
+            reservations=reservations,
+            now=now,
+        )
+        return transfer_id, status, reservations
+
+    def _admitted_transfer_reservations_locked(
+        self,
+        *,
+        admission: dict[str, object],
+        session: Session,
+        decision: SchedulingDecision,
+        transfer_id: str,
+        buffer_ids: tuple[str, ...],
+    ) -> list[TransferReservation]:
+        if admission["state"] != _ADMISSION_ADMITTED:
+            return []
+        reservations = self._commit_scheduler_leases_locked(
+            session,
+            decision,
+            transfer_id=transfer_id,
+            buffer_ids=buffer_ids,
+        )
+        admission["lease_ids"] = tuple(
+            reservation.reservation_id for reservation in reservations
+        )
+        return reservations
+
+    def _planned_transfer_status_locked(
+        self,
+        *,
+        transfer_id: str,
+        session: Session,
+        job_id: str | None,
+        total_bytes: int,
+    ) -> TransferStatus:
+        status = TransferStatus(
+            transfer_id=str(transfer_id),
+            job_id=str(job_id or session.session_id),
+            state=TransferStatusState.SUBMITTED,
+            bytes_total=int(total_bytes),
+            bytes_completed=0,
+            session_id=session.session_id,
+        )
+        self._transfer_statuses[str(transfer_id)] = status
+        return status
+
+    def _register_block_runtime_records_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+    ) -> None:
+        normalized_transfer_id = str(transfer_id)
+        records = daemon_block_runtime.runtime_records_for_block_plan(
+            transfer_id=normalized_transfer_id,
+            plan=dict(decision.plan),
+            plan_generation=self._transfer_plan_generations.get(
+                normalized_transfer_id,
+                0,
+            ),
+            lease_ids_by_relay=self._block_runtime_lease_ids_by_relay_locked(
+                normalized_transfer_id
+            ),
+        )
+        if records:
+            self._block_runtime_records[normalized_transfer_id] = tuple(
+                record.as_dict() for record in records
+            )
+            self._runtime_state_version += 1
+
+    def _block_runtime_lease_ids_by_relay_locked(
+        self,
+        transfer_id: str,
+    ) -> dict[int, tuple[str, ...]]:
+        relay_leases: dict[int, list[str]] = {}
+        for lease_id, mapped_transfer_id in sorted(self._reservation_transfers.items()):
+            if str(mapped_transfer_id) != str(transfer_id):
+                continue
+            lease = self._lease_tokens.get(lease_id)
+            if lease is None:
+                continue
+            relay_leases.setdefault(int(lease.relay_gpu), []).append(str(lease_id))
+        return {
+            relay_gpu: tuple(lease_ids)
+            for relay_gpu, lease_ids in sorted(relay_leases.items())
+        }
+
+    def _register_transfer_owner_peer_locked(
+        self,
+        *,
+        transfer_id: str,
+        status: TransferStatus,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        transfer_peer_identity = self._transfer_peer_identity_for_owner_locked(
+            job_id=status.job_id,
+            session_id=status.session_id,
+            peer_identity=peer_identity,
+        )
+        if transfer_peer_identity is not None:
+            self._transfer_peer_identities[str(transfer_id)] = transfer_peer_identity
+
+    def _register_transfer_plan_contract_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+        session: Session,
+        job_id: str | None,
+        total_bytes: int,
+        chunk_bytes: int,
+        mode: str,
+        direction: str,
+        buffer_ids: tuple[str, ...],
+        ranges: tuple[dict[str, int], ...] | None,
+        intent_id: str | None,
+        topology_snapshot_id: str | None,
+        workload_kind: str,
+        priority: int,
+        admission: dict[str, object],
+        now: float,
+    ) -> None:
+        normalized_transfer_id = str(transfer_id)
+        self._transfer_plans[normalized_transfer_id] = dict(decision.plan)
+        self._scheduling_decisions[normalized_transfer_id] = decision
+        self._transfer_plan_requests[normalized_transfer_id] = {
+            "session_id": session.session_id,
+            "total_bytes": int(total_bytes),
+            "chunk_bytes": int(chunk_bytes),
+            "mode": str(mode),
+            "direction": str(direction).lower(),
+            "job_id": None if job_id is None else str(job_id),
+            "buffer_ids": buffer_ids,
+            "ranges": ranges,
+            "intent_id": None if intent_id is None else str(intent_id),
+            "topology_snapshot_id": topology_snapshot_id,
+            "workload_kind": str(workload_kind),
+            "priority": int(priority),
+        }
+        self._transfer_plan_expirations[normalized_transfer_id] = (
+            self._plan_expires_at_for_decision(decision, now=now)
+        )
+        self._transfer_admissions[normalized_transfer_id] = {
+            **admission,
+            "plan_generation": self._transfer_plan_generations[normalized_transfer_id],
+            "plan_expires_at": self._transfer_plan_expirations[normalized_transfer_id],
+        }
+
+    def _attach_admission_priority_evidence_locked(
+        self,
+        transfer_id: str,
+        *,
+        now: float,
+    ) -> None:
+        normalized_transfer_id = str(transfer_id)
+        admission = self._transfer_admissions[normalized_transfer_id]
+        admission_order = _admission_priority_record(
+            transfer_id=normalized_transfer_id,
+            admission=admission,
+            queue_record=self._transfer_queue_records.get(normalized_transfer_id, {}),
+            runtime_state=self._runtime_resource_state_locked(now=float(now)),
+            now=float(now),
+        )
+        self._transfer_admissions[normalized_transfer_id] = _admission_with_priority_evidence(
+            {
+                **admission,
+                "priority_order": admission_order,
+            },
+            admission_order,
+        )
+        self._refresh_transfer_queue_record_locked(normalized_transfer_id, now=now)
+
+    def _issue_direct_plan_ticket_if_needed_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+        buffer_ids: tuple[str, ...],
+        reservations: list[TransferReservation],
+        now: float,
+    ) -> None:
+        if reservations:
+            return
+        if len(buffer_ids) < 2:
+            return
+        if not planning_helpers.decision_is_direct_only(decision):
+            return
+        ticket = self._execution_ticket_for_plan_locked(
+            transfer_id=str(transfer_id),
+            decision=decision,
+            source_buffer_id=buffer_ids[0],
+            destination_buffer_id=buffer_ids[1],
+            now=now,
+            lease_ids=(),
+        )
+        self._execution_tickets[ticket.ticket_id] = ticket
+        self._transfer_tickets[str(transfer_id)] = ticket.ticket_id
 
     def _planned_transfer_payload_locked(
         self,
@@ -3099,150 +3950,248 @@ class TurboBusDaemon:
             request = self._transfer_plan_requests.get(transfer_id)
             if request is None:
                 continue
-            admission_order = _admission_priority_record(
+            promoted_record = self._promote_delayed_transfer_locked(
                 transfer_id=transfer_id,
-                admission=self._transfer_admissions.get(transfer_id, {}),
-                queue_record=self._transfer_queue_records.get(transfer_id, {}),
+                status=status,
+                request=request,
                 runtime_state=runtime_state,
-                now=float(now),
-            )
-            try:
-                (
-                    session,
-                    decision,
-                    buffer_ids_tuple,
-                    _plan_job_id,
-                    _relay_eligibility,
-                    _planning_relays,
-                    _snapshot_id,
-                ) = self._scheduler_decision_for_transfer_locked(
-                    session_id=str(request["session_id"]),
-                    total_bytes=int(request["total_bytes"]),
-                    chunk_bytes=int(request["chunk_bytes"]),
-                    mode=str(request["mode"]),
-                    direction=str(request["direction"]),
-                    job_id=(
-                        None
-                        if request.get("job_id") is None
-                        else str(request["job_id"])
-                    ),
-                    buffer_ids=request.get("buffer_ids"),
-                    normalized_ranges=request.get("ranges"),
-                    intent_id=request.get("intent_id"),
-                    topology_snapshot_id=request.get("topology_snapshot_id"),
-                    workload_kind=str(request.get("workload_kind", "generic")),
-                    priority=int(request.get("priority", 0) or 0),
-                    peer_identity=None,
-                    now=now,
-                    exclude_transfer_id=transfer_id,
-                    defer_relay_admission=True,
-                )
-            except ValueError as exc:
-                admission = dict(self._transfer_admissions.get(transfer_id, {}))
-                admission.update(
-                    {
-                        "state": _ADMISSION_DELAYED,
-                        "reason": str(exc),
-                        "promotion_failed_at": float(now),
-                        "priority_order": admission_order,
-                    }
-                )
-                self._transfer_admissions[transfer_id] = admission
-                self._refresh_transfer_queue_record_locked(transfer_id, now=now)
-                continue
-            admission = self._admission_for_decision_locked(
-                decision,
-                session=session,
-                job_id=request.get("job_id"),
-                total_bytes=int(request["total_bytes"]),
-                workload_kind=str(request.get("workload_kind", "generic")),
-                priority=int(request.get("priority", 0) or 0),
-                allow_delayed=True,
-                enforce_fairness=False,
                 now=now,
             )
-            if admission["state"] != _ADMISSION_ADMITTED:
-                admission = {
-                    **admission,
-                    "plan_generation": self._transfer_plan_generations.get(
-                        transfer_id,
-                        0,
-                    ),
-                    "plan_expires_at": self._transfer_plan_expirations.get(transfer_id),
-                    "promotion_checked_at": float(now),
-                    "priority_order": admission_order,
-                }
-                admission = _admission_with_priority_evidence(admission, admission_order)
-                self._transfer_admissions[transfer_id] = admission
-                self._refresh_transfer_queue_record_locked(transfer_id, now=now)
-                continue
+            if promoted_record is not None:
+                promoted.append(promoted_record)
+        return tuple(promoted)
 
-            generation = int(self._transfer_plan_generations.get(transfer_id, 0)) + 1
-            self._transfer_plan_generations[transfer_id] = generation
-            self._transfer_plans[transfer_id] = dict(decision.plan)
-            self._scheduling_decisions[transfer_id] = decision
-            self._transfer_plan_expirations[transfer_id] = (
-                self._plan_expires_at_for_decision(decision, now=now)
+    def _promote_delayed_transfer_locked(
+        self,
+        *,
+        transfer_id: str,
+        status: TransferStatus,
+        request: Mapping[str, object],
+        runtime_state: Mapping[str, object],
+        now: float,
+    ) -> dict[str, object] | None:
+        admission_order = _admission_priority_record(
+            transfer_id=transfer_id,
+            admission=self._transfer_admissions.get(transfer_id, {}),
+            queue_record=self._transfer_queue_records.get(transfer_id, {}),
+            runtime_state=runtime_state,
+            now=float(now),
+        )
+        try:
+            session, decision, buffer_ids_tuple = (
+                self._promotion_scheduler_decision_locked(
+                    transfer_id=transfer_id,
+                    request=request,
+                    now=now,
+                )
             )
-            self._execution_tickets.pop(self._transfer_tickets.pop(transfer_id, ""), None)
-            reservations = self._commit_scheduler_leases_locked(
-                session,
-                decision,
+        except ValueError as exc:
+            self._record_delayed_promotion_failure_locked(
                 transfer_id=transfer_id,
-                buffer_ids=buffer_ids_tuple,
+                error=str(exc),
+                admission_order=admission_order,
+                now=now,
             )
-            admission = {
-                **admission,
-                "lease_ids": tuple(
-                    reservation.reservation_id for reservation in reservations
-                ),
-                "plan_generation": generation,
-                "plan_expires_at": self._transfer_plan_expirations[transfer_id],
-                "promoted_at": float(now),
+            return None
+        admission = self._admission_for_decision_locked(
+            decision,
+            session=session,
+            job_id=request.get("job_id"),
+            total_bytes=int(request["total_bytes"]),
+            workload_kind=str(request.get("workload_kind", "generic")),
+            priority=int(request.get("priority", 0) or 0),
+            allow_delayed=True,
+            enforce_fairness=False,
+            now=now,
+        )
+        if admission["state"] != _ADMISSION_ADMITTED:
+            self._record_delayed_promotion_check_locked(
+                transfer_id=transfer_id,
+                admission=admission,
+                admission_order=admission_order,
+                now=now,
+            )
+            return None
+        return self._commit_delayed_promotion_locked(
+            transfer_id=transfer_id,
+            status=status,
+            session=session,
+            decision=decision,
+            buffer_ids=buffer_ids_tuple,
+            request=request,
+            admission=admission,
+            admission_order=admission_order,
+            now=now,
+        )
+
+    def _promotion_scheduler_decision_locked(
+        self,
+        *,
+        transfer_id: str,
+        request: Mapping[str, object],
+        now: float,
+    ) -> tuple[Session, SchedulingDecision, tuple[str, ...]]:
+        (
+            session,
+            decision,
+            buffer_ids_tuple,
+            _plan_job_id,
+            _relay_eligibility,
+            _planning_relays,
+            _snapshot_id,
+        ) = self._scheduler_decision_for_transfer_locked(
+            session_id=str(request["session_id"]),
+            total_bytes=int(request["total_bytes"]),
+            chunk_bytes=int(request["chunk_bytes"]),
+            mode=str(request["mode"]),
+            direction=str(request["direction"]),
+            job_id=None if request.get("job_id") is None else str(request["job_id"]),
+            buffer_ids=request.get("buffer_ids"),
+            normalized_ranges=request.get("ranges"),
+            intent_id=request.get("intent_id"),
+            topology_snapshot_id=request.get("topology_snapshot_id"),
+            workload_kind=str(request.get("workload_kind", "generic")),
+            priority=int(request.get("priority", 0) or 0),
+            peer_identity=None,
+            now=now,
+            exclude_transfer_id=transfer_id,
+            defer_relay_admission=True,
+        )
+        return session, decision, buffer_ids_tuple
+
+    def _record_delayed_promotion_failure_locked(
+        self,
+        *,
+        transfer_id: str,
+        error: str,
+        admission_order: Mapping[str, object],
+        now: float,
+    ) -> None:
+        admission = dict(self._transfer_admissions.get(transfer_id, {}))
+        admission.update(
+            {
+                "state": _ADMISSION_DELAYED,
+                "reason": str(error),
+                "promotion_failed_at": float(now),
                 "priority_order": admission_order,
             }
-            admission = _admission_with_priority_evidence(admission, admission_order)
-            self._transfer_admissions[transfer_id] = admission
-            intent_id = request.get("intent_id")
-            intent = (
-                None
-                if intent_id is None
-                else self._transfer_intents.get(str(intent_id))
-            )
-            ticket = None
-            if intent is not None:
-                ticket = self._execution_ticket_for_intent_locked(
-                    intent=intent,
-                    transfer_id=transfer_id,
-                    decision=decision,
-                    now=now,
-                )
-                self._execution_tickets[ticket.ticket_id] = ticket
-                self._transfer_tickets[transfer_id] = ticket.ticket_id
-            self._append_audit_record_locked(
-                event_type="admission_promoted",
-                transfer_id=transfer_id,
-                ticket=ticket,
-                state=status.state,
-                reason="daemon_resource_state_available",
-                bytes_completed=status.bytes_completed,
-                now=now,
-            )
-            self._refresh_transfer_queue_record_locked(transfer_id, now=now)
-            self._touch_session_locked(session.session_id, now)
-            runtime_state = self._runtime_resource_state_locked(now=float(now))
-            promoted.append(
-                {
-                    "transfer_id": transfer_id,
-                    "plan_generation": generation,
-                    "lease_ids": tuple(
-                        reservation.reservation_id for reservation in reservations
-                    ),
-                    "ticket_id": None if ticket is None else ticket.ticket_id,
-                    "priority_order": admission_order,
-                }
-            )
-        return tuple(promoted)
+        )
+        self._transfer_admissions[transfer_id] = admission
+        self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+
+    def _record_delayed_promotion_check_locked(
+        self,
+        *,
+        transfer_id: str,
+        admission: Mapping[str, object],
+        admission_order: Mapping[str, object],
+        now: float,
+    ) -> None:
+        updated = {
+            **admission,
+            "plan_generation": self._transfer_plan_generations.get(transfer_id, 0),
+            "plan_expires_at": self._transfer_plan_expirations.get(transfer_id),
+            "promotion_checked_at": float(now),
+            "priority_order": admission_order,
+        }
+        updated = _admission_with_priority_evidence(updated, admission_order)
+        self._transfer_admissions[transfer_id] = updated
+        self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+
+    def _commit_delayed_promotion_locked(
+        self,
+        *,
+        transfer_id: str,
+        status: TransferStatus,
+        session: Session,
+        decision: SchedulingDecision,
+        buffer_ids: tuple[str, ...],
+        request: Mapping[str, object],
+        admission: Mapping[str, object],
+        admission_order: Mapping[str, object],
+        now: float,
+    ) -> dict[str, object]:
+        generation = int(self._transfer_plan_generations.get(transfer_id, 0)) + 1
+        self._transfer_plan_generations[transfer_id] = generation
+        self._transfer_plans[transfer_id] = dict(decision.plan)
+        self._scheduling_decisions[transfer_id] = decision
+        self._transfer_plan_expirations[transfer_id] = (
+            self._plan_expires_at_for_decision(decision, now=now)
+        )
+        self._execution_tickets.pop(self._transfer_tickets.pop(transfer_id, ""), None)
+        reservations = self._commit_scheduler_leases_locked(
+            session,
+            decision,
+            transfer_id=transfer_id,
+            buffer_ids=buffer_ids,
+        )
+        self._register_block_runtime_records_locked(
+            transfer_id=transfer_id,
+            decision=decision,
+        )
+        updated_admission = {
+            **admission,
+            "lease_ids": tuple(
+                reservation.reservation_id for reservation in reservations
+            ),
+            "plan_generation": generation,
+            "plan_expires_at": self._transfer_plan_expirations[transfer_id],
+            "promoted_at": float(now),
+            "priority_order": admission_order,
+        }
+        updated_admission = _admission_with_priority_evidence(
+            updated_admission,
+            admission_order,
+        )
+        self._transfer_admissions[transfer_id] = updated_admission
+        ticket = self._ticket_for_promoted_transfer_locked(
+            transfer_id=transfer_id,
+            decision=decision,
+            request=request,
+            now=now,
+        )
+        self._append_audit_record_locked(
+            event_type="admission_promoted",
+            transfer_id=transfer_id,
+            ticket=ticket,
+            state=status.state,
+            reason="daemon_resource_state_available",
+            bytes_completed=status.bytes_completed,
+            now=now,
+        )
+        self._refresh_transfer_queue_record_locked(transfer_id, now=now)
+        self._touch_session_locked(session.session_id, now)
+        return {
+            "transfer_id": transfer_id,
+            "plan_generation": generation,
+            "lease_ids": tuple(
+                reservation.reservation_id for reservation in reservations
+            ),
+            "ticket_id": None if ticket is None else ticket.ticket_id,
+            "priority_order": admission_order,
+        }
+
+    def _ticket_for_promoted_transfer_locked(
+        self,
+        *,
+        transfer_id: str,
+        decision: SchedulingDecision,
+        request: Mapping[str, object],
+        now: float,
+    ) -> ExecutionTicket | None:
+        intent_id = request.get("intent_id")
+        intent = None if intent_id is None else self._transfer_intents.get(str(intent_id))
+        if intent is None:
+            return None
+        ticket = self._execution_ticket_for_intent_locked(
+            intent=intent,
+            transfer_id=transfer_id,
+            decision=decision,
+            now=now,
+        )
+        self._execution_tickets[ticket.ticket_id] = ticket
+        self._transfer_tickets[transfer_id] = ticket.ticket_id
+        return ticket
 
     def _current_execution_ticket_for_transfer_locked(
         self,
@@ -3315,7 +4264,7 @@ class TurboBusDaemon:
             ticket = self._completion_ticket_for_transfer_locked(
                 normalized_transfer_id
             )
-            _normalize_completion_evidence(
+            normalize_completion_evidence(
                 evidence,
                 expected_bytes=status.bytes_total,
                 completion_source=str(completion_source or "worker"),
@@ -3416,6 +4365,8 @@ class TurboBusDaemon:
             ),
             "plan_generation": self._transfer_plan_generations.get(str(transfer_id), 0),
             "plan_expires_at": self._transfer_plan_expirations.get(str(transfer_id)),
+            "block_plan": _block_plan_runtime_record(decision.plan),
+            "block_queue": self._block_runtime_queue_record_locked(str(transfer_id)),
             "started_at": None,
             "completed_at": None,
             "fallback_reason": decision.fallback_reason,
@@ -3481,6 +4432,10 @@ class TurboBusDaemon:
             record["decision_id"] = decision.decision_id
             record["topology_snapshot_id"] = decision.topology_snapshot_id
             record["fallback_reason"] = decision.fallback_reason
+            record["block_plan"] = _block_plan_runtime_record(decision.plan)
+            record["block_queue"] = self._block_runtime_queue_record_locked(
+                str(transfer_id)
+            )
         if status.error is not None:
             record["error"] = status.error
         completion_source = self._transfer_completion_sources.get(str(transfer_id))
@@ -3527,12 +4482,97 @@ class TurboBusDaemon:
             self._runtime_state_version += 1
         return record
 
+    def _block_runtime_queue_record_locked(self, transfer_id: str) -> dict[str, object]:
+        records = self._block_runtime_records.get(str(transfer_id))
+        if records:
+            return daemon_block_runtime.queue_view(records)
+        decision = self._scheduling_decisions.get(str(transfer_id))
+        if decision is None:
+            return {
+                "source": "daemon_block_runtime",
+                "available": False,
+                "block_count": 0,
+                "states": {},
+                "bytes_by_state": {},
+            }
+        return _block_queue_runtime_record(decision.plan)
+
     def _runtime_resource_state_locked(
         self,
         *,
         now: float | None = None,
     ) -> dict[str, object]:
         captured_at = float(time.time() if now is None else now)
+        transfer_records, recent_terminal_feedback = (
+            self._runtime_transfer_records_locked(captured_at)
+        )
+        transfer_summary = _runtime_transfer_summary_from_records(
+            {
+                job_id: {
+                    "job_id": job_id,
+                    "weight": float(job.weight),
+                }
+                for job_id, job in self._jobs.items()
+            },
+            transfer_records,
+            recent_terminal_feedback,
+        )
+        transfer_groups = transfer_summary["transfer_groups"]
+        active_by_direction = transfer_summary["active_bytes_by_direction"]
+        queued_by_direction = transfer_summary["queued_bytes_by_direction"]
+        job_runtime_state = transfer_summary["job_runtime_state"]
+        relay_state = self._runtime_relay_state_locked(
+            transfer_groups["active_transfers"]
+        )
+        active_resource_usage = self._runtime_active_resource_usage_locked(
+            active_by_direction=active_by_direction,
+            staging_records=relay_state["staging_records"],
+            active_reservations=relay_state["active_reservations"],
+            active_leases=relay_state["active_leases"],
+        )
+        pcie_pool_state = self._runtime_pcie_bandwidth_pool_locked(
+            active_paths=relay_state["path_records"],
+        )
+        runtime_state = {
+            "version": self._runtime_state_version,
+            "captured_at": captured_at,
+            "transfer_order": tuple(self._transfer_queue),
+            "transfers": transfer_records,
+            "queued_transfers": transfer_groups["queued_transfers"],
+            "admitted_transfers": transfer_groups["admitted_transfers"],
+            "delayed_transfers": transfer_groups["delayed_transfers"],
+            "running_transfers": transfer_groups["running_transfers"],
+            "active_transfers": transfer_groups["active_transfers"],
+            "recent_terminal_transfers": recent_terminal_feedback,
+            "active_paths": relay_state["path_records"],
+            "active_resource_usage": active_resource_usage,
+            "job_runtime_state": job_runtime_state,
+            "active_reservations": relay_state["active_reservations"],
+            "active_leases": relay_state["active_leases"],
+            "relay_staging": relay_state["staging_records"],
+            "pcie_fabric": pcie_pool_state["pcie_fabric"],
+            "pcie_edge_load": pcie_pool_state["pcie_edge_load"],
+            "pcie_bandwidth_pool": pcie_pool_state["pcie_bandwidth_pool"],
+            "summary": self._runtime_resource_summary_locked(
+                transfer_groups=transfer_groups,
+                terminal_transfer_count=int(
+                    transfer_summary["terminal_transfer_count"]
+                ),
+                recent_terminal_transfer_count=len(recent_terminal_feedback),
+                relay_state=relay_state,
+                active_resource_usage=active_resource_usage,
+                queued_by_direction=queued_by_direction,
+                active_by_direction=active_by_direction,
+                job_runtime_state=job_runtime_state,
+            ),
+        }
+        _refresh_runtime_feedback_summary(runtime_state)
+        return runtime_state
+
+    def _runtime_transfer_records_locked(
+        self,
+        captured_at: float,
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         for transfer_id in tuple(self._transfer_queue):
             self._refresh_transfer_queue_record_locked(transfer_id, now=captured_at)
         transfer_records = [
@@ -3549,56 +4589,12 @@ class TurboBusDaemon:
             )
             if transfer_id not in live_transfer_ids
         ]
-        delayed_transfers = [
-            dict(record)
-            for record in transfer_records
-            if str(record.get("state")) == TransferStatusState.SUBMITTED.value
-            and not _record_has_admitted_execution(record)
-        ]
-        admitted_transfers = [
-            dict(record)
-            for record in transfer_records
-            if str(record.get("state")) == TransferStatusState.SUBMITTED.value
-            and _record_has_admitted_execution(record)
-        ]
-        queued_transfers = [
-            dict(record)
-            for record in transfer_records
-            if str(record.get("state")) == TransferStatusState.SUBMITTED.value
-        ]
-        running_transfers = [
-            dict(record)
-            for record in transfer_records
-            if str(record.get("state")) == TransferStatusState.RUNNING.value
-        ]
-        active_transfers = [
-            dict(record)
-            for record in transfer_records
-            if _record_has_active_execution(record)
-        ]
-        active_by_direction: dict[str, dict[str, int]] = {}
-        queued_by_direction: dict[str, dict[str, int]] = {}
-        for record in active_transfers:
-            direction = str(record.get("direction", "unknown"))
-            bucket = active_by_direction.setdefault(
-                direction,
-                {"transfer_count": 0, "bytes_total": 0, "bytes_remaining": 0},
-            )
-            bucket["transfer_count"] += 1
-            bucket["bytes_total"] += int(record.get("bytes_total", 0) or 0)
-            bucket["bytes_remaining"] += max(
-                0,
-                int(record.get("bytes_total", 0) or 0)
-                - int(record.get("bytes_completed", 0) or 0),
-            )
-        for record in queued_transfers:
-            direction = str(record.get("direction", "unknown"))
-            bucket = queued_by_direction.setdefault(
-                direction,
-                {"transfer_count": 0, "bytes_total": 0},
-            )
-            bucket["transfer_count"] += 1
-            bucket["bytes_total"] += int(record.get("bytes_total", 0) or 0)
+        return transfer_records, recent_terminal_feedback
+
+    def _runtime_relay_state_locked(
+        self,
+        active_transfers: list[dict[str, object]],
+    ) -> dict[str, object]:
         path_records, path_summary = self._active_path_records_locked(active_transfers)
         active_reservations = [
             self._runtime_reservation_record_locked(reservation_id, reservation)
@@ -3609,141 +4605,144 @@ class TurboBusDaemon:
             for lease_id, lease in sorted(self._lease_tokens.items())
             if lease_id in self._reservations
         ]
-        staging_records = [dict(value) for _, value in sorted(self._staging_records.items())]
-        job_runtime_state = self._job_runtime_state_locked(transfer_records)
-        relay_path_summary = {
-            "path_count": 0,
-            "chunk_count": 0,
-            "bytes_total": 0,
-        }
-        completion_source_counts: dict[str, int] = {}
-        terminal_completion_source_counts: dict[str, int] = {}
-        active_execution_evidence = _empty_execution_path_evidence()
-        active_execution_evidence_by_source: dict[str, dict[str, int]] = {}
-        terminal_execution_evidence = _terminal_execution_evidence_from_records(
-            (*transfer_records, *recent_terminal_feedback)
-        )
-        terminal_execution_evidence_by_source = (
-            _terminal_execution_evidence_by_source_from_records(
-                (*transfer_records, *recent_terminal_feedback)
-            )
-        )
-        runtime_feedback_metrics = _runtime_feedback_metrics_from_records(
-            (*transfer_records, *recent_terminal_feedback)
-        )
-        for key, value in path_summary.items():
-            if not key.endswith(":relay"):
-                continue
-            relay_path_summary["path_count"] += int(value.get("path_count", 0) or 0)
-            relay_path_summary["chunk_count"] += int(value.get("chunk_count", 0) or 0)
-            relay_path_summary["bytes_total"] += int(value.get("bytes_total", 0) or 0)
-        for record in path_records:
-            kind = str(record.get("kind", "unknown"))
-            _accumulate_execution_path_evidence(
-                active_execution_evidence,
-                kind=kind,
-                bytes_total=int(record.get("bytes_total", 0) or 0),
-                chunk_count=int(record.get("chunk_count", 0) or 0),
-            )
-            completion_source = str(record.get("completion_source", "")).lower()
-            if completion_source:
-                source_bucket = active_execution_evidence_by_source.setdefault(
-                    completion_source,
-                    _empty_execution_path_evidence(),
-                )
-                _accumulate_execution_path_evidence(
-                    source_bucket,
-                    kind=kind,
-                    bytes_total=int(record.get("bytes_total", 0) or 0),
-                    chunk_count=int(record.get("chunk_count", 0) or 0),
-                )
-        for record in (*transfer_records, *recent_terminal_feedback):
-            completion_source = str(record.get("completion_source", "")).lower()
-            if not completion_source:
-                continue
-            completion_source_counts[completion_source] = (
-                completion_source_counts.get(completion_source, 0) + 1
-            )
-            if str(record.get("state")) in {
-                TransferStatusState.COMPLETE.value,
-                TransferStatusState.FAILED.value,
-                TransferStatusState.CANCELED.value,
-            }:
-                terminal_completion_source_counts[completion_source] = (
-                    terminal_completion_source_counts.get(completion_source, 0) + 1
-                )
-        active_resource_usage = {
-            "h2d": dict(active_by_direction.get("h2d", {})),
-            "d2h": dict(active_by_direction.get("d2h", {})),
-            "p2p": dict(relay_path_summary),
-            "relay_staging": {
-                "count": len(staging_records),
-                "active_reservation_count": len(active_reservations),
-                "active_lease_count": len(active_leases),
-            },
-        }
+        staging_records = [
+            dict(value) for _, value in sorted(self._staging_records.items())
+        ]
         relay_runtime_state = {
             "active_paths": path_records,
             "active_reservations": active_reservations,
             "active_leases": active_leases,
             "relay_staging": staging_records,
         }
-        busy_relays = tuple(sorted(busy_relays_from_runtime_state(relay_runtime_state)))
-        relay_load = relay_load_from_runtime_state(relay_runtime_state)
+        relay_activity = relay_activity_from_runtime_state(relay_runtime_state)
         return {
-            "version": self._runtime_state_version,
-            "captured_at": captured_at,
-            "transfer_order": tuple(self._transfer_queue),
-            "transfers": transfer_records,
-            "queued_transfers": queued_transfers,
-            "admitted_transfers": admitted_transfers,
-            "delayed_transfers": delayed_transfers,
-            "running_transfers": running_transfers,
-            "active_transfers": active_transfers,
-            "recent_terminal_transfers": recent_terminal_feedback,
-            "active_paths": path_records,
-            "active_resource_usage": active_resource_usage,
-            "job_runtime_state": job_runtime_state,
+            "path_records": path_records,
+            "path_summary": path_summary,
             "active_reservations": active_reservations,
             "active_leases": active_leases,
-            "relay_staging": staging_records,
-            "summary": {
-                "queued_transfer_count": len(queued_transfers),
-                "admitted_transfer_count": len(admitted_transfers),
-                "delayed_transfer_count": len(delayed_transfers),
-                "running_transfer_count": len(running_transfers),
-                "active_transfer_count": len(active_transfers),
-                "recent_terminal_transfer_count": len(recent_terminal_feedback),
-                "terminal_transfer_count": sum(
-                    1
-                    for record in (*transfer_records, *recent_terminal_feedback)
-                    if str(record.get("state"))
-                    in {
-                        TransferStatusState.COMPLETE.value,
-                        TransferStatusState.FAILED.value,
-                        TransferStatusState.CANCELED.value,
-                    }
-                ),
+            "staging_records": staging_records,
+            "busy_relays": tuple(sorted(relay_activity["busy_relays"])),
+            "relay_load": relay_activity["relay_load"],
+        }
+
+    def _runtime_pcie_bandwidth_pool_locked(
+        self,
+        *,
+        active_paths: object,
+    ) -> dict[str, object]:
+        if self._topology_provider is None:
+            unavailable = {
+                "source": "daemon_pcie_bandwidth_pool",
+                "available": False,
+                "reason": _TOPOLOGY_UNAVAILABLE_ERROR,
+                "paths": {},
+                "edges": {},
+            }
+            return {
+                "pcie_fabric": {},
+                "pcie_edge_load": {},
+                "pcie_bandwidth_pool": unavailable,
+            }
+        try:
+            inventory = self._topology_provider.snapshot()
+        except Exception as exc:
+            unavailable = {
+                "source": "daemon_pcie_bandwidth_pool",
+                "available": False,
+                "reason": str(exc),
+                "paths": {},
+                "edges": {},
+            }
+            return {
+                "pcie_fabric": {},
+                "pcie_edge_load": {},
+                "pcie_bandwidth_pool": unavailable,
+            }
+        fabric = pcie_fabric_snapshot_from_inventory(inventory)
+        fabric_record = fabric.as_dict()
+        capacity_by_edge = {
+            str(edge.edge_id): float(edge.capacity_gbps)
+            for edge in fabric.edges
+        }
+        path_edge_map = {
+            int(path.device_id): tuple(path.edge_ids)
+            for path in fabric.paths
+        }
+        edge_load = _pcie_load_from_active_paths(
+            active_paths=active_paths,
+            path_edge_map=path_edge_map,
+            capacity_by_edge=capacity_by_edge,
+        )
+        return {
+            "pcie_fabric": fabric_record,
+            "pcie_edge_load": edge_load,
+            "pcie_bandwidth_pool": _build_bandwidth_pool_snapshot(
+                pcie_fabric=fabric_record,
+                edge_load=edge_load,
+            ),
+        }
+
+    def _runtime_active_resource_usage_locked(
+        self,
+        *,
+        active_by_direction: dict[str, dict[str, int]],
+        staging_records: list[dict[str, object]],
+        active_reservations: list[dict[str, object]],
+        active_leases: list[dict[str, object]],
+    ) -> dict[str, object]:
+        return {
+            "h2d": dict(active_by_direction.get("h2d", {})),
+            "d2h": dict(active_by_direction.get("d2h", {})),
+            "p2p": {},
+            "relay_staging": {
+                "count": len(staging_records),
                 "active_reservation_count": len(active_reservations),
                 "active_lease_count": len(active_leases),
-                "relay_staging_count": len(staging_records),
-                "relay_path_count": relay_path_summary["path_count"],
-                "relay_path_bytes_total": relay_path_summary["bytes_total"],
-                "busy_relays": busy_relays,
-                "relay_load": relay_load,
-                "completion_source_counts": completion_source_counts,
-                "terminal_completion_source_counts": terminal_completion_source_counts,
-                "active_execution_evidence": active_execution_evidence,
-                "active_execution_evidence_by_source": active_execution_evidence_by_source,
-                "terminal_execution_evidence": terminal_execution_evidence,
-                "terminal_execution_evidence_by_source": terminal_execution_evidence_by_source,
-                "runtime_feedback_metrics": runtime_feedback_metrics,
-                "queued_bytes_by_direction": queued_by_direction,
-                "active_bytes_by_direction": active_by_direction,
-                "active_paths": path_summary,
-                "active_resource_usage": active_resource_usage,
-                "job_runtime_state": job_runtime_state,
             },
+        }
+
+    def _runtime_resource_summary_locked(
+        self,
+        *,
+        transfer_groups: dict[str, list[dict[str, object]]],
+        terminal_transfer_count: int,
+        recent_terminal_transfer_count: int,
+        relay_state: dict[str, object],
+        active_resource_usage: dict[str, object],
+        queued_by_direction: dict[str, dict[str, int]],
+        active_by_direction: dict[str, dict[str, int]],
+        job_runtime_state: dict[str, dict[str, object]],
+    ) -> dict[str, object]:
+        active_reservations = relay_state["active_reservations"]
+        active_leases = relay_state["active_leases"]
+        staging_records = relay_state["staging_records"]
+        return {
+            "queued_transfer_count": len(transfer_groups["queued_transfers"]),
+            "admitted_transfer_count": len(transfer_groups["admitted_transfers"]),
+            "delayed_transfer_count": len(transfer_groups["delayed_transfers"]),
+            "running_transfer_count": len(transfer_groups["running_transfers"]),
+            "active_transfer_count": len(transfer_groups["active_transfers"]),
+            "recent_terminal_transfer_count": int(recent_terminal_transfer_count),
+            "terminal_transfer_count": int(terminal_transfer_count),
+            "active_reservation_count": len(active_reservations),
+            "active_lease_count": len(active_leases),
+            "relay_staging_count": len(staging_records),
+            "relay_path_count": 0,
+            "relay_path_bytes_total": 0,
+            "busy_relays": relay_state["busy_relays"],
+            "relay_load": relay_state["relay_load"],
+            "completion_source_counts": {},
+            "terminal_completion_source_counts": {},
+            "active_execution_evidence": _empty_execution_path_evidence(),
+            "active_execution_evidence_by_source": {},
+            "terminal_execution_evidence": {},
+            "terminal_execution_evidence_by_source": {},
+            "runtime_feedback_metrics": {},
+            "queued_bytes_by_direction": queued_by_direction,
+            "active_bytes_by_direction": active_by_direction,
+            "active_paths": relay_state["path_summary"],
+            "active_resource_usage": active_resource_usage,
+            "job_runtime_state": job_runtime_state,
         }
 
     def _runtime_reservation_record_locked(
@@ -3773,57 +4772,14 @@ class TurboBusDaemon:
         self,
         transfer_records: list[dict[str, object]],
     ) -> dict[str, dict[str, object]]:
-        jobs = {
+        job_runtime_state = {
             job_id: {
                 "job_id": job_id,
                 "weight": float(job.weight),
-                "queued_transfer_count": 0,
-                "running_transfer_count": 0,
-                "active_transfer_count": 0,
-                "active_bytes_total": 0,
-                "active_bytes_remaining": 0,
             }
             for job_id, job in self._jobs.items()
         }
-        for record in transfer_records:
-            job_id = record.get("job_id")
-            if job_id is None:
-                continue
-            normalized = str(job_id)
-            job_record = jobs.setdefault(
-                normalized,
-                {
-                    "job_id": normalized,
-                    "weight": 1.0,
-                    "queued_transfer_count": 0,
-                    "running_transfer_count": 0,
-                    "active_transfer_count": 0,
-                    "active_bytes_total": 0,
-                    "active_bytes_remaining": 0,
-                },
-            )
-            state = str(record.get("state", ""))
-            if state == TransferStatusState.SUBMITTED.value:
-                job_record["queued_transfer_count"] = int(
-                    job_record["queued_transfer_count"]
-                ) + 1
-            elif state == TransferStatusState.RUNNING.value:
-                job_record["running_transfer_count"] = int(
-                    job_record["running_transfer_count"]
-                ) + 1
-            if _record_has_active_execution(record):
-                bytes_total = int(record.get("bytes_total", 0) or 0)
-                bytes_completed = int(record.get("bytes_completed", 0) or 0)
-                job_record["active_transfer_count"] = int(
-                    job_record["active_transfer_count"]
-                ) + 1
-                job_record["active_bytes_total"] = int(
-                    job_record["active_bytes_total"]
-                ) + bytes_total
-                job_record["active_bytes_remaining"] = int(
-                    job_record["active_bytes_remaining"]
-                ) + max(0, bytes_total - bytes_completed)
-        return dict(sorted(jobs.items()))
+        return _job_runtime_state_from_records(job_runtime_state, transfer_records)
 
     def _active_path_records_locked(
         self,
@@ -4007,7 +4963,7 @@ class TurboBusDaemon:
         expires_at: float | None = None,
         lease_ids: tuple[str, ...] = (),
     ) -> ExecutionTicket:
-        return daemon_receipts.execution_ticket_for_plan(
+        ticket = daemon_receipts.execution_ticket_for_plan(
             transfer_id=transfer_id,
             decision=decision,
             source_buffer_id=source_buffer_id,
@@ -4026,6 +4982,32 @@ class TurboBusDaemon:
                 lease_ids=lease_ids,
             ),
         )
+        self._mark_block_runtime_ticket_issued_locked(
+            transfer_id=str(transfer_id),
+            ticket=ticket,
+            now=now,
+        )
+        return ticket
+
+    def _mark_block_runtime_ticket_issued_locked(
+        self,
+        *,
+        transfer_id: str,
+        ticket: ExecutionTicket,
+        now: float,
+    ) -> None:
+        records = self._block_runtime_records.get(str(transfer_id))
+        if not records:
+            return
+        updated = daemon_block_runtime.mark_ticket_issued(
+            records,
+            ticket_id=ticket.ticket_id,
+            issued_at=float(now),
+        )
+        self._block_runtime_records[str(transfer_id)] = tuple(
+            record.as_dict() for record in updated
+        )
+        self._runtime_state_version += 1
 
     def _authorization_cleanup_payload_locked(
         self,
@@ -4088,6 +5070,11 @@ class TurboBusDaemon:
                 lease_ids=lease_ids,
             )
         }
+        block_runtime = daemon_block_runtime.ticket_metadata_view(
+            self._block_runtime_records.get(str(transfer_id), ())
+        )
+        if block_runtime is not None:
+            metadata["block_runtime"] = block_runtime
         intent = self._transfer_intents.get(str(decision.intent_id))
         if intent is not None:
             policy_hints = (
@@ -4175,6 +5162,17 @@ class TurboBusDaemon:
             and isinstance(archived.get("completion_evidence"), Mapping)
         ):
             completion_evidence = dict(archived["completion_evidence"])
+        block_runtime_records = self._block_runtime_records.get(transfer_id)
+        if (
+            not block_runtime_records
+            and isinstance(archived.get("block_runtime"), Iterable)
+            and not isinstance(archived.get("block_runtime"), (str, bytes, Mapping))
+        ):
+            block_runtime_records = tuple(
+                dict(record)
+                for record in archived["block_runtime"]
+                if isinstance(record, Mapping)
+            )
         buffer_snapshots = self._transfer_buffer_snapshots.get(transfer_id)
         if (
             buffer_snapshots is None
@@ -4197,6 +5195,7 @@ class TurboBusDaemon:
             admitted_state=_ADMISSION_ADMITTED,
             completion_source=completion_source,
             completion_evidence=completion_evidence,
+            block_runtime=block_runtime_records,
             buffer_snapshots=buffer_snapshots,
         )
 
@@ -4454,10 +5453,42 @@ class TurboBusDaemon:
         now: float | None = None,
     ) -> dict[str, object]:
         created_at = float(time.time() if now is None else now)
-        normalized_transfer_id = None if transfer_id is None else str(transfer_id)
-        if normalized_transfer_id is None and staging_record is not None:
-            value = staging_record.get("transfer_id")
-            normalized_transfer_id = None if value is None else str(value)
+        context = self._audit_record_context_locked(
+            transfer_id=transfer_id,
+            reservation=reservation,
+            lease=lease,
+            staging_record=staging_record,
+            ticket=ticket,
+            session_id=session_id,
+        )
+        record = self._audit_record_payload_locked(
+            created_at=created_at,
+            event_type=str(event_type),
+            context=context,
+            state=state,
+            reason=reason,
+            failure_reason=failure_reason,
+            cleanup_kind=cleanup_kind,
+            cleanup_target_id=cleanup_target_id,
+            bytes_completed=bytes_completed,
+        )
+        self._audit_records.append(record)
+        return record
+
+    def _audit_record_context_locked(
+        self,
+        *,
+        transfer_id: str | None,
+        reservation: TransferReservation | None,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+        ticket: ExecutionTicket | None,
+        session_id: str | None,
+    ) -> dict[str, object]:
+        normalized_transfer_id = self._audit_transfer_id(
+            transfer_id=transfer_id,
+            staging_record=staging_record,
+        )
         status = (
             None
             if normalized_transfer_id is None
@@ -4468,107 +5499,119 @@ class TurboBusDaemon:
             if normalized_transfer_id is None
             else self._scheduling_decisions.get(normalized_transfer_id)
         )
-        ticket_id = None
-        if ticket is not None:
-            ticket_id = ticket.ticket_id
-        elif normalized_transfer_id is not None:
-            ticket_id = self._transfer_tickets.get(normalized_transfer_id)
-        active_ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
-        if ticket is None:
-            ticket = active_ticket
-        lease_id = None
-        if lease is not None:
-            lease_id = lease.lease_id
-        elif reservation is not None:
-            lease_id = reservation.reservation_id
-        elif staging_record is not None:
-            value = staging_record.get("lease_id")
-            lease_id = None if value is None else str(value)
-        if lease is None and lease_id is not None:
-            lease = self._lease_tokens.get(lease_id)
-        resolved_session_id = session_id
-        if resolved_session_id is None and status is not None:
-            resolved_session_id = status.session_id
-        if resolved_session_id is None and lease is not None:
-            resolved_session_id = lease.session_id
-        if resolved_session_id is None and reservation is not None:
-            resolved_session_id = reservation.session_id
-        if resolved_session_id is None and staging_record is not None:
-            value = staging_record.get("session_id")
-            resolved_session_id = None if value is None else str(value)
-        job_id = None
-        if status is not None:
-            job_id = status.job_id
-        elif lease is not None:
-            job_id = lease.job_id
-        elif staging_record is not None:
-            value = staging_record.get("job_id")
-            job_id = None if value is None else str(value)
-        elif decision is not None:
-            job_id = decision.job_id
+        ticket_id, ticket = self._audit_ticket(
+            transfer_id=normalized_transfer_id,
+            ticket=ticket,
+        )
+        lease_id, lease = self._audit_lease(
+            reservation=reservation,
+            lease=lease,
+            staging_record=staging_record,
+        )
+        resolved_session_id = self._audit_session_id(
+            session_id=session_id,
+            status=status,
+            reservation=reservation,
+            lease=lease,
+            staging_record=staging_record,
+        )
+        job_id = self._audit_job_id(
+            status=status,
+            decision=decision,
+            lease=lease,
+            staging_record=staging_record,
+        )
         job = None if job_id is None else self._jobs.get(job_id)
-        buffer_ids: tuple[str, ...] = ()
-        if lease is not None:
-            buffer_ids = tuple(lease.buffer_ids)
-        elif staging_record is not None:
-            buffer_ids = tuple(str(item) for item in staging_record.get("buffer_ids", ()))
-        elif ticket is not None:
-            buffer_ids = (ticket.source_buffer_id, ticket.destination_buffer_id)
-        relay_gpu = None
-        if reservation is not None:
-            relay_gpu = reservation.relay_gpu
-        elif lease is not None:
-            relay_gpu = lease.relay_gpu
-        elif staging_record is not None and staging_record.get("relay_gpu") is not None:
-            relay_gpu = int(staging_record["relay_gpu"])
-        direction = None
-        if reservation is not None:
-            direction = reservation.direction
-        elif staging_record is not None:
-            value = staging_record.get("direction")
-            direction = None if value is None else str(value)
-        elif ticket is not None:
-            direction = ticket.direction
-        bytes_total = 0
-        if reservation is not None:
-            bytes_total = int(reservation.bytes)
-        elif staging_record is not None:
-            bytes_total = int(staging_record.get("requested_bytes", 0) or 0)
-        elif status is not None:
-            bytes_total = int(status.bytes_total)
+        return {
+            "transfer_id": normalized_transfer_id,
+            "status": status,
+            "decision": decision,
+            "ticket": ticket,
+            "ticket_id": ticket_id,
+            "lease": lease,
+            "lease_id": lease_id,
+            "session_id": resolved_session_id,
+            "job_id": job_id,
+            "job": job,
+            "buffer_ids": self._audit_buffer_ids(
+                lease=lease,
+                staging_record=staging_record,
+                ticket=ticket,
+            ),
+            "relay_gpu": self._audit_relay_gpu(
+                reservation=reservation,
+                lease=lease,
+                staging_record=staging_record,
+            ),
+            "direction": self._audit_direction(
+                reservation=reservation,
+                staging_record=staging_record,
+                ticket=ticket,
+            ),
+            "bytes_total": self._audit_bytes_total(
+                reservation=reservation,
+                staging_record=staging_record,
+                status=status,
+            ),
+            "staging_record": staging_record,
+        }
+
+    def _audit_record_payload_locked(
+        self,
+        *,
+        created_at: float,
+        event_type: str,
+        context: Mapping[str, object],
+        state: TransferStatusState | str | None,
+        reason: str | None,
+        failure_reason: str | None,
+        cleanup_kind: str | None,
+        cleanup_target_id: str | None,
+        bytes_completed: int | None,
+    ) -> dict[str, object]:
+        status = context.get("status")
+        decision = context.get("decision")
+        ticket = context.get("ticket")
+        job = context.get("job")
+        bytes_total = int(context.get("bytes_total", 0) or 0)
         completed = (
             int(bytes_completed)
             if bytes_completed is not None
-            else (int(status.bytes_completed) if status is not None else 0)
+            else (
+                int(status.bytes_completed)
+                if isinstance(status, TransferStatus)
+                else 0
+            )
         )
-        if reservation is not None and bytes_total:
+        if context.get("lease_id") is not None and bytes_total:
             completed = min(completed, bytes_total)
-        started_at = None
-        if staging_record is not None:
-            started_at = float(staging_record.get("created_at", 0.0) or 0.0)
-        elif decision is not None:
-            started_at = float(decision.issued_at)
-        duration_seconds = None
-        if started_at:
-            duration_seconds = max(0.0, created_at - started_at)
-        record = {
+        duration_seconds = self._audit_duration_seconds(
+            created_at=created_at,
+            staging_record=context.get("staging_record"),
+            decision=decision,
+        )
+        return {
             "audit_id": f"audit-{len(self._audit_records) + 1}",
             "event_type": str(event_type),
             "created_at": created_at,
-            "transfer_id": normalized_transfer_id,
+            "transfer_id": context.get("transfer_id"),
             "decision_id": None if decision is None else decision.decision_id,
-            "ticket_id": ticket_id,
+            "ticket_id": context.get("ticket_id"),
             "topology_snapshot_id": (
                 None if decision is None else decision.topology_snapshot_id
             ),
-            "lease_id": lease_id,
-            "session_id": None if resolved_session_id is None else str(resolved_session_id),
-            "job_id": job_id,
+            "lease_id": context.get("lease_id"),
+            "session_id": (
+                None
+                if context.get("session_id") is None
+                else str(context.get("session_id"))
+            ),
+            "job_id": context.get("job_id"),
             "user_id": None if job is None else job.user_id,
             "process_id": None if job is None else job.process_id,
             "container_id": None if job is None else job.container_id,
-            "relay_gpu": relay_gpu,
-            "direction": direction,
+            "relay_gpu": context.get("relay_gpu"),
+            "direction": context.get("direction"),
             "bytes_total": bytes_total,
             "bytes_completed": completed,
             "duration_seconds": duration_seconds,
@@ -4585,15 +5628,177 @@ class TurboBusDaemon:
             "destination_buffer_id": (
                 None if ticket is None else ticket.destination_buffer_id
             ),
-            "buffer_ids": buffer_ids,
+            "buffer_ids": context.get("buffer_ids", ()),
             "staging_record_id": (
                 None
-                if staging_record is None
-                else staging_record.get("staging_record_id")
+                if context.get("staging_record") is None
+                else context["staging_record"].get("staging_record_id")
             ),
         }
-        self._audit_records.append(record)
-        return record
+
+    def _audit_transfer_id(
+        self,
+        *,
+        transfer_id: str | None,
+        staging_record: Mapping[str, object] | None,
+    ) -> str | None:
+        if transfer_id is not None:
+            return str(transfer_id)
+        if staging_record is None:
+            return None
+        value = staging_record.get("transfer_id")
+        return None if value is None else str(value)
+
+    def _audit_ticket(
+        self,
+        *,
+        transfer_id: str | None,
+        ticket: ExecutionTicket | None,
+    ) -> tuple[str | None, ExecutionTicket | None]:
+        if ticket is not None:
+            return ticket.ticket_id, ticket
+        if transfer_id is None:
+            return None, None
+        ticket_id = self._transfer_tickets.get(transfer_id)
+        active_ticket = None if ticket_id is None else self._execution_tickets.get(ticket_id)
+        return ticket_id, active_ticket
+
+    def _audit_lease(
+        self,
+        *,
+        reservation: TransferReservation | None,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+    ) -> tuple[str | None, LeaseToken | None]:
+        if lease is not None:
+            return lease.lease_id, lease
+        if reservation is not None:
+            lease_id = reservation.reservation_id
+        elif staging_record is not None:
+            value = staging_record.get("lease_id")
+            lease_id = None if value is None else str(value)
+        else:
+            lease_id = None
+        resolved_lease = None if lease_id is None else self._lease_tokens.get(lease_id)
+        return lease_id, resolved_lease
+
+    def _audit_session_id(
+        self,
+        *,
+        session_id: str | None,
+        status: TransferStatus | None,
+        reservation: TransferReservation | None,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+    ) -> str | None:
+        if session_id is not None:
+            return session_id
+        if status is not None:
+            return status.session_id
+        if lease is not None:
+            return lease.session_id
+        if reservation is not None:
+            return reservation.session_id
+        if staging_record is None:
+            return None
+        value = staging_record.get("session_id")
+        return None if value is None else str(value)
+
+    def _audit_job_id(
+        self,
+        *,
+        status: TransferStatus | None,
+        decision: SchedulingDecision | None,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+    ) -> str | None:
+        if status is not None:
+            return status.job_id
+        if lease is not None:
+            return lease.job_id
+        if staging_record is not None:
+            value = staging_record.get("job_id")
+            return None if value is None else str(value)
+        if decision is not None:
+            return decision.job_id
+        return None
+
+    def _audit_buffer_ids(
+        self,
+        *,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+        ticket: ExecutionTicket | None,
+    ) -> tuple[str, ...]:
+        if lease is not None:
+            return tuple(lease.buffer_ids)
+        if staging_record is not None:
+            return tuple(str(item) for item in staging_record.get("buffer_ids", ()))
+        if ticket is not None:
+            return (ticket.source_buffer_id, ticket.destination_buffer_id)
+        return ()
+
+    def _audit_relay_gpu(
+        self,
+        *,
+        reservation: TransferReservation | None,
+        lease: LeaseToken | None,
+        staging_record: Mapping[str, object] | None,
+    ) -> int | None:
+        if reservation is not None:
+            return reservation.relay_gpu
+        if lease is not None:
+            return lease.relay_gpu
+        if staging_record is not None and staging_record.get("relay_gpu") is not None:
+            return int(staging_record["relay_gpu"])
+        return None
+
+    def _audit_direction(
+        self,
+        *,
+        reservation: TransferReservation | None,
+        staging_record: Mapping[str, object] | None,
+        ticket: ExecutionTicket | None,
+    ) -> str | None:
+        if reservation is not None:
+            return reservation.direction
+        if staging_record is not None:
+            value = staging_record.get("direction")
+            return None if value is None else str(value)
+        if ticket is not None:
+            return ticket.direction
+        return None
+
+    def _audit_bytes_total(
+        self,
+        *,
+        reservation: TransferReservation | None,
+        staging_record: Mapping[str, object] | None,
+        status: TransferStatus | None,
+    ) -> int:
+        if reservation is not None:
+            return int(reservation.bytes)
+        if staging_record is not None:
+            return int(staging_record.get("requested_bytes", 0) or 0)
+        if status is not None:
+            return int(status.bytes_total)
+        return 0
+
+    def _audit_duration_seconds(
+        self,
+        *,
+        created_at: float,
+        staging_record: object,
+        decision: object,
+    ) -> float | None:
+        started_at = None
+        if isinstance(staging_record, Mapping):
+            started_at = float(staging_record.get("created_at", 0.0) or 0.0)
+        elif isinstance(decision, SchedulingDecision):
+            started_at = float(decision.issued_at)
+        if not started_at:
+            return None
+        return max(0.0, created_at - started_at)
 
     def _cleanup_job_locked(self, job_id: str, reason: str) -> dict[str, int]:
         removed = _empty_removed_summary()
@@ -5022,6 +6227,58 @@ class TurboBusDaemon:
             raise ValueError("cleanup owner_binding is only supported for reservations")
         if not isinstance(owner_binding, Mapping):
             raise ValueError("cleanup owner_binding must be a mapping")
+        binding = self._normalized_cleanup_owner_binding_locked(cleanup, owner_binding)
+        job_id = str(binding["job_id"])
+        session_id = str(binding["session_id"])
+        transfer_id = str(binding["transfer_id"])
+        normalized_lease_ids = binding["lease_ids"]
+        normalized_cleanup_target_ids = binding["cleanup_scope"]["target_ids"]
+        owner_peer_identity = binding.get("owner_peer_identity")
+        normalized_owner_peer = binding.get("peer_identity")
+        if (
+            owner_peer_identity is not None
+            and peer_identity is not None
+            and peer_identity.authenticated
+        ):
+            peer_auth.validate_peer_owner_match(
+                expected=owner_peer_identity,
+                actual=peer_identity,
+                owner_name="cleanup owner_binding",
+            )
+        for scoped_lease_id in normalized_cleanup_target_ids:
+            owner_peer_identity, normalized_owner_peer = (
+                self._validate_cleanup_owner_binding_target_locked(
+                    scoped_lease_id=str(scoped_lease_id),
+                    job_id=job_id,
+                    session_id=session_id,
+                    transfer_id=transfer_id,
+                    owner_peer_identity=owner_peer_identity,
+                    normalized_owner_peer=normalized_owner_peer,
+                    peer_identity=peer_identity,
+                )
+            )
+        result = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "transfer_id": transfer_id,
+            "lease_ids": normalized_lease_ids,
+            "cleanup_scope": {
+                "target_kind": binding["cleanup_scope"]["target_kind"],
+                "target_ids": normalized_cleanup_target_ids,
+            },
+        }
+        relay_gpus = owner_binding.get("relay_gpus")
+        if isinstance(relay_gpus, Iterable) and not isinstance(relay_gpus, (str, bytes)):
+            result["relay_gpus"] = tuple(sorted({int(item) for item in relay_gpus}))
+        if normalized_owner_peer is not None:
+            result["peer_identity"] = normalized_owner_peer
+        return result
+
+    def _normalized_cleanup_owner_binding_locked(
+        self,
+        cleanup: CleanupRequest,
+        owner_binding: Mapping[str, object],
+    ) -> dict[str, object]:
         job_id = str(owner_binding.get("job_id", ""))
         session_id = str(owner_binding.get("session_id", ""))
         transfer_id = str(owner_binding.get("transfer_id", ""))
@@ -5072,6 +6329,159 @@ class TurboBusDaemon:
         if isinstance(owner_peer, Mapping):
             owner_peer_identity = PeerIdentity(**dict(owner_peer))
             normalized_owner_peer = asdict(owner_peer_identity)
+        result: dict[str, object] = {
+            "job_id": job_id,
+            "session_id": session_id,
+            "transfer_id": transfer_id,
+            "lease_ids": normalized_lease_ids,
+            "cleanup_scope": {
+                "target_kind": cleanup_target_kind,
+                "target_ids": normalized_cleanup_target_ids,
+            },
+        }
+        if normalized_owner_peer is not None:
+            result["peer_identity"] = normalized_owner_peer
+        if owner_peer_identity is not None:
+            result["owner_peer_identity"] = owner_peer_identity
+        return result
+
+    def _validate_cleanup_owner_binding_target_locked(
+        self,
+        *,
+        scoped_lease_id: str,
+        job_id: str,
+        session_id: str,
+        transfer_id: str,
+        owner_peer_identity: PeerIdentity | None,
+        normalized_owner_peer: dict[str, object] | None,
+        peer_identity: PeerIdentity | None,
+    ) -> tuple[PeerIdentity | None, dict[str, object] | None]:
+        reservation = self._reservations.get(scoped_lease_id)
+        if reservation is not None:
+            self._validate_cleanup_owner_binding_reservation_locked(
+                scoped_lease_id=scoped_lease_id,
+                reservation=reservation,
+                job_id=job_id,
+                session_id=session_id,
+                transfer_id=transfer_id,
+                peer_identity=peer_identity,
+            )
+            return owner_peer_identity, normalized_owner_peer
+        staging_record = self._staging_records.get(scoped_lease_id)
+        if staging_record is not None:
+            self._validate_cleanup_owner_binding_staging_locked(
+                staging_record=staging_record,
+                job_id=job_id,
+                session_id=session_id,
+                transfer_id=transfer_id,
+                peer_identity=peer_identity,
+            )
+            return owner_peer_identity, normalized_owner_peer
+        return self._validate_cleanup_owner_binding_archive_locked(
+            scoped_lease_id=scoped_lease_id,
+            job_id=job_id,
+            transfer_id=transfer_id,
+            owner_peer_identity=owner_peer_identity,
+            normalized_owner_peer=normalized_owner_peer,
+            peer_identity=peer_identity,
+        )
+
+    def _validate_cleanup_owner_binding_reservation_locked(
+        self,
+        *,
+        scoped_lease_id: str,
+        reservation: TransferReservation,
+        job_id: str,
+        session_id: str,
+        transfer_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if str(reservation.session_id) != session_id:
+            raise ValueError("cleanup owner_binding session does not match reservation")
+        lease = self._lease_tokens.get(scoped_lease_id)
+        if lease is None:
+            raise ValueError("cleanup owner_binding lease token is unavailable")
+        if lease.job_id is not None and str(lease.job_id) != job_id:
+            raise ValueError("cleanup owner_binding job does not match lease")
+        mapped_transfer_id = self._reservation_transfers.get(scoped_lease_id)
+        if mapped_transfer_id != transfer_id:
+            raise ValueError("cleanup owner_binding transfer does not match reservation")
+        self._validate_peer_owns_lease_locked(
+            lease_id=scoped_lease_id,
+            peer_identity=peer_identity,
+        )
+
+    def _validate_cleanup_owner_binding_staging_locked(
+        self,
+        *,
+        staging_record: Mapping[str, object],
+        job_id: str,
+        session_id: str,
+        transfer_id: str,
+        peer_identity: PeerIdentity | None,
+    ) -> None:
+        if str(staging_record.get("session_id", "")) != session_id:
+            raise ValueError("cleanup owner_binding session does not match staging record")
+        if str(staging_record.get("job_id", "")) != job_id:
+            raise ValueError("cleanup owner_binding job does not match staging record")
+        if str(staging_record.get("transfer_id", "")) != transfer_id:
+            raise ValueError("cleanup owner_binding transfer does not match staging record")
+        self._validate_peer_owns_staging_record_locked(
+            staging_record=staging_record,
+            peer_identity=peer_identity,
+        )
+
+    def _validate_cleanup_owner_binding_archive_locked(
+        self,
+        *,
+        scoped_lease_id: str,
+        job_id: str,
+        transfer_id: str,
+        owner_peer_identity: PeerIdentity | None,
+        normalized_owner_peer: dict[str, object] | None,
+        peer_identity: PeerIdentity | None,
+    ) -> tuple[PeerIdentity | None, dict[str, object] | None]:
+        archived_target = self._retired_cleanup_target_record_locked(
+            target_kind="reservation",
+            target_id=scoped_lease_id,
+        )
+        if archived_target is None:
+            raise ValueError("cleanup owner_binding references unknown reservation")
+        archived_transfer_ids = tuple(
+            str(item) for item in archived_target.get("transfer_ids", ()) or ()
+        )
+        if archived_transfer_ids and transfer_id not in archived_transfer_ids:
+            raise ValueError(
+                "cleanup owner_binding transfer does not match archived reservation"
+            )
+        if archived_transfer_ids:
+            self._validate_peer_owns_receipt_transfer_locked(
+                transfer_id=transfer_id,
+                job_id=job_id,
+                peer_identity=peer_identity,
+            )
+        archived_peer = self._coerce_peer_identity(archived_target.get("peer_identity"))
+        if (
+            owner_peer_identity is not None
+            and archived_peer is not None
+            and archived_peer.authenticated
+        ):
+            peer_auth.validate_peer_owner_match(
+                expected=archived_peer,
+                actual=owner_peer_identity,
+                owner_name="reservation",
+            )
+            return owner_peer_identity, normalized_owner_peer
+        if owner_peer_identity is not None:
+            return owner_peer_identity, normalized_owner_peer
+        for archived_transfer_id in archived_transfer_ids:
+            archived_transfer_peer = self._archived_transfer_owner_peer_locked(
+                archived_transfer_id
+            )
+            if archived_transfer_peer is not None:
+                owner_peer_identity = archived_transfer_peer
+                normalized_owner_peer = asdict(archived_transfer_peer)
+                break
         if (
             owner_peer_identity is not None
             and peer_identity is not None
@@ -5082,114 +6492,7 @@ class TurboBusDaemon:
                 actual=peer_identity,
                 owner_name="cleanup owner_binding",
             )
-        for scoped_lease_id in normalized_cleanup_target_ids:
-            reservation = self._reservations.get(scoped_lease_id)
-            if reservation is not None:
-                if str(reservation.session_id) != session_id:
-                    raise ValueError(
-                        "cleanup owner_binding session does not match reservation"
-                    )
-                lease = self._lease_tokens.get(scoped_lease_id)
-                if lease is None:
-                    raise ValueError("cleanup owner_binding lease token is unavailable")
-                if lease.job_id is not None and str(lease.job_id) != job_id:
-                    raise ValueError("cleanup owner_binding job does not match lease")
-                mapped_transfer_id = self._reservation_transfers.get(scoped_lease_id)
-                if mapped_transfer_id != transfer_id:
-                    raise ValueError(
-                        "cleanup owner_binding transfer does not match reservation"
-                    )
-                self._validate_peer_owns_lease_locked(
-                    lease_id=scoped_lease_id,
-                    peer_identity=peer_identity,
-                )
-                continue
-            staging_record = self._staging_records.get(scoped_lease_id)
-            if staging_record is not None:
-                if str(staging_record.get("session_id", "")) != session_id:
-                    raise ValueError(
-                        "cleanup owner_binding session does not match staging record"
-                    )
-                if str(staging_record.get("job_id", "")) != job_id:
-                    raise ValueError(
-                        "cleanup owner_binding job does not match staging record"
-                    )
-                if str(staging_record.get("transfer_id", "")) != transfer_id:
-                    raise ValueError(
-                        "cleanup owner_binding transfer does not match staging record"
-                    )
-                self._validate_peer_owns_staging_record_locked(
-                    staging_record=staging_record,
-                    peer_identity=peer_identity,
-                )
-                continue
-            archived_target = self._retired_cleanup_target_record_locked(
-                target_kind="reservation",
-                target_id=scoped_lease_id,
-            )
-            if archived_target is None:
-                raise ValueError("cleanup owner_binding references unknown reservation")
-            archived_transfer_ids = tuple(
-                str(item) for item in archived_target.get("transfer_ids", ()) or ()
-            )
-            if archived_transfer_ids and transfer_id not in archived_transfer_ids:
-                raise ValueError(
-                    "cleanup owner_binding transfer does not match archived reservation"
-                )
-            if archived_transfer_ids:
-                self._validate_peer_owns_receipt_transfer_locked(
-                    transfer_id=transfer_id,
-                    job_id=job_id,
-                    peer_identity=peer_identity,
-                )
-            archived_peer = self._coerce_peer_identity(
-                archived_target.get("peer_identity")
-            )
-            if (
-                owner_peer_identity is not None
-                and archived_peer is not None
-                and archived_peer.authenticated
-            ):
-                peer_auth.validate_peer_owner_match(
-                    expected=archived_peer,
-                    actual=owner_peer_identity,
-                    owner_name="reservation",
-                )
-            elif owner_peer_identity is None:
-                for archived_transfer_id in archived_transfer_ids:
-                    archived_transfer_peer = self._archived_transfer_owner_peer_locked(
-                        archived_transfer_id
-                    )
-                    if archived_transfer_peer is not None:
-                        owner_peer_identity = archived_transfer_peer
-                        normalized_owner_peer = asdict(archived_transfer_peer)
-                        break
-                if (
-                    owner_peer_identity is not None
-                    and peer_identity is not None
-                    and peer_identity.authenticated
-                ):
-                    peer_auth.validate_peer_owner_match(
-                        expected=owner_peer_identity,
-                        actual=peer_identity,
-                        owner_name="cleanup owner_binding",
-                    )
-        result = {
-            "job_id": job_id,
-            "session_id": session_id,
-            "transfer_id": transfer_id,
-            "lease_ids": normalized_lease_ids,
-            "cleanup_scope": {
-                "target_kind": cleanup_target_kind,
-                "target_ids": normalized_cleanup_target_ids,
-            },
-        }
-        relay_gpus = owner_binding.get("relay_gpus")
-        if isinstance(relay_gpus, Iterable) and not isinstance(relay_gpus, (str, bytes)):
-            result["relay_gpus"] = tuple(sorted({int(item) for item in relay_gpus}))
-        if normalized_owner_peer is not None:
-            result["peer_identity"] = normalized_owner_peer
-        return result
+        return owner_peer_identity, normalized_owner_peer
 
     def _residual_transfer_ids_for_cleanup_target_locked(
         self,
@@ -5357,13 +6660,24 @@ class TurboBusDaemon:
         )
         existing_peer = self._coerce_peer_identity(existing.get("peer_identity"))
         archived_peer = peer_identity if peer_identity is not None else existing_peer
+        existing_transfer_ids = tuple(
+            str(item) for item in existing.get("transfer_ids", ()) or ()
+        )
+        merged_transfer_ids = tuple(
+            dict.fromkeys(
+                existing_transfer_ids
+                + tuple(str(item) for item in transfer_ids)
+            )
+        )
         record = {
             "target_kind": normalized_kind,
             "target_id": normalized_id,
             "peer_identity": archived_peer,
-            "reason": None if reason is None else str(reason),
+            "reason": (
+                existing.get("reason") if reason is None else str(reason)
+            ),
             "retired_at": time.time(),
-            "transfer_ids": tuple(str(item) for item in transfer_ids),
+            "transfer_ids": merged_transfer_ids,
         }
         if isinstance(buffer_snapshot, Mapping):
             record["buffer_snapshot"] = dict(buffer_snapshot)
@@ -5533,44 +6847,44 @@ class TurboBusDaemon:
             if existing:
                 self._transfer_receipt_archive[normalized] = existing
             return
-        archived_record = {
-            "transfer_id": normalized,
-            "intent_id": str(intent_id) if intent_id is not None else None,
-            "intent": current_intent,
-            "status": status,
-            "decision": decision,
-            "ticket": self._receipt_execution_ticket_for_transfer_locked(normalized),
-            "admission": dict(self._transfer_admissions.get(normalized, {})),
-            "plan_generation": self._transfer_plan_generations.get(normalized, 0),
-            "plan_expires_at": self._transfer_plan_expirations.get(normalized),
-            "completion_source": self._transfer_completion_sources.get(normalized),
-            "completion_evidence": dict(
-                self._transfer_completion_evidence.get(normalized, {})
-            ),
-            "buffer_snapshots": dict(
-                self._transfer_buffer_snapshots.get(normalized, {})
-            ),
-            "queue_record": dict(self._transfer_queue_records.get(normalized, {})),
-            "reservations": tuple(
+        archived_record = daemon_transfer_lifecycle.archive_record(
+            transfer_id=normalized,
+            existing=existing,
+            request=request,
+            intent=current_intent,
+            status=status,
+            decision=decision,
+            ticket=self._receipt_execution_ticket_for_transfer_locked(normalized),
+            admission=self._transfer_admissions.get(normalized, {}),
+            plan_generation=self._transfer_plan_generations.get(normalized, 0),
+            plan_expires_at=self._transfer_plan_expirations.get(normalized),
+            completion_source=self._transfer_completion_sources.get(normalized),
+            completion_evidence=self._transfer_completion_evidence.get(normalized, {}),
+            block_runtime=self._block_runtime_records.get(normalized, ()),
+            buffer_snapshots=self._transfer_buffer_snapshots.get(normalized, {}),
+            queue_record=self._transfer_queue_records.get(normalized, {}),
+            reservations=(
                 self._runtime_reservation_record_locked(reservation_id, reservation)
                 for reservation_id, reservation in sorted(self._reservations.items())
                 if self._reservation_transfers.get(reservation_id) == normalized
             ),
-            "leases": tuple(
+            leases=(
                 self._runtime_lease_record_locked(lease_id, lease)
                 for lease_id, lease in sorted(self._lease_tokens.items())
                 if self._reservation_transfers.get(lease_id) == normalized
             ),
-            "peer_identity": self._transfer_owner_peer_for_archive_locked(
+            peer_identity=self._transfer_owner_peer_for_archive_locked(
                 transfer_id=normalized,
                 status=status,
                 existing=existing,
             ),
-        }
+        )
         if archived_record["intent_id"] is not None:
             self._archived_intent_transfers[str(archived_record["intent_id"])] = normalized
-        updated = dict(existing)
-        updated.update(archived_record)
+        updated = daemon_transfer_lifecycle.merge_archive_record(
+            existing=existing,
+            record=archived_record,
+        )
         if updated != existing:
             self._runtime_state_version += 1
         self._transfer_receipt_archive[normalized] = updated
@@ -5616,6 +6930,17 @@ class TurboBusDaemon:
         queue_record = dict(self._transfer_queue_records.get(normalized, {}))
         if not queue_record and isinstance(archived.get("queue_record"), Mapping):
             queue_record = dict(archived["queue_record"])
+        block_runtime = tuple(
+            dict(record)
+            for record in self._block_runtime_records.get(normalized, ())
+            if isinstance(record, Mapping)
+        )
+        if not block_runtime and isinstance(archived.get("block_runtime"), Iterable):
+            block_runtime = tuple(
+                dict(record)
+                for record in archived.get("block_runtime", ()) or ()
+                if isinstance(record, Mapping)
+            )
         ticket = self._receipt_execution_ticket_for_transfer_locked(normalized)
         reservations = tuple(
             self._runtime_reservation_record_locked(reservation_id, reservation)
@@ -5670,44 +6995,32 @@ class TurboBusDaemon:
                 receipt = self._receipt_for_intent_locked(intent.intent_id)
             except ValueError:
                 receipt = None
-        return {
-            "source": "daemon_authoritative_transfer_recovery",
-            "transfer_id": normalized,
-            "intent_id": archived.get("intent_id"),
-            "state": str(getattr(status.state, "value", status.state)),
-            "job_id": status.job_id,
-            "session_id": status.session_id,
-            "status": asdict(status),
-            "receipt": None if receipt is None else asdict(receipt),
-            "admission": admission,
-            "queue_record": queue_record,
-            "ticket": None if ticket is None else asdict(ticket),
-            "reservations": reservations,
-            "leases": leases,
-            "buffer_snapshots": (
-                {
-                    str(key): dict(value)
-                    for key, value in buffer_snapshots.items()
-                    if isinstance(value, Mapping)
-                }
-                if isinstance(buffer_snapshots, Mapping)
-                else {}
+        return daemon_transfer_lifecycle.recovery_state(
+            transfer_id=normalized,
+            status=status,
+            archived=archived,
+            admission=admission,
+            queue_record=queue_record,
+            block_runtime=block_runtime,
+            ticket=ticket,
+            reservations=reservations,
+            leases=leases,
+            buffer_snapshots=(
+                buffer_snapshots if isinstance(buffer_snapshots, Mapping) else {}
             ),
-            "cleanup_targets": cleanup_targets,
-            "completion_source": archived.get(
+            cleanup_targets=cleanup_targets,
+            receipt=receipt,
+            completion_source=archived.get(
                 "completion_source",
                 self._transfer_completion_sources.get(normalized),
             ),
-            "completion_evidence": dict(
-                archived.get(
-                    "completion_evidence",
-                    self._transfer_completion_evidence.get(normalized, {}),
-                )
-                or {}
+            completion_evidence=archived.get(
+                "completion_evidence",
+                self._transfer_completion_evidence.get(normalized, {}),
             ),
-            "recovered_at": float(now),
-            "archived": bool(normalized in self._transfer_receipt_archive),
-        }
+            recovered_at=now,
+            archived_active=normalized in self._transfer_receipt_archive,
+        )
 
     def _record_terminal_runtime_feedback_locked(self, transfer_id: str) -> None:
         normalized = str(transfer_id)
@@ -5791,6 +7104,77 @@ class TurboBusDaemon:
         if removed:
             self._runtime_state_version += 1
 
+    def _record_failure_cleanup_contract_locked(
+        self,
+        *,
+        transfer_id: str,
+        final_state: TransferStatusState,
+        error: str,
+        removed: Mapping[str, object],
+        promoted: Iterable[Mapping[str, object]],
+    ) -> None:
+        normalized = str(transfer_id)
+        contract = daemon_transfer_lifecycle.failure_cleanup_contract(
+            transfer_id=normalized,
+            final_state=final_state,
+            error=error,
+            removed=removed,
+            promoted_transfers=promoted,
+            recorded_at=time.time(),
+            active_ticket_retained=normalized in self._transfer_tickets,
+            active_reservation_count=sum(
+                1
+                for mapped_transfer_id in self._reservation_transfers.values()
+                if mapped_transfer_id == normalized
+            ),
+            active_staging_count=sum(
+                1
+                for record in self._staging_records.values()
+                if str(record.get("transfer_id", "")) == normalized
+            ),
+        )
+        self._merge_failure_cleanup_contract_into_evidence_locked(
+            transfer_id=normalized,
+            contract=contract,
+        )
+        self._archive_transfer_receipt_state_locked(normalized)
+        self._record_terminal_runtime_feedback_locked(normalized)
+
+    def _merge_failure_cleanup_contract_into_evidence_locked(
+        self,
+        *,
+        transfer_id: str,
+        contract: Mapping[str, object],
+    ) -> None:
+        normalized = str(transfer_id)
+        active_evidence = self._transfer_completion_evidence.get(normalized)
+        if isinstance(active_evidence, Mapping):
+            updated = dict(active_evidence)
+            updated["failure_cleanup_contract"] = dict(contract)
+            cleanup = updated.get("cleanup")
+            if isinstance(cleanup, Mapping):
+                cleanup_record = dict(cleanup)
+            else:
+                cleanup_record = {}
+            cleanup_record.setdefault("ok", True)
+            cleanup_record["failure_cleanup_contract"] = dict(contract)
+            updated["cleanup"] = cleanup_record
+            self._transfer_completion_evidence[normalized] = updated
+            return
+        archived = self._transfer_receipt_archive.get(normalized)
+        if not isinstance(archived, Mapping):
+            return
+        archived_evidence = dict(archived.get("completion_evidence", {}) or {})
+        archived_evidence["failure_cleanup_contract"] = dict(contract)
+        cleanup = archived_evidence.get("cleanup")
+        cleanup_record = dict(cleanup) if isinstance(cleanup, Mapping) else {}
+        cleanup_record.setdefault("ok", True)
+        cleanup_record["failure_cleanup_contract"] = dict(contract)
+        archived_evidence["cleanup"] = cleanup_record
+        updated_archive = dict(archived)
+        updated_archive["completion_evidence"] = archived_evidence
+        self._transfer_receipt_archive[normalized] = updated_archive
+
     def _pop_transfer_runtime_maps_locked(self, transfer_id: str) -> bool:
         normalized = str(transfer_id)
         removed = False
@@ -5803,6 +7187,7 @@ class TurboBusDaemon:
             self._transfer_plan_generations,
             self._transfer_plan_expirations,
             self._transfer_plans,
+            self._block_runtime_records,
             self._scheduling_decisions,
             self._transfer_peer_identities,
         ):
@@ -6085,6 +7470,7 @@ class TurboBusDaemon:
             requested_relays=requested_relays,
             inventory=inventory,
         )
+        pcie_fabric = pcie_fabric_snapshot_from_inventory(inventory).as_dict()
         eligible_by_relay = {
             int(item["relay_gpu"]): dict(item)
             for item in relay_eligibility["eligible_relays"]
@@ -6124,6 +7510,7 @@ class TurboBusDaemon:
             "topology_version": inventory.version,
             "inventory_source": inventory.source,
             "inventory_discovered_at": inventory.discovered_at,
+            "pcie_fabric": pcie_fabric,
             "target_gpu": int(target_gpu),
             "relay_gpus": list(requested_relays),
             "relay_topology": relay_bindings,
@@ -6722,6 +8109,63 @@ def reserve_socket(path: str) -> socket.socket:
     return sock
 
 
+def _block_plan_runtime_record(plan: Mapping[str, object]) -> dict[str, object]:
+    block_plan = plan.get("block_plan")
+    if not isinstance(block_plan, Mapping):
+        return {
+            "source": "daemon_scheduler_block_plan",
+            "available": False,
+            "block_count": 0,
+            "path_count": 0,
+        }
+    blocks = tuple(
+        item for item in block_plan.get("blocks", ()) or () if isinstance(item, Mapping)
+    )
+    paths = tuple(
+        item for item in block_plan.get("paths", ()) or () if isinstance(item, Mapping)
+    )
+    path_kinds = {
+        str(path.get("path_id")): str(path.get("kind", "unknown"))
+        for path in paths
+    }
+    block_bytes_by_kind: dict[str, int] = {}
+    for block in blocks:
+        kind = path_kinds.get(str(block.get("path_id")), "unknown")
+        block_bytes_by_kind[kind] = block_bytes_by_kind.get(kind, 0) + int(
+            block.get("bytes", 0) or 0
+        )
+    return {
+        "source": "daemon_scheduler_block_plan",
+        "available": True,
+        "plan_id": block_plan.get("plan_id"),
+        "direction": block_plan.get("direction"),
+        "block_count": len(blocks),
+        "path_count": len(paths),
+        "bytes_by_path_kind": block_bytes_by_kind,
+        "metadata": dict(block_plan.get("metadata", {}) or {}),
+    }
+
+
+def _block_queue_runtime_record(plan: Mapping[str, object]) -> dict[str, object]:
+    block_plan = plan.get("block_plan")
+    if not isinstance(block_plan, Mapping):
+        return {
+            "source": "daemon_scheduler_block_queue",
+            "available": False,
+            "block_count": 0,
+            "states": {},
+            "bytes_by_state": {},
+        }
+    queue_records = _queue_records_for_block_plan(
+        _block_plan_from_mapping(block_plan),
+    )
+    return {
+        **_block_queue_summary(queue_records),
+        "available": True,
+        "records": tuple(record.as_dict() for record in queue_records),
+    }
+
+
 def _runtime_state_without_transfer(
     runtime_state: dict[str, object],
     *,
@@ -6771,148 +8215,6 @@ def _runtime_state_without_transfer(
     return filtered
 
 
-def _job_runtime_state_from_records(
-    job_runtime_state: Mapping[str, object],
-    transfers: object,
-) -> dict[str, dict[str, object]]:
-    filtered_jobs = {
-        str(job_id): {
-            "job_id": str(job_id),
-            "weight": float(
-                record.get("weight", 1.0)
-                if isinstance(record, Mapping)
-                else 1.0
-            ),
-            "queued_transfer_count": 0,
-            "running_transfer_count": 0,
-            "active_transfer_count": 0,
-            "active_bytes_total": 0,
-            "active_bytes_remaining": 0,
-        }
-        for job_id, record in job_runtime_state.items()
-    }
-    for item in _runtime_mapping_records(transfers):
-        if item.get("job_id") is None:
-            continue
-        job_id = str(item["job_id"])
-        job_record = filtered_jobs.setdefault(
-            job_id,
-            {
-                "job_id": job_id,
-                "weight": 1.0,
-                "queued_transfer_count": 0,
-                "running_transfer_count": 0,
-                "active_transfer_count": 0,
-                "active_bytes_total": 0,
-                "active_bytes_remaining": 0,
-            },
-        )
-
-    def _record_failure_cleanup_contract_locked(
-        self,
-        *,
-        transfer_id: str,
-        final_state: TransferStatusState,
-        error: str,
-        removed: Mapping[str, object],
-        promoted: Iterable[Mapping[str, object]],
-    ) -> None:
-        normalized = str(transfer_id)
-        contract = {
-            "source": "daemon_failure_cleanup_contract",
-            "transfer_id": normalized,
-            "final_state": final_state.value,
-            "error": str(error),
-            "removed": {
-                str(key): int(value)
-                for key, value in dict(removed).items()
-                if value is not None
-            },
-            "promoted_transfers": [
-                dict(item) for item in promoted if isinstance(item, Mapping)
-            ],
-            "recorded_at": time.time(),
-            "active_ticket_retained": normalized in self._transfer_tickets,
-            "active_reservation_count": sum(
-                1
-                for mapped_transfer_id in self._reservation_transfers.values()
-                if mapped_transfer_id == normalized
-            ),
-            "active_staging_count": sum(
-                1
-                for record in self._staging_records.values()
-                if str(record.get("transfer_id", "")) == normalized
-            ),
-        }
-        self._merge_failure_cleanup_contract_into_evidence_locked(
-            transfer_id=normalized,
-            contract=contract,
-        )
-        self._archive_transfer_receipt_state_locked(normalized)
-        self._record_terminal_runtime_feedback_locked(normalized)
-
-    def _merge_failure_cleanup_contract_into_evidence_locked(
-        self,
-        *,
-        transfer_id: str,
-        contract: Mapping[str, object],
-    ) -> None:
-        normalized = str(transfer_id)
-        active_evidence = self._transfer_completion_evidence.get(normalized)
-        if isinstance(active_evidence, Mapping):
-            updated = dict(active_evidence)
-            updated["failure_cleanup_contract"] = dict(contract)
-            cleanup = updated.get("cleanup")
-            if isinstance(cleanup, Mapping):
-                cleanup_record = dict(cleanup)
-            else:
-                cleanup_record = {}
-            cleanup_record.setdefault("ok", True)
-            cleanup_record["failure_cleanup_contract"] = dict(contract)
-            updated["cleanup"] = cleanup_record
-            self._transfer_completion_evidence[normalized] = updated
-            return
-        archived = self._transfer_receipt_archive.get(normalized)
-        if not isinstance(archived, Mapping):
-            return
-        archived_evidence = dict(archived.get("completion_evidence", {}) or {})
-        archived_evidence["failure_cleanup_contract"] = dict(contract)
-        cleanup = archived_evidence.get("cleanup")
-        cleanup_record = dict(cleanup) if isinstance(cleanup, Mapping) else {}
-        cleanup_record.setdefault("ok", True)
-        cleanup_record["failure_cleanup_contract"] = dict(contract)
-        archived_evidence["cleanup"] = cleanup_record
-        updated_archive = dict(archived)
-        updated_archive["completion_evidence"] = archived_evidence
-        self._transfer_receipt_archive[normalized] = updated_archive
-        state = str(item.get("state", ""))
-        if state == TransferStatusState.SUBMITTED.value:
-            job_record["queued_transfer_count"] += 1
-        elif state == TransferStatusState.RUNNING.value:
-            job_record["running_transfer_count"] += 1
-        if _record_has_active_execution(item):
-            bytes_total = int(item.get("bytes_total", 0) or 0)
-            bytes_completed = int(item.get("bytes_completed", 0) or 0)
-            job_record["active_transfer_count"] += 1
-            job_record["active_bytes_total"] += bytes_total
-            job_record["active_bytes_remaining"] += max(
-                0,
-                bytes_total - bytes_completed,
-            )
-    return dict(sorted(filtered_jobs.items()))
-
-
-def _record_has_admitted_execution(record: Mapping[str, object]) -> bool:
-    return str(record.get("admission_state", _ADMISSION_ADMITTED)) == _ADMISSION_ADMITTED
-
-
-def _record_has_active_execution(record: Mapping[str, object]) -> bool:
-    state = str(record.get("state", ""))
-    if state == TransferStatusState.RUNNING.value:
-        return True
-    if state != TransferStatusState.SUBMITTED.value:
-        return False
-    return _record_has_admitted_execution(record)
 
 def _normalize_transfer_ranges(
     ranges: Iterable[dict[str, int]] | None,
@@ -6988,597 +8290,3 @@ def _is_execution_completion_source(completion_source: str | None) -> bool:
     if completion_source is None:
         return False
     return str(completion_source).lower() in {"worker", "backend"}
-
-
-def _normalize_completion_evidence(
-    evidence: Mapping[str, object] | None,
-    *,
-    expected_bytes: int,
-    completion_source: str,
-    expected_ticket: ExecutionTicket | None = None,
-) -> dict[str, object]:
-    if not isinstance(evidence, Mapping):
-        raise ValueError("complete intent transfer requires verified byte evidence")
-    expected = int(expected_bytes)
-    try:
-        verified_bytes = int(evidence["verified_bytes"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("complete intent transfer requires verified byte evidence") from exc
-    if verified_bytes != expected:
-        raise ValueError(
-            f"verified byte evidence mismatch: {verified_bytes} != {expected}"
-        )
-    content_match = bool(evidence.get("content_match", False))
-    if not content_match:
-        raise ValueError("complete intent transfer requires matching buffer evidence")
-    source_digest = evidence.get("source_digest")
-    destination_digest = evidence.get("destination_digest")
-    if (
-        source_digest is not None
-        and destination_digest is not None
-        and str(source_digest) != str(destination_digest)
-    ):
-        raise ValueError("verified byte evidence digest mismatch")
-    ticket_binding = _normalize_completion_ticket_binding(
-        evidence,
-        expected_ticket=expected_ticket,
-    )
-    resource_evidence = evidence.get("resource_evidence")
-    path_evidence_source = evidence.get("execution_path_evidence")
-    if isinstance(path_evidence_source, Mapping):
-        explicit_path_evidence = dict(path_evidence_source)
-        for field_name in (
-            "executor",
-            "path",
-            "plan_source",
-            "target_device",
-            "relay_gpu",
-            "relay_gpus",
-            "src_buffer_id",
-            "dst_buffer_id",
-            "staging_slot_id",
-            "direct_bytes",
-            "direct_chunks",
-            "relay_bytes",
-            "relay_chunks",
-        ):
-            if field_name in evidence and field_name not in explicit_path_evidence:
-                explicit_path_evidence[field_name] = evidence[field_name]
-        for field_name in (
-            "path_level_evidence",
-            "native_path_stats",
-            "relay_device_stats",
-        ):
-            if field_name in evidence and field_name not in explicit_path_evidence:
-                explicit_path_evidence[field_name] = evidence[field_name]
-        path_evidence = _normalize_execution_path_evidence(
-            explicit_path_evidence,
-            expected_bytes=expected,
-        )
-    else:
-        path_evidence = _normalize_execution_path_evidence(
-            evidence,
-            expected_bytes=expected,
-        )
-    direct_completion_evidence = evidence.get("direct_completion_evidence")
-    relay_completion_evidence = evidence.get("relay_completion_evidence")
-    worker_completion_evidence = evidence.get("worker_completion_evidence")
-    cleanup_evidence = evidence.get("cleanup")
-    worker_startup = evidence.get("worker_startup")
-    worker_async_pool = evidence.get("worker_async_pool")
-    path_level_evidence = evidence.get("path_level_evidence")
-    native_path_stats = evidence.get("native_path_stats")
-    relay_device_stats = evidence.get("relay_device_stats")
-    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
-    cuda_ipc_lifecycle = evidence.get("cuda_ipc_lifecycle")
-    if not isinstance(cuda_ipc_lifecycle, Mapping) and isinstance(
-        resource_evidence,
-        Mapping,
-    ):
-        nested_cuda_ipc_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
-        if isinstance(nested_cuda_ipc_lifecycle, Mapping):
-            cuda_ipc_lifecycle = nested_cuda_ipc_lifecycle
-    expected_evidence_bytes = evidence.get("expected_bytes")
-    return {
-        "verified": True,
-        "verified_bytes": verified_bytes,
-        **(
-            {}
-            if expected_evidence_bytes is None
-            else {"expected_bytes": int(expected_evidence_bytes)}
-        ),
-        "content_match": True,
-        "verification_source": str(
-            evidence.get("verification_source") or completion_source
-        ),
-        "verification_method": str(evidence.get("verification_method") or "unknown"),
-        **(
-            {}
-            if source_digest is None
-            else {"source_digest": str(source_digest)}
-        ),
-        **(
-            {}
-            if destination_digest is None
-            else {"destination_digest": str(destination_digest)}
-        ),
-        **(
-            {}
-            if not isinstance(resource_evidence, Mapping)
-            else {"resource_evidence": dict(resource_evidence)}
-        ),
-        **(
-            {}
-            if not path_evidence
-            else {"execution_path_evidence": path_evidence}
-        ),
-        **(
-            {}
-            if not isinstance(direct_completion_evidence, Mapping)
-            else {"direct_completion_evidence": dict(direct_completion_evidence)}
-        ),
-        **(
-            {}
-            if not isinstance(relay_completion_evidence, Mapping)
-            else {"relay_completion_evidence": dict(relay_completion_evidence)}
-        ),
-        **(
-            {}
-            if not isinstance(worker_completion_evidence, Mapping)
-            else {"worker_completion_evidence": dict(worker_completion_evidence)}
-        ),
-        **(
-            {}
-            if not isinstance(cleanup_evidence, Mapping)
-            else {"cleanup": dict(cleanup_evidence)}
-        ),
-        **(
-            {}
-            if not isinstance(worker_startup, Mapping)
-            else {"worker_startup": dict(worker_startup)}
-        ),
-        **(
-            {}
-            if not isinstance(worker_async_pool, Mapping)
-            else {"worker_async_pool": dict(worker_async_pool)}
-        ),
-        **(
-            {}
-            if not isinstance(path_level_evidence, Mapping)
-            else {"path_level_evidence": dict(path_level_evidence)}
-        ),
-        **(
-            {}
-            if not isinstance(native_path_stats, (list, tuple))
-            else {
-                "native_path_stats": tuple(
-                    dict(item) for item in native_path_stats if isinstance(item, Mapping)
-                )
-            }
-        ),
-        **(
-            {}
-            if not isinstance(relay_device_stats, (list, tuple))
-            else {
-                "relay_device_stats": tuple(
-                    dict(item) for item in relay_device_stats if isinstance(item, Mapping)
-                )
-            }
-        ),
-        **(
-            {}
-            if not isinstance(failure_cleanup_contract, Mapping)
-            else {"failure_cleanup_contract": dict(failure_cleanup_contract)}
-        ),
-        **(
-            {}
-            if not isinstance(cuda_ipc_lifecycle, Mapping)
-            else {"cuda_ipc_lifecycle": dict(cuda_ipc_lifecycle)}
-        ),
-        **ticket_binding,
-    }
-
-
-def _merge_completion_evidence(
-    existing: Mapping[str, object] | None,
-    incoming: Mapping[str, object],
-) -> dict[str, object]:
-    if not isinstance(existing, Mapping):
-        return dict(incoming)
-    merged = dict(existing)
-    merged.update(dict(incoming))
-    for field_name in (
-        "resource_evidence",
-        "execution_path_evidence",
-        "direct_completion_evidence",
-        "relay_completion_evidence",
-        "worker_completion_evidence",
-        "cleanup",
-        "worker_async_pool",
-        "path_level_evidence",
-        "failure_cleanup_contract",
-        "cuda_ipc_lifecycle",
-    ):
-        previous = existing.get(field_name)
-        current = incoming.get(field_name)
-        if isinstance(previous, Mapping) and isinstance(current, Mapping):
-            nested = dict(previous)
-            nested.update(dict(current))
-            merged[field_name] = nested
-        elif isinstance(previous, Mapping) and field_name not in incoming:
-            merged[field_name] = dict(previous)
-    return merged
-
-
-def _normalize_execution_path_evidence(
-    evidence: Mapping[str, object],
-    *,
-    expected_bytes: int,
-    require_total_match: bool = True,
-) -> dict[str, object]:
-    result: dict[str, object] = {}
-    int_fields = (
-        "direct_bytes",
-        "direct_chunks",
-        "relay_bytes",
-        "relay_chunks",
-        "target_device",
-        "relay_gpu",
-    )
-    for field_name in int_fields:
-        if field_name in evidence and evidence[field_name] is not None:
-            result[field_name] = int(evidence[field_name])
-    relay_gpus = evidence.get("relay_gpus")
-    if relay_gpus is not None:
-        if isinstance(relay_gpus, (str, bytes)) or not isinstance(relay_gpus, Iterable):
-            raise ValueError("execution path evidence relay_gpus must be iterable")
-        result["relay_gpus"] = tuple(int(item) for item in relay_gpus)
-    for field_name in (
-        "executor",
-        "path",
-        "plan_source",
-        "src_buffer_id",
-        "dst_buffer_id",
-        "staging_slot_id",
-    ):
-        value = evidence.get(field_name)
-        if value is not None:
-            result[field_name] = str(value)
-    path_level_evidence = evidence.get("path_level_evidence")
-    if isinstance(path_level_evidence, Mapping):
-        result["path_level_evidence"] = dict(path_level_evidence)
-    native_path_stats = evidence.get("native_path_stats")
-    if isinstance(native_path_stats, (list, tuple)):
-        result["native_path_stats"] = tuple(
-            dict(item) for item in native_path_stats if isinstance(item, Mapping)
-        )
-    relay_device_stats = evidence.get("relay_device_stats")
-    if isinstance(relay_device_stats, (list, tuple)):
-        result["relay_device_stats"] = tuple(
-            dict(item) for item in relay_device_stats if isinstance(item, Mapping)
-        )
-    direct_bytes = result.get("direct_bytes")
-    relay_bytes = result.get("relay_bytes")
-    if require_total_match and direct_bytes is not None and relay_bytes is not None:
-        path_bytes = int(direct_bytes) + int(relay_bytes)
-        if path_bytes != int(expected_bytes):
-            raise ValueError(
-                f"execution path byte evidence mismatch: {path_bytes} != {int(expected_bytes)}"
-            )
-    return result
-
-
-def _normalize_status_ticket_evidence(
-    evidence: Mapping[str, object] | None,
-    *,
-    expected_ticket: ExecutionTicket,
-) -> dict[str, object]:
-    if not isinstance(evidence, Mapping):
-        raise ValueError(
-            "intent transfer status update requires daemon ticket evidence"
-        )
-    ticket_binding = _normalize_ticket_binding(
-        evidence,
-        expected_ticket=expected_ticket,
-        evidence_name="status evidence",
-    )
-    resource_evidence = evidence.get("resource_evidence")
-    if isinstance(resource_evidence, Mapping):
-        ticket_binding["resource_evidence"] = dict(resource_evidence)
-    path_evidence = _normalize_execution_path_evidence(
-        evidence,
-        expected_bytes=int(evidence.get("expected_bytes", 0) or 0),
-        require_total_match=False,
-    )
-    if path_evidence:
-        ticket_binding["execution_path_evidence"] = path_evidence
-    cleanup = evidence.get("cleanup")
-    if isinstance(cleanup, Mapping):
-        ticket_binding["cleanup"] = dict(cleanup)
-    direct_completion_evidence = evidence.get("direct_completion_evidence")
-    if isinstance(direct_completion_evidence, Mapping):
-        ticket_binding["direct_completion_evidence"] = dict(direct_completion_evidence)
-    relay_completion_evidence = evidence.get("relay_completion_evidence")
-    if isinstance(relay_completion_evidence, Mapping):
-        ticket_binding["relay_completion_evidence"] = dict(relay_completion_evidence)
-    worker_completion_evidence = evidence.get("worker_completion_evidence")
-    if isinstance(worker_completion_evidence, Mapping):
-        ticket_binding["worker_completion_evidence"] = dict(worker_completion_evidence)
-    worker_startup = evidence.get("worker_startup")
-    if isinstance(worker_startup, Mapping):
-        ticket_binding["worker_startup"] = dict(worker_startup)
-    worker_async_pool = evidence.get("worker_async_pool")
-    if isinstance(worker_async_pool, Mapping):
-        ticket_binding["worker_async_pool"] = dict(worker_async_pool)
-    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
-    if isinstance(failure_cleanup_contract, Mapping):
-        ticket_binding["failure_cleanup_contract"] = dict(failure_cleanup_contract)
-    cuda_ipc_lifecycle = evidence.get("cuda_ipc_lifecycle")
-    if not isinstance(cuda_ipc_lifecycle, Mapping) and isinstance(
-        resource_evidence,
-        Mapping,
-    ):
-        nested_cuda_ipc_lifecycle = resource_evidence.get("cuda_ipc_lifecycle")
-        if isinstance(nested_cuda_ipc_lifecycle, Mapping):
-            cuda_ipc_lifecycle = nested_cuda_ipc_lifecycle
-    if isinstance(cuda_ipc_lifecycle, Mapping):
-        ticket_binding["cuda_ipc_lifecycle"] = dict(cuda_ipc_lifecycle)
-    for field_name in (
-        "executor",
-        "path",
-        "plan_source",
-        "verification_source",
-        "verification_method",
-        "source_digest",
-        "destination_digest",
-        "failure_source",
-    ):
-        value = evidence.get(field_name)
-        if value is not None:
-            ticket_binding[field_name] = str(value)
-    for field_name in ("verified_bytes", "expected_bytes"):
-        value = evidence.get(field_name)
-        if value is not None:
-            ticket_binding[field_name] = int(value)
-    if "content_match" in evidence:
-        ticket_binding["content_match"] = bool(evidence.get("content_match", False))
-    planned_relay_cleanup = evidence.get("planned_relay_cleanup")
-    if isinstance(planned_relay_cleanup, Iterable) and not isinstance(
-        planned_relay_cleanup,
-        (str, bytes, Mapping),
-    ):
-        ticket_binding["planned_relay_cleanup"] = [
-            dict(item)
-            for item in planned_relay_cleanup
-            if isinstance(item, Mapping)
-        ]
-    for field_name in ("worker_bytes_completed", "relay_bytes_completed", "reported_bytes"):
-        value = evidence.get(field_name)
-        if value is not None:
-            ticket_binding[field_name] = int(value)
-    for field_name in ("worker_state", "completion_validation"):
-        value = evidence.get(field_name)
-        if value is not None:
-            ticket_binding[field_name] = str(value)
-    return ticket_binding
-
-
-def _normalize_completion_ticket_binding(
-    evidence: Mapping[str, object],
-    *,
-    expected_ticket: ExecutionTicket | None,
-) -> dict[str, object]:
-    if expected_ticket is None:
-        return {}
-    return _normalize_ticket_binding(
-        evidence,
-        expected_ticket=expected_ticket,
-        evidence_name="completion evidence",
-    )
-
-
-def _normalize_ticket_binding(
-    evidence: Mapping[str, object],
-    *,
-    expected_ticket: ExecutionTicket,
-    evidence_name: str,
-) -> dict[str, object]:
-    evidence_ticket_id = evidence.get("ticket_id")
-    if evidence_ticket_id is None or str(evidence_ticket_id) != expected_ticket.ticket_id:
-        raise ValueError(f"{evidence_name} ticket_id does not match daemon ticket")
-    evidence_transfer_id = evidence.get("transfer_id")
-    expected_transfer_id = expected_ticket.metadata.get("transfer_id")
-    if (
-        expected_transfer_id is not None
-        and (
-            evidence_transfer_id is None
-            or str(evidence_transfer_id) != str(expected_transfer_id)
-        )
-    ):
-        raise ValueError(f"{evidence_name} transfer_id does not match daemon ticket")
-    evidence_generation = evidence.get("plan_generation")
-    expected_generation = expected_ticket.metadata.get("plan_generation")
-    if (
-        expected_generation is not None
-        and (
-            evidence_generation is None
-            or int(evidence_generation) != int(expected_generation)
-        )
-    ):
-        raise ValueError(f"{evidence_name} plan_generation does not match daemon ticket")
-    ticket_binding = {
-        "ticket_id": expected_ticket.ticket_id,
-        **(
-            {}
-            if expected_transfer_id is None
-            else {"transfer_id": str(expected_transfer_id)}
-        ),
-        **(
-            {}
-            if expected_generation is None
-            else {"plan_generation": int(expected_generation)}
-        ),
-    }
-    owner_binding = _normalize_evidence_owner_binding(
-        evidence,
-        expected_ticket=expected_ticket,
-        evidence_name=evidence_name,
-    )
-    if owner_binding is not None:
-        ticket_binding["owner_binding"] = owner_binding
-    return ticket_binding
-
-
-def _normalize_evidence_owner_binding(
-    evidence: Mapping[str, object],
-    *,
-    expected_ticket: ExecutionTicket,
-    evidence_name: str,
-) -> dict[str, object] | None:
-    expected_owner = expected_ticket.metadata.get("owner_binding")
-    evidence_owner = evidence.get("owner_binding")
-    if not isinstance(expected_owner, Mapping):
-        return None
-    if not isinstance(evidence_owner, Mapping):
-        raise ValueError(f"{evidence_name} owner_binding is required")
-    normalized_expected = _canonical_owner_binding(expected_owner)
-    normalized_evidence = _canonical_owner_binding(evidence_owner)
-    if normalized_expected != normalized_evidence:
-        raise ValueError(f"{evidence_name} owner_binding does not match daemon ticket")
-    return normalized_expected
-
-
-def _canonical_owner_binding(owner_binding: Mapping[str, object]) -> dict[str, object]:
-    cleanup_scope = owner_binding.get("cleanup_scope")
-    if not isinstance(cleanup_scope, Mapping):
-        raise ValueError("owner_binding cleanup_scope is required")
-    peer_identity = owner_binding.get("peer_identity")
-    canonical = {
-        "job_id": str(owner_binding["job_id"]),
-        "session_id": str(owner_binding["session_id"]),
-        "transfer_id": str(owner_binding["transfer_id"]),
-        "lease_ids": tuple(str(item) for item in owner_binding.get("lease_ids", ()) or ()),
-        "relay_gpus": tuple(sorted({int(item) for item in owner_binding.get("relay_gpus", ()) or ()})),
-        "cleanup_scope": {
-            "target_kind": str(cleanup_scope.get("target_kind", "")).lower(),
-            "target_ids": tuple(str(item) for item in cleanup_scope.get("target_ids", ()) or ()),
-        },
-    }
-    if isinstance(peer_identity, Mapping):
-        canonical["peer_identity"] = dict(peer_identity)
-    return canonical
-
-
-def _empty_removed_summary() -> dict[str, int]:
-    return {
-        "jobs": 0,
-        "buffers": 0,
-        "sessions": 0,
-        "reservations": 0,
-        "staging_records": 0,
-        "transfers": 0,
-    }
-
-
-def _merge_removed(
-    target: dict[str, int] | None,
-    source: dict[str, int] | None,
-) -> dict[str, int] | None:
-    if target is None:
-        return target
-    if source is None:
-        return target
-    for key, value in source.items():
-        target[key] = int(target.get(key, 0)) + int(value)
-    return target
-
-
-def _session_cleanup_target_payload(
-    cleanup_targets: Mapping[str, object] | None,
-) -> dict[str, object]:
-    if cleanup_targets is None:
-        return {}
-    job_ids = tuple(
-        str(item["target_id"])
-        for item in cleanup_targets.get("jobs", ()) or ()
-        if isinstance(item, Mapping) and "target_id" in item
-    )
-    buffer_ids = tuple(
-        str(item["target_id"])
-        for item in cleanup_targets.get("buffers", ()) or ()
-        if isinstance(item, Mapping) and "target_id" in item
-    )
-    if not job_ids and not buffer_ids:
-        return {}
-    return {
-        "retired_cleanup_targets": {
-            "job_ids": job_ids,
-            "buffer_ids": buffer_ids,
-        }
-    }
-
-
-def _merge_retention_evidence(
-    existing: object,
-    incoming: Mapping[str, object] | None,
-) -> dict[str, object] | None:
-    existing_mapping = dict(existing) if isinstance(existing, Mapping) else {}
-    incoming_mapping = dict(incoming) if isinstance(incoming, Mapping) else {}
-    if not existing_mapping and not incoming_mapping:
-        return None
-    merged = dict(existing_mapping)
-    for key, value in incoming_mapping.items():
-        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
-            nested = dict(merged[key])
-            nested.update(dict(value))
-            merged[key] = nested
-        elif isinstance(value, Mapping):
-            merged[key] = dict(value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _jsonable_cleanup_target_record(record: Mapping[str, object]) -> dict[str, object]:
-    result = dict(record)
-    peer_identity = result.get("peer_identity")
-    if isinstance(peer_identity, PeerIdentity):
-        result["peer_identity"] = asdict(peer_identity)
-    elif isinstance(peer_identity, Mapping):
-        result["peer_identity"] = dict(peer_identity)
-    buffer_snapshot = result.get("buffer_snapshot")
-    if isinstance(buffer_snapshot, Mapping):
-        result["buffer_snapshot"] = dict(buffer_snapshot)
-    retention_evidence = result.get("retention_evidence")
-    if isinstance(retention_evidence, Mapping):
-        result["retention_evidence"] = dict(retention_evidence)
-    transfer_ids = result.get("transfer_ids")
-    if transfer_ids is not None:
-        result["transfer_ids"] = tuple(str(item) for item in transfer_ids)
-    return result
-
-
-def _buffer_snapshot_with_retention_evidence(
-    snapshot: Mapping[str, object],
-    *,
-    retention_evidence: Mapping[str, object],
-    archived_buffer_snapshot: object,
-) -> dict[str, object]:
-    updated = dict(snapshot)
-    if "metadata" not in updated and isinstance(archived_buffer_snapshot, Mapping):
-        archived_metadata = archived_buffer_snapshot.get("metadata")
-        if isinstance(archived_metadata, Mapping):
-            updated["metadata"] = dict(archived_metadata)
-    merged_retention = _merge_retention_evidence(
-        updated.get("retention_evidence"),
-        retention_evidence,
-    )
-    if merged_retention is not None:
-        updated["retention_evidence"] = merged_retention
-        local_cleanup = merged_retention.get("local_cpu_buffer_cleanup")
-        if isinstance(local_cleanup, Mapping):
-            updated["local_cpu_buffer_cleanup"] = dict(local_cleanup)
-        owned_release = merged_retention.get("owned_cpu_buffer_release")
-        if isinstance(owned_release, Mapping):
-            updated["owned_cpu_buffer_release"] = dict(owned_release)
-    return updated

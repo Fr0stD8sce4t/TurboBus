@@ -22,6 +22,10 @@ class DaemonStartupConfig:
     require_peer_credentials: bool = True
     max_sessions_per_relay: int = 1
     max_inflight_chunks_per_relay: int = 8
+    min_pool_bytes: int = 12 * 1024 * 1024
+    min_chunks_for_relay: int = 2
+    relay_min_effective_bw_gbps: float = 0.0
+    relay_min_direct_ratio: float = 0.0
     session_timeout_seconds: float = 0.0
     profile_max_age_seconds: float = 0.0
 
@@ -29,6 +33,10 @@ class DaemonStartupConfig:
         min_relay_count = int(self.min_relay_count)
         if min_relay_count < 0:
             raise ValueError("min_relay_count must be non-negative")
+        if int(self.min_pool_bytes) < 0:
+            raise ValueError("min_pool_bytes must be non-negative")
+        if int(self.min_chunks_for_relay) < 0:
+            raise ValueError("min_chunks_for_relay must be non-negative")
         if self.target_gpu is not None and int(self.target_gpu) < 0:
             raise ValueError("target_gpu must be non-negative")
         object.__setattr__(
@@ -37,6 +45,18 @@ class DaemonStartupConfig:
             str(self.topology_provider).strip().lower().replace("_", "-"),
         )
         object.__setattr__(self, "min_relay_count", min_relay_count)
+        object.__setattr__(self, "min_pool_bytes", int(self.min_pool_bytes))
+        object.__setattr__(self, "min_chunks_for_relay", int(self.min_chunks_for_relay))
+        object.__setattr__(
+            self,
+            "relay_min_effective_bw_gbps",
+            float(self.relay_min_effective_bw_gbps),
+        )
+        object.__setattr__(
+            self,
+            "relay_min_direct_ratio",
+            float(self.relay_min_direct_ratio),
+        )
         if self.target_gpu is not None:
             object.__setattr__(self, "target_gpu", int(self.target_gpu))
 
@@ -62,6 +82,10 @@ def create_production_daemon(
         max_inflight_chunks_per_relay=config.max_inflight_chunks_per_relay,
         session_timeout_seconds=config.session_timeout_seconds,
         profile_max_age_seconds=config.profile_max_age_seconds,
+        min_pool_bytes=config.min_pool_bytes,
+        min_chunks_for_relay=config.min_chunks_for_relay,
+        relay_min_effective_bw_gbps=config.relay_min_effective_bw_gbps,
+        relay_min_direct_ratio=config.relay_min_direct_ratio,
         topology_provider=provider,
         require_authenticated_peers=config.require_peer_credentials,
     )
@@ -116,9 +140,15 @@ def _snapshot_or_startup_error(provider: TopologyProvider) -> DaemonResourceInve
 
 
 def _reject_fixture_inventory(inventory: DaemonResourceInventory) -> None:
+    synthetic_markers = ("test_fixture", "test fixture", "fixture", "synthetic", "fake")
     source = str(inventory.source).lower()
     discovery = str(inventory.metadata.get("discovery", "")).lower()
-    if source.startswith("test_fixture") or "test fixture" in discovery:
+    provider = str(inventory.metadata.get("provider", "")).lower()
+    if (
+        any(marker in source for marker in synthetic_markers)
+        or any(marker in discovery for marker in synthetic_markers)
+        or any(marker in provider for marker in synthetic_markers)
+    ):
         raise DaemonStartupError(
             "production daemon startup cannot use synthetic topology fixtures"
         )

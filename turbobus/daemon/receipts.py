@@ -175,45 +175,34 @@ def receipt_for_transfer(
     admitted_state: str,
     completion_source: str | None = None,
     completion_evidence: dict[str, object] | None = None,
+    block_runtime: object = None,
     buffer_snapshots: Mapping[str, object] | None = None,
 ) -> TransferReceipt:
-    error = status.error
-    if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
-        error = error or f"transfer {status.state.value}"
+    error = _receipt_error(status)
     evidence = dict(completion_evidence or {})
-    evidence_ticket_id = evidence.get("ticket_id")
-    evidence_transfer_id = evidence.get("transfer_id")
-    evidence_plan_generation = _optional_int(evidence.get("plan_generation"))
-    evidence_expected_bytes = _optional_int(evidence.get("expected_bytes"))
-    resource_evidence = evidence.get("resource_evidence")
-    execution_path_evidence = evidence.get("execution_path_evidence")
-    direct_completion_evidence = evidence.get("direct_completion_evidence")
-    relay_completion_evidence = evidence.get("relay_completion_evidence")
-    worker_completion_evidence = evidence.get("worker_completion_evidence")
-    cleanup_evidence = evidence.get("cleanup")
-    worker_startup = evidence.get("worker_startup")
-    planned_relay_cleanup = evidence.get("planned_relay_cleanup")
-    path_level_evidence = evidence.get("path_level_evidence")
-    native_path_stats = evidence.get("native_path_stats")
-    relay_device_stats = evidence.get("relay_device_stats")
-    failure_cleanup_contract = evidence.get("failure_cleanup_contract")
+    block_runtime_evidence = _block_runtime_evidence(
+        block_runtime=block_runtime,
+        evidence=evidence,
+    )
+    evidence_parts = _receipt_evidence_parts(evidence)
     cuda_ipc_lifecycle = _cuda_ipc_lifecycle_from_evidence(evidence)
     buffer_lifetime_evidence = _buffer_lifetime_evidence(
         intent=intent,
         buffer_snapshots=buffer_snapshots,
-        resource_evidence=resource_evidence,
-        direct_completion_evidence=direct_completion_evidence,
-        relay_completion_evidence=relay_completion_evidence,
-        worker_completion_evidence=worker_completion_evidence,
-        cleanup_evidence=cleanup_evidence,
+        resource_evidence=evidence_parts["resource_evidence"],
+        direct_completion_evidence=evidence_parts["direct_completion_evidence"],
+        relay_completion_evidence=evidence_parts["relay_completion_evidence"],
+        worker_completion_evidence=evidence_parts["worker_completion_evidence"],
+        cleanup_evidence=evidence_parts["cleanup_evidence"],
     )
     completion_contract = _completion_contract_view(
         evidence=evidence,
-        execution_path_evidence=execution_path_evidence,
-        cleanup_evidence=cleanup_evidence,
-        direct_completion_evidence=direct_completion_evidence,
-        relay_completion_evidence=relay_completion_evidence,
-        worker_completion_evidence=worker_completion_evidence,
+        execution_path_evidence=evidence_parts["execution_path_evidence"],
+        cleanup_evidence=evidence_parts["cleanup_evidence"],
+        direct_completion_evidence=evidence_parts["direct_completion_evidence"],
+        relay_completion_evidence=evidence_parts["relay_completion_evidence"],
+        worker_completion_evidence=evidence_parts["worker_completion_evidence"],
+        block_runtime_evidence=block_runtime_evidence,
     )
     reproduction_evidence = _reproduction_evidence_view(
         transfer_id=transfer_id,
@@ -227,15 +216,29 @@ def receipt_for_transfer(
         completion_contract=completion_contract,
         buffer_lifetime_evidence=buffer_lifetime_evidence,
         cuda_ipc_lifecycle=cuda_ipc_lifecycle,
+        block_runtime_evidence=block_runtime_evidence,
         evidence=evidence,
+    )
+    metadata = _receipt_metadata(
+        transfer_id=transfer_id,
+        decision=decision,
+        ticket=ticket,
+        admission=admission,
+        admitted_state=admitted_state,
+        plan_generation=plan_generation,
+        plan_expires_at=plan_expires_at,
+        completion_source=completion_source,
+        evidence=evidence,
+        evidence_parts=evidence_parts,
+        cuda_ipc_lifecycle=cuda_ipc_lifecycle,
+        completion_contract=completion_contract,
+        buffer_lifetime_evidence=buffer_lifetime_evidence,
+        reproduction_evidence=reproduction_evidence,
+        block_runtime_evidence=block_runtime_evidence,
     )
     return TransferReceipt(
         receipt_id=f"receipt-{transfer_id}",
-        ticket_id=(
-            ticket.ticket_id
-            if ticket is not None
-            else f"ticket-pending-{transfer_id}"
-        ),
+        ticket_id=_receipt_ticket_id(transfer_id=transfer_id, ticket=ticket),
         intent_id=intent.intent_id,
         decision_id=decision.decision_id,
         topology_snapshot_id=decision.topology_snapshot_id,
@@ -247,129 +250,255 @@ def receipt_for_transfer(
         started_at=decision.issued_at,
         path_stats=decision.path_summary,
         error=error,
-        metadata={
-            "transfer_id": transfer_id,
-            "fallback_reason": decision.fallback_reason,
-            "admission_state": admission.get("state", admitted_state),
-            "admission_reason": admission.get("reason"),
-            "admission_fairness": (
-                dict(admission["fairness"])
-                if isinstance(admission.get("fairness"), Mapping)
-                else None
-            ),
-            "admission_priority_order": (
-                dict(admission["priority_order"])
-                if isinstance(admission.get("priority_order"), Mapping)
-                else None
-            ),
-            "multi_tenant_admission": (
-                dict(admission["multi_tenant_admission"])
-                if isinstance(admission.get("multi_tenant_admission"), Mapping)
-                else None
-            ),
-            "plan_generation": int(plan_generation),
-            "plan_expires_at": plan_expires_at,
-            "completion_source": completion_source,
-            "executed": completion_source in {"worker", "backend"},
-            "verified": bool(evidence.get("verified", False)),
-            "verified_bytes": int(evidence.get("verified_bytes", 0) or 0),
-            "evidence_expected_bytes": (
-                None if evidence_expected_bytes is None else evidence_expected_bytes
-            ),
-            "content_match": bool(evidence.get("content_match", False)),
-            "verification_source": evidence.get("verification_source"),
-            "verification_method": evidence.get("verification_method"),
-            "source_digest": evidence.get("source_digest"),
-            "destination_digest": evidence.get("destination_digest"),
-            "execution_ticket_id": None if ticket is None else ticket.ticket_id,
-            "evidence_ticket_id": (
-                None if evidence_ticket_id is None else str(evidence_ticket_id)
-            ),
-            "evidence_transfer_id": (
-                None if evidence_transfer_id is None else str(evidence_transfer_id)
-            ),
-            "evidence_plan_generation": (
-                None if evidence_plan_generation is None else evidence_plan_generation
-            ),
-            "resource_evidence": (
-                dict(resource_evidence)
-                if isinstance(resource_evidence, Mapping)
-                else None
-            ),
-            "execution_path_evidence": (
-                dict(execution_path_evidence)
-                if isinstance(execution_path_evidence, Mapping)
-                else None
-            ),
-            "direct_completion_evidence": (
-                dict(direct_completion_evidence)
-                if isinstance(direct_completion_evidence, Mapping)
-                else None
-            ),
-            "relay_completion_evidence": (
-                dict(relay_completion_evidence)
-                if isinstance(relay_completion_evidence, Mapping)
-                else None
-            ),
-            "worker_completion_evidence": (
-                dict(worker_completion_evidence)
-                if isinstance(worker_completion_evidence, Mapping)
-                else None
-            ),
-            "completion_evidence": dict(evidence),
-            "cleanup_evidence": (
-                dict(cleanup_evidence)
-                if isinstance(cleanup_evidence, Mapping)
-                else None
-            ),
-            "planned_relay_cleanup": (
-                [
-                    dict(item)
-                    for item in planned_relay_cleanup
-                    if isinstance(item, Mapping)
-                ]
-                if isinstance(planned_relay_cleanup, list | tuple)
-                else None
-            ),
-            "worker_startup": (
-                dict(worker_startup)
-                if isinstance(worker_startup, Mapping)
-                else None
-            ),
-            "path_level_evidence": (
-                dict(path_level_evidence)
-                if isinstance(path_level_evidence, Mapping)
-                else None
-            ),
-            "native_path_stats": (
-                [
-                    dict(item)
-                    for item in native_path_stats
-                    if isinstance(item, Mapping)
-                ]
-                if isinstance(native_path_stats, list | tuple)
-                else None
-            ),
-            "relay_device_stats": (
-                [
-                    dict(item)
-                    for item in relay_device_stats
-                    if isinstance(item, Mapping)
-                ]
-                if isinstance(relay_device_stats, list | tuple)
-                else None
-            ),
-            "failure_cleanup_contract": (
-                dict(failure_cleanup_contract)
-                if isinstance(failure_cleanup_contract, Mapping)
-                else None
-            ),
-            "cuda_ipc_lifecycle": cuda_ipc_lifecycle,
-            "completion_contract": completion_contract,
-            "buffer_lifetime_evidence": buffer_lifetime_evidence,
-            "reproduction_evidence": reproduction_evidence,
-        },
+        metadata=metadata,
     )
+
+
+def _receipt_error(status: TransferStatus) -> str | None:
+    error = status.error
+    if status.state in {TransferStatusState.FAILED, TransferStatusState.CANCELED}:
+        return error or f"transfer {status.state.value}"
+    return error
+
+
+def _receipt_ticket_id(
+    *,
+    transfer_id: str,
+    ticket: ExecutionTicket | None,
+) -> str:
+    if ticket is not None:
+        return ticket.ticket_id
+    return f"ticket-pending-{transfer_id}"
+
+
+def _receipt_evidence_parts(evidence: Mapping[str, object]) -> dict[str, object]:
+    return {
+        "ticket_id": evidence.get("ticket_id"),
+        "transfer_id": evidence.get("transfer_id"),
+        "plan_generation": _optional_int(evidence.get("plan_generation")),
+        "expected_bytes": _optional_int(evidence.get("expected_bytes")),
+        "resource_evidence": evidence.get("resource_evidence"),
+        "execution_path_evidence": evidence.get("execution_path_evidence"),
+        "direct_completion_evidence": evidence.get("direct_completion_evidence"),
+        "relay_completion_evidence": evidence.get("relay_completion_evidence"),
+        "worker_completion_evidence": evidence.get("worker_completion_evidence"),
+        "cleanup_evidence": evidence.get("cleanup"),
+        "worker_startup": evidence.get("worker_startup"),
+        "worker_async_pool": evidence.get("worker_async_pool"),
+        "worker_runtime_feedback": evidence.get("worker_runtime_feedback"),
+        "async_data_plane": evidence.get("async_data_plane"),
+        "planned_relay_cleanup": evidence.get("planned_relay_cleanup"),
+        "path_level_evidence": evidence.get("path_level_evidence"),
+        "native_path_stats": evidence.get("native_path_stats"),
+        "relay_device_stats": evidence.get("relay_device_stats"),
+        "failure_cleanup_contract": evidence.get("failure_cleanup_contract"),
+    }
+
+
+def _receipt_metadata(
+    *,
+    transfer_id: str,
+    decision: SchedulingDecision,
+    ticket: ExecutionTicket | None,
+    admission: Mapping[str, object],
+    admitted_state: str,
+    plan_generation: int,
+    plan_expires_at: float | None,
+    completion_source: str | None,
+    evidence: Mapping[str, object],
+    evidence_parts: Mapping[str, object],
+    cuda_ipc_lifecycle: Mapping[str, object] | None,
+    completion_contract: Mapping[str, object],
+    buffer_lifetime_evidence: Mapping[str, object],
+    reproduction_evidence: Mapping[str, object],
+    block_runtime_evidence: Mapping[str, object] | None,
+) -> dict[str, object]:
+    metadata = _receipt_admission_metadata(
+        transfer_id=transfer_id,
+        decision=decision,
+        admission=admission,
+        admitted_state=admitted_state,
+        plan_generation=plan_generation,
+        plan_expires_at=plan_expires_at,
+    )
+    metadata.update(
+        _receipt_execution_metadata(
+            ticket=ticket,
+            completion_source=completion_source,
+            evidence=evidence,
+            evidence_parts=evidence_parts,
+        )
+    )
+    metadata.update(_receipt_evidence_metadata(evidence, evidence_parts))
+    metadata.update(
+        {
+            "cuda_ipc_lifecycle": cuda_ipc_lifecycle,
+            "completion_contract": dict(completion_contract),
+            "buffer_lifetime_evidence": dict(buffer_lifetime_evidence),
+            "block_runtime": (
+                None
+                if block_runtime_evidence is None
+                else dict(block_runtime_evidence)
+            ),
+            "reproduction_evidence": dict(reproduction_evidence),
+        }
+    )
+    return metadata
+
+
+def _receipt_admission_metadata(
+    *,
+    transfer_id: str,
+    decision: SchedulingDecision,
+    admission: Mapping[str, object],
+    admitted_state: str,
+    plan_generation: int,
+    plan_expires_at: float | None,
+) -> dict[str, object]:
+    return {
+        "transfer_id": transfer_id,
+        "fallback_reason": decision.fallback_reason,
+        "admission_state": admission.get("state", admitted_state),
+        "admission_reason": admission.get("reason"),
+        "admission_fairness": _mapping_or_none(admission.get("fairness")),
+        "admission_priority_order": _mapping_or_none(
+            admission.get("priority_order")
+        ),
+        "multi_tenant_admission": _mapping_or_none(
+            admission.get("multi_tenant_admission")
+        ),
+        "plan_generation": int(plan_generation),
+        "plan_expires_at": plan_expires_at,
+    }
+
+
+def _receipt_execution_metadata(
+    *,
+    ticket: ExecutionTicket | None,
+    completion_source: str | None,
+    evidence: Mapping[str, object],
+    evidence_parts: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "completion_source": completion_source,
+        "executed": completion_source in {"worker", "backend"},
+        "verified": bool(evidence.get("verified", False)),
+        "verified_bytes": int(evidence.get("verified_bytes", 0) or 0),
+        "evidence_expected_bytes": evidence_parts["expected_bytes"],
+        "content_match": bool(evidence.get("content_match", False)),
+        "verification_source": evidence.get("verification_source"),
+        "verification_method": evidence.get("verification_method"),
+        "source_digest": evidence.get("source_digest"),
+        "destination_digest": evidence.get("destination_digest"),
+        "execution_ticket_id": None if ticket is None else ticket.ticket_id,
+        "evidence_ticket_id": _str_or_none(evidence_parts["ticket_id"]),
+        "evidence_transfer_id": _str_or_none(evidence_parts["transfer_id"]),
+        "evidence_plan_generation": evidence_parts["plan_generation"],
+    }
+
+
+def _receipt_evidence_metadata(
+    evidence: Mapping[str, object],
+    evidence_parts: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "resource_evidence": _mapping_or_none(
+            evidence_parts["resource_evidence"]
+        ),
+        "execution_path_evidence": _mapping_or_none(
+            evidence_parts["execution_path_evidence"]
+        ),
+        "direct_completion_evidence": _mapping_or_none(
+            evidence_parts["direct_completion_evidence"]
+        ),
+        "relay_completion_evidence": _mapping_or_none(
+            evidence_parts["relay_completion_evidence"]
+        ),
+        "worker_completion_evidence": _mapping_or_none(
+            evidence_parts["worker_completion_evidence"]
+        ),
+        "completion_evidence": dict(evidence),
+        "cleanup_evidence": _mapping_or_none(evidence_parts["cleanup_evidence"]),
+        "worker_async_pool": _mapping_or_none(
+            evidence_parts["worker_async_pool"]
+        ),
+        "worker_runtime_feedback": _mapping_or_none(
+            evidence_parts["worker_runtime_feedback"]
+        ),
+        "async_data_plane": _mapping_or_none(evidence_parts["async_data_plane"]),
+        "planned_relay_cleanup": _mapping_sequence_or_none(
+            evidence_parts["planned_relay_cleanup"]
+        ),
+        "worker_startup": _mapping_or_none(evidence_parts["worker_startup"]),
+        "path_level_evidence": _mapping_or_none(
+            evidence_parts["path_level_evidence"]
+        ),
+        "native_path_stats": _mapping_sequence_or_none(
+            evidence_parts["native_path_stats"]
+        ),
+        "relay_device_stats": _mapping_sequence_or_none(
+            evidence_parts["relay_device_stats"]
+        ),
+        "failure_cleanup_contract": _mapping_or_none(
+            evidence_parts["failure_cleanup_contract"]
+        ),
+    }
+
+
+def _mapping_or_none(value: object) -> dict[str, object] | None:
+    if isinstance(value, Mapping):
+        return dict(value)
+    return None
+
+
+def _mapping_sequence_or_none(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list | tuple):
+        return None
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _block_runtime_evidence(
+    *,
+    block_runtime: object,
+    evidence: Mapping[str, object],
+) -> dict[str, object] | None:
+    runtime = block_runtime
+    if runtime is None:
+        runtime = evidence.get("block_runtime")
+    if isinstance(runtime, Mapping):
+        return dict(runtime)
+    if not isinstance(runtime, list | tuple):
+        return None
+    records = tuple(dict(item) for item in runtime if isinstance(item, Mapping))
+    if not records:
+        return None
+    states: dict[str, int] = {}
+    bytes_by_state: dict[str, int] = {}
+    bytes_by_path_kind: dict[str, int] = {}
+    for record in records:
+        state = str(record.get("state", "unknown"))
+        states[state] = states.get(state, 0) + 1
+        byte_count = int(record.get("bytes", 0) or 0)
+        bytes_by_state[state] = bytes_by_state.get(state, 0) + byte_count
+        path_kind = str(record.get("path_kind", "unknown"))
+        bytes_by_path_kind[path_kind] = bytes_by_path_kind.get(path_kind, 0) + byte_count
+    return {
+        "source": "daemon_block_runtime",
+        "available": True,
+        "summary": {
+            "block_count": len(records),
+            "states": states,
+            "bytes_by_state": bytes_by_state,
+            "bytes_by_path_kind": bytes_by_path_kind,
+        },
+        "records": records,
+    }
+
+
+def _str_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _optional_int(value: object) -> int | None:
@@ -471,6 +600,7 @@ def _reproduction_evidence_view(
     completion_contract: Mapping[str, object],
     buffer_lifetime_evidence: Mapping[str, object],
     cuda_ipc_lifecycle: Mapping[str, object] | None,
+    block_runtime_evidence: Mapping[str, object] | None,
     evidence: Mapping[str, object],
 ) -> dict[str, object]:
     execution_path = completion_contract.get("execution_path")
@@ -520,6 +650,54 @@ def _reproduction_evidence_view(
             "path": path_view,
         },
         "completion_contract": dict(completion_contract),
+        "block_runtime": (
+            None
+            if block_runtime_evidence is None
+            else dict(block_runtime_evidence)
+        ),
+        "data_plane": {
+            "worker_async_pool": (
+                dict(completion_contract["worker_async_pool"])
+                if isinstance(completion_contract.get("worker_async_pool"), Mapping)
+                else None
+            ),
+            "async_data_plane": (
+                dict(completion_contract["async_data_plane"])
+                if isinstance(completion_contract.get("async_data_plane"), Mapping)
+                else None
+            ),
+            "worker_runtime_feedback": (
+                dict(completion_contract["worker_runtime_feedback"])
+                if isinstance(
+                    completion_contract.get("worker_runtime_feedback"),
+                    Mapping,
+                )
+                else None
+            ),
+            "path_level_evidence": (
+                dict(completion_contract["path_level_evidence"])
+                if isinstance(completion_contract.get("path_level_evidence"), Mapping)
+                else None
+            ),
+            "native_path_stats": (
+                [
+                    dict(item)
+                    for item in completion_contract["native_path_stats"]
+                    if isinstance(item, Mapping)
+                ]
+                if isinstance(completion_contract.get("native_path_stats"), list)
+                else None
+            ),
+            "relay_device_stats": (
+                [
+                    dict(item)
+                    for item in completion_contract["relay_device_stats"]
+                    if isinstance(item, Mapping)
+                ]
+                if isinstance(completion_contract.get("relay_device_stats"), list)
+                else None
+            ),
+        },
         "buffer_lifetime": dict(buffer_lifetime_evidence),
         "cuda_ipc_lifecycle": (
             dict(cuda_ipc_lifecycle)
@@ -593,6 +771,7 @@ def _completion_contract_view(
     direct_completion_evidence: object,
     relay_completion_evidence: object,
     worker_completion_evidence: object,
+    block_runtime_evidence: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     contract = {
         "ticket_id": evidence.get("ticket_id"),
@@ -616,6 +795,21 @@ def _completion_contract_view(
         "worker_startup": (
             dict(evidence.get("worker_startup"))
             if isinstance(evidence.get("worker_startup"), Mapping)
+            else None
+        ),
+        "worker_async_pool": (
+            dict(evidence.get("worker_async_pool"))
+            if isinstance(evidence.get("worker_async_pool"), Mapping)
+            else None
+        ),
+        "worker_runtime_feedback": (
+            dict(evidence.get("worker_runtime_feedback"))
+            if isinstance(evidence.get("worker_runtime_feedback"), Mapping)
+            else None
+        ),
+        "async_data_plane": (
+            dict(evidence.get("async_data_plane"))
+            if isinstance(evidence.get("async_data_plane"), Mapping)
             else None
         ),
         "path_level_evidence": (
@@ -645,6 +839,11 @@ def _completion_contract_view(
             dict(evidence.get("failure_cleanup_contract"))
             if isinstance(evidence.get("failure_cleanup_contract"), Mapping)
             else None
+        ),
+        "block_runtime": (
+            None
+            if block_runtime_evidence is None
+            else dict(block_runtime_evidence)
         ),
         "cuda_ipc_lifecycle": _cuda_ipc_lifecycle_from_evidence(evidence),
         "execution_path": (
@@ -765,6 +964,9 @@ def _single_mode_completion_view(
         "relay_bytes",
         "relay_chunks",
         "worker_startup",
+        "worker_async_pool",
+        "worker_runtime_feedback",
+        "async_data_plane",
         "path_level_evidence",
         "native_path_stats",
         "relay_device_stats",
@@ -819,9 +1021,12 @@ def _worker_completion_view(
         "relay_chunks",
         "relay_gpu",
         "relay_gpus",
+        "worker_async_pool",
         "path_level_evidence",
         "native_path_stats",
         "relay_device_stats",
+        "worker_runtime_feedback",
+        "async_data_plane",
         "failure_cleanup_contract",
         "cuda_ipc_lifecycle",
     ):

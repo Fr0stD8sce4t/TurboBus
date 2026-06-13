@@ -110,10 +110,12 @@ struct RuntimeOptions {
   bool profile_cache_enabled = true;
   TransferMode transfer_mode = TransferMode::Pool;
   std::size_t min_chunks_for_relay = 2;
+  std::size_t min_pool_bytes = 12ull * 1024ull * 1024ull;
   double relay_min_effective_bw_gbps = 0.0;
   double relay_min_direct_ratio = 0.0;
   bool enable_dynamic_weights = false;
   double dynamic_weight_alpha = 0.25;
+  bool clear_relay_staging_on_chunk = false;
 };
 
 struct PathStats {

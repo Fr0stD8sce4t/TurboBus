@@ -6,6 +6,7 @@ from typing import Iterable as TypingIterable
 
 from ..planner_types import PlannerTransferPlan
 from ..schema import WorkloadKind
+from .bandwidth_pool import bandwidth_pool_from_runtime_state
 
 
 @dataclass(frozen=True)
@@ -20,10 +21,15 @@ class RuntimeLoadView:
     total_weight: float
     current_job_active_bytes: int
     total_active_bytes: int
+    current_job_backlog_bytes: int
+    total_backlog_bytes: int
     request_charge_bytes: float
     average_weighted_active_bytes: float
     current_weighted_active_bytes: float
     projected_weighted_active_bytes: float
+    average_weighted_fairness_bytes: float
+    current_weighted_fairness_bytes: float
+    projected_weighted_fairness_bytes: float
     fairness_threshold_bytes: float
     active_transfer_count: int
     running_transfer_count: int
@@ -37,6 +43,7 @@ class RuntimeLoadView:
     terminal_execution_evidence: dict[str, int]
     terminal_execution_evidence_by_source: dict[str, dict[str, int]]
     runtime_feedback_metrics: dict[str, object]
+    pcie_bandwidth_pool: dict[str, object]
 
     def policy_metadata(self) -> dict[str, object]:
         runtime_state = dict(self.runtime_state)
@@ -51,9 +58,14 @@ class RuntimeLoadView:
             "resource_pressure": self.resource_pressure,
             "current_job_active_bytes": self.current_job_active_bytes,
             "total_active_bytes": self.total_active_bytes,
+            "current_job_backlog_bytes": self.current_job_backlog_bytes,
+            "total_backlog_bytes": self.total_backlog_bytes,
             "current_weighted_active_bytes": self.current_weighted_active_bytes,
             "projected_weighted_active_bytes": self.projected_weighted_active_bytes,
             "average_weighted_active_bytes": self.average_weighted_active_bytes,
+            "current_weighted_fairness_bytes": self.current_weighted_fairness_bytes,
+            "projected_weighted_fairness_bytes": self.projected_weighted_fairness_bytes,
+            "average_weighted_fairness_bytes": self.average_weighted_fairness_bytes,
             "fairness_threshold_bytes": self.fairness_threshold_bytes,
             "busy_relays": tuple(sorted(self.busy_relays)),
             "runtime_state_version": int(runtime_state.get("version", 0) or 0),
@@ -95,6 +107,7 @@ class RuntimeLoadView:
                 for key, value in self.terminal_execution_evidence_by_source.items()
             },
             "runtime_feedback_metrics": dict(self.runtime_feedback_metrics),
+            "pcie_bandwidth_pool": dict(self.pcie_bandwidth_pool),
             "relay_load": {
                 int(relay): dict(record)
                 for relay, record in sorted(self.relay_load.items())
@@ -178,7 +191,7 @@ class RuntimeLoadView:
         fairness_denominator = max(self.fairness_threshold_bytes, 1.0)
         fairness_overage = max(
             0.0,
-            self.projected_weighted_active_bytes - self.fairness_threshold_bytes,
+            self.projected_weighted_fairness_bytes - self.fairness_threshold_bytes,
         )
         fairness_pressure = min(fairness_overage / fairness_denominator, 2.0) * 0.25
         worker_pressure = self.completion_source_pressure.get("worker", 0.0) * 0.12
@@ -203,8 +216,13 @@ class RuntimeLoadView:
             "queued_direction_bytes": queued_direction_bytes,
         }
 
-    def direct_cost_pressure(self, direction: str) -> float:
-        summary = self.scheduler_pressure_summary(direction)
+    def direct_cost_pressure(
+        self,
+        direction: str,
+        *,
+        pressure_summary: Mapping[str, object] | None = None,
+    ) -> float:
+        summary = self._resolved_pressure_summary(direction, pressure_summary)
         return max(
             0.0,
             self.direct_pressure(direction)
@@ -215,8 +233,14 @@ class RuntimeLoadView:
             + float(summary["backend_pressure"]),
         )
 
-    def relay_cost_pressure(self, relay_device: int, direction: str) -> float:
-        summary = self.scheduler_pressure_summary(direction)
+    def relay_cost_pressure(
+        self,
+        relay_device: int,
+        direction: str,
+        *,
+        pressure_summary: Mapping[str, object] | None = None,
+    ) -> float:
+        summary = self._resolved_pressure_summary(direction, pressure_summary)
         return max(
             0.0,
             self.relay_pressure(relay_device, direction=direction)
@@ -233,20 +257,27 @@ class RuntimeLoadView:
         direction: str,
         relay_device: int | None = None,
         admission_state: str = "available",
+        pressure_summary: Mapping[str, object] | None = None,
+        path_pressure: float | None = None,
     ) -> dict[str, object]:
         kind = str(path_kind).lower()
         normalized_direction = str(direction).lower()
-        pressure_summary = self.scheduler_pressure_summary(normalized_direction)
+        pressure_summary = self._resolved_pressure_summary(
+            normalized_direction,
+            pressure_summary,
+        )
         if kind == "relay":
             relay_record = (
                 {}
                 if relay_device is None
                 else dict(self.relay_load.get(int(relay_device), {}) or {})
             )
-            path_pressure = self.relay_cost_pressure(
-                -1 if relay_device is None else int(relay_device),
-                normalized_direction,
-            )
+            if path_pressure is None:
+                path_pressure = self.relay_cost_pressure(
+                    -1 if relay_device is None else int(relay_device),
+                    normalized_direction,
+                    pressure_summary=pressure_summary,
+                )
             path_active_bytes = int(relay_record.get("active_bytes", 0) or 0)
             busy = relay_device is not None and int(relay_device) in self.busy_relays
             idle_bonus = 0.18 if not busy and path_active_bytes == 0 else 0.0
@@ -258,7 +289,11 @@ class RuntimeLoadView:
             ) * 0.035
             source_pressure = float(pressure_summary["worker_pressure"])
         else:
-            path_pressure = self.direct_cost_pressure(normalized_direction)
+            if path_pressure is None:
+                path_pressure = self.direct_cost_pressure(
+                    normalized_direction,
+                    pressure_summary=pressure_summary,
+                )
             direct_active = self.active_execution_evidence_by_source.get("backend", {})
             path_active_bytes = _execution_evidence_total_bytes(direct_active)
             busy = False
@@ -268,7 +303,7 @@ class RuntimeLoadView:
         fairness_denominator = max(self.fairness_threshold_bytes, 1.0)
         fairness_overage = max(
             0.0,
-            self.projected_weighted_active_bytes - self.fairness_threshold_bytes,
+            self.projected_weighted_fairness_bytes - self.fairness_threshold_bytes,
         )
         fairness_penalty = min(fairness_overage / fairness_denominator, 2.0) * 0.20
         admission_penalty = _adaptive_admission_penalty(admission_state)
@@ -290,7 +325,7 @@ class RuntimeLoadView:
             "relay_device": relay_device,
             "admission_state": str(admission_state),
             "busy": bool(busy),
-            "path_pressure": path_pressure,
+            "path_pressure": max(0.0, float(path_pressure)),
             "source_pressure": source_pressure,
             "backlog_penalty": backlog_penalty,
             "fairness_penalty": fairness_penalty,
@@ -304,13 +339,27 @@ class RuntimeLoadView:
             "pressure_summary": dict(pressure_summary),
         }
 
-    def adaptive_policy_metadata(self, direction: str) -> dict[str, object]:
+    def adaptive_policy_metadata(
+        self,
+        direction: str,
+        *,
+        pressure_summary: Mapping[str, object] | None = None,
+        direct_path_pressure: float | None = None,
+        relay_path_pressures: Mapping[int, float] | None = None,
+    ) -> dict[str, object]:
         normalized_direction = str(direction).lower()
+        pressure_summary = self._resolved_pressure_summary(
+            normalized_direction,
+            pressure_summary,
+        )
+        relay_path_pressures = relay_path_pressures or {}
         relay_policies = {
             int(relay): self.adaptive_policy_for_path(
                 path_kind="relay",
                 direction=normalized_direction,
                 relay_device=int(relay),
+                pressure_summary=pressure_summary,
+                path_pressure=relay_path_pressures.get(int(relay)),
             )
             for relay in sorted(self.relay_load)
         }
@@ -321,10 +370,26 @@ class RuntimeLoadView:
             "direct": self.adaptive_policy_for_path(
                 path_kind="direct",
                 direction=normalized_direction,
+                pressure_summary=pressure_summary,
+                path_pressure=direct_path_pressure,
             ),
             "relays": relay_policies,
-            "summary": self.scheduler_pressure_summary(normalized_direction),
+            "summary": pressure_summary,
         }
+
+    def _resolved_pressure_summary(
+        self,
+        direction: str,
+        pressure_summary: Mapping[str, object] | None,
+    ) -> Mapping[str, object]:
+        normalized_direction = str(direction).lower()
+        if (
+            isinstance(pressure_summary, Mapping)
+            and str(pressure_summary.get("direction", "")).lower()
+            == normalized_direction
+        ):
+            return pressure_summary
+        return self.scheduler_pressure_summary(normalized_direction)
 
     def priority_cost_discount(self) -> float:
         priority = min(max(int(self.priority), 0), 9)
@@ -353,6 +418,8 @@ class RuntimeLoadView:
 
 def runtime_state_metadata(
     runtime_state: Mapping[str, object] | None,
+    *,
+    relay_activity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if not isinstance(runtime_state, Mapping):
         return {
@@ -379,8 +446,10 @@ def runtime_state_metadata(
             "queued_bytes_by_direction": {},
             "active_resource_usage": {},
             "relay_load": {},
+            "pcie_bandwidth_pool": {},
         }
-    relay_activity = relay_activity_from_runtime_state(runtime_state)
+    if not isinstance(relay_activity, Mapping):
+        relay_activity = relay_activity_from_runtime_state(runtime_state)
     summary = runtime_state.get("summary", {})
     if not isinstance(summary, Mapping):
         summary = {}
@@ -441,6 +510,7 @@ def runtime_state_metadata(
         ),
         "active_resource_usage": dict(summary.get("active_resource_usage", {}) or {}),
         "relay_load": relay_activity["relay_load"],
+        "pcie_bandwidth_pool": bandwidth_pool_from_runtime_state(runtime_state),
     }
 
 
@@ -454,28 +524,36 @@ def runtime_view(
 ) -> RuntimeLoadView:
     normalized_job_id = None if job_id is None else str(job_id)
     workload = WorkloadKind(workload_kind).value
-    runtime_state_snapshot = runtime_state_metadata(runtime_state)
-    active_transfer_count = 0
-    running_transfer_count = 0
-    queued_transfer_count = 0
-    admitted_transfer_count = 0
-    delayed_transfer_count = 0
+    relay_activity = relay_activity_from_runtime_state(runtime_state)
+    runtime_state_snapshot = runtime_state_metadata(
+        runtime_state,
+        relay_activity=relay_activity,
+    )
+    active_transfer_count = int(
+        runtime_state_snapshot.get("active_transfer_count", 0) or 0
+    )
+    running_transfer_count = int(
+        runtime_state_snapshot.get("running_transfer_count", 0) or 0
+    )
+    queued_transfer_count = int(
+        runtime_state_snapshot.get("queued_transfer_count", 0) or 0
+    )
+    admitted_transfer_count = int(
+        runtime_state_snapshot.get("admitted_transfer_count", 0) or 0
+    )
+    delayed_transfer_count = int(
+        runtime_state_snapshot.get("delayed_transfer_count", 0) or 0
+    )
     job_runtime_state: Mapping[str, object] = {}
     if isinstance(runtime_state, Mapping):
         summary = runtime_state.get("summary", {})
         if isinstance(summary, Mapping):
-            active_transfer_count = int(summary.get("active_transfer_count", 0) or 0)
-            running_transfer_count = int(summary.get("running_transfer_count", 0) or 0)
-            queued_transfer_count = int(summary.get("queued_transfer_count", 0) or 0)
-            admitted_transfer_count = int(summary.get("admitted_transfer_count", 0) or 0)
-            delayed_transfer_count = int(summary.get("delayed_transfer_count", 0) or 0)
             nested_jobs = summary.get("job_runtime_state", {})
             if isinstance(nested_jobs, Mapping):
                 job_runtime_state = nested_jobs
         jobs = runtime_state.get("job_runtime_state", {})
         if isinstance(jobs, Mapping):
             job_runtime_state = jobs
-    relay_activity = relay_activity_from_runtime_state(runtime_state)
     busy_relays = relay_activity["busy_relays"]
     relay_load = relay_activity["relay_load"]
     completion_source_pressure = completion_source_pressure_from_runtime_state(
@@ -502,10 +580,15 @@ def runtime_view(
     runtime_feedback_metrics = dict(
         runtime_state_snapshot.get("runtime_feedback_metrics", {}) or {}
     )
+    pcie_bandwidth_pool = dict(
+        runtime_state_snapshot.get("pcie_bandwidth_pool", {}) or {}
+    )
 
     total_weight = 0.0
     total_active_bytes = 0
+    total_backlog_bytes = 0
     current_job_active_bytes = 0
+    current_job_backlog_bytes = 0
     job_weight = 1.0
     for key, value in job_runtime_state.items():
         if not isinstance(value, Mapping):
@@ -513,10 +596,13 @@ def runtime_view(
         weight = max(0.0, float(value.get("weight", 1.0) or 1.0))
         total_weight += weight
         active_bytes = int(value.get("active_bytes_remaining", 0) or 0)
+        backlog_bytes = _job_delayed_backlog_bytes(value)
         total_active_bytes += active_bytes
+        total_backlog_bytes += backlog_bytes
         if normalized_job_id is not None and str(key) == normalized_job_id:
             job_weight = weight or 1.0
             current_job_active_bytes = active_bytes
+            current_job_backlog_bytes = backlog_bytes
     if total_weight <= 0.0:
         total_weight = max(1.0, job_weight)
     if normalized_job_id is not None and normalized_job_id not in job_runtime_state:
@@ -559,6 +645,17 @@ def runtime_view(
     average_weighted = (
         (total_active_bytes + request_charge) / max(total_weight, 1e-12)
     )
+    backlog_charge = current_job_backlog_bytes * 0.5
+    total_backlog_charge = total_backlog_bytes * 0.5
+    current_fairness_bytes = current_job_active_bytes + backlog_charge
+    total_fairness_bytes = total_active_bytes + total_backlog_charge
+    current_weighted_fairness = current_fairness_bytes / max(job_weight, 1e-12)
+    projected_weighted_fairness = (
+        current_fairness_bytes + request_charge
+    ) / max(job_weight, 1e-12)
+    average_weighted_fairness = (
+        total_fairness_bytes + request_charge
+    ) / max(total_weight, 1e-12)
     return RuntimeLoadView(
         job_id=normalized_job_id,
         workload_kind=workload,
@@ -570,11 +667,16 @@ def runtime_view(
         total_weight=total_weight,
         current_job_active_bytes=current_job_active_bytes,
         total_active_bytes=total_active_bytes,
+        current_job_backlog_bytes=current_job_backlog_bytes,
+        total_backlog_bytes=total_backlog_bytes,
         request_charge_bytes=request_charge,
         average_weighted_active_bytes=average_weighted,
         current_weighted_active_bytes=current_weighted,
         projected_weighted_active_bytes=projected_weighted,
-        fairness_threshold_bytes=average_weighted * 1.25,
+        average_weighted_fairness_bytes=average_weighted_fairness,
+        current_weighted_fairness_bytes=current_weighted_fairness,
+        projected_weighted_fairness_bytes=projected_weighted_fairness,
+        fairness_threshold_bytes=average_weighted_fairness * 1.25,
         active_transfer_count=active_transfer_count,
         running_transfer_count=running_transfer_count,
         queued_transfer_count=queued_transfer_count,
@@ -587,6 +689,7 @@ def runtime_view(
         terminal_execution_evidence=terminal_execution_evidence,
         terminal_execution_evidence_by_source=terminal_execution_evidence_by_source,
         runtime_feedback_metrics=runtime_feedback_metrics,
+        pcie_bandwidth_pool=pcie_bandwidth_pool,
     )
 
 
@@ -598,6 +701,15 @@ def workload_charge_multiplier(workload_kind: str) -> float:
     if workload_kind == WorkloadKind.OPTIMIZER_STATE.value:
         return 1.25
     return 1.0
+
+
+def _job_delayed_backlog_bytes(job_record: Mapping[str, object]) -> int:
+    delayed = job_record.get("delayed_bytes_total")
+    if delayed is not None:
+        return max(0, int(delayed or 0))
+    queued = int(job_record.get("queued_bytes_total", 0) or 0)
+    admitted = int(job_record.get("admitted_bytes_total", 0) or 0)
+    return max(0, queued - admitted)
 
 
 def _adaptive_admission_penalty(admission_state: str) -> float:
@@ -621,12 +733,12 @@ def fairness_fallback_for_plan(
     has_relay = any(assignment.path.kind == "relay" for assignment in plan.assignments)
     if not has_relay:
         return None
-    if runtime_view.total_active_bytes <= 0:
+    if runtime_view.total_active_bytes <= 0 and runtime_view.total_backlog_bytes <= 0:
         return None
     effective_threshold = runtime_view.fairness_threshold_bytes / (
         1.0 + runtime_view.resource_pressure
     )
-    if runtime_view.projected_weighted_active_bytes <= effective_threshold:
+    if runtime_view.projected_weighted_fairness_bytes <= effective_threshold:
         return None
     return "weighted fairness limit prefers direct fallback"
 
@@ -634,12 +746,12 @@ def fairness_fallback_for_plan(
 def relay_fairness_admission_blocked_reason(
     runtime_view: RuntimeLoadView,
 ) -> str | None:
-    if runtime_view.total_active_bytes <= 0:
+    if runtime_view.total_active_bytes <= 0 and runtime_view.total_backlog_bytes <= 0:
         return None
     effective_threshold = runtime_view.fairness_threshold_bytes / (
         1.0 + runtime_view.resource_pressure
     )
-    if runtime_view.projected_weighted_active_bytes <= effective_threshold:
+    if runtime_view.projected_weighted_fairness_bytes <= effective_threshold:
         return None
     return "weighted fairness limit delays relay admission"
 
@@ -704,6 +816,9 @@ def relay_activity_from_runtime_state(
 ) -> dict[str, object]:
     if not isinstance(runtime_state, Mapping):
         return {"busy_relays": set(), "relay_load": {}}
+    summary_activity = _relay_activity_from_runtime_summary(runtime_state)
+    if summary_activity is not None:
+        return summary_activity
     records: dict[int, dict[str, object]] = {}
     busy: set[int] = set()
     for record in _runtime_records(runtime_state.get("active_paths", ())):
@@ -784,6 +899,107 @@ def relay_activity_from_runtime_state(
     }
 
 
+def _relay_activity_from_runtime_summary(
+    runtime_state: Mapping[str, object],
+) -> dict[str, object] | None:
+    summary = runtime_state.get("summary", {})
+    if not isinstance(summary, Mapping):
+        return None
+    relay_load = summary.get("relay_load")
+    if not isinstance(relay_load, Mapping):
+        return None
+    if not _runtime_summary_relay_counts_match(runtime_state, summary):
+        return None
+    busy_relays = summary.get("busy_relays", ())
+    if not isinstance(busy_relays, list | tuple | set | frozenset):
+        busy_relays = ()
+    busy: set[int] = set()
+    for item in busy_relays:
+        relay_id = _relay_id_or_none(item)
+        if relay_id is not None:
+            busy.add(relay_id)
+    normalized: dict[int, dict[str, object]] = {}
+    for relay, record in relay_load.items():
+        if not isinstance(record, Mapping):
+            continue
+        relay_id = _relay_id_or_none(relay)
+        if relay_id is None:
+            continue
+        normalized[relay_id] = dict(record)
+        normalized[relay_id]["relay_gpu"] = int(
+            normalized[relay_id].get("relay_gpu", relay_id)
+        )
+        if _relay_load_record_is_busy(normalized[relay_id]):
+            busy.add(relay_id)
+    return {
+        "busy_relays": busy,
+        "relay_load": normalized,
+    }
+
+
+def _runtime_summary_relay_counts_match(
+    runtime_state: Mapping[str, object],
+    summary: Mapping[str, object],
+) -> bool:
+    active_paths = runtime_state.get("active_paths", ()) or ()
+    if not isinstance(active_paths, list | tuple):
+        return False
+    relay_path_count, relay_path_bytes_total = _relay_path_activity_totals(
+        active_paths,
+    )
+    if int(summary.get("relay_path_count", -1) or 0) != relay_path_count:
+        return False
+    if int(summary.get("relay_path_bytes_total", -1) or 0) != relay_path_bytes_total:
+        return False
+    for field_name, state_name in (
+        ("active_reservation_count", "active_reservations"),
+        ("active_lease_count", "active_leases"),
+        ("relay_staging_count", "relay_staging"),
+    ):
+        state_records = runtime_state.get(state_name, ()) or ()
+        if not isinstance(state_records, list | tuple):
+            return False
+        if int(summary.get(field_name, -1) or 0) != len(state_records):
+            return False
+    return True
+
+
+def _relay_path_activity_totals(
+    active_paths: list[object] | tuple[object, ...],
+) -> tuple[int, int]:
+    path_count = 0
+    bytes_total = 0
+    for record in active_paths:
+        if not isinstance(record, Mapping):
+            continue
+        if str(record.get("kind", "")).lower() != "relay":
+            continue
+        path_count += 1
+        bytes_total += int(record.get("bytes_total", 0) or 0)
+    return path_count, bytes_total
+
+
+def _relay_load_record_is_busy(record: Mapping[str, object]) -> bool:
+    return any(
+        int(record.get(field_name, 0) or 0) > 0
+        for field_name in (
+            "active_path_count",
+            "active_reservation_count",
+            "active_lease_count",
+            "staging_record_count",
+        )
+    )
+
+
+def _relay_id_or_none(value: object) -> int | None:
+    try:
+        if value is None or str(value) == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def completion_source_pressure_from_runtime_state(
     runtime_state: Mapping[str, object] | None,
 ) -> dict[str, float]:
@@ -847,6 +1063,14 @@ def completion_source_pressure_from_runtime_state(
                 16,
             ) * 0.04
             weighted_worker += min(
+                int(worker_runtime.get("max_runtime_cache_over_limit", 0) or 0),
+                16,
+            ) * 0.10
+            weighted_worker += min(
+                int(worker_runtime.get("max_active_runtime_cache_key_count", 0) or 0),
+                16,
+            ) * 0.05
+            weighted_worker += min(
                 int(worker_runtime.get("runtime_cache_evictions", 0) or 0),
                 16,
             ) * 0.08
@@ -880,6 +1104,10 @@ def completion_source_pressure_from_runtime_state(
                 int(backend_runtime.get("max_runtime_cache_size", 0) or 0),
                 16,
             ) * 0.03
+            weighted_backend += min(
+                int(backend_runtime.get("max_runtime_cache_over_limit", 0) or 0),
+                16,
+            ) * 0.08
             weighted_backend += min(
                 int(backend_runtime.get("runtime_cache_evictions", 0) or 0),
                 16,

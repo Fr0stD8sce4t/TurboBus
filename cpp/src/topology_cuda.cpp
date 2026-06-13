@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <stdexcept>
 #include <string>
@@ -73,6 +74,9 @@ Topology TopologyManager::Discover(int target_device,
       }
     }
   }
+  std::sort(candidates.begin(), candidates.end());
+  candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                   candidates.end());
 
   for (const int relay_device : candidates) {
     if (relay_device < 0 || relay_device >= device_count) {

@@ -278,6 +278,8 @@ PYBIND11_MODULE(_turbobus, m) {
       .def_readwrite("transfer_mode", &turbobus::RuntimeOptions::transfer_mode)
       .def_readwrite("min_chunks_for_relay",
                      &turbobus::RuntimeOptions::min_chunks_for_relay)
+      .def_readwrite("min_pool_bytes",
+                     &turbobus::RuntimeOptions::min_pool_bytes)
       .def_readwrite("relay_min_effective_bw_gbps",
                      &turbobus::RuntimeOptions::relay_min_effective_bw_gbps)
       .def_readwrite("relay_min_direct_ratio",
@@ -285,7 +287,9 @@ PYBIND11_MODULE(_turbobus, m) {
       .def_readwrite("enable_dynamic_weights",
                      &turbobus::RuntimeOptions::enable_dynamic_weights)
       .def_readwrite("dynamic_weight_alpha",
-                     &turbobus::RuntimeOptions::dynamic_weight_alpha);
+                     &turbobus::RuntimeOptions::dynamic_weight_alpha)
+      .def_readwrite("clear_relay_staging_on_chunk",
+                     &turbobus::RuntimeOptions::clear_relay_staging_on_chunk);
 
   py::class_<turbobus::RelayProfile>(m, "RelayProfile")
       .def(py::init<>())
@@ -413,8 +417,7 @@ PYBIND11_MODULE(_turbobus, m) {
            py::return_value_policy::reference_internal)
       .def("planner_profile", &turbobus::TurboBusRuntime::PlannerProfile,
            py::return_value_policy::reference_internal)
-      .def("last_plan", &turbobus::TurboBusRuntime::LastPlan,
-           py::return_value_policy::reference_internal)
+      .def("last_plan", &turbobus::TurboBusRuntime::LastPlan)
       .def("fetch_plan_to_gpu",
            [](turbobus::TurboBusRuntime& runtime, std::uintptr_t host_ptr,
               std::size_t host_bytes, std::uintptr_t target_ptr,
@@ -424,7 +427,8 @@ PYBIND11_MODULE(_turbobus, m) {
                  reinterpret_cast<void*>(target_ptr), target_bytes, plan);
            },
            py::arg("host_ptr"), py::arg("host_bytes"), py::arg("target_ptr"),
-           py::arg("target_bytes"), py::arg("plan"))
+           py::arg("target_bytes"), py::arg("plan"),
+           py::call_guard<py::gil_scoped_release>())
       .def("offload_plan_to_cpu",
            [](turbobus::TurboBusRuntime& runtime, std::uintptr_t target_ptr,
               std::size_t target_bytes, std::uintptr_t host_ptr,
@@ -434,7 +438,8 @@ PYBIND11_MODULE(_turbobus, m) {
                  reinterpret_cast<void*>(host_ptr), host_bytes, plan);
            },
            py::arg("target_ptr"), py::arg("target_bytes"), py::arg("host_ptr"),
-           py::arg("host_bytes"), py::arg("plan"))
+           py::arg("host_bytes"), py::arg("plan"),
+           py::call_guard<py::gil_scoped_release>())
       .def("run_dummy_compute",
            [](turbobus::TurboBusRuntime& runtime, std::uintptr_t device_ptr,
               std::size_t elements, int iterations) {

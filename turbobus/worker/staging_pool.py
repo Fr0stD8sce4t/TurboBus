@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
+from threading import RLock
 from typing import Callable
 
 from ..schema import WorkerDataPlaneRequest
@@ -117,26 +118,30 @@ class WorkerStagingPool:
         self._slot_id_factory = slot_id_factory
         self._next_slot_id = 1
         self._slots: dict[str, WorkerStagingSlot] = {}
+        self._lock = RLock()
 
     def allocate(self, request: WorkerDataPlaneRequest) -> WorkerStagingSlot:
-        slot_id = self._new_slot_id()
-        if slot_id in self._slots:
-            raise WorkerStagingPoolError("staging slot id already exists")
-        slot = WorkerStagingSlot.from_request(request, slot_id=slot_id)
-        self._slots[slot.slot_id] = slot
-        return slot
+        with self._lock:
+            slot_id = self._new_slot_id()
+            if slot_id in self._slots:
+                raise WorkerStagingPoolError("staging slot id already exists")
+            slot = WorkerStagingSlot.from_request(request, slot_id=slot_id)
+            self._slots[slot.slot_id] = slot
+            return slot
 
     def describe(self, slot_id: str | None = None) -> dict[str, object]:
-        if slot_id is not None:
-            slot = self._slots.get(str(slot_id))
-            if slot is None:
-                raise WorkerStagingPoolError("unknown staging slot")
-            return slot.as_dict()
-        return {
-            "active_slots": {
-                slot_id: slot.as_dict() for slot_id, slot in sorted(self._slots.items())
+        with self._lock:
+            if slot_id is not None:
+                slot = self._slots.get(str(slot_id))
+                if slot is None:
+                    raise WorkerStagingPoolError("unknown staging slot")
+                return slot.as_dict()
+            return {
+                "active_slots": {
+                    slot_id: slot.as_dict()
+                    for slot_id, slot in sorted(self._slots.items())
+                }
             }
-        }
 
     def validate_slot_for_request(
         self,
@@ -145,32 +150,34 @@ class WorkerStagingPool:
     ) -> WorkerStagingSlot:
         if not isinstance(request, WorkerDataPlaneRequest):
             raise TypeError("request must be a WorkerDataPlaneRequest")
-        slot = self._slots.get(str(slot_id))
-        if slot is None:
-            raise WorkerStagingPoolError("unknown staging slot")
-        if slot.transfer_id != request.transfer_id:
-            raise WorkerStagingPoolError("staging slot transfer mismatch")
-        if slot.lease_id != request.lease_id:
-            raise WorkerStagingPoolError("staging slot lease mismatch")
-        if slot.session_id != request.session_id:
-            raise WorkerStagingPoolError("staging slot session mismatch")
-        if slot.job_id != request.job_id:
-            raise WorkerStagingPoolError("staging slot job mismatch")
-        if slot.relay_gpu != request.relay_gpu:
-            raise WorkerStagingPoolError("staging slot relay mismatch")
-        return slot
+        with self._lock:
+            slot = self._slots.get(str(slot_id))
+            if slot is None:
+                raise WorkerStagingPoolError("unknown staging slot")
+            if slot.transfer_id != request.transfer_id:
+                raise WorkerStagingPoolError("staging slot transfer mismatch")
+            if slot.lease_id != request.lease_id:
+                raise WorkerStagingPoolError("staging slot lease mismatch")
+            if slot.session_id != request.session_id:
+                raise WorkerStagingPoolError("staging slot session mismatch")
+            if slot.job_id != request.job_id:
+                raise WorkerStagingPoolError("staging slot job mismatch")
+            if slot.relay_gpu != request.relay_gpu:
+                raise WorkerStagingPoolError("staging slot relay mismatch")
+            return slot
 
     def release(
         self,
         slot_id: str,
         request: WorkerDataPlaneRequest | None = None,
     ) -> WorkerStagingSlot:
-        if request is not None:
-            self.validate_slot_for_request(slot_id, request)
-        slot = self._slots.pop(str(slot_id), None)
-        if slot is None:
-            raise WorkerStagingPoolError("unknown staging slot")
-        return replace(slot, active=False)
+        with self._lock:
+            if request is not None:
+                self.validate_slot_for_request(slot_id, request)
+            slot = self._slots.pop(str(slot_id), None)
+            if slot is None:
+                raise WorkerStagingPoolError("unknown staging slot")
+            return replace(slot, active=False)
 
     def _new_slot_id(self) -> str:
         if self._slot_id_factory is not None:

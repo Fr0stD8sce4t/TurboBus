@@ -25,7 +25,7 @@ class CudaRelayExecutor {
                            const TransferPlan& plan);
 
   void Wait(const TransferHandle& handle);
-  TransferStats GetStats(const TransferHandle& handle) const;
+  TransferStats GetStats(const TransferHandle& handle);
 
  private:
   struct Impl;

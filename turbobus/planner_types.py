@@ -84,14 +84,18 @@ class PlannerTransferPlan:
     chunk_bytes: int = 16 * 1024 * 1024
     assignments: tuple[PlannerPathAssignment, ...] = field(default_factory=tuple)
     cost_metadata: dict[str, object] = field(default_factory=dict)
+    block_plan: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "total_bytes": self.total_bytes,
             "chunk_bytes": self.chunk_bytes,
             "assignments": [assignment.as_dict() for assignment in self.assignments],
             "cost_metadata": dict(self.cost_metadata),
         }
+        if self.block_plan is not None:
+            payload["block_plan"] = dict(self.block_plan)
+        return payload
 
 
 @dataclass(frozen=True)

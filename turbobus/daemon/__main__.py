@@ -22,6 +22,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-sessions-per-relay", type=int, default=1)
     parser.add_argument("--max-inflight-chunks-per-relay", type=int, default=8)
+    parser.add_argument("--min-pool-bytes", type=int, default=12 * 1024 * 1024)
+    parser.add_argument("--min-chunks-for-relay", type=int, default=2)
+    parser.add_argument("--relay-min-effective-bw-gbps", type=float, default=0.0)
+    parser.add_argument("--relay-min-direct-ratio", type=float, default=0.0)
     parser.add_argument("--session-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--profile-max-age-seconds", type=float, default=0.0)
     parser.add_argument(
@@ -41,6 +45,10 @@ def startup_config_from_args(args) -> DaemonStartupConfig:
         require_pcie=not args.allow_missing_pcie,
         max_sessions_per_relay=args.max_sessions_per_relay,
         max_inflight_chunks_per_relay=args.max_inflight_chunks_per_relay,
+        min_pool_bytes=args.min_pool_bytes,
+        min_chunks_for_relay=args.min_chunks_for_relay,
+        relay_min_effective_bw_gbps=args.relay_min_effective_bw_gbps,
+        relay_min_direct_ratio=args.relay_min_direct_ratio,
         session_timeout_seconds=args.session_timeout_seconds,
         profile_max_age_seconds=args.profile_max_age_seconds,
     )

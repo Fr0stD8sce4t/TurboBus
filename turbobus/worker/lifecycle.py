@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
@@ -26,6 +27,7 @@ from .lifecycle_evidence import (
     cleanup_completion_evidence as _cleanup_completion_evidence,
     execution_contract_evidence_from_metadata as _execution_contract_evidence_from_metadata,
     status_evidence_for_result as _status_evidence_for_result,
+    worker_block_progress_evidence as _worker_block_progress_evidence,
     worker_pool_record as _worker_pool_record,
 )
 from .resources import (
@@ -254,6 +256,10 @@ class _WorkerTransferCleanupCoordinator:
             ),
             force=force,
             owner_binding=cleanup_contract["owner_binding"],
+            retention_evidence=_worker_resource_lifecycle_retention_evidence(
+                request,
+                result,
+            ),
         )
 
     def cleanup_status_report_failure(
@@ -273,6 +279,7 @@ class _WorkerTransferCleanupCoordinator:
             reason=reason,
             force=force,
             owner_binding=cleanup_contract["owner_binding"],
+            retention_evidence=None,
         )
 
     def _cleanup_contract_for_worker_request(
@@ -305,6 +312,7 @@ class _WorkerTransferCleanupCoordinator:
         reason: str,
         force: bool,
         owner_binding: Mapping[str, object],
+        retention_evidence: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         if target_kind == "session":
             return self._cleanup(
@@ -316,6 +324,7 @@ class _WorkerTransferCleanupCoordinator:
                 ),
                 reason=reason,
                 force=force,
+                retention_evidence=retention_evidence,
             )
         if len(lease_ids) == 1:
             return self._cleanup(
@@ -329,6 +338,7 @@ class _WorkerTransferCleanupCoordinator:
                 force=force,
                 authorized_target_ids=lease_ids,
                 owner_binding=owner_binding,
+                retention_evidence=retention_evidence,
             )
         return self._cleanup_worker_leases(
             lease_ids=lease_ids,
@@ -336,6 +346,7 @@ class _WorkerTransferCleanupCoordinator:
             reason=reason,
             force=force,
             owner_binding=owner_binding,
+            retention_evidence=retention_evidence,
         )
 
     def _cleanup(
@@ -346,6 +357,7 @@ class _WorkerTransferCleanupCoordinator:
         force: bool,
         authorized_target_ids: tuple[str, ...] | None = None,
         owner_binding: Mapping[str, object] | None = None,
+        retention_evidence: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         response: DaemonResponse = self.daemon_client.cleanup(
             target_kind=target_kind,
@@ -354,6 +366,9 @@ class _WorkerTransferCleanupCoordinator:
             force=force,
             owner_binding=(
                 None if owner_binding is None else dict(owner_binding)
+            ),
+            retention_evidence=(
+                None if retention_evidence is None else dict(retention_evidence)
             ),
         )
         if not response.ok:
@@ -376,6 +391,7 @@ class _WorkerTransferCleanupCoordinator:
         reason: str,
         force: bool,
         owner_binding: Mapping[str, object],
+        retention_evidence: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         return self._cleanup_lease_ids(
             lease_ids=lease_ids,
@@ -383,6 +399,7 @@ class _WorkerTransferCleanupCoordinator:
             reason=reason,
             force=force,
             owner_binding=owner_binding,
+            retention_evidence=retention_evidence,
         )
 
     def _cleanup_lease_ids(
@@ -393,6 +410,7 @@ class _WorkerTransferCleanupCoordinator:
         reason: str,
         force: bool,
         owner_binding: Mapping[str, object],
+        retention_evidence: Mapping[str, object] | None = None,
     ) -> DaemonResponse:
         cleanup = getattr(self.daemon_client, "cleanup", None)
         if not callable(cleanup):
@@ -407,6 +425,10 @@ class _WorkerTransferCleanupCoordinator:
                 target_id=lease_id,
                 reason=reason,
                 force=force,
+                owner_binding=dict(owner_binding),
+                retention_evidence=(
+                    None if retention_evidence is None else dict(retention_evidence)
+                ),
             )
             if response.ok:
                 normalized_response = self._validated_cleanup_response(
@@ -423,6 +445,8 @@ class _WorkerTransferCleanupCoordinator:
                     else {}
                 )
                 cleanup_modes.append(str(payload.get("cleanup_mode", "cleanup")))
+                if bool(payload.get("retention_evidence_recorded", False)):
+                    cleanup_modes.append("retention_recorded")
                 cleaned_ids.extend(
                     str(item)
                     for item in payload.get("cleaned_reservation_ids", ()) or ()
@@ -446,6 +470,11 @@ class _WorkerTransferCleanupCoordinator:
                 else "cleanup"
             ),
             "owner_binding": dict(owner_binding),
+            **(
+                {}
+                if not any(mode == "retention_recorded" for mode in cleanup_modes)
+                else {"retention_evidence_recorded": True}
+            ),
         }
         return DaemonResponse(ok=True, payload=payload)
 
@@ -537,7 +566,10 @@ class WorkerAsyncExecutionPool:
         self._next_pool_sequence = 1
         self._queued: dict[str, dict[str, object]] = {}
         self._running: dict[str, dict[str, object]] = {}
-        self._terminal: dict[str, dict[str, object]] = {}
+        self._futures: dict[str, Future] = {}
+        self._terminal: OrderedDict[str, dict[str, object]] = OrderedDict()
+        self._terminal_history_limit = _worker_terminal_history_limit(executor)
+        self._terminal_history_evictions = 0
         self._closed = False
 
     def submit(
@@ -566,19 +598,31 @@ class WorkerAsyncExecutionPool:
         )
         with self._lock:
             if self._closed:
-                raise WorkerAsyncExecutionPoolError("worker async execution pool is closed")
-            if worker_request.transfer_id in self._queued or worker_request.transfer_id in self._running:
+                raise WorkerAsyncExecutionPoolError(
+                    "worker async execution pool is closed"
+                )
+            if (
+                worker_request.transfer_id in self._queued
+                or worker_request.transfer_id in self._running
+            ):
                 raise WorkerAsyncExecutionPoolError(
                     "worker transfer is already queued or running"
                 )
             self._queued[worker_request.transfer_id] = queued_record
-        future = self._executor_pool.submit(
-            self._run_transfer,
-            worker_request,
-            staging_slot,
-            pool_ticket,
-            queued_at,
-        )
+            try:
+                future = self._executor_pool.submit(
+                    self._run_transfer,
+                    worker_request,
+                    staging_slot,
+                    pool_ticket,
+                    queued_at,
+                )
+                queued_record["future_registered"] = True
+                self._futures[worker_request.transfer_id] = future
+            except Exception:
+                self._queued.pop(worker_request.transfer_id, None)
+                self._futures.pop(worker_request.transfer_id, None)
+                raise
         return WorkerAsyncExecution(
             pool=self,
             pool_ticket=pool_ticket,
@@ -625,13 +669,23 @@ class WorkerAsyncExecutionPool:
             "recorded_at": time.time(),
         }
         with self._lock:
-            queued = self._queued.pop(execution.transfer_id, None)
+            queued = (
+                self._queued.pop(execution.transfer_id, None)
+                if canceled
+                else self._queued.get(execution.transfer_id)
+            )
             if isinstance(queued, Mapping):
                 record["queued_record"] = dict(queued)
             running = self._running.get(execution.transfer_id)
             if isinstance(running, Mapping):
                 record["running_record"] = dict(running)
-            self._terminal[execution.transfer_id] = record
+            record["future"] = _future_state_record(execution.future)
+            if canceled:
+                self._futures.pop(execution.transfer_id, None)
+                self._record_terminal_locked(execution.transfer_id, record)
+                record["terminal_recorded"] = True
+            else:
+                record["terminal_recorded"] = False
         return dict(record)
 
     def drain_terminal(self) -> dict[str, dict[str, object]]:
@@ -652,8 +706,24 @@ class WorkerAsyncExecutionPool:
             running_snapshot = {
                 key: dict(value) for key, value in sorted(self._running.items())
             }
+            futures_to_cancel = {
+                key: self._futures[key]
+                for key in queued_snapshot
+                if key in self._futures
+            }
+        cancelled_futures: dict[str, bool] = {}
+        if cancel_queued:
+            for transfer_id, future in futures_to_cancel.items():
+                cancelled_futures[transfer_id] = bool(future.cancel())
         self._executor_pool.shutdown(wait=True, cancel_futures=bool(cancel_queued))
         with self._lock:
+            close_terminal_records = self._record_close_cancelled_queued_locked(
+                queued_snapshot=queued_snapshot,
+                futures=futures_to_cancel,
+                cancelled_futures=cancelled_futures,
+                closed_at=closed_at,
+                cancel_queued=bool(cancel_queued),
+            )
             terminal_snapshot = {
                 key: dict(value) for key, value in sorted(self._terminal.items())
             }
@@ -663,18 +733,22 @@ class WorkerAsyncExecutionPool:
             "cancel_queued": bool(cancel_queued),
             "queued_at_close": queued_snapshot,
             "running_at_close": running_snapshot,
+            "queued_cancelled_at_close": close_terminal_records,
             "terminal_at_close": terminal_snapshot,
         }
 
     def _describe_locked(self) -> dict[str, object]:
         return {
             "closed": bool(self._closed),
+            "terminal_history_limit": int(self._terminal_history_limit),
+            "terminal_history_evictions": int(self._terminal_history_evictions),
             "queued": {
                 key: dict(value) for key, value in sorted(self._queued.items())
             },
             "running": {
                 key: dict(value) for key, value in sorted(self._running.items())
             },
+            "submitted_future_count": len(self._futures),
             "terminal": {
                 key: dict(value) for key, value in sorted(self._terminal.items())
             },
@@ -706,6 +780,8 @@ class WorkerAsyncExecutionPool:
             self._queued.pop(worker_request.transfer_id, None)
             self._running[worker_request.transfer_id] = running_record
         result: WorkerTransferResult | None = None
+        completed_at = 0.0
+        terminal_history_evictions = 0
         try:
             result = _execute_worker_transfer_once(
                 executor=self._executor,
@@ -713,13 +789,6 @@ class WorkerAsyncExecutionPool:
                 worker_startup_evidence=self._worker_startup_evidence,
                 worker_request=worker_request,
                 staging_slot=staging_slot,
-            )
-            return _worker_result_with_async_pool_evidence(
-                result,
-                pool_ticket=pool_ticket,
-                queued_at=queued_at,
-                started_at=started_at,
-                completed_at=time.time(),
             )
         finally:
             completed_at = time.time()
@@ -739,7 +808,73 @@ class WorkerAsyncExecutionPool:
             )
             with self._lock:
                 self._running.pop(worker_request.transfer_id, None)
-                self._terminal[worker_request.transfer_id] = terminal_record
+                self._futures.pop(worker_request.transfer_id, None)
+                self._record_terminal_locked(
+                    worker_request.transfer_id,
+                    terminal_record,
+                )
+                terminal_history_evictions = self._terminal_history_evictions
+        if result is None:
+            raise RuntimeError("worker execution did not produce a result")
+        return _worker_result_with_async_pool_evidence(
+            result,
+            pool_ticket=pool_ticket,
+            queued_at=queued_at,
+            started_at=started_at,
+            completed_at=completed_at,
+            terminal_history_limit=self._terminal_history_limit,
+            terminal_history_evictions=terminal_history_evictions,
+        )
+
+    def _record_close_cancelled_queued_locked(
+        self,
+        *,
+        queued_snapshot: Mapping[str, Mapping[str, object]],
+        futures: Mapping[str, Future],
+        cancelled_futures: Mapping[str, bool],
+        closed_at: float,
+        cancel_queued: bool,
+    ) -> dict[str, dict[str, object]]:
+        if not cancel_queued:
+            return {}
+        terminal_records: dict[str, dict[str, object]] = {}
+        for transfer_id, queued_record in sorted(queued_snapshot.items()):
+            active_queued = self._queued.get(transfer_id)
+            if active_queued is None:
+                continue
+            future = futures.get(transfer_id)
+            if future is not None and not future.cancelled():
+                continue
+            self._queued.pop(transfer_id, None)
+            self._futures.pop(transfer_id, None)
+            terminal_record = dict(queued_record)
+            terminal_record.update(
+                {
+                    "state": "canceled",
+                    "reason": "worker_async_pool_close",
+                    "closed_at": float(closed_at),
+                    "completed_at": float(closed_at),
+                    "cancel_queued": True,
+                    "canceled": bool(cancelled_futures.get(transfer_id, True)),
+                    "future": _future_state_record(future),
+                }
+            )
+            self._record_terminal_locked(transfer_id, terminal_record)
+            terminal_records[transfer_id] = dict(terminal_record)
+        return terminal_records
+
+    def _record_terminal_locked(
+        self,
+        transfer_id: str,
+        record: Mapping[str, object],
+    ) -> None:
+        self._terminal[str(transfer_id)] = dict(record)
+        self._terminal.move_to_end(str(transfer_id))
+        if self._terminal_history_limit < 0:
+            return
+        while len(self._terminal) > self._terminal_history_limit:
+            self._terminal.popitem(last=False)
+            self._terminal_history_evictions += 1
 
 
 class WorkerAsyncExecution:
@@ -764,12 +899,24 @@ class WorkerAsyncExecution:
             "state": str(state),
         }
         evidence["pool_snapshot"] = self.pool.describe()
-        evidence["future"] = {
-            "done": bool(self.future.done()),
-            "cancelled": bool(self.future.cancelled()),
-            "running": bool(self.future.running()),
-        }
+        evidence["future"] = _future_state_record(self.future)
         return evidence
+
+
+def _future_state_record(future: Future | None) -> dict[str, object]:
+    if future is None:
+        return {
+            "registered": False,
+            "done": False,
+            "cancelled": False,
+            "running": False,
+        }
+    return {
+        "registered": True,
+        "done": bool(future.done()),
+        "cancelled": bool(future.cancelled()),
+        "running": bool(future.running()),
+    }
 
 
 class WorkerTransferClient:
@@ -834,34 +981,106 @@ class WorkerTransferClient:
             transfer_id=request.transfer_id,
             relay_gpu=request.relay_gpu,
         )
-        try:
-            worker_request = self._authorize(request)
-        except WorkerAuthorizationError as exc:
-            cleanup_target_id = cleanup_target_id_for_request(
-                cleanup_target_kind,
-                request,
-            )
+        lifecycle_context = self._start_worker_lifecycle_context(
+            request=request,
+            cleanup_target_kind=cleanup_target_kind,
+        )
+        if isinstance(lifecycle_context, WorkerTransferLifecycleRecord):
+            return lifecycle_context
+        worker_request = lifecycle_context["worker_request"]
+        staging_slot = lifecycle_context["staging_slot"]
+        running_update = lifecycle_context["running_update"]
+        running_response = lifecycle_context["running_response"]
+        result = self._execute_lifecycle_transfer(worker_request, staging_slot)
+        status_update = daemon_status_update_for_result(result)
+        status_response: DaemonResponse | None = None
+        if report_terminal_status:
             try:
-                cleanup_response = self._cleanup_coordinator.cleanup_authorization_failure(
-                    request,
-                    authorization_payload=exc.daemon_payload,
-                    target_kind=cleanup_target_kind,
-                )
-            except WorkerCleanupError as cleanup_exc:
-                return WorkerTransferLifecycleRecord(
-                    authorization_request=request,
+                status_response = self._status_reporter.report(result)
+            except WorkerStatusReportError as exc:
+                return self._terminal_status_failure_lifecycle_record(
+                    request=request,
+                    worker_request=worker_request,
+                    staging_slot=staging_slot,
+                    running_update=running_update,
+                    running_response=running_response,
+                    result=result,
+                    status_update=status_update,
+                    error=exc,
                     cleanup_target_kind=cleanup_target_kind,
-                    cleanup_target_id=cleanup_target_id,
-                    final_state="cleanup_failed",
-                    error=str(cleanup_exc),
                 )
-            return WorkerTransferLifecycleRecord(
-                authorization_request=request,
+        cleanup_target_id = self._cleanup_target_id_for_lifecycle_result(
+            cleanup_target_kind=cleanup_target_kind,
+            worker_request=worker_request,
+            result=result,
+        )
+        cleanup_response = self._cleanup_lifecycle_execution_result(
+            request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            result=result,
+            status_update=status_update,
+            status_response=status_response,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+        )
+        if isinstance(cleanup_response, WorkerTransferLifecycleRecord):
+            return cleanup_response
+        result = _worker_result_with_cleanup_completion_evidence(
+            worker_request,
+            result,
+            cleanup_response,
+        )
+        if not report_terminal_status and result.state in {
+            WorkerTransferState.COMPLETE,
+            WorkerTransferState.FAILED,
+        }:
+            return self._terminal_without_status_lifecycle_record(
+                request=request,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
+                result=result,
                 cleanup_target_kind=cleanup_target_kind,
                 cleanup_target_id=cleanup_target_id,
                 cleanup_response=cleanup_response,
-                final_state="authorization_failed",
-                error=str(exc),
+            )
+        status_response = self._report_cleanup_evidence(
+            worker_request,
+            result,
+            cleanup_response,
+            current_status_response=status_response,
+        )
+        return self._completed_cleanup_lifecycle_record(
+            request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            result=result,
+            status_update=status_update,
+            status_response=status_response,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            cleanup_response=cleanup_response,
+        )
+
+    def _start_worker_lifecycle_context(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        cleanup_target_kind: str,
+    ) -> dict[str, object] | WorkerTransferLifecycleRecord:
+        try:
+            worker_request = self._authorize(request)
+        except WorkerAuthorizationError as exc:
+            return self._authorization_failure_lifecycle_record(
+                request=request,
+                error=exc,
+                cleanup_target_kind=cleanup_target_kind,
             )
         _trace_worker_stage(
             "worker_lifecycle_authorized",
@@ -889,47 +1108,27 @@ class WorkerTransferClient:
                 transfer_id=worker_request.transfer_id,
             )
         except WorkerStatusReportError as exc:
-            staging_release = self._staging_pool.release(
-                staging_slot.slot_id,
-                worker_request.data_plane,
-            )
-            cleanup_target_id = cleanup_target_id_for_worker_request(
-                cleanup_target_kind,
-                worker_request,
-            )
-            try:
-                cleanup_response = (
-                    self._cleanup_coordinator.cleanup_status_report_failure(
-                        worker_request,
-                        target_kind=cleanup_target_kind,
-                    )
-                )
-            except WorkerCleanupError as cleanup_exc:
-                return WorkerTransferLifecycleRecord(
-                    authorization_request=request,
-                    worker_request=worker_request,
-                    staging_slot=staging_slot,
-                    running_update=running_update,
-                    running_response=running_response,
-                    staging_release=staging_release,
-                    cleanup_target_kind=cleanup_target_kind,
-                    cleanup_target_id=cleanup_target_id,
-                    final_state="cleanup_failed",
-                    error=str(cleanup_exc),
-                )
-            return WorkerTransferLifecycleRecord(
-                authorization_request=request,
+            return self._running_status_failure_lifecycle_record(
+                request=request,
                 worker_request=worker_request,
                 staging_slot=staging_slot,
                 running_update=running_update,
                 running_response=running_response,
-                staging_release=staging_release,
+                error=exc,
                 cleanup_target_kind=cleanup_target_kind,
-                cleanup_target_id=cleanup_target_id,
-                cleanup_response=cleanup_response,
-                final_state="status_failed",
-                error=str(exc),
             )
+        return {
+            "worker_request": worker_request,
+            "staging_slot": staging_slot,
+            "running_update": running_update,
+            "running_response": running_response,
+        }
+
+    def _execute_lifecycle_transfer(
+        self,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+    ) -> WorkerTransferResult:
         try:
             _trace_worker_stage(
                 "worker_lifecycle_execute_start",
@@ -945,6 +1144,7 @@ class WorkerTransferClient:
                 state=result.state.value,
                 bytes=result.bytes_completed,
             )
+            return result
         except Exception as exc:
             result = failed_worker_result_from_exception(
                 worker_request,
@@ -956,100 +1156,169 @@ class WorkerTransferClient:
                 transfer_id=worker_request.transfer_id,
                 error=str(exc),
             )
-        status_update = daemon_status_update_for_result(result)
-        status_response: DaemonResponse | None = None
-        if report_terminal_status:
-            try:
-                status_response = self._status_reporter.report(result)
-            except WorkerStatusReportError as exc:
-                staging_release = self._staging_pool.release(
-                    staging_slot.slot_id,
-                    worker_request.data_plane,
-                )
-                cleanup_target_id = cleanup_target_id_for_worker_request(
-                    cleanup_target_kind,
-                    worker_request,
-                )
-                try:
-                    cleanup_response = (
-                        self._cleanup_coordinator.cleanup_status_report_failure(
-                            worker_request,
-                            target_kind=cleanup_target_kind,
-                        )
-                    )
-                except WorkerCleanupError as cleanup_exc:
-                    return WorkerTransferLifecycleRecord(
-                        authorization_request=request,
-                        worker_request=worker_request,
-                        staging_slot=staging_slot,
-                        running_update=running_update,
-                        running_response=running_response,
-                        staging_release=staging_release,
-                        result=result,
-                        status_update=status_update,
-                        cleanup_target_kind=cleanup_target_kind,
-                        cleanup_target_id=cleanup_target_id,
-                        final_state="cleanup_failed",
-                        error=str(cleanup_exc),
-                    )
-                try:
-                    status_response = self._report_cleanup_evidence(
-                        worker_request,
-                        result,
-                        cleanup_response,
-                        current_status_response=cleanup_response,
-                    )
-                except WorkerStatusReportError as report_exc:
-                    return WorkerTransferLifecycleRecord(
-                        authorization_request=request,
-                        worker_request=worker_request,
-                        staging_slot=staging_slot,
-                        running_update=running_update,
-                        running_response=running_response,
-                        staging_release=staging_release,
-                        result=result,
-                        status_update=status_update,
-                        cleanup_response=cleanup_response,
-                        cleanup_target_kind=cleanup_target_kind,
-                        cleanup_target_id=cleanup_target_id,
-                        final_state="status_failed",
-                        error=str(report_exc),
-                    )
-                return WorkerTransferLifecycleRecord(
-                    authorization_request=request,
-                    worker_request=worker_request,
-                    staging_slot=staging_slot,
-                    running_update=running_update,
-                    running_response=running_response,
-                    staging_release=staging_release,
-                    result=result,
-                    status_update=status_update,
-                    status_response=status_response,
-                    cleanup_target_kind=cleanup_target_kind,
-                    cleanup_target_id=cleanup_target_id,
-                    cleanup_response=cleanup_response,
-                    final_state=result.state.value,
-                    error=str(exc),
-                )
-        cleanup_target_id = (
-            worker_request.authorization.lease_id
-            if result.state == WorkerTransferState.COMPLETE
-            else cleanup_target_id_for_worker_request(
-                cleanup_target_kind,
-                worker_request,
-            )
+            return result
+
+    def _cleanup_target_id_for_lifecycle_result(
+        self,
+        *,
+        cleanup_target_kind: str,
+        worker_request: WorkerTransferRequest,
+        result: WorkerTransferResult,
+    ) -> str:
+        if result.state == WorkerTransferState.COMPLETE:
+            return worker_request.authorization.lease_id
+        return cleanup_target_id_for_worker_request(
+            cleanup_target_kind,
+            worker_request,
         )
+
+    def _cleanup_lifecycle_execution_result(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        result: WorkerTransferResult,
+        status_update: dict[str, object],
+        status_response: DaemonResponse | None,
+        cleanup_target_kind: str,
+        cleanup_target_id: str,
+    ) -> DaemonResponse | WorkerTransferLifecycleRecord:
         try:
-            cleanup_response = self._cleanup_coordinator.cleanup_execution_failure(
+            return self._cleanup_coordinator.cleanup_execution_failure(
                 worker_request,
                 result,
                 target_kind=cleanup_target_kind,
             )
         except WorkerCleanupError as exc:
-            staging_release = self._staging_pool.release(
-                staging_slot.slot_id,
-                worker_request.data_plane,
+            return self._execution_cleanup_failure_lifecycle_record(
+                request=request,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
+                result=result,
+                status_update=status_update,
+                status_response=status_response,
+                cleanup_target_kind=cleanup_target_kind,
+                cleanup_target_id=cleanup_target_id,
+                error=exc,
             )
+
+    def _authorization_failure_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        error: WorkerAuthorizationError,
+        cleanup_target_kind: str,
+    ) -> WorkerTransferLifecycleRecord:
+        cleanup_target_id = cleanup_target_id_for_request(
+            cleanup_target_kind,
+            request,
+        )
+        try:
+            cleanup_response = self._cleanup_coordinator.cleanup_authorization_failure(
+                request,
+                authorization_payload=error.daemon_payload,
+                target_kind=cleanup_target_kind,
+            )
+        except WorkerCleanupError as cleanup_exc:
+            return WorkerTransferLifecycleRecord(
+                authorization_request=request,
+                cleanup_target_kind=cleanup_target_kind,
+                cleanup_target_id=cleanup_target_id,
+                final_state="cleanup_failed",
+                error=str(cleanup_exc),
+            )
+        return WorkerTransferLifecycleRecord(
+            authorization_request=request,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            cleanup_response=cleanup_response,
+            final_state="authorization_failed",
+            error=str(error),
+        )
+
+    def _running_status_failure_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        error: WorkerStatusReportError,
+        cleanup_target_kind: str,
+    ) -> WorkerTransferLifecycleRecord:
+        staging_release = self._staging_pool.release(
+            staging_slot.slot_id,
+            worker_request.data_plane,
+        )
+        cleanup_target_id = cleanup_target_id_for_worker_request(
+            cleanup_target_kind,
+            worker_request,
+        )
+        try:
+            cleanup_response = self._cleanup_coordinator.cleanup_status_report_failure(
+                worker_request,
+                target_kind=cleanup_target_kind,
+            )
+        except WorkerCleanupError as cleanup_exc:
+            return WorkerTransferLifecycleRecord(
+                authorization_request=request,
+                worker_request=worker_request,
+                staging_slot=staging_slot,
+                running_update=running_update,
+                running_response=running_response,
+                staging_release=staging_release,
+                cleanup_target_kind=cleanup_target_kind,
+                cleanup_target_id=cleanup_target_id,
+                final_state="cleanup_failed",
+                error=str(cleanup_exc),
+            )
+        return WorkerTransferLifecycleRecord(
+            authorization_request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            staging_release=staging_release,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            cleanup_response=cleanup_response,
+            final_state="status_failed",
+            error=str(error),
+        )
+
+    def _terminal_status_failure_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        result: WorkerTransferResult,
+        status_update: dict[str, object],
+        error: WorkerStatusReportError,
+        cleanup_target_kind: str,
+    ) -> WorkerTransferLifecycleRecord:
+        staging_release = self._staging_pool.release(
+            staging_slot.slot_id,
+            worker_request.data_plane,
+        )
+        cleanup_target_id = cleanup_target_id_for_worker_request(
+            cleanup_target_kind,
+            worker_request,
+        )
+        try:
+            cleanup_response = self._cleanup_coordinator.cleanup_status_report_failure(
+                worker_request,
+                target_kind=cleanup_target_kind,
+            )
+        except WorkerCleanupError as cleanup_exc:
             return WorkerTransferLifecycleRecord(
                 authorization_request=request,
                 worker_request=worker_request,
@@ -1059,20 +1328,24 @@ class WorkerTransferClient:
                 staging_release=staging_release,
                 result=result,
                 status_update=status_update,
-                status_response=status_response,
                 cleanup_target_kind=cleanup_target_kind,
                 cleanup_target_id=cleanup_target_id,
                 final_state="cleanup_failed",
-                error=str(exc),
+                error=str(cleanup_exc),
             )
-        if not report_terminal_status and result.state in {
-            WorkerTransferState.COMPLETE,
-            WorkerTransferState.FAILED,
-        }:
-            staging_release = self._staging_pool.release(
-                staging_slot.slot_id,
-                worker_request.data_plane,
+        result = _worker_result_with_cleanup_completion_evidence(
+            worker_request,
+            result,
+            cleanup_response,
+        )
+        try:
+            status_response = self._report_cleanup_evidence(
+                worker_request,
+                result,
+                cleanup_response,
+                current_status_response=cleanup_response,
             )
+        except WorkerStatusReportError as report_exc:
             return WorkerTransferLifecycleRecord(
                 authorization_request=request,
                 worker_request=worker_request,
@@ -1081,18 +1354,112 @@ class WorkerTransferClient:
                 running_response=running_response,
                 staging_release=staging_release,
                 result=result,
+                status_update=status_update,
+                cleanup_response=cleanup_response,
                 cleanup_target_kind=cleanup_target_kind,
                 cleanup_target_id=cleanup_target_id,
-                cleanup_response=cleanup_response,
-                final_state=result.state.value,
-                error=result.error,
+                final_state="status_failed",
+                error=str(report_exc),
             )
-        status_response = self._report_cleanup_evidence(
-            worker_request,
-            result,
-            cleanup_response,
-            current_status_response=status_response,
+        return WorkerTransferLifecycleRecord(
+            authorization_request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            staging_release=staging_release,
+            result=result,
+            status_update=status_update,
+            status_response=status_response,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            cleanup_response=cleanup_response,
+            final_state=result.state.value,
+            error=str(error),
         )
+
+    def _execution_cleanup_failure_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        result: WorkerTransferResult,
+        status_update: dict[str, object],
+        status_response: DaemonResponse | None,
+        cleanup_target_kind: str,
+        cleanup_target_id: str,
+        error: WorkerCleanupError,
+    ) -> WorkerTransferLifecycleRecord:
+        staging_release = self._staging_pool.release(
+            staging_slot.slot_id,
+            worker_request.data_plane,
+        )
+        return WorkerTransferLifecycleRecord(
+            authorization_request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            staging_release=staging_release,
+            result=result,
+            status_update=status_update,
+            status_response=status_response,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            final_state="cleanup_failed",
+            error=str(error),
+        )
+
+    def _terminal_without_status_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        result: WorkerTransferResult,
+        cleanup_target_kind: str,
+        cleanup_target_id: str,
+        cleanup_response: DaemonResponse,
+    ) -> WorkerTransferLifecycleRecord:
+        staging_release = self._staging_pool.release(
+            staging_slot.slot_id,
+            worker_request.data_plane,
+        )
+        return WorkerTransferLifecycleRecord(
+            authorization_request=request,
+            worker_request=worker_request,
+            staging_slot=staging_slot,
+            running_update=running_update,
+            running_response=running_response,
+            staging_release=staging_release,
+            result=result,
+            cleanup_target_kind=cleanup_target_kind,
+            cleanup_target_id=cleanup_target_id,
+            cleanup_response=cleanup_response,
+            final_state=result.state.value,
+            error=result.error,
+        )
+
+    def _completed_cleanup_lifecycle_record(
+        self,
+        *,
+        request: WorkerTransferAuthorizationRequest,
+        worker_request: WorkerTransferRequest,
+        staging_slot: WorkerStagingSlot,
+        running_update: dict[str, object] | None,
+        running_response: DaemonResponse | None,
+        result: WorkerTransferResult,
+        status_update: dict[str, object],
+        status_response: DaemonResponse,
+        cleanup_target_kind: str,
+        cleanup_target_id: str,
+        cleanup_response: DaemonResponse,
+    ) -> WorkerTransferLifecycleRecord:
         staging_release = self._staging_pool.release(
             staging_slot.slot_id,
             worker_request.data_plane,
@@ -1124,7 +1491,7 @@ class WorkerTransferClient:
     ) -> DaemonResponse:
         if result.state not in {WorkerTransferState.COMPLETE, WorkerTransferState.FAILED}:
             return current_status_response
-        evidence = _cleanup_completion_evidence(
+        evidence = _cleanup_completion_evidence_for_status(
             worker_request,
             result,
             cleanup_response,
@@ -1342,10 +1709,23 @@ def _worker_result_with_ticket_binding(
     owner_binding = request.data_plane.metadata.get("owner_binding")
     if isinstance(owner_binding, Mapping):
         metadata.setdefault("owner_binding", dict(owner_binding))
+    block_runtime = request.ticket.metadata.get("block_runtime")
+    if isinstance(block_runtime, Mapping):
+        metadata.setdefault("block_runtime", dict(block_runtime))
+    block_progress = _worker_block_progress_evidence(request, result)
+    if block_progress is not None:
+        metadata.setdefault("block_progress", block_progress)
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
-        for key in ("ticket_id", "transfer_id", "plan_generation", "owner_binding"):
+        for key in (
+            "ticket_id",
+            "transfer_id",
+            "plan_generation",
+            "owner_binding",
+            "block_runtime",
+            "block_progress",
+        ):
             if key in metadata:
                 completion_evidence.setdefault(key, metadata[key])
         metadata["completion_evidence"] = completion_evidence
@@ -1389,6 +1769,90 @@ def _worker_result_with_resource_close_evidence(
         error=result.error,
         bytes_completed=result.bytes_completed,
         metadata=metadata,
+    )
+
+
+def _worker_resource_lifecycle_retention_evidence(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+) -> dict[str, object] | None:
+    metadata = dict(result.metadata)
+    resource_evidence = metadata.get("resource_evidence")
+    cuda_ipc_lifecycle = metadata.get("cuda_ipc_lifecycle")
+    completion_evidence = metadata.get("completion_evidence")
+    if isinstance(completion_evidence, Mapping):
+        if not isinstance(resource_evidence, Mapping):
+            resource_evidence = completion_evidence.get("resource_evidence")
+        if not isinstance(cuda_ipc_lifecycle, Mapping):
+            cuda_ipc_lifecycle = completion_evidence.get("cuda_ipc_lifecycle")
+    if not isinstance(resource_evidence, Mapping) and not isinstance(
+        cuda_ipc_lifecycle,
+        Mapping,
+    ):
+        return None
+    retention = {
+        "source": "worker_resource_lifecycle_retention",
+        "transfer_id": request.transfer_id,
+        "ticket_id": request.ticket.ticket_id,
+        "plan_generation": int(request.ticket.metadata.get("plan_generation", 0) or 0),
+        "state": result.state.value,
+        "bytes_completed": int(result.bytes_completed),
+        "source_buffer_id": request.ticket.source_buffer_id,
+        "destination_buffer_id": request.ticket.destination_buffer_id,
+        "owner_binding": dict(request.data_plane.metadata.get("owner_binding", {})),
+    }
+    if isinstance(resource_evidence, Mapping):
+        retention["resource_evidence"] = dict(resource_evidence)
+        close_evidence = resource_evidence.get("close_evidence")
+        if isinstance(close_evidence, Mapping):
+            retention["resource_close_evidence"] = dict(close_evidence)
+    if isinstance(cuda_ipc_lifecycle, Mapping):
+        retention["cuda_ipc_lifecycle"] = dict(cuda_ipc_lifecycle)
+    cleanup = metadata.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        retention["cleanup"] = dict(cleanup)
+    return retention
+
+
+def _worker_result_with_cleanup_completion_evidence(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+    cleanup_response: DaemonResponse,
+) -> WorkerTransferResult:
+    if result.state not in {WorkerTransferState.COMPLETE, WorkerTransferState.FAILED}:
+        return result
+    evidence = _cleanup_completion_evidence_for_status(
+        request,
+        result,
+        cleanup_response,
+    )
+    metadata = dict(result.metadata)
+    metadata["completion_evidence"] = evidence
+    cleanup = evidence.get("cleanup")
+    if isinstance(cleanup, Mapping):
+        metadata["cleanup"] = dict(cleanup)
+    return WorkerTransferResult(
+        transfer_id=result.transfer_id,
+        state=result.state,
+        error=result.error,
+        bytes_completed=result.bytes_completed,
+        metadata=metadata,
+    )
+
+
+def _cleanup_completion_evidence_for_status(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+    cleanup_response: DaemonResponse,
+) -> dict[str, object]:
+    metadata = dict(result.metadata)
+    evidence = metadata.get("completion_evidence")
+    if isinstance(evidence, Mapping) and isinstance(evidence.get("cleanup"), Mapping):
+        return dict(evidence)
+    return _cleanup_completion_evidence(
+        request,
+        result,
+        cleanup_response,
     )
 
 
@@ -1501,6 +1965,8 @@ def _worker_result_with_async_pool_evidence(
     queued_at: float,
     started_at: float,
     completed_at: float,
+    terminal_history_limit: int,
+    terminal_history_evictions: int,
 ) -> WorkerTransferResult:
     metadata = dict(result.metadata)
     evidence = {
@@ -1512,6 +1978,8 @@ def _worker_result_with_async_pool_evidence(
         "completed_at": float(completed_at),
         "queue_wait_ms": max(0.0, (float(started_at) - float(queued_at)) * 1000.0),
         "execution_ms": max(0.0, (float(completed_at) - float(started_at)) * 1000.0),
+        "terminal_history_limit": int(terminal_history_limit),
+        "terminal_history_evictions": int(terminal_history_evictions),
     }
     metadata["worker_async_pool"] = evidence
     completion_evidence = (
@@ -1529,6 +1997,11 @@ def _worker_result_with_async_pool_evidence(
         bytes_completed=result.bytes_completed,
         metadata=metadata,
     )
+
+
+def _worker_terminal_history_limit(executor: object) -> int:
+    options = getattr(executor, "options", None)
+    return int(getattr(options, "worker_terminal_history_entries", 128))
 
 
 def _failed_worker_result_from_async_pool_exception(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <mutex>
 #include <vector>
 
 #include "turbobus/executor.h"
@@ -28,9 +29,9 @@ class TurboBusRuntime {
   DummyComputeStats RunDummyCompute(void* device_ptr, std::size_t elements,
                                     int iterations);
   void Wait(const TransferHandle& handle);
-  TransferStats GetStats(const TransferHandle& handle) const;
+  TransferStats GetStats(const TransferHandle& handle);
   const ProfileResult& CachedProfile() const;
-  const TransferPlan& LastPlan() const;
+  TransferPlan LastPlan() const;
   const ProfileResult& PlannerProfile() const;
 
  private:
@@ -42,6 +43,7 @@ class TurboBusRuntime {
   ProfileResult profile_;
   ProfileResult planner_profile_;
   TransferPlan last_plan_;
+  mutable std::mutex state_mutex_;
   bool has_profile_ = false;
   bool initialized_ = false;
 

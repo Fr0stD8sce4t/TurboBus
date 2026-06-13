@@ -12,6 +12,56 @@ from .models import (
 from .staging_pool import WorkerStagingSlot
 
 
+_COMPLETION_BINDING_METADATA_KEYS = (
+    "ticket_id",
+    "transfer_id",
+    "plan_generation",
+    "owner_binding",
+    "block_progress",
+    "block_runtime",
+    "worker_runtime_feedback",
+    "async_data_plane",
+)
+
+
+_EXECUTION_CONTRACT_METADATA_KEYS = (
+    "executor",
+    "path",
+    "plan_source",
+    "target_device",
+    "verified_bytes",
+    "content_match",
+    "verification_source",
+    "verification_method",
+    "source_digest",
+    "destination_digest",
+    "direct_bytes",
+    "direct_chunks",
+    "relay_bytes",
+    "relay_chunks",
+    "relay_gpu",
+    "relay_gpus",
+    "src_buffer_id",
+    "dst_buffer_id",
+    "staging_slot_id",
+    "resource_evidence",
+    "cuda_ipc_lifecycle",
+    "worker_startup",
+    "worker_async_pool",
+    "worker_runtime_feedback",
+    "async_data_plane",
+    "path_level_evidence",
+    "native_path_stats",
+    "relay_device_stats",
+    "ticket_id",
+    "transfer_id",
+    "plan_generation",
+    "block_progress",
+    "block_runtime",
+    "failure_source",
+)
+
+
 def status_evidence_for_result(
     result: WorkerTransferResult,
 ) -> dict[str, object] | None:
@@ -22,48 +72,18 @@ def status_evidence_for_result(
     evidence = metadata.get("completion_evidence")
     if isinstance(evidence, Mapping):
         completion_evidence = dict(evidence)
-        for key in (
-            "ticket_id",
-            "transfer_id",
-            "plan_generation",
-            "owner_binding",
-            "worker_runtime_feedback",
-        ):
+        for key in _COMPLETION_BINDING_METADATA_KEYS:
             if key in metadata:
                 completion_evidence.setdefault(key, metadata[key])
         return completion_evidence
-    evidence_keys = {
-        "executor",
-        "path",
-        "plan_source",
-        "target_device",
-        "verified_bytes",
-        "content_match",
-        "verification_source",
-        "verification_method",
-        "source_digest",
-        "destination_digest",
-        "direct_bytes",
-        "direct_chunks",
-        "relay_bytes",
-        "relay_chunks",
-        "relay_gpu",
-        "relay_gpus",
-        "src_buffer_id",
-        "dst_buffer_id",
-        "staging_slot_id",
-        "resource_evidence",
-        "worker_startup",
-        "path_level_evidence",
-        "native_path_stats",
-        "relay_device_stats",
-        "ticket_id",
-        "transfer_id",
-        "plan_generation",
-    }
-    if not any(key in metadata for key in evidence_keys):
+    if not any(key in metadata for key in _EXECUTION_CONTRACT_METADATA_KEYS):
         return None
-    return {key: metadata[key] for key in evidence_keys if key in metadata}
+    contract = {
+        key: metadata[key]
+        for key in _EXECUTION_CONTRACT_METADATA_KEYS
+        if key in metadata
+    }
+    return contract
 
 
 def worker_pool_record(
@@ -151,6 +171,68 @@ def cleanup_completion_evidence(
     return evidence
 
 
+def worker_block_progress_evidence(
+    request: WorkerTransferRequest,
+    result: WorkerTransferResult,
+) -> dict[str, object] | None:
+    block_runtime = request.ticket.metadata.get("block_runtime")
+    if not isinstance(block_runtime, Mapping):
+        return None
+    records = tuple(
+        dict(record)
+        for record in block_runtime.get("records", ()) or ()
+        if isinstance(record, Mapping)
+    )
+    if not records:
+        return None
+    progress_state = (
+        "completed"
+        if result.state is WorkerTransferState.COMPLETE
+        else "failed"
+    )
+    completed_bytes = int(result.bytes_completed)
+    remaining_bytes = max(0, completed_bytes)
+    progress_records: list[dict[str, object]] = []
+    for record in records:
+        byte_count = int(record.get("bytes", 0) or 0)
+        if result.state is WorkerTransferState.COMPLETE:
+            record_state = "completed"
+            record_completed_bytes = byte_count
+        elif remaining_bytes >= byte_count:
+            record_state = "completed"
+            record_completed_bytes = byte_count
+            remaining_bytes -= byte_count
+        else:
+            record_state = progress_state
+            record_completed_bytes = 0
+        progress_records.append(
+            {
+                "block_id": str(record.get("block_id")),
+                "path_id": str(record.get("path_id")),
+                "path_kind": str(record.get("path_kind", "unknown")),
+                "state": record_state,
+                "bytes": byte_count,
+                "bytes_completed": record_completed_bytes,
+                "attempt": int(record.get("attempt", 0) or 0),
+                "ticket_id": request.ticket.ticket_id,
+                "transfer_id": request.transfer_id,
+                "plan_generation": int(
+                    request.ticket.metadata.get("plan_generation", 0) or 0
+                ),
+            }
+        )
+    return {
+        "source": "worker_daemon_block_runtime_progress",
+        "transfer_id": request.transfer_id,
+        "ticket_id": request.ticket.ticket_id,
+        "plan_generation": int(request.ticket.metadata.get("plan_generation", 0) or 0),
+        "state": result.state.value,
+        "bytes_completed": int(result.bytes_completed),
+        "block_count": len(progress_records),
+        "records": tuple(progress_records),
+    }
+
+
 def execution_contract_evidence_from_metadata(
     metadata: Mapping[str, object],
 ) -> dict[str, object]:
@@ -159,38 +241,7 @@ def execution_contract_evidence_from_metadata(
         if isinstance(metadata.get("completion_evidence"), Mapping)
         else {}
     )
-    for key in (
-        "executor",
-        "path",
-        "plan_source",
-        "target_device",
-        "verified_bytes",
-        "content_match",
-        "verification_source",
-        "verification_method",
-        "source_digest",
-        "destination_digest",
-        "direct_bytes",
-        "direct_chunks",
-        "relay_bytes",
-        "relay_chunks",
-        "relay_gpu",
-        "relay_gpus",
-        "src_buffer_id",
-        "dst_buffer_id",
-        "staging_slot_id",
-        "resource_evidence",
-        "cuda_ipc_lifecycle",
-        "worker_startup",
-        "worker_async_pool",
-        "path_level_evidence",
-        "native_path_stats",
-        "relay_device_stats",
-        "ticket_id",
-        "transfer_id",
-        "plan_generation",
-        "failure_source",
-    ):
+    for key in _EXECUTION_CONTRACT_METADATA_KEYS:
         if key in metadata:
             evidence.setdefault(key, metadata[key])
     cleanup = metadata.get("cleanup")
@@ -208,5 +259,6 @@ __all__ = [
     "cleanup_completion_evidence",
     "execution_contract_evidence_from_metadata",
     "status_evidence_for_result",
+    "worker_block_progress_evidence",
     "worker_pool_record",
 ]

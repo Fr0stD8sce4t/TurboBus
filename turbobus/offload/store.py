@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Iterable, Mapping
 
+from ..runtime.evidence import (
+    validate_adapter_batch_snapshot,
+    validate_adapter_lifecycle_evidence,
+)
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferIntent, TransferReceipt, WorkloadKind
 from .blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from .context import AdapterTransferContext, require_runtime_session_open
 from .handles import ReceiptTransferHandle, validate_adapter_receipt
+from .lifecycle import adapter_lifecycle_evidence_from_handles
 from .stats import TransferStats, summarize_transfer_handles
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -28,12 +36,66 @@ class OffloadBatch:
         return self.store.block_infos(self.names)
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：生成 RuntimeSession 绑定 batch 快照
+        #  * ========================================================================
+        #  * 数据源：OffloadBatch handles 与 TurboBusRuntimeSession entrypoint record
+        #  * 操作：
+        #  *   1) 通过 adapter lifecycle evidence 绑定真实 TransferReceipt
+        #  *   2) 只导出 RuntimeSession adapter evidence 对齐后的运行态摘要
+        #  */
+        logger.info("开始生成 RuntimeSession 绑定 batch 快照...")
+
+        # // 1.1 读取 block 结构快照
+        block_snapshots = [info.as_dict() for info in self.block_infos()]
+
+        # // 1.2 空 batch 不伪造 transfer evidence
+        if not self.handles:
+            snapshot = {
+                "operation": self.operation,
+                "names": list(self.names),
+                "transfer_state": "empty",
+                "blocks": block_snapshots,
+                "route_policy_visible_to_adapter": False,
+            }
+            validate_adapter_batch_snapshot(snapshot)
+            logger.info("RuntimeSession 绑定 batch 快照生成完成, receipts: %s", 0)
+            return snapshot
+
+        # // 1.3 生成 RuntimeSession adapter evidence
+        evidence = self.store.batch_lifecycle_evidence(
+            operation=self.operation,
+            names=self.names,
+            handles=self.handles,
+        )
+        snapshot = {
             "operation": self.operation,
             "names": list(self.names),
-            "transfer_stats": self.transfer_stats().as_dict(),
-            "blocks": [info.as_dict() for info in self.block_infos()],
+            "transfer_state": "runtime_session_bound",
+            "blocks": block_snapshots,
+            "runtime_entrypoint": dict(evidence["runtime_entrypoint"]),
+            "adapter_evidence_record": dict(
+                evidence["runtime_entrypoint"]["adapter_evidence_record"]
+            ),
+            "receipt_contracts": list(evidence["receipt_contracts"]),
+            "receipt_count": int(evidence["receipt_count"]),
+            "receipt_ids": str(evidence["receipt_ids"]),
+            "intent_ids": str(evidence["intent_ids"]),
+            "decision_ids": str(evidence["decision_ids"]),
+            "topology_snapshot_ids": str(evidence["topology_snapshot_ids"]),
+            "ticket_ids": str(evidence["ticket_ids"]),
+            "receipt_states": str(evidence["receipt_states"]),
+            "direct_bytes": int(evidence["direct_bytes"]),
+            "relay_bytes": int(evidence["relay_bytes"]),
+            "route_policy_visible_to_adapter": False,
         }
+        validate_adapter_batch_snapshot(snapshot)
+        logger.info(
+            "RuntimeSession 绑定 batch 快照生成完成, receipts: %s",
+            snapshot["receipt_count"],
+        )
+        return snapshot
 
 
 class OffloadStore:
@@ -187,6 +249,59 @@ class OffloadStore:
             for block in (self.block(name) for name in names)
             if block.last_handle is not None
         )
+
+    def batch_lifecycle_evidence(
+        self,
+        *,
+        operation: str,
+        names: Iterable[str],
+        handles: Iterable[object],
+    ) -> dict[str, object]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤2：绑定 batch lifecycle evidence
+        #  * ========================================================================
+        #  * 数据源：adapter transfer handles 与 OffloadStore RuntimeSession client
+        #  * 操作：
+        #  *   1) 用 RuntimeSession entrypoint record 记录 batch receipt 对齐关系
+        #  *   2) 返回 adapter 可消费的 evidence，不开放 route/relay/pool 选择
+        #  */
+        logger.info("开始绑定 batch lifecycle evidence...")
+
+        # // 2.1 归一化 batch 名称和 handle
+        selected_names = tuple(str(name) for name in names)
+        selected_handles = tuple(handles)
+
+        # // 2.2 基于真实 receipt 生成 RuntimeSession-bound evidence
+        evidence = adapter_lifecycle_evidence_from_handles(
+            evidence_id=(
+                f"offload-batch-{self.transfer_context.session_id}-"
+                f"{self.transfer_context.intent_prefix}-{operation}-"
+                f"{'-'.join(selected_names)}"
+            ),
+            operation=str(operation),
+            transfer_context=self.transfer_context,
+            item_field="block_names",
+            item_count_field="block_count",
+            item_names=selected_names,
+            handles=selected_handles,
+            transfer_stats=self.transfer_stats_many(selected_names).as_dict(),
+            runtime_session=self.client,
+            extra={
+                "adapter": "offload_store_batch",
+                "adapter_submit_source": "TurboBusRuntimeSession",
+                "adapter_handle_source": "ReceiptTransferHandle",
+                "batch_snapshot_source": "OffloadBatch.as_dict",
+            },
+        )
+
+        # // 2.3 用 runtime/evidence 严格校验 RuntimeSession adapter record
+        validate_adapter_lifecycle_evidence(evidence)
+        logger.info(
+            "batch lifecycle evidence 绑定完成, evidence_id: %s",
+            evidence["evidence_id"],
+        )
+        return evidence
 
     def set_block_state(
         self,

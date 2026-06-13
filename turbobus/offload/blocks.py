@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import logging
 
 from .stats import TransferStats, summarize_transfer_handles
+
+logger = logging.getLogger(__name__)
 
 
 class BlockState(str, Enum):
@@ -37,7 +40,19 @@ class OffloadBlockInfo:
     last_transfer_error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：生成公开 block 结构快照
+        #  * ========================================================================
+        #  * 目标对象：OffloadBlockInfo public snapshot
+        #  * 操作：
+        #  *   1) 只公开 block 结构、位置和逻辑状态
+        #  *   2) 不在裸 block 快照中暴露 receipt/ticket/decision 运行态字段
+        #  */
+        logger.info("开始生成公开 block 结构快照...")
+
+        # // 1.1 返回不含运行态 receipt 字段的结构信息
+        snapshot = {
             "name": self.name,
             "block_id": self.block_id,
             "cpu_slot": self.cpu_slot,
@@ -47,21 +62,9 @@ class OffloadBlockInfo:
             "bytes": self.bytes,
             "state": self.state.value,
             "last_operation": self.last_operation,
-            "transfer_stats": (
-                self.transfer_stats.as_dict()
-                if self.transfer_stats is not None
-                else None
-            ),
-            "last_intent_id": self.last_intent_id,
-            "last_receipt_id": self.last_receipt_id,
-            "last_ticket_id": self.last_ticket_id,
-            "last_decision_id": self.last_decision_id,
-            "last_topology_snapshot_id": self.last_topology_snapshot_id,
-            "last_job_id": self.last_job_id,
-            "last_session_id": self.last_session_id,
-            "last_receipt_state": self.last_receipt_state,
-            "last_transfer_error": self.last_transfer_error,
         }
+        logger.info("公开 block 结构快照生成完成, name: %s", self.name)
+        return snapshot
 
 
 @dataclass

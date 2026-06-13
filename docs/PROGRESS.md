@@ -19,19 +19,15 @@ completed system capability loop. Do not accumulate implementation history.
   and vLLM KV lifecycle evidence record RuntimeSession entrypoint adapter
   evidence records and consume real `TransferReceipt` objects.
 - Offload lifecycle public exports no longer expose raw receipt trace or raw
-  handle receipt collection. Public receipt trace helpers now require
-  `TurboBusRuntimeSession`, validate receipt ownership, record adapter evidence,
-  and return RuntimeSession-bound snapshots.
-- vLLM connector close now consumes the real `TurboBusRuntimeSession.close`
-  response before emitting free backing cleanup summaries. Free backing cleanup
-  evidence and public close events require a RuntimeSession close entrypoint
-  record and continue to reject route policy exposure.
-- Public saved-prefix reads now validate optional restore lifecycle and daemon
-  recovery evidence against RuntimeSession adapter evidence records, then expose
-  only scalar recovery/lifecycle snapshots.
-- Public connector event reads still validate RuntimeSession-bound event
-  evidence, while public event clearing now rejects deleting adapter evidence
-  outside the connector lifecycle.
+  handle receipt collection. Public receipt trace helpers require
+  `TurboBusRuntimeSession`, validate receipt ownership, record adapter
+  evidence, and return RuntimeSession-bound snapshots.
+- Public offload block snapshots now expose only structural block state.
+  Public offload batch snapshots must generate and validate RuntimeSession
+  adapter evidence before exposing receipt, ticket, decision, topology, and
+  byte-summary fields.
+- vLLM connector close, saved-prefix reads, and connector event reads remain
+  bound to RuntimeSession evidence and keep route policy hidden.
 
 ## Remaining Risk
 
@@ -50,7 +46,8 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter-facing offload batch and block state snapshots in
-`turbobus/offload/` and adapter managers. Tighten any path that can emit
-runtime-looking transfer state without consuming `TurboBusRuntimeSession`
-entrypoint adapter evidence records or close entrypoint records.
+Next inspect remaining adapter-facing `transfer_stats` reads and lifecycle range
+evidence in model loading, training offload, inference KV, and vLLM managers.
+Tighten any path that can emit runtime-looking transfer state without consuming
+`TurboBusRuntimeSession` entrypoint adapter evidence records or close entrypoint
+records.

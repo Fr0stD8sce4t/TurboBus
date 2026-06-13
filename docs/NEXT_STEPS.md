@@ -39,23 +39,24 @@ records, snapshots, and real receipts.
   receipt collection stay private.
 - `turbobus/offload/handles.py`: keep low-level handle submit/wait bindings
   tied to RuntimeSession entrypoint records through offload-internal helpers.
-- `turbobus/runtime/evidence.py`: continue rejecting missing RuntimeSession,
-  missing adapter evidence records, fake evidence, exposed route policy, and
-  lifecycle identity drift.
+- `turbobus/offload/store.py` and `turbobus/offload/blocks.py`: public batch
+  snapshots must use RuntimeSession-bound adapter evidence before exposing
+  receipt/ticket/decision summaries. Public block snapshots remain structural
+  and do not expose runtime-looking receipt fields.
+- `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
+  evidence, exposed route policy, lifecycle identity drift, and public batch
+  snapshots that are not bound to RuntimeSession adapter evidence.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
-  must not create route, plan, relay, pool, or target-GPU policy. vLLM close
-  and free backing cleanup summaries must inherit RuntimeSession close
-  entrypoint evidence. Public saved-prefix recovery and lifecycle reads must
-  return only RuntimeSession-bound scalar snapshots. Public connector event
-  reads must not expose a clear/delete path for RuntimeSession-bound evidence.
+  must not create route, plan, relay, pool, or target-GPU policy.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter-facing offload batch and block state snapshots in
-`turbobus/offload/` and adapter managers. Tighten any path that can emit
-runtime-looking transfer state without a `TurboBusRuntimeSession` entrypoint
-adapter evidence record or close entrypoint record.
+inspect remaining adapter-facing `transfer_stats` reads and lifecycle range
+evidence in model loading, training offload, inference KV, and vLLM managers.
+Tighten any path that can emit runtime-looking transfer state without consuming
+`TurboBusRuntimeSession` entrypoint adapter evidence records or close entrypoint
+records.
 
 ## Remaining Risk
 

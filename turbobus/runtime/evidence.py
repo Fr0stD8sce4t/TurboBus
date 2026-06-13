@@ -73,6 +73,64 @@ def validate_adapter_lifecycle_evidence(
     )
 
 
+def validate_adapter_batch_snapshot(
+    snapshot: Mapping[str, object],
+) -> RuntimeEvidenceValidationReport:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：校验 adapter batch 快照边界
+    #  * ========================================================================
+    #  * 数据源：OffloadBatch.as_dict public snapshot
+    #  * 操作：
+    #  *   1) 拒绝公开 batch 快照暴露 route policy
+    #  *   2) 要求运行态 batch 绑定 RuntimeSession adapter evidence record
+    #  */
+    logger.info("开始校验 adapter batch 快照边界...")
+
+    # // 1.1 校验 batch 快照基础结构
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("adapter batch snapshot must be a mapping")
+    if bool(snapshot.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("adapter batch snapshot exposes physical route policy")
+
+    # // 1.2 空 batch 只能暴露结构状态，不能伪造 receipt evidence
+    transfer_state = str(snapshot.get("transfer_state", ""))
+    if transfer_state == "empty":
+        _require_empty_batch_snapshot(snapshot)
+        logger.info("adapter batch 快照边界校验完成, receipts: %s", 0)
+        return RuntimeEvidenceValidationReport(
+            source="adapter_batch_snapshot",
+            receipt_count=0,
+        )
+
+    # // 1.3 运行态 batch 必须绑定 RuntimeSession entrypoint record
+    if transfer_state != "runtime_session_bound":
+        raise ValueError("adapter batch snapshot has unknown transfer_state")
+    lifecycle = _batch_snapshot_lifecycle_view(snapshot)
+    _require_runtime_entrypoint_contract(
+        snapshot.get("runtime_entrypoint"),
+        lifecycle=lifecycle,
+    )
+    _require_batch_adapter_record(snapshot)
+    receipt_views = tuple(_receipt_views_from_lifecycle(lifecycle))
+    expected_count = int(snapshot.get("receipt_count", 0) or 0)
+    if expected_count != len(receipt_views):
+        raise ValueError("adapter batch snapshot receipt_count mismatch")
+    logger.info(
+        "adapter batch 快照边界校验完成, receipts: %s",
+        len(receipt_views),
+    )
+    return RuntimeEvidenceValidationReport(
+        source="adapter_batch_snapshot",
+        receipt_count=len(receipt_views),
+        receipts=receipt_views,
+        lifecycle_count=1,
+        lifecycle_evidence_ids=(
+            str(lifecycle.get("evidence_id")),
+        ),
+    )
+
+
 def _require_receipts(receipts: Iterable[TransferReceipt]) -> tuple[TransferReceipt, ...]:
     resolved = tuple(receipts)
     for index, receipt in enumerate(resolved):
@@ -82,6 +140,111 @@ def _require_receipts(receipts: Iterable[TransferReceipt]) -> tuple[TransferRece
                 f"item {index} is {type(receipt).__name__}"
             )
     return resolved
+
+
+def _require_empty_batch_snapshot(snapshot: Mapping[str, object]) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：校验空 batch 快照
+    #  * ========================================================================
+    #  * 数据源：OffloadBatch.as_dict empty snapshot
+    #  * 操作：
+    #  *   1) 允许 block 结构摘要
+    #  *   2) 拒绝 receipt/runtime entrypoint 字段伪装成执行 evidence
+    #  */
+    logger.info("开始校验空 batch 快照...")
+
+    # // 2.1 拒绝空 batch 携带运行态 evidence 字段
+    forbidden = {
+        "runtime_entrypoint",
+        "adapter_evidence_record",
+        "receipt_contracts",
+        "receipt_ids",
+        "intent_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+        "ticket_ids",
+    }
+    leaked = sorted(key for key in forbidden if key in snapshot)
+    if leaked:
+        raise ValueError(
+            "empty adapter batch snapshot must not expose runtime evidence: "
+            + ", ".join(leaked)
+        )
+    logger.info("空 batch 快照校验完成")
+
+
+def _batch_snapshot_lifecycle_view(
+    snapshot: Mapping[str, object],
+) -> dict[str, object]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：构造 batch lifecycle 校验视图
+    #  * ========================================================================
+    #  * 数据源：batch snapshot runtime_entrypoint 与 receipt_contracts
+    #  * 操作：
+    #  *   1) 读取 RuntimeSession adapter evidence record
+    #  *   2) 生成 runtime/evidence 内部复用的 lifecycle view
+    #  */
+    logger.info("开始构造 batch lifecycle 校验视图...")
+
+    # // 3.1 提取 RuntimeSession entrypoint
+    runtime_entrypoint = snapshot.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError("adapter batch snapshot missing runtime_entrypoint")
+
+    # // 3.2 提取 adapter evidence record
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError("adapter batch snapshot missing adapter evidence record")
+    evidence_id = adapter_record.get("evidence_id")
+    if evidence_id is None:
+        raise ValueError("adapter batch snapshot adapter evidence missing evidence_id")
+
+    # // 3.3 构造 receipt contract 校验视图
+    lifecycle = {
+        "evidence_id": str(evidence_id),
+        "receipt_contracts": snapshot.get("receipt_contracts"),
+    }
+    logger.info("batch lifecycle 校验视图构造完成, evidence_id: %s", evidence_id)
+    return lifecycle
+
+
+def _require_batch_adapter_record(snapshot: Mapping[str, object]) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：核对 batch adapter evidence record
+    #  * ========================================================================
+    #  * 数据源：batch snapshot 与 runtime_entrypoint.adapter_evidence_record
+    #  * 操作：
+    #  *   1) 要求 public adapter_evidence_record 来自 RuntimeSession entrypoint
+    #  *   2) 核对 intent/receipt 已在 RuntimeSession 记录中
+    #  */
+    logger.info("开始核对 batch adapter evidence record...")
+
+    # // 4.1 读取 public 与 entrypoint 两份 record
+    public_record = snapshot.get("adapter_evidence_record")
+    runtime_entrypoint = snapshot.get("runtime_entrypoint")
+    if not isinstance(public_record, Mapping) or not isinstance(
+        runtime_entrypoint,
+        Mapping,
+    ):
+        raise ValueError("adapter batch snapshot missing adapter evidence record")
+    entrypoint_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(entrypoint_record, Mapping):
+        raise ValueError("adapter batch snapshot missing runtime adapter record")
+
+    # // 4.2 核对 record 标识与记录状态
+    if str(public_record.get("evidence_id")) != str(entrypoint_record.get("evidence_id")):
+        raise ValueError("adapter batch snapshot adapter evidence_id mismatch")
+    if not bool(public_record.get("intents_recorded", False)):
+        raise ValueError("adapter batch snapshot adapter evidence missing intents")
+    if not bool(public_record.get("receipts_recorded", False)):
+        raise ValueError("adapter batch snapshot adapter evidence missing receipts")
+    logger.info(
+        "batch adapter evidence record 核对完成, evidence_id: %s",
+        public_record.get("evidence_id"),
+    )
 
 
 def _normalize_lifecycle_evidence(
@@ -383,6 +546,7 @@ def _receipt_view_from_contract(contract: Mapping[str, object]) -> dict[str, obj
 
 __all__ = [
     "RuntimeEvidenceValidationReport",
+    "validate_adapter_batch_snapshot",
     "validate_adapter_lifecycle_evidence",
     "validate_runtime_receipts",
 ]

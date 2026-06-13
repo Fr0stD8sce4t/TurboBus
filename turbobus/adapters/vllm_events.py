@@ -25,10 +25,17 @@ _RUNTIME_EVIDENCE_KEYS = frozenset(
         "completion_sources",
         "fallback_reason",
         "prefix_cleanup_mutation_ids",
+        "free_backing_cleanup_groups",
     }
 )
 
-_PRIVATE_EVENT_KEYS = frozenset({"adapter_evidence_record", "adapter_evidence_records"})
+_PRIVATE_EVENT_KEYS = frozenset(
+    {
+        "adapter_evidence_record",
+        "adapter_evidence_records",
+        "runtime_close_entrypoint",
+    }
+)
 
 
 def clear_connector_events() -> None:
@@ -122,6 +129,9 @@ def _validated_connector_event(event: Mapping[str, Any]) -> dict[str, Any]:
     elif requires_adapter_record:
         raise ValueError("connector event missing adapter evidence record")
 
+    if "free_backing_cleanup_groups" in record:
+        _require_runtime_close_entrypoint(record.get("runtime_close_entrypoint"))
+
     logger.info("connector 事件边界校验完成, runtime_summary: %s", True)
     return record
 
@@ -198,6 +208,42 @@ def _require_adapter_evidence_record(record: Mapping[str, Any]) -> None:
         "adapter evidence record 校验完成, evidence_id: %s",
         record.get("evidence_id"),
     )
+
+
+def _require_runtime_close_entrypoint(value: object) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤7：校验 connector close RuntimeSession entrypoint
+    #  * ========================================================================
+    #  * 目标：确认 free backing cleanup summary 来自 RuntimeSession close
+    #  * 数据源：connector close event
+    #  * 操作：
+    #  *   1) 要求 close entrypoint 存在
+    #  *   2) 要求 close record 已写入 RuntimeSession entrypoint
+    #  */
+    logger.info("开始校验 connector close RuntimeSession entrypoint...")
+
+    # // 7.1 校验 RuntimeSession entrypoint 边界
+    if not isinstance(value, Mapping):
+        raise ValueError("connector close event missing RuntimeSession close entrypoint")
+    if str(value.get("entrypoint")) != "TurboBusRuntimeSession":
+        raise ValueError("connector close event RuntimeSession entrypoint mismatch")
+    if str(value.get("plan_source")) != "daemon_scheduler":
+        raise ValueError("connector close event plan_source mismatch")
+    if bool(value.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("connector close event exposes route policy to adapter")
+    if bool(value.get("route_policy_visible_to_application", True)):
+        raise ValueError("connector close event exposes route policy to application")
+
+    # // 7.2 校验 RuntimeSession close record
+    close_record = value.get("close")
+    if not isinstance(close_record, Mapping):
+        raise ValueError("connector close event missing RuntimeSession close record")
+    if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
+        raise ValueError("connector close event close record mismatch")
+    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("connector close event close record exposes route policy")
+    logger.info("connector close RuntimeSession entrypoint 校验完成")
 
 
 __all__ = [

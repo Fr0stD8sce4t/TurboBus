@@ -22,6 +22,10 @@ completed system capability loop. Do not accumulate implementation history.
   handle receipt collection. Public receipt trace helpers now require
   `TurboBusRuntimeSession`, validate receipt ownership, record adapter evidence,
   and return RuntimeSession-bound snapshots.
+- vLLM connector close now consumes the real `TurboBusRuntimeSession.close`
+  response before emitting free backing cleanup summaries. Free backing cleanup
+  evidence and public close events require a RuntimeSession close entrypoint
+  record and continue to reject route policy exposure.
 
 ## Remaining Risk
 
@@ -40,7 +44,8 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter-facing lifecycle, cleanup, recovery, and close
-summaries in `turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`.
-Tighten any path that can emit runtime-looking evidence without consuming
-`TurboBusRuntimeSession` entrypoint adapter evidence records.
+Next inspect remaining adapter-facing recovery and lifecycle summary reads in
+`turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`. Tighten any
+path that can emit runtime-looking evidence without consuming
+`TurboBusRuntimeSession` entrypoint adapter evidence records or close
+entrypoint records.

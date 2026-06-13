@@ -32,7 +32,8 @@ records, snapshots, and real receipts.
   recovery, close, and session-level evidence.
 - `turbobus/runtime/session_records.py`: keep entrypoint snapshots aligned with
   adapter context, intent, receipt, adapter evidence, recovery, and cleanup
-  records.
+  records. RuntimeSession close records must identify
+  `TurboBusRuntimeSession.close` and keep route policy hidden.
 - `turbobus/offload/lifecycle.py`: expose only RuntimeSession-bound adapter
   lifecycle and receipt trace helpers. Raw receipt trace extraction and handle
   receipt collection stay private.
@@ -42,15 +43,17 @@ records, snapshots, and real receipts.
   missing adapter evidence records, fake evidence, exposed route policy, and
   lifecycle identity drift.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
-  must not create route, plan, relay, pool, or target-GPU policy.
+  must not create route, plan, relay, pool, or target-GPU policy. vLLM close
+  and free backing cleanup summaries must inherit RuntimeSession close
+  entrypoint evidence.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter-facing lifecycle, cleanup, recovery, and close
-summaries in `turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`.
-Tighten any path that can emit runtime-looking evidence without a
-`TurboBusRuntimeSession` entrypoint adapter evidence record.
+inspect remaining adapter-facing recovery and lifecycle summary reads in
+`turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`. Tighten any
+path that can emit runtime-looking evidence without a `TurboBusRuntimeSession`
+entrypoint adapter evidence record or close entrypoint record.
 
 ## Remaining Risk
 

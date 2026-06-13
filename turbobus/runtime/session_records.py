@@ -293,6 +293,10 @@ def record_runtime_session_close(
     # // 1.2 合并关闭响应摘要
     close_record.update(
         {
+            "entrypoint": "TurboBusRuntimeSession.close",
+            "plan_source": "daemon_scheduler",
+            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_application": False,
             "closed_at": time.time(),
             "ok": bool(response_ok),
             "error": response_error,

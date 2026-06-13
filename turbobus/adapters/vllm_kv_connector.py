@@ -218,8 +218,14 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         closed_prefixes = self._close_saved_prefixes()
         closed_pending_saves = self._close_pending_save_contexts()
         closed_pending_metadata = self._close_pending_metadata()
-        free_backing_cleanup = self._backing_pool.close()
         _clear_saved_prefixes_for_connector(self.session_id, job_id=self.job_id)
+        runtime_close_response = self.runtime_session.close()
+        runtime_close_entrypoint = _runtime_close_entrypoint_for_connector_close(
+            runtime_close_response.payload
+        )
+        free_backing_cleanup = self._backing_pool.close(
+            runtime_close_entrypoint=runtime_close_entrypoint
+        )
         clear_metadata = getattr(self, "clear_connector_metadata", None)
         if callable(clear_metadata):
             clear_metadata()
@@ -236,6 +242,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "adapter_evidence_records"
                 ],
                 "free_backing_cleanup": free_backing_cleanup,
+                "runtime_close_entrypoint": runtime_close_entrypoint,
+                "route_policy_visible_to_adapter": False,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
             }
@@ -250,10 +258,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             prefix_cleanup_mutation_ids=",".join(closed_prefixes["cleanup_mutation_ids"]),
             adapter_evidence_records=closed_prefixes["adapter_evidence_records"],
             free_backing_cleanup_groups=len(free_backing_cleanup),
+            runtime_close_entrypoint=runtime_close_entrypoint,
+            route_policy_visible_to_adapter=False,
             pending_saves=closed_pending_saves,
             **closed_pending_metadata,
         )
-        self.runtime_session.close()
 
     def shutdown(self) -> None:
         self.close()
@@ -1544,6 +1553,53 @@ def _vllm_kv_lifecycle_evidence(
             receipt_trace.get("daemon_recovery_sources", "")
         ),
     }
+
+
+def _runtime_close_entrypoint_for_connector_close(
+    close_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：提取 connector close 的 RuntimeSession entrypoint
+    #  * ========================================================================
+    #  * 数据源：TurboBusRuntimeSession.close response payload
+    #  * 操作：
+    #  *   1) 拒绝缺失 RuntimeSession close snapshot
+    #  *   2) 拒绝 close 证据暴露 route policy
+    #  */
+    logger.info("开始提取 connector close RuntimeSession entrypoint...")
+
+    # // 1.1 读取 close payload 中的 RuntimeSession entrypoint
+    if not isinstance(close_payload, Mapping):
+        raise ValueError("connector close requires RuntimeSession close payload")
+    runtime_entrypoint = close_payload.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError("connector close missing RuntimeSession entrypoint")
+    contract = dict(runtime_entrypoint)
+
+    # // 1.2 校验生产入口和 route policy 边界
+    if str(contract.get("entrypoint")) != "TurboBusRuntimeSession":
+        raise ValueError("connector close RuntimeSession entrypoint mismatch")
+    if str(contract.get("plan_source")) != "daemon_scheduler":
+        raise ValueError("connector close RuntimeSession plan_source mismatch")
+    if bool(contract.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("connector close exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_application", True)):
+        raise ValueError("connector close exposes route policy to application")
+
+    # // 1.3 校验 close record 已写入 entrypoint
+    close_record = contract.get("close")
+    if not isinstance(close_record, Mapping):
+        raise ValueError("connector close missing RuntimeSession close record")
+    if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
+        raise ValueError("connector close record mismatch")
+    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("connector close record exposes route policy")
+
+    # // 1.4 返回隔离副本供 cleanup evidence 消费
+    contract["close"] = dict(close_record)
+    logger.info("connector close RuntimeSession entrypoint 提取完成")
+    return contract
 
 
 def _request_binding_for_vllm_kv_lifecycle(

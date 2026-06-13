@@ -83,7 +83,29 @@ class TurboBusCPUBackingPool:
             **lifecycle,
         }
 
-    def close(self) -> list[dict[str, Any]]:
+    def close(
+        self,
+        *,
+        runtime_close_entrypoint: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：关闭空闲 backing 并绑定 RuntimeSession close
+        #  * ========================================================================
+        #  * 数据源：free backing pool 与 RuntimeSession close entrypoint
+        #  * 操作：
+        #  *   1) 校验 close entrypoint 来自 TurboBusRuntimeSession
+        #  *   2) 关闭所有空闲 backing group
+        #  *   3) 把 cleanup summary 绑定到 close record
+        #  */
+        logger.info("开始关闭空闲 backing 并绑定 RuntimeSession close...")
+
+        # // 1.1 校验 RuntimeSession close entrypoint
+        close_entrypoint = _runtime_close_entrypoint_for_free_backing_cleanup(
+            runtime_close_entrypoint
+        )
+
+        # // 1.2 关闭 free backing group 并继承 close entrypoint
         evidence = []
         for groups in self._free_by_shape.values():
             for cpu_backings in groups:
@@ -91,9 +113,15 @@ class TurboBusCPUBackingPool:
                     {
                         "action": "close_free_backing_group",
                         "backings": self.close_backings(cpu_backings),
+                        "runtime_close_entrypoint": close_entrypoint,
+                        "route_policy_visible_to_adapter": False,
                     }
                 )
         self._free_by_shape.clear()
+        logger.info(
+            "空闲 backing RuntimeSession close 绑定完成, groups: %s",
+            len(evidence),
+        )
         return evidence
 
     @staticmethod
@@ -209,6 +237,48 @@ def _close_backing(backing: Any) -> dict[str, Any]:
     evidence["action"] = "none"
     evidence["closed"] = bool(getattr(backing, "closed", False))
     return evidence
+
+
+def _runtime_close_entrypoint_for_free_backing_cleanup(
+    runtime_close_entrypoint: Mapping[str, Any],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：校验 free backing cleanup 的 RuntimeSession close entrypoint
+    #  * ========================================================================
+    #  * 数据源：TurboBusRuntimeSession.close response payload
+    #  * 操作：
+    #  *   1) 拒绝缺失 RuntimeSession close record
+    #  *   2) 拒绝暴露 route policy 的 close summary
+    #  */
+    logger.info("开始校验 free backing RuntimeSession close entrypoint...")
+
+    # // 2.1 校验 entrypoint 基本合约
+    if not isinstance(runtime_close_entrypoint, Mapping):
+        raise ValueError("free backing cleanup requires RuntimeSession close entrypoint")
+    entrypoint = dict(runtime_close_entrypoint)
+    if str(entrypoint.get("entrypoint")) != "TurboBusRuntimeSession":
+        raise ValueError("free backing cleanup close entrypoint mismatch")
+    if str(entrypoint.get("plan_source")) != "daemon_scheduler":
+        raise ValueError("free backing cleanup close plan_source mismatch")
+    if bool(entrypoint.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("free backing cleanup exposes route policy to adapter")
+    if bool(entrypoint.get("route_policy_visible_to_application", True)):
+        raise ValueError("free backing cleanup exposes route policy to application")
+
+    # // 2.2 校验 close record 已写入 RuntimeSession entrypoint
+    close_record = entrypoint.get("close")
+    if not isinstance(close_record, Mapping):
+        raise ValueError("free backing cleanup missing RuntimeSession close record")
+    if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
+        raise ValueError("free backing cleanup close record mismatch")
+    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("free backing close record exposes route policy")
+
+    # // 2.3 返回隔离副本
+    entrypoint["close"] = dict(close_record)
+    logger.info("free backing RuntimeSession close entrypoint 校验完成")
+    return entrypoint
 
 
 def _prefix_lifecycle_for_backing_evidence(

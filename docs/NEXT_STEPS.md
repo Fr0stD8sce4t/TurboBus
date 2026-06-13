@@ -36,7 +36,10 @@ records, snapshots, and real receipts.
   `TurboBusRuntimeSession.close` and keep route policy hidden.
 - `turbobus/offload/lifecycle.py`: expose only RuntimeSession-bound adapter
   lifecycle and receipt trace helpers. Raw receipt trace extraction and handle
-  receipt collection stay private.
+  receipt collection stay private. Daemon recovery in adapter lifecycle
+  evidence is a RuntimeSession-bound scalar summary only; daemon queue,
+  ticket, lease, buffer, cleanup, and completion-evidence internals stay out of
+  adapter-facing lifecycle evidence.
 - `turbobus/offload/handles.py`: keep low-level handle submit/wait bindings
   tied to RuntimeSession entrypoint records through offload-internal helpers.
 - `turbobus/offload/store.py` and `turbobus/offload/blocks.py`: public batch
@@ -47,7 +50,8 @@ records, snapshots, and real receipts.
 - `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
   evidence, exposed route policy, lifecycle identity drift, public batch
   snapshots, public transfer stats snapshots, and lifecycle range/binding
-  extras that are not bound to RuntimeSession adapter evidence.
+  extras or daemon recovery details that are not bound to RuntimeSession
+  adapter evidence.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, target-GPU policy, or their own
   receipt/ticket/decision summaries inside range/binding extras. vLLM
@@ -59,9 +63,9 @@ records, snapshots, and real receipts.
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter-facing construction and recovery paths for any
-runtime-looking entrypoint that can still bypass `TurboBusRuntimeSession`
-adapter evidence records, saved-prefix snapshots, or RuntimeSession close
+inspect remaining adapter construction snapshots and offload public batch/stats
+snapshots for any runtime-looking identity, route policy, or receipt-contract
+detail that should stay behind `TurboBusRuntimeSession` adapter evidence
 records.
 
 ## Remaining Risk

@@ -294,9 +294,24 @@ def _daemon_recovery_from_receipts(
     receipts: Iterable[TransferReceipt],
     runtime_session,
 ) -> list[dict[str, Any]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：构造 RuntimeSession recovery 摘要
+    #  * ========================================================================
+    #  * 数据源：TransferReceipt metadata 与 TurboBusRuntimeSession recovery API
+    #  * 操作：
+    #  *   1) 通过 RuntimeSession 主动恢复 transfer 状态
+    #  *   2) 只返回 adapter 可消费的标量摘要，不公开 ticket/lease/queue 明细
+    #  */
+    logger.info("开始构造 RuntimeSession recovery 摘要...")
+
+    # // 3.1 读取 RuntimeSession recovery 入口
     recover = getattr(runtime_session, "recover_transfer_state", None)
     if not callable(recover):
+        logger.info("RuntimeSession recovery 摘要构造完成, recovered: %s", 0)
         return []
+
+    # // 3.2 逐个 receipt 触发 RuntimeSession recovery
     recovered: list[dict[str, Any]] = []
     for receipt in receipts:
         metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
@@ -309,22 +324,17 @@ def _daemon_recovery_from_receipts(
         )
         recovered.append(
             {
-                "intent_id": receipt.intent_id,
-                "receipt_id": receipt.receipt_id,
-                "transfer_id": str(transfer_id),
                 "source": recovery.get("source"),
                 "state": recovery.get("state"),
-                "admission": recovery.get("admission"),
-                "queue_record": recovery.get("queue_record"),
-                "ticket": recovery.get("ticket"),
-                "reservations": recovery.get("reservations"),
-                "leases": recovery.get("leases"),
-                "buffer_snapshots": recovery.get("buffer_snapshots"),
-                "cleanup_targets": recovery.get("cleanup_targets"),
-                "completion_source": recovery.get("completion_source"),
-                "completion_evidence": recovery.get("completion_evidence"),
+                "archived": bool(recovery.get("archived", False)),
+                "receipt_recorded": isinstance(recovery.get("receipt"), Mapping),
+                "route_policy_visible_to_adapter": False,
             }
         )
+    logger.info(
+        "RuntimeSession recovery 摘要构造完成, recovered: %s",
+        len(recovered),
+    )
     return recovered
 
 

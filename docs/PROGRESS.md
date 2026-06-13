@@ -21,7 +21,10 @@ completed system capability loop. Do not accumulate implementation history.
 - Offload lifecycle public exports no longer expose raw receipt trace or raw
   handle receipt collection. Public receipt trace helpers require
   `TurboBusRuntimeSession`, validate receipt ownership, record adapter
-  evidence, and return RuntimeSession-bound snapshots.
+  evidence, and return RuntimeSession-bound snapshots. Daemon recovery in
+  adapter lifecycle evidence is reduced to RuntimeSession-bound scalar
+  summaries; daemon queue, ticket, lease, buffer, cleanup, and
+  completion-evidence internals stay out of adapter-facing recovery evidence.
 - Public offload block snapshots now expose only structural block state.
   Public offload batch snapshots must generate and validate RuntimeSession
   adapter evidence before exposing receipt, ticket, decision, topology, and
@@ -56,7 +59,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter-facing construction and recovery paths for any
-runtime-looking entrypoint that can still bypass `TurboBusRuntimeSession`
-adapter evidence records, saved-prefix snapshots, or RuntimeSession close
-records.
+Next inspect remaining adapter construction snapshots and offload public
+batch/stats snapshots for any runtime-looking identity, route policy, or
+receipt-contract detail that should stay behind `TurboBusRuntimeSession`
+adapter evidence records.

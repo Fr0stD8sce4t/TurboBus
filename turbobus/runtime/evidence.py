@@ -409,7 +409,62 @@ def _require_adapter_lifecycle_contract(lifecycle: Mapping[str, object]) -> None
         lifecycle.get("runtime_entrypoint"),
         lifecycle=lifecycle,
     )
+    _require_adapter_lifecycle_recovery_contract(lifecycle)
     logger.info("适配器生命周期边界校验完成")
+
+
+def _require_adapter_lifecycle_recovery_contract(
+    lifecycle: Mapping[str, object],
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤8：校验 adapter recovery 摘要
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle daemon_recovery 字段
+    #  * 操作：
+    #  *   1) 允许 RuntimeSession recovery 标量摘要
+    #  *   2) 拒绝 queue/ticket/lease/buffer 等 daemon 内部细节暴露给 adapter
+    #  */
+    logger.info("开始校验 adapter recovery 摘要...")
+
+    # // 8.1 空 recovery 直接通过
+    recovery = lifecycle.get("daemon_recovery")
+    if recovery is None:
+        logger.info("adapter recovery 摘要校验完成, count: %s", 0)
+        return
+    if not isinstance(recovery, list | tuple):
+        raise TypeError("adapter lifecycle daemon_recovery must be a sequence")
+
+    # // 8.2 校验每条 recovery 摘要不含 daemon 内部细节
+    for item in recovery:
+        if not isinstance(item, Mapping):
+            raise TypeError("adapter lifecycle daemon_recovery items must be mappings")
+        if bool(item.get("route_policy_visible_to_adapter", True)):
+            raise ValueError("adapter recovery exposes route policy")
+        _require_no_runtime_identity_fields(
+            item,
+            source="adapter lifecycle daemon_recovery",
+        )
+        leaked = sorted(
+            key
+            for key in (
+                "admission",
+                "queue_record",
+                "ticket",
+                "reservations",
+                "leases",
+                "buffer_snapshots",
+                "cleanup_targets",
+                "completion_evidence",
+            )
+            if key in item
+        )
+        if leaked:
+            raise ValueError(
+                "adapter recovery must use RuntimeSession recovery summary "
+                "instead of " + ", ".join(leaked)
+            )
+    logger.info("adapter recovery 摘要校验完成, count: %s", len(recovery))
 
 
 def _require_adapter_lifecycle_range_contract(

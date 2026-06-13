@@ -344,14 +344,6 @@ class VllmKVSlotAdapter:
             "receipt_count": sum(
                 int(item.get("receipt_count", 0) or 0) for item in group_snapshots
             ),
-            "receipt_ids": _join_snapshot_csv(group_snapshots, "receipt_ids"),
-            "intent_ids": _join_snapshot_csv(group_snapshots, "intent_ids"),
-            "decision_ids": _join_snapshot_csv(group_snapshots, "decision_ids"),
-            "topology_snapshot_ids": _join_snapshot_csv(
-                group_snapshots,
-                "topology_snapshot_ids",
-            ),
-            "ticket_ids": _join_snapshot_csv(group_snapshots, "ticket_ids"),
             "receipt_states": _join_snapshot_csv(group_snapshots, "receipt_states"),
             "direct_bytes": sum(
                 int(item.get("direct_bytes", 0) or 0) for item in group_snapshots

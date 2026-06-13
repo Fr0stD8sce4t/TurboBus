@@ -42,11 +42,12 @@ records, snapshots, and real receipts.
   adapter-facing lifecycle evidence.
 - `turbobus/offload/handles.py`: keep low-level handle submit/wait bindings
   tied to RuntimeSession entrypoint records through offload-internal helpers.
-- `turbobus/offload/store.py` and `turbobus/offload/blocks.py`: public batch
-  snapshots must use RuntimeSession-bound adapter evidence before exposing
-  receipt/ticket/decision summaries. Public block snapshots remain structural
-  and do not expose runtime-looking receipt fields. Public transfer stats reads
-  must return RuntimeSession-bound stats snapshots, not raw direct/relay counts.
+- `turbobus/offload/store.py`, `turbobus/offload/handles.py`, and
+  `turbobus/offload/blocks.py`: public batch and transfer stats snapshots use
+  RuntimeSession-bound adapter evidence internally, but expose only scalar
+  counts, adapter evidence ids, receipt states, and byte summaries. Public
+  block snapshots remain structural and do not expose runtime-looking receipt
+  fields.
 - `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
   evidence, exposed route policy, lifecycle identity drift, public batch
   snapshots, public transfer stats snapshots, and lifecycle range/binding
@@ -54,19 +55,20 @@ records, snapshots, and real receipts.
   adapter evidence.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, target-GPU policy, or their own
-  receipt/ticket/decision summaries inside range/binding extras. vLLM
-  connector public events, saved-prefix snapshots, and backing lifecycle
-  summaries expose only RuntimeSession-bound scalar counts, evidence ids, and
-  close-binding flags; raw receipt, ticket, decision, topology, runtime
-  entrypoint, and receipt-contract identities stay internal to validation.
+  receipt/ticket/decision summaries inside range/binding extras. vLLM public
+  events, saved-prefix snapshots, backing lifecycle summaries, and transfer
+  stats aggregations expose only RuntimeSession-bound scalar counts, evidence
+  ids, receipt states, byte summaries, and close-binding flags; raw receipt,
+  ticket, decision, topology, runtime entrypoint, and receipt-contract
+  identities stay internal to validation.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter construction snapshots and offload public batch/stats
-snapshots for any runtime-looking identity, route policy, or receipt-contract
-detail that should stay behind `TurboBusRuntimeSession` adapter evidence
-records.
+inspect remaining adapter construction snapshots and adapter lifecycle
+range/binding extras for any runtime-looking identity, route policy, or
+receipt-contract detail that should stay behind `TurboBusRuntimeSession`
+adapter evidence records.
 
 ## Remaining Risk
 

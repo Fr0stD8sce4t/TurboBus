@@ -70,27 +70,12 @@ class OffloadBatch:
             names=self.names,
             handles=self.handles,
         )
-        snapshot = {
-            "operation": self.operation,
-            "names": list(self.names),
-            "transfer_state": "runtime_session_bound",
-            "blocks": block_snapshots,
-            "runtime_entrypoint": dict(evidence["runtime_entrypoint"]),
-            "adapter_evidence_record": dict(
-                evidence["runtime_entrypoint"]["adapter_evidence_record"]
-            ),
-            "receipt_contracts": list(evidence["receipt_contracts"]),
-            "receipt_count": int(evidence["receipt_count"]),
-            "receipt_ids": str(evidence["receipt_ids"]),
-            "intent_ids": str(evidence["intent_ids"]),
-            "decision_ids": str(evidence["decision_ids"]),
-            "topology_snapshot_ids": str(evidence["topology_snapshot_ids"]),
-            "ticket_ids": str(evidence["ticket_ids"]),
-            "receipt_states": str(evidence["receipt_states"]),
-            "direct_bytes": int(evidence["direct_bytes"]),
-            "relay_bytes": int(evidence["relay_bytes"]),
-            "route_policy_visible_to_adapter": False,
-        }
+        snapshot = _public_adapter_evidence_snapshot(
+            evidence,
+            operation=self.operation,
+            names=list(self.names),
+            blocks=block_snapshots,
+        )
         validate_adapter_batch_snapshot(snapshot)
         logger.info(
             "RuntimeSession 绑定 batch 快照生成完成, receipts: %s",
@@ -274,28 +259,13 @@ class OffloadStore:
             names=selected_names,
             handles=handles,
         )
-        snapshot = {
-            "transfer_state": "runtime_session_bound",
-            "names": list(selected_names),
-            "bytes": int(evidence.get("bytes", 0) or 0),
-            "direct_chunks": int(evidence.get("direct_chunks", 0) or 0),
-            "relay_chunks": int(evidence.get("relay_chunks", 0) or 0),
-            "runtime_entrypoint": dict(evidence["runtime_entrypoint"]),
-            "adapter_evidence_record": dict(
-                evidence["runtime_entrypoint"]["adapter_evidence_record"]
-            ),
-            "receipt_contracts": list(evidence["receipt_contracts"]),
-            "receipt_count": int(evidence["receipt_count"]),
-            "receipt_ids": str(evidence["receipt_ids"]),
-            "intent_ids": str(evidence["intent_ids"]),
-            "decision_ids": str(evidence["decision_ids"]),
-            "topology_snapshot_ids": str(evidence["topology_snapshot_ids"]),
-            "ticket_ids": str(evidence["ticket_ids"]),
-            "receipt_states": str(evidence["receipt_states"]),
-            "direct_bytes": int(evidence["direct_bytes"]),
-            "relay_bytes": int(evidence["relay_bytes"]),
-            "route_policy_visible_to_adapter": False,
-        }
+        snapshot = _public_adapter_evidence_snapshot(
+            evidence,
+            names=list(selected_names),
+            bytes=int(evidence.get("bytes", 0) or 0),
+            direct_chunks=int(evidence.get("direct_chunks", 0) or 0),
+            relay_chunks=int(evidence.get("relay_chunks", 0) or 0),
+        )
         validate_adapter_transfer_stats_snapshot(snapshot)
         logger.info(
             "RuntimeSession 绑定 transfer stats 快照生成完成, receipts: %s",
@@ -566,6 +536,56 @@ def _require_runtime_session_client(
         raise ValueError(
             "offload context session_id must match the runtime session session_id"
         )
+
+
+def _public_adapter_evidence_snapshot(
+    evidence: Mapping[str, object],
+    **payload: object,
+) -> dict[str, object]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：构建公开 RuntimeSession evidence 快照
+    #  * ========================================================================
+    #  * 目标：
+    #  *   1) 消费已通过内部校验的完整 lifecycle evidence。
+    #  *   2) 只公开标量计数和 adapter evidence id。
+    #  *   3) 隐藏 RuntimeSession entrypoint、receipt contracts 和 raw ids。
+    #  */
+    logger.info("开始构建公开 RuntimeSession evidence 快照...")
+
+    # // 1.1 读取 RuntimeSession 持有的 adapter evidence id
+    runtime_entrypoint = evidence.get("runtime_entrypoint")
+    if not isinstance(runtime_entrypoint, Mapping):
+        raise ValueError("public adapter snapshot missing RuntimeSession entrypoint")
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError("public adapter snapshot missing adapter evidence record")
+    evidence_id = adapter_record.get("evidence_id")
+    if evidence_id is None:
+        raise ValueError("public adapter snapshot missing adapter evidence_id")
+
+    # // 1.2 统计内部 receipt contracts，不公开 contract 明细
+    receipt_contracts = evidence.get("receipt_contracts")
+    if not isinstance(receipt_contracts, list | tuple):
+        raise ValueError("public adapter snapshot missing receipt contracts")
+
+    # // 1.3 只发布 RuntimeSession 绑定后的标量 evidence
+    snapshot = {
+        "transfer_state": "runtime_session_bound",
+        "adapter_evidence_id": str(evidence_id),
+        "receipt_count": int(evidence.get("receipt_count", 0) or 0),
+        "receipt_contract_count": len(receipt_contracts),
+        "receipt_states": str(evidence.get("receipt_states", "")),
+        "direct_bytes": int(evidence.get("direct_bytes", 0) or 0),
+        "relay_bytes": int(evidence.get("relay_bytes", 0) or 0),
+        "route_policy_visible_to_adapter": False,
+        **payload,
+    }
+    logger.info(
+        "公开 RuntimeSession evidence 快照构建完成, receipts: %s",
+        snapshot["receipt_count"],
+    )
+    return snapshot
 
 
 __all__ = [

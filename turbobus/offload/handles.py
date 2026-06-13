@@ -79,24 +79,23 @@ class ReceiptTransferHandle:
 
         # // 4.2 生成并校验 evidence-bound stats 快照
         raw_stats = self._raw_stats
+        adapter_record = self.runtime_entrypoint.get("adapter_evidence_record")
+        if not isinstance(adapter_record, dict):
+            raise ValueError("handle stats missing RuntimeSession adapter evidence")
+        adapter_evidence_id = adapter_record.get("evidence_id")
+        if adapter_evidence_id is None:
+            raise ValueError("handle stats missing adapter evidence_id")
+        receipt_contracts = trace.get("receipt_contracts")
+        if not isinstance(receipt_contracts, list | tuple):
+            raise ValueError("handle stats missing receipt contracts")
         snapshot = {
             "transfer_state": "runtime_session_bound",
-            "intent_id": self.intent.intent_id,
-            "receipt_id": self.receipt.receipt_id,
+            "adapter_evidence_id": str(adapter_evidence_id),
             "bytes": int(raw_stats.bytes),
             "direct_chunks": int(raw_stats.direct_chunks),
             "relay_chunks": int(raw_stats.relay_chunks),
-            "runtime_entrypoint": dict(self.runtime_entrypoint),
-            "adapter_evidence_record": dict(
-                self.runtime_entrypoint["adapter_evidence_record"]
-            ),
-            "receipt_contracts": list(trace["receipt_contracts"]),
             "receipt_count": int(trace["receipt_count"]),
-            "receipt_ids": str(trace["receipt_ids"]),
-            "intent_ids": str(trace["intent_ids"]),
-            "decision_ids": str(trace["decision_ids"]),
-            "topology_snapshot_ids": str(trace["topology_snapshot_ids"]),
-            "ticket_ids": str(trace["ticket_ids"]),
+            "receipt_contract_count": len(receipt_contracts),
             "receipt_states": str(trace["receipt_states"]),
             "direct_bytes": int(trace["direct_bytes"]),
             "relay_bytes": int(trace["relay_bytes"]),

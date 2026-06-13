@@ -26,12 +26,14 @@ completed system capability loop. Do not accumulate implementation history.
   summaries; daemon queue, ticket, lease, buffer, cleanup, and
   completion-evidence internals stay out of adapter-facing recovery evidence.
 - Public offload block snapshots now expose only structural block state.
-  Public offload batch snapshots must generate and validate RuntimeSession
-  adapter evidence before exposing receipt, ticket, decision, topology, and
-  byte-summary fields.
-- Public adapter transfer stats reads now return RuntimeSession-bound stats
-  snapshots with adapter evidence records and receipt contracts. Raw direct and
-  relay counts remain private inputs to lifecycle evidence construction.
+  Public offload batch snapshots, handle stats, store transfer stats, and vLLM
+  transfer stats aggregations generate and validate RuntimeSession adapter
+  evidence internally, then expose only scalar counts, adapter evidence ids,
+  receipt states, and byte summaries.
+- Raw RuntimeSession entrypoint records, receipt contracts, receipt ids,
+  intent ids, ticket ids, decision ids, topology ids, and route policy stay
+  behind RuntimeSession adapter evidence validation. Raw direct and relay
+  counts remain private inputs to lifecycle evidence construction.
 - Model loading and training lifecycle range/binding extras now expose only
   structural buffer, tensor, bucket, and range summaries. Receipt, ticket,
   decision, topology, and transfer-state identity must come from
@@ -59,7 +61,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter construction snapshots and offload public
-batch/stats snapshots for any runtime-looking identity, route policy, or
+Next inspect remaining adapter construction snapshots and adapter lifecycle
+range/binding extras for any runtime-looking identity, route policy, or
 receipt-contract detail that should stay behind `TurboBusRuntimeSession`
 adapter evidence records.

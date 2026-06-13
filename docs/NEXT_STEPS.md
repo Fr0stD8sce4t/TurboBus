@@ -50,15 +50,19 @@ records, snapshots, and real receipts.
   extras that are not bound to RuntimeSession adapter evidence.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, target-GPU policy, or their own
-  receipt/ticket/decision summaries inside range/binding extras.
+  receipt/ticket/decision summaries inside range/binding extras. vLLM
+  connector public events, saved-prefix snapshots, and backing lifecycle
+  summaries expose only RuntimeSession-bound scalar counts, evidence ids, and
+  close-binding flags; raw receipt, ticket, decision, topology, runtime
+  entrypoint, and receipt-contract identities stay internal to validation.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining vLLM connector lifecycle event fields and prefix/backing
-manager summaries. Tighten any event field that can expose runtime-looking
-transfer state without consuming `TurboBusRuntimeSession` entrypoint adapter
-evidence records or close entrypoint records.
+inspect remaining adapter-facing construction and recovery paths for any
+runtime-looking entrypoint that can still bypass `TurboBusRuntimeSession`
+adapter evidence records, saved-prefix snapshots, or RuntimeSession close
+records.
 
 ## Remaining Risk
 

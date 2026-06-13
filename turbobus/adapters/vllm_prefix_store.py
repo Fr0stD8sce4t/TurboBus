@@ -739,19 +739,23 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
         "relay_chunks": int(prefix.relay_chunks),
         "direct_bytes": int(prefix.direct_bytes),
         "relay_bytes": int(prefix.relay_bytes),
-        "receipt_ids": str(prefix.receipt_ids),
-        "decision_ids": str(prefix.decision_ids),
-        "topology_snapshot_ids": str(prefix.topology_snapshot_ids),
-        "ticket_ids": str(prefix.ticket_ids),
-        "fallback_reason": str(prefix.fallback_reason),
+        "receipt_count": int(
+            prefix.save_lifecycle_evidence.get("receipt_count", 0) or 0
+        ),
+        "receipt_states": str(
+            prefix.save_lifecycle_evidence.get("receipt_states", "")
+        ),
+        "completion_sources": str(
+            prefix.save_lifecycle_evidence.get("completion_sources", "")
+        ),
         "save_lifecycle_evidence_id": str(
             prefix.save_lifecycle_evidence.get("evidence_id", "")
         ),
         "store_mutation_id": str(
             prefix.store_lifecycle_evidence.get("mutation_id", "")
         ),
-        "adapter_evidence_record": dict(
-            store_entrypoint["adapter_evidence_record"]
+        "adapter_evidence_id": str(
+            store_entrypoint["adapter_evidence_record"].get("evidence_id", "")
         ),
         "receipt_contract_count": len(store_receipt_contracts),
         "route_policy_visible_to_adapter": False,
@@ -798,7 +802,6 @@ def _optional_lifecycle_summary_for_prefix_store(
     summary = {
         "evidence_id": str(evidence.get("evidence_id", "")),
         "operation": str(evidence.get("operation", "")),
-        "receipt_ids": str(evidence.get("receipt_ids", "")),
         "receipt_count": int(evidence.get("receipt_count", 0) or 0),
         "daemon_recovery_count": int(
             evidence.get("daemon_recovery_count", 0) or 0
@@ -806,7 +809,9 @@ def _optional_lifecycle_summary_for_prefix_store(
         "daemon_recovery_sources": str(
             evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_record": dict(entrypoint["adapter_evidence_record"]),
+        "adapter_evidence_id": str(
+            entrypoint["adapter_evidence_record"].get("evidence_id", "")
+        ),
         "receipt_contract_count": len(receipt_contracts),
         "route_policy_visible_to_adapter": False,
     }
@@ -858,7 +863,7 @@ def _optional_daemon_recovery_summary_for_prefix_store(
         "daemon_recovery_sources": str(
             evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_record": dict(adapter_record),
+        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
         "route_policy_visible_to_adapter": False,
     }
     logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", True)

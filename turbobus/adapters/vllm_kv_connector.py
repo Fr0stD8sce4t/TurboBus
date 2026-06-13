@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 import time
 from typing import Any, Mapping
 
@@ -27,6 +28,8 @@ from .vllm_prefix_store import (
     _store_saved_prefix_for_connector,
     get_saved_prefix,
 )
+
+logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - depends on an installed vLLM build
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (
@@ -237,11 +240,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "connector_session_id": self.connector_session_id,
                 "prefixes": closed_prefixes["count"],
                 "prefix_cleanup_mutation_ids": closed_prefixes["cleanup_mutation_ids"],
-                "adapter_evidence_records": closed_prefixes[
-                    "adapter_evidence_records"
-                ],
-                "free_backing_cleanup": free_backing_cleanup,
-                "runtime_close_entrypoint": runtime_close_entrypoint,
+                "adapter_evidence_count": len(
+                    closed_prefixes["adapter_evidence_records"]
+                ),
+                "free_backing_cleanup": _public_free_backing_cleanup_summary(
+                    free_backing_cleanup
+                ),
+                "runtime_close_entrypoint_recorded": True,
                 "route_policy_visible_to_adapter": False,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
@@ -808,13 +813,15 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "total_ms": total_ms,
                 "layers": len(kv_caches),
                 "ranges": len(range_names),
-                "lifecycle_evidence": lifecycle_evidence,
-                "adapter_evidence_record": _adapter_evidence_record_for_event(
+                "lifecycle_evidence": _public_vllm_lifecycle_summary(
+                    lifecycle_evidence
+                ),
+                "adapter_evidence_id": _adapter_evidence_id_for_event(
                     lifecycle_evidence
                 ),
                 "route_policy_visible_to_adapter": False,
                 **stats,
-                **receipt_trace,
+                **_event_receipt_trace_fields(receipt_trace),
             }
         )
         _emit_event(
@@ -1123,14 +1130,18 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "total_ms": total_ms,
                 "layers": len(context.kv_caches),
                 "ranges": context.ranges,
-                "lifecycle_evidence": lifecycle_evidence,
-                "store_lifecycle_evidence": mutation.evidence,
-                "adapter_evidence_record": _adapter_evidence_record_for_event(
+                "lifecycle_evidence": _public_vllm_lifecycle_summary(
+                    lifecycle_evidence
+                ),
+                "store_lifecycle_evidence": _public_vllm_lifecycle_summary(
+                    mutation.evidence
+                ),
+                "adapter_evidence_id": _adapter_evidence_id_for_event(
                     lifecycle_evidence
                 ),
                 "route_policy_visible_to_adapter": False,
                 **stats,
-                **receipt_trace,
+                **_event_receipt_trace_fields(receipt_trace),
             }
         )
         _emit_event(
@@ -1212,9 +1223,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "block_count": removed.block_count,
                     "source_request_id": removed.source_request_id,
                     "reason": removal.reason,
-                    "cleanup_lifecycle_evidence": removal.cleanup_evidence,
-                    "backing_lifecycle": backing_evidence,
-                    "adapter_evidence_record": _adapter_evidence_record_for_event(
+                    "cleanup_lifecycle_evidence": _public_vllm_lifecycle_summary(
+                        removal.cleanup_evidence
+                    ),
+                    "backing_lifecycle": _public_vllm_backing_lifecycle_summary(
+                        backing_evidence
+                    ),
+                    "adapter_evidence_id": _adapter_evidence_id_for_event(
                         removal.cleanup_evidence
                     ),
                     "route_policy_visible_to_adapter": False,
@@ -1260,9 +1275,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "block_count": prefix.block_count,
                     "source_request_id": prefix.source_request_id,
                     "reason": removal.reason,
-                    "cleanup_lifecycle_evidence": removal.cleanup_evidence,
-                    "backing_lifecycle": backing_evidence,
-                    "adapter_evidence_record": _adapter_evidence_record_for_event(
+                    "cleanup_lifecycle_evidence": _public_vllm_lifecycle_summary(
+                        removal.cleanup_evidence
+                    ),
+                    "backing_lifecycle": _public_vllm_backing_lifecycle_summary(
+                        backing_evidence
+                    ),
+                    "adapter_evidence_id": _adapter_evidence_id_for_event(
                         removal.cleanup_evidence
                     ),
                     "route_policy_visible_to_adapter": False,
@@ -1441,15 +1460,9 @@ def _event_receipt_trace_fields(receipt_trace: Mapping[str, Any]) -> dict[str, A
     allowed_keys = (
         "direct_bytes",
         "relay_bytes",
-        "receipt_ids",
-        "decision_ids",
-        "topology_snapshot_ids",
-        "ticket_ids",
-        "fallback_reason",
         "receipt_count",
         "receipt_states",
         "completion_sources",
-        "transfer_ids",
     )
     event_fields = {key: receipt_trace.get(key) for key in allowed_keys}
 
@@ -1487,6 +1500,151 @@ def _adapter_evidence_record_for_event(
     result = dict(adapter_record)
     logger.info("adapter event 证据记录提取完成, evidence_id: %s", result.get("evidence_id"))
     return result
+
+
+def _adapter_evidence_id_for_event(
+    lifecycle_evidence: Mapping[str, Any],
+) -> str:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：提取 adapter event 证据标识
+    #  * ========================================================================
+    #  * 目标：公开事件缓存不携带完整 adapter evidence record
+    #  * 数据源：adapter lifecycle evidence
+    #  * 操作：
+    #  *   1) 复用 RuntimeSession evidence record 校验
+    #  *   2) 只返回 evidence_id
+    #  */
+    logger.info("开始提取 adapter event 证据标识...")
+
+    # // 3.1 提取并校验 adapter evidence record
+    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+
+    # // 3.2 返回公开 evidence id
+    evidence_id = str(adapter_record.get("evidence_id", ""))
+    logger.info("adapter event 证据标识提取完成, evidence_id: %s", evidence_id)
+    return evidence_id
+
+
+def _public_vllm_lifecycle_summary(
+    lifecycle_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤3：构造 vLLM lifecycle 公开摘要
+    #  * ========================================================================
+    #  * 目标：事件缓存只保留 RuntimeSession 绑定后的标量证据
+    #  * 数据源：已生成的 vLLM lifecycle evidence
+    #  * 操作：
+    #  *   1) 提取 adapter evidence id
+    #  *   2) 只返回数量、状态、来源和 route policy 隐藏标记
+    #  */
+    logger.info("开始构造 vLLM lifecycle 公开摘要...")
+
+    # // 3.1 提取 adapter evidence record
+    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+
+    # // 3.2 统计 receipt contract 数量
+    receipt_contracts = lifecycle_evidence.get("receipt_contracts")
+    receipt_contract_count = (
+        len(receipt_contracts)
+        if isinstance(receipt_contracts, list)
+        else 0
+    )
+
+    # // 3.3 返回公开标量摘要
+    summary = {
+        "evidence_id": str(lifecycle_evidence.get("evidence_id", "")),
+        "mutation_id": str(lifecycle_evidence.get("mutation_id", "")),
+        "operation": str(
+            lifecycle_evidence.get("operation", lifecycle_evidence.get("action", ""))
+        ),
+        "receipt_count": int(lifecycle_evidence.get("receipt_count", 0) or 0),
+        "receipt_states": str(lifecycle_evidence.get("receipt_states", "")),
+        "completion_sources": str(lifecycle_evidence.get("completion_sources", "")),
+        "direct_bytes": int(lifecycle_evidence.get("direct_bytes", 0) or 0),
+        "relay_bytes": int(lifecycle_evidence.get("relay_bytes", 0) or 0),
+        "daemon_recovery_count": int(
+            lifecycle_evidence.get("daemon_recovery_count", 0) or 0
+        ),
+        "daemon_recovery_sources": str(
+            lifecycle_evidence.get("daemon_recovery_sources", "")
+        ),
+        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "receipt_contract_count": receipt_contract_count,
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info(
+        "vLLM lifecycle 公开摘要构造完成, evidence_id: %s",
+        summary["adapter_evidence_id"],
+    )
+    return summary
+
+
+def _public_vllm_backing_lifecycle_summary(
+    backing_evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤4：构造 vLLM backing 公开摘要
+    #  * ========================================================================
+    #  * 目标：backing 事件不公开 RuntimeSession entrypoint 和 receipt contracts
+    #  * 数据源：backing lifecycle evidence
+    #  * 操作：
+    #  *   1) 读取 backing 动作和规模
+    #  *   2) 只返回 receipt contract 数量
+    #  */
+    logger.info("开始构造 vLLM backing 公开摘要...")
+
+    # // 4.1 统计 receipt contract 数量
+    receipt_contracts = backing_evidence.get("receipt_contracts")
+    receipt_contract_count = (
+        len(receipt_contracts)
+        if isinstance(receipt_contracts, list)
+        else 0
+    )
+
+    # // 4.2 返回公开 backing 摘要
+    summary = {
+        "action": str(backing_evidence.get("action", "")),
+        "lifecycle_source": str(backing_evidence.get("lifecycle_source", "")),
+        "backing_count": int(backing_evidence.get("backing_count", 0) or 0),
+        "receipt_contract_count": receipt_contract_count,
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info(
+        "vLLM backing 公开摘要构造完成, action: %s",
+        summary["action"],
+    )
+    return summary
+
+
+def _public_free_backing_cleanup_summary(
+    free_backing_cleanup: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤5：构造 free backing cleanup 公开摘要
+    #  * ========================================================================
+    #  * 目标：close 事件只说明 RuntimeSession close 已绑定
+    #  * 数据源：backing pool close evidence
+    #  * 操作：
+    #  *   1) 统计 cleanup group
+    #  *   2) 不公开完整 close entrypoint
+    #  */
+    logger.info("开始构造 free backing cleanup 公开摘要...")
+
+    # // 5.1 统计 cleanup group
+    group_count = len(free_backing_cleanup)
+
+    # // 5.2 返回 RuntimeSession close 绑定摘要
+    summary = {
+        "group_count": group_count,
+        "runtime_close_entrypoint_recorded": True,
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info("free backing cleanup 公开摘要构造完成, groups: %s", group_count)
+    return summary
 
 
 def _vllm_kv_lifecycle_evidence(

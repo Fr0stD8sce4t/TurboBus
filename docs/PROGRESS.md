@@ -33,8 +33,11 @@ completed system capability loop. Do not accumulate implementation history.
   structural buffer, tensor, bucket, and range summaries. Receipt, ticket,
   decision, topology, and transfer-state identity must come from
   RuntimeSession adapter evidence records and receipt contracts.
-- vLLM connector close, saved-prefix reads, and connector event reads remain
-  bound to RuntimeSession evidence and keep route policy hidden.
+- vLLM connector close, saved-prefix reads, connector event reads, lifecycle
+  event caches, and backing summaries remain bound to RuntimeSession evidence.
+  Public vLLM summaries expose scalar counts, evidence ids, and close-binding
+  flags only. Raw receipt, ticket, decision, topology, runtime entrypoint, and
+  receipt-contract identities stay inside the internal validation chain.
 
 ## Remaining Risk
 
@@ -53,7 +56,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining vLLM connector lifecycle event fields and prefix/backing
-manager summaries. Tighten any event field that can expose runtime-looking
-transfer state without consuming `TurboBusRuntimeSession` entrypoint adapter
-evidence records or close entrypoint records.
+Next inspect remaining adapter-facing construction and recovery paths for any
+runtime-looking entrypoint that can still bypass `TurboBusRuntimeSession`
+adapter evidence records, saved-prefix snapshots, or RuntimeSession close
+records.

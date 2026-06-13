@@ -34,6 +34,14 @@ _PRIVATE_EVENT_KEYS = frozenset(
         "adapter_evidence_record",
         "adapter_evidence_records",
         "runtime_close_entrypoint",
+        "receipt_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+        "ticket_ids",
+        "transfer_ids",
+        "fallback_reason",
+        "receipt_contracts",
+        "runtime_entrypoint",
     }
 )
 
@@ -90,7 +98,10 @@ def get_connector_events() -> list[dict[str, Any]]:
     logger.info("开始读取 connector 事件快照...")
 
     # // 1.1 校验所有 runtime-looking 事件
-    events = [_validated_connector_event(event) for event in _CONNECTOR_EVENTS]
+    events = [
+        _public_connector_event(_validated_connector_event(event))
+        for event in _CONNECTOR_EVENTS
+    ]
 
     # // 1.2 返回隔离副本
     logger.info("connector 事件快照读取完成, count: %s", len(events))
@@ -113,11 +124,12 @@ def emit_event(event: str, **fields) -> None:
     # // 2.1 构造并校验事件记录
     record = _validated_connector_event({"event": event, **fields})
     _CONNECTOR_EVENTS.append(record)
+    public_record = _public_connector_event(record)
 
     # // 2.2 输出控制台标量摘要
     parts = ["turbobus_kv_connector_event", f"event={event}"]
-    for key, value in record.items():
-        if key == "event" or key in _PRIVATE_EVENT_KEYS:
+    for key, value in public_record.items():
+        if key == "event":
             continue
         parts.append(f"{key}={value}")
     print(" ".join(parts), flush=True)
@@ -168,6 +180,49 @@ def _validated_connector_event(event: Mapping[str, Any]) -> dict[str, Any]:
 
     logger.info("connector 事件边界校验完成, runtime_summary: %s", True)
     return record
+
+
+def _public_connector_event(record: Mapping[str, Any]) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤8：构造公开 connector event
+    #  * ========================================================================
+    #  * 目标：公开读面只暴露 RuntimeSession 绑定后的标量摘要
+    #  * 数据源：已校验 connector event
+    #  * 操作：
+    #  *   1) 删除 receipt/ticket/decision/topology 原始标识
+    #  *   2) 保留 adapter evidence 的 id 和数量摘要
+    #  */
+    logger.info("开始构造公开 connector event...")
+
+    # // 8.1 复制非私有字段
+    public = {
+        key: value
+        for key, value in record.items()
+        if key not in _PRIVATE_EVENT_KEYS
+    }
+
+    # // 8.2 记录单条 adapter evidence 摘要
+    adapter_record = record.get("adapter_evidence_record")
+    if isinstance(adapter_record, Mapping):
+        public["adapter_evidence_id"] = str(adapter_record.get("evidence_id", ""))
+
+    # // 8.3 记录多条 adapter evidence 摘要
+    adapter_records = record.get("adapter_evidence_records")
+    if isinstance(adapter_records, list):
+        evidence_ids = [
+            str(item.get("evidence_id", ""))
+            for item in adapter_records
+            if isinstance(item, Mapping) and str(item.get("evidence_id", "")).strip()
+        ]
+        public["adapter_evidence_count"] = len(evidence_ids)
+
+    # // 8.4 记录 close entrypoint 已绑定摘要
+    if "runtime_close_entrypoint" in record:
+        public["runtime_close_entrypoint_recorded"] = True
+
+    logger.info("公开 connector event 构造完成, fields: %s", len(public))
+    return public
 
 
 def _has_runtime_summary(record: Mapping[str, Any]) -> bool:

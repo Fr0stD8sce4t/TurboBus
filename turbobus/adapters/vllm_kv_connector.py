@@ -779,7 +779,18 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         saved.daemon_recovery_evidence = {
             "operation": "restore",
             "request_id": request.request_id,
+            "runtime_entrypoint": dict(lifecycle_evidence["runtime_entrypoint"]),
+            "adapter_evidence_record": _adapter_evidence_record_for_event(
+                lifecycle_evidence
+            ),
             "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
+            "daemon_recovery_count": int(
+                receipt_trace.get("daemon_recovery_count", 0) or 0
+            ),
+            "daemon_recovery_sources": str(
+                receipt_trace.get("daemon_recovery_sources", "")
+            ),
+            "route_policy_visible_to_adapter": False,
         }
         self.state.events.append(
             {
@@ -1025,7 +1036,18 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             daemon_recovery_evidence={
                 "operation": "save",
                 "request_id": request.request_id,
+                "runtime_entrypoint": dict(lifecycle_evidence["runtime_entrypoint"]),
+                "adapter_evidence_record": _adapter_evidence_record_for_event(
+                    lifecycle_evidence
+                ),
                 "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
+                "daemon_recovery_count": int(
+                    receipt_trace.get("daemon_recovery_count", 0) or 0
+                ),
+                "daemon_recovery_sources": str(
+                    receipt_trace.get("daemon_recovery_sources", "")
+                ),
+                "route_policy_visible_to_adapter": False,
             },
         )
         mutation = self._store_prefix(prefix)

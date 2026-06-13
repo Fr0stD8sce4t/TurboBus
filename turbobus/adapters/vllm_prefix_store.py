@@ -718,6 +718,14 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
     )
 
     # // 12.3 返回公开标量快照
+    restore_summary = _optional_lifecycle_summary_for_prefix_store(
+        prefix.last_restore_lifecycle_evidence,
+        source="last_restore_lifecycle_evidence",
+    )
+    recovery_summary = _optional_daemon_recovery_summary_for_prefix_store(
+        prefix.daemon_recovery_evidence,
+        source="daemon_recovery_evidence",
+    )
     snapshot = {
         "schema": "turbobus.vllm_saved_prefix.runtime_snapshot.v1",
         "key": prefix.key,
@@ -749,7 +757,112 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
         "route_policy_visible_to_adapter": False,
     }
     logger.info("saved prefix RuntimeSession 快照构造完成, key: %s", prefix.key)
+    if restore_summary is not None:
+        snapshot["last_restore_lifecycle"] = restore_summary
+    if recovery_summary is not None:
+        snapshot["daemon_recovery"] = recovery_summary
     return snapshot
+
+
+def _optional_lifecycle_summary_for_prefix_store(
+    evidence: Mapping[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any] | None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤15：读取可选 lifecycle 公开摘要
+    #  * ========================================================================
+    #  * 数据源：TurboBusSavedPrefix lifecycle evidence
+    #  * 操作：
+    #  *   1) 空 evidence 直接跳过
+    #  *   2) 校验 RuntimeSession adapter evidence record
+    #  *   3) 只返回标量摘要和 adapter evidence record
+    #  */
+    logger.info("开始读取可选 lifecycle 公开摘要...")
+
+    # // 15.1 空 evidence 不进入公开摘要
+    if not evidence:
+        logger.info("可选 lifecycle 公开摘要读取完成, present: %s", False)
+        return None
+
+    # // 15.2 校验 RuntimeSession entrypoint 和 receipt contracts
+    entrypoint = _runtime_entrypoint_for_prefix_store(evidence, source=source)
+    receipt_contracts = _receipt_contracts_for_prefix_store(
+        evidence,
+        runtime_entrypoint=entrypoint,
+        source=source,
+    )
+
+    # // 15.3 返回公开标量摘要
+    summary = {
+        "evidence_id": str(evidence.get("evidence_id", "")),
+        "operation": str(evidence.get("operation", "")),
+        "receipt_ids": str(evidence.get("receipt_ids", "")),
+        "receipt_count": int(evidence.get("receipt_count", 0) or 0),
+        "daemon_recovery_count": int(
+            evidence.get("daemon_recovery_count", 0) or 0
+        ),
+        "daemon_recovery_sources": str(
+            evidence.get("daemon_recovery_sources", "")
+        ),
+        "adapter_evidence_record": dict(entrypoint["adapter_evidence_record"]),
+        "receipt_contract_count": len(receipt_contracts),
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info("可选 lifecycle 公开摘要读取完成, present: %s", True)
+    return summary
+
+
+def _optional_daemon_recovery_summary_for_prefix_store(
+    evidence: Mapping[str, Any],
+    *,
+    source: str,
+) -> dict[str, Any] | None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤16：读取可选 daemon recovery 公开摘要
+    #  * ========================================================================
+    #  * 数据源：TurboBusSavedPrefix daemon recovery evidence
+    #  * 操作：
+    #  *   1) 空 recovery evidence 直接跳过
+    #  *   2) 校验 RuntimeSession adapter evidence record
+    #  *   3) 只返回 recovery 标量摘要
+    #  */
+    logger.info("开始读取可选 daemon recovery 公开摘要...")
+
+    # // 16.1 空 evidence 不进入公开摘要
+    if not evidence:
+        logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", False)
+        return None
+
+    # // 16.2 校验 RuntimeSession entrypoint 和 adapter evidence record
+    entrypoint = _runtime_entrypoint_for_prefix_store(evidence, source=source)
+    adapter_record = evidence.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
+    if str(adapter_record.get("evidence_id")) != str(
+        entrypoint["adapter_evidence_record"].get("evidence_id")
+    ):
+        raise ValueError(f"{source} adapter evidence_id mismatch")
+    if bool(evidence.get("route_policy_visible_to_adapter", True)):
+        raise ValueError(f"{source} exposes route policy to adapter")
+
+    # // 16.3 返回公开标量摘要
+    summary = {
+        "operation": str(evidence.get("operation", "")),
+        "request_id": str(evidence.get("request_id", "")),
+        "daemon_recovery_count": int(
+            evidence.get("daemon_recovery_count", 0) or 0
+        ),
+        "daemon_recovery_sources": str(
+            evidence.get("daemon_recovery_sources", "")
+        ),
+        "adapter_evidence_record": dict(adapter_record),
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", True)
+    return summary
 
 
 def _remove_saved_prefix_for_connector(

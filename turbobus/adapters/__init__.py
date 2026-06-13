@@ -35,7 +35,6 @@ from .vllm_kv_connector import (
     TurboBusConnectorMetadata,
     TurboBusRequestMetadata,
     TurboBusSavedPrefix,
-    clear_connector_events,
     get_connector_events,
     get_saved_prefix,
 )
@@ -64,7 +63,6 @@ __all__ = [
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
     "block_bytes_from_vllm_kv_tensor",
-    "clear_connector_events",
     "extract_vllm_block_ids",
     "get_connector_events",
     "get_saved_prefix",

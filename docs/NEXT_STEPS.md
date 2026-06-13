@@ -46,15 +46,16 @@ records, snapshots, and real receipts.
   must not create route, plan, relay, pool, or target-GPU policy. vLLM close
   and free backing cleanup summaries must inherit RuntimeSession close
   entrypoint evidence. Public saved-prefix recovery and lifecycle reads must
-  return only RuntimeSession-bound scalar snapshots.
+  return only RuntimeSession-bound scalar snapshots. Public connector event
+  reads must not expose a clear/delete path for RuntimeSession-bound evidence.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter-facing state/event reads in `turbobus/adapters/`,
-`turbobus/offload/`, and `turbobus/runtime/`. Tighten any path that can emit
-runtime-looking evidence without a `TurboBusRuntimeSession` entrypoint adapter
-evidence record or close entrypoint record.
+inspect remaining adapter-facing offload batch and block state snapshots in
+`turbobus/offload/` and adapter managers. Tighten any path that can emit
+runtime-looking transfer state without a `TurboBusRuntimeSession` entrypoint
+adapter evidence record or close entrypoint record.
 
 ## Remaining Risk
 

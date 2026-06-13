@@ -29,6 +29,9 @@ completed system capability loop. Do not accumulate implementation history.
 - Public saved-prefix reads now validate optional restore lifecycle and daemon
   recovery evidence against RuntimeSession adapter evidence records, then expose
   only scalar recovery/lifecycle snapshots.
+- Public connector event reads still validate RuntimeSession-bound event
+  evidence, while public event clearing now rejects deleting adapter evidence
+  outside the connector lifecycle.
 
 ## Remaining Risk
 
@@ -47,8 +50,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter-facing state/event reads in
-`turbobus/adapters/`, `turbobus/offload/`, and `turbobus/runtime/`. Tighten any
-path that can emit runtime-looking evidence without consuming
-`TurboBusRuntimeSession` entrypoint adapter evidence records or close
-entrypoint records.
+Next inspect remaining adapter-facing offload batch and block state snapshots in
+`turbobus/offload/` and adapter managers. Tighten any path that can emit
+runtime-looking transfer state without consuming `TurboBusRuntimeSession`
+entrypoint adapter evidence records or close entrypoint records.

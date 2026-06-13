@@ -13,7 +13,6 @@ from ..schema import TransferReceipt, WorkloadKind
 from .vllm_backing_pool import TurboBusCPUBackingPool
 from .vllm_config import TurboBusConnectorConfig
 from .vllm_events import (
-    clear_connector_events,
     emit_event as _emit_event,
     get_connector_events,
 )
@@ -1947,7 +1946,6 @@ __all__ = [
     "TurboBusConnectorMetadata",
     "TurboBusRequestMetadata",
     "TurboBusSavedPrefix",
-    "clear_connector_events",
     "get_connector_events",
     "get_saved_prefix",
 ]

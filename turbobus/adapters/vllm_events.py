@@ -39,7 +39,41 @@ _PRIVATE_EVENT_KEYS = frozenset(
 
 
 def clear_connector_events() -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：拒绝公开清理 connector events
+    #  * ========================================================================
+    #  * 目标：防止外部代码删除 RuntimeSession-bound adapter event evidence
+    #  * 数据源：公共 adapter API
+    #  * 操作：
+    #  *   1) 拒绝公开清理
+    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  */
+    logger.info("开始拒绝公开清理 connector events...")
+
+    # // 1.1 拒绝公开事件清理
+    raise RuntimeError(
+        "connector events must be cleared through TurboBusRuntimeSession "
+        "connector lifecycle"
+    )
+
+
+def _clear_connector_events_for_connector() -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：清理 connector 内部事件
+    #  * ========================================================================
+    #  * 目标：只允许 connector 生命周期内部重置事件缓存
+    #  * 数据源：_CONNECTOR_EVENTS
+    #  * 操作：
+    #  *   1) 清空内部事件缓存
+    #  *   2) 不作为公共 evidence 删除入口
+    #  */
+    logger.info("开始清理 connector 内部事件...")
+
+    # // 2.1 清空内部事件缓存
     _CONNECTOR_EVENTS.clear()
+    logger.info("connector 内部事件清理完成")
 
 
 def get_connector_events() -> list[dict[str, Any]]:

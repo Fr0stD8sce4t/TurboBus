@@ -6,8 +6,7 @@ from typing import Any, Mapping
 
 from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats
-from ..offload.lifecycle import receipt_trace_from_receipts, runtime_entrypoint_contract
-from ..runtime.validation import validate_runtime_receipt
+from ..offload.lifecycle import runtime_session_receipt_trace_from_receipts
 from ..runtime_session import TurboBusRuntimeSession
 from ..runtime_options import RuntimeOptions
 from ..schema import TransferReceipt, WorkloadKind
@@ -1377,27 +1376,12 @@ def _receipt_trace_from_receipts(
     evidence_id: str,
     operation: str,
 ) -> dict[str, Any]:
-    for receipt in receipts:
-        validate_runtime_receipt(
-            receipt,
-            intent_id=receipt.intent_id,
-            job_id=runtime_session.job_id,
-            session_id=runtime_session.session_id,
-        )
-    trace = receipt_trace_from_receipts(receipts)
-    recovery = _daemon_recovery_from_receipts(receipts, runtime_session)
-    trace["daemon_recovery"] = recovery
-    trace["daemon_recovery_count"] = len(recovery)
-    trace["daemon_recovery_sources"] = _join_unique(
-        str(item.get("source", "")) for item in recovery if item.get("source")
-    )
-    trace["runtime_entrypoint"] = runtime_entrypoint_contract(
+    return runtime_session_receipt_trace_from_receipts(
+        receipts,
         runtime_session,
-        receipts=receipts,
         evidence_id=evidence_id,
         operation=operation,
     )
-    return trace
 
 
 def _vllm_kv_lifecycle_evidence_id(
@@ -1473,41 +1457,6 @@ def _adapter_evidence_record_for_event(
     result = dict(adapter_record)
     logger.info("adapter event 证据记录提取完成, evidence_id: %s", result.get("evidence_id"))
     return result
-
-
-def _daemon_recovery_from_receipts(
-    receipts: list[TransferReceipt],
-    runtime_session: TurboBusRuntimeSession,
-) -> list[dict[str, Any]]:
-    recovered: list[dict[str, Any]] = []
-    for receipt in receipts:
-        metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
-        transfer_id = metadata.get("transfer_id")
-        if transfer_id is None:
-            continue
-        recovery = runtime_session.recover_transfer_state(
-            intent_id=receipt.intent_id,
-            transfer_id=str(transfer_id),
-        )
-        recovered.append(
-            {
-                "intent_id": receipt.intent_id,
-                "receipt_id": receipt.receipt_id,
-                "transfer_id": str(transfer_id),
-                "source": recovery.get("source"),
-                "state": recovery.get("state"),
-                "admission": recovery.get("admission"),
-                "queue_record": recovery.get("queue_record"),
-                "ticket": recovery.get("ticket"),
-                "reservations": recovery.get("reservations"),
-                "leases": recovery.get("leases"),
-                "buffer_snapshots": recovery.get("buffer_snapshots"),
-                "cleanup_targets": recovery.get("cleanup_targets"),
-                "completion_source": recovery.get("completion_source"),
-                "completion_evidence": recovery.get("completion_evidence"),
-            }
-        )
-    return recovered
 
 
 def _vllm_kv_lifecycle_evidence(

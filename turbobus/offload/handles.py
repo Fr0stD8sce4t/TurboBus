@@ -7,7 +7,7 @@ from ..runtime_session import TurboBusRuntimeSession
 from ..runtime.validation import validate_runtime_receipt
 from ..schema import TransferIntent, TransferReceipt, TransferStatusState
 from .context import AdapterTransferContext, require_runtime_session_open
-from .lifecycle import runtime_entrypoint_contract
+from .lifecycle import _runtime_entrypoint_contract
 from .stats import TransferStats, transfer_stats_from_receipt
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ class ReceiptTransferHandle:
         operation = _adapter_handle_operation(self.intent, phase=phase)
 
         # // 3.2 记录并缓存 RuntimeSession entrypoint contract
-        self.runtime_entrypoint = runtime_entrypoint_contract(
+        self.runtime_entrypoint = _runtime_entrypoint_contract(
             self.client,
             receipts=(self.receipt,),
             evidence_id=str(self.evidence_id),

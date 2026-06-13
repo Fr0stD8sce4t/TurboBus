@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import math
 from typing import Iterable, Mapping
 
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..offload.context import forbidden_physical_policy_keys
-from ..offload.stats import TransferStats
+from ..offload.stats import TransferStats, TransferStatsSnapshot
+from ..runtime.evidence import validate_adapter_transfer_stats_collection
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -214,21 +218,14 @@ class VllmKVSlotAdapter:
     def submit_save_request(self, request_id: str) -> list:
         return self._submit_request_transfer(request_id, "save")
 
-    def transfer_stats(self, refs: Iterable[VllmKVBlockRef]) -> TransferStats:
+    def transfer_stats(self, refs: Iterable[VllmKVBlockRef]) -> TransferStatsSnapshot:
         names_by_group = self._register_and_group(refs)
-        total = TransferStats()
-        for group_id, names in names_by_group.items():
-            total = self._sum_transfer_stats(total, self.adapters[group_id].transfer_stats(names))
-        return total
+        return self._transfer_stats_snapshot_from_group_names(names_by_group)
 
-    def transfer_stats_for_request(self, request_id: str) -> TransferStats:
-        total = TransferStats()
-        for group_id, names in self._group_names_for_request(request_id).items():
-            total = self._sum_transfer_stats(
-                total,
-                self.adapters[group_id].transfer_stats(names),
-            )
-        return total
+    def transfer_stats_for_request(self, request_id: str) -> TransferStatsSnapshot:
+        return self._transfer_stats_snapshot_from_group_names(
+            self._group_names_for_request(request_id),
+        )
 
     def forget_request(self, request_id: str) -> tuple[str, ...]:
         grouped_names = self._request_group_names.pop(str(request_id), None)
@@ -310,6 +307,67 @@ class VllmKVSlotAdapter:
             relay_chunks=total.relay_chunks + stats.relay_chunks,
         )
 
+    def _transfer_stats_snapshot_from_group_names(
+        self,
+        names_by_group: Mapping[int, Iterable[str]],
+    ) -> TransferStatsSnapshot:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：聚合 RuntimeSession 绑定 vLLM stats 快照
+        #  * ========================================================================
+        #  * 数据源：每个 group 的 InferenceKVSlotAdapter transfer stats snapshot
+        #  * 操作：
+        #  *   1) 收集每个 group 的 RuntimeSession adapter evidence
+        #  *   2) 只聚合已绑定 evidence 的统计摘要，不开放 route policy
+        #  */
+        logger.info("开始聚合 RuntimeSession 绑定 vLLM stats 快照...")
+
+        # // 1.1 读取 group-level evidence-bound stats
+        group_snapshots: list[dict[str, object]] = []
+        total = TransferStats()
+        for group_id, names in names_by_group.items():
+            stats = self.adapters[int(group_id)].transfer_stats(tuple(names))
+            group_snapshot = stats.as_dict()
+            group_snapshot["group_id"] = int(group_id)
+            group_snapshots.append(group_snapshot)
+            total = self._sum_transfer_stats(total, stats)
+
+        # // 1.2 构造 vLLM 聚合快照
+        snapshot = {
+            "transfer_state": "runtime_session_bound",
+            "adapter": "vllm_kv_slot_adapter",
+            "group_count": len(group_snapshots),
+            "groups": group_snapshots,
+            "bytes": int(total.bytes),
+            "direct_chunks": int(total.direct_chunks),
+            "relay_chunks": int(total.relay_chunks),
+            "receipt_count": sum(
+                int(item.get("receipt_count", 0) or 0) for item in group_snapshots
+            ),
+            "receipt_ids": _join_snapshot_csv(group_snapshots, "receipt_ids"),
+            "intent_ids": _join_snapshot_csv(group_snapshots, "intent_ids"),
+            "decision_ids": _join_snapshot_csv(group_snapshots, "decision_ids"),
+            "topology_snapshot_ids": _join_snapshot_csv(
+                group_snapshots,
+                "topology_snapshot_ids",
+            ),
+            "ticket_ids": _join_snapshot_csv(group_snapshots, "ticket_ids"),
+            "receipt_states": _join_snapshot_csv(group_snapshots, "receipt_states"),
+            "direct_bytes": sum(
+                int(item.get("direct_bytes", 0) or 0) for item in group_snapshots
+            ),
+            "relay_bytes": sum(
+                int(item.get("relay_bytes", 0) or 0) for item in group_snapshots
+            ),
+            "route_policy_visible_to_adapter": False,
+        }
+        logger.info(
+            "RuntimeSession 绑定 vLLM stats 快照聚合完成, receipts: %s",
+            snapshot["receipt_count"],
+        )
+        validate_adapter_transfer_stats_collection(snapshot)
+        return TransferStatsSnapshot(snapshot)
+
     def _register_and_group(
         self,
         refs: Iterable[VllmKVBlockRef],
@@ -375,6 +433,36 @@ def _group_metadata(
         )
     metadata["group_id"] = int(group_id)
     return metadata
+
+
+def _join_snapshot_csv(
+    snapshots: Iterable[Mapping[str, object]],
+    field_name: str,
+) -> str:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：聚合 stats 快照标识字段
+    #  * ========================================================================
+    #  * 数据源：group-level RuntimeSession stats snapshots
+    #  * 操作：
+    #  *   1) 读取每个 group 的 CSV 标识字段
+    #  *   2) 保持去重顺序，用于 vLLM 聚合 evidence 摘要
+    #  */
+    logger.info("开始聚合 stats 快照标识字段...")
+
+    # // 2.1 顺序去重拼接 CSV 字段
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for snapshot in snapshots:
+        for value in str(snapshot.get(field_name, "")).split(","):
+            normalized = value.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+    result = ",".join(ordered)
+    logger.info("stats 快照标识字段聚合完成, field: %s", field_name)
+    return result
 
 
 def _group_intent_prefix(intent_prefix: str | None, group_id: int) -> str | None:

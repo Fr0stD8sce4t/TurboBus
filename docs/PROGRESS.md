@@ -26,6 +26,9 @@ completed system capability loop. Do not accumulate implementation history.
   Public offload batch snapshots must generate and validate RuntimeSession
   adapter evidence before exposing receipt, ticket, decision, topology, and
   byte-summary fields.
+- Public adapter transfer stats reads now return RuntimeSession-bound stats
+  snapshots with adapter evidence records and receipt contracts. Raw direct and
+  relay counts remain private inputs to lifecycle evidence construction.
 - vLLM connector close, saved-prefix reads, and connector event reads remain
   bound to RuntimeSession evidence and keep route policy hidden.
 
@@ -46,8 +49,8 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter-facing `transfer_stats` reads and lifecycle range
-evidence in model loading, training offload, inference KV, and vLLM managers.
-Tighten any path that can emit runtime-looking transfer state without consuming
+Next inspect remaining lifecycle range evidence in model loading, training
+offload, inference KV, and vLLM managers. Tighten any range or binding evidence
+that can emit runtime-looking transfer state without consuming
 `TurboBusRuntimeSession` entrypoint adapter evidence records or close entrypoint
 records.

@@ -42,21 +42,22 @@ records, snapshots, and real receipts.
 - `turbobus/offload/store.py` and `turbobus/offload/blocks.py`: public batch
   snapshots must use RuntimeSession-bound adapter evidence before exposing
   receipt/ticket/decision summaries. Public block snapshots remain structural
-  and do not expose runtime-looking receipt fields.
+  and do not expose runtime-looking receipt fields. Public transfer stats reads
+  must return RuntimeSession-bound stats snapshots, not raw direct/relay counts.
 - `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
-  evidence, exposed route policy, lifecycle identity drift, and public batch
-  snapshots that are not bound to RuntimeSession adapter evidence.
+  evidence, exposed route policy, lifecycle identity drift, public batch
+  snapshots, and public transfer stats snapshots that are not bound to
+  RuntimeSession adapter evidence.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, or target-GPU policy.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter-facing `transfer_stats` reads and lifecycle range
-evidence in model loading, training offload, inference KV, and vLLM managers.
-Tighten any path that can emit runtime-looking transfer state without consuming
-`TurboBusRuntimeSession` entrypoint adapter evidence records or close entrypoint
-records.
+inspect remaining lifecycle range evidence in model loading, training offload,
+inference KV, and vLLM managers. Tighten any range or binding evidence that can
+emit runtime-looking transfer state without consuming `TurboBusRuntimeSession`
+entrypoint adapter evidence records or close entrypoint records.
 
 ## Remaining Risk
 

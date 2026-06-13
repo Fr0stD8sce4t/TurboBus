@@ -7,6 +7,7 @@ from typing import Iterable, Mapping
 from ..runtime.evidence import (
     validate_adapter_batch_snapshot,
     validate_adapter_lifecycle_evidence,
+    validate_adapter_transfer_stats_snapshot,
 )
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferIntent, TransferReceipt, WorkloadKind
@@ -14,7 +15,7 @@ from .blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from .context import AdapterTransferContext, require_runtime_session_open
 from .handles import ReceiptTransferHandle, validate_adapter_receipt
 from .lifecycle import adapter_lifecycle_evidence_from_handles
-from .stats import TransferStats, summarize_transfer_handles
+from .stats import TransferStats, TransferStatsSnapshot, summarize_transfer_handles
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,8 @@ class OffloadBatch:
     def wait(self) -> None:
         self.store.wait_many(self.names)
 
-    def transfer_stats(self) -> TransferStats:
-        return self.store.transfer_stats_many(self.names)
+    def transfer_stats(self) -> TransferStatsSnapshot:
+        return self.store.transfer_stats_snapshot(self.names)
 
     def block_infos(self) -> list[OffloadBlockInfo]:
         return self.store.block_infos(self.names)
@@ -237,13 +238,72 @@ class OffloadStore:
                 waited.add(handle_key)
             self._mark_waited(block)
 
-    def stats(self, name: str):
-        return self.block(name).last_stats
+    def stats(self, name: str) -> TransferStatsSnapshot:
+        return self.transfer_stats_snapshot([name])
 
-    def transfer_stats(self, name: str) -> TransferStats | None:
+    def transfer_stats(self, name: str) -> TransferStatsSnapshot:
+        return self.transfer_stats_snapshot([name])
+
+    def _raw_transfer_stats(self, name: str) -> TransferStats | None:
         return self.block(name).last_transfer_stats
 
-    def transfer_stats_many(self, names: Iterable[str]) -> TransferStats:
+    def transfer_stats_many(self, names: Iterable[str]) -> TransferStatsSnapshot:
+        return self.transfer_stats_snapshot(names)
+
+    def transfer_stats_snapshot(self, names: Iterable[str]) -> TransferStatsSnapshot:
+        # /*
+        #  * ========================================================================
+        #  * 步骤3：生成 RuntimeSession 绑定 transfer stats 快照
+        #  * ========================================================================
+        #  * 数据源：OffloadStore handles 与 RuntimeSession adapter evidence record
+        #  * 操作：
+        #  *   1) 禁止公开 raw direct/relay stats
+        #  *   2) 只返回经过 RuntimeSession evidence 校验的统计快照
+        #  */
+        logger.info("开始生成 RuntimeSession 绑定 transfer stats 快照...")
+
+        # // 3.1 归一化名称并提取已提交 handle
+        selected_names = tuple(str(name) for name in names)
+        handles = tuple(self._handles_for_names(selected_names))
+        if not selected_names or not handles:
+            raise RuntimeError("adapter transfer stats require RuntimeSession receipts")
+
+        # // 3.2 生成 RuntimeSession-bound lifecycle evidence
+        evidence = self.batch_lifecycle_evidence(
+            operation="transfer_stats",
+            names=selected_names,
+            handles=handles,
+        )
+        snapshot = {
+            "transfer_state": "runtime_session_bound",
+            "names": list(selected_names),
+            "bytes": int(evidence.get("bytes", 0) or 0),
+            "direct_chunks": int(evidence.get("direct_chunks", 0) or 0),
+            "relay_chunks": int(evidence.get("relay_chunks", 0) or 0),
+            "runtime_entrypoint": dict(evidence["runtime_entrypoint"]),
+            "adapter_evidence_record": dict(
+                evidence["runtime_entrypoint"]["adapter_evidence_record"]
+            ),
+            "receipt_contracts": list(evidence["receipt_contracts"]),
+            "receipt_count": int(evidence["receipt_count"]),
+            "receipt_ids": str(evidence["receipt_ids"]),
+            "intent_ids": str(evidence["intent_ids"]),
+            "decision_ids": str(evidence["decision_ids"]),
+            "topology_snapshot_ids": str(evidence["topology_snapshot_ids"]),
+            "ticket_ids": str(evidence["ticket_ids"]),
+            "receipt_states": str(evidence["receipt_states"]),
+            "direct_bytes": int(evidence["direct_bytes"]),
+            "relay_bytes": int(evidence["relay_bytes"]),
+            "route_policy_visible_to_adapter": False,
+        }
+        validate_adapter_transfer_stats_snapshot(snapshot)
+        logger.info(
+            "RuntimeSession 绑定 transfer stats 快照生成完成, receipts: %s",
+            snapshot["receipt_count"],
+        )
+        return TransferStatsSnapshot(snapshot)
+
+    def _raw_transfer_stats_many(self, names: Iterable[str]) -> TransferStats:
         return summarize_transfer_handles(
             block.last_handle
             for block in (self.block(name) for name in names)
@@ -285,7 +345,7 @@ class OffloadStore:
             item_count_field="block_count",
             item_names=selected_names,
             handles=selected_handles,
-            transfer_stats=self.transfer_stats_many(selected_names).as_dict(),
+            transfer_stats=self._raw_transfer_stats_many(selected_names).as_dict(),
             runtime_session=self.client,
             extra={
                 "adapter": "offload_store_batch",
@@ -302,6 +362,17 @@ class OffloadStore:
             evidence["evidence_id"],
         )
         return evidence
+
+    def _handles_for_names(self, names: Iterable[str]) -> list[object]:
+        handles = []
+        seen = set()
+        for name in names:
+            handle = self.block(str(name)).last_handle
+            if handle is None or id(handle) in seen:
+                continue
+            seen.add(id(handle))
+            handles.append(handle)
+        return handles
 
     def set_block_state(
         self,

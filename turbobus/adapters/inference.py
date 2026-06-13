@@ -5,7 +5,7 @@ from typing import Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext
-from ..offload.stats import TransferStats
+from ..offload.stats import TransferStatsSnapshot
 from ..offload.store import OffloadBatch, OffloadStore
 from ..schema import WorkloadKind
 
@@ -184,7 +184,7 @@ class InferenceKVSlotAdapter(OffloadStore):
     def wait_prefix(self, names: Iterable[str]) -> None:
         self.wait_many(names)
 
-    def transfer_stats(self, names: Iterable[str]) -> TransferStats:
+    def transfer_stats(self, names: Iterable[str]) -> TransferStatsSnapshot:
         return self.transfer_stats_many(names)
 
     def mark_on_cpu(self, names: Iterable[str] | None = None) -> None:

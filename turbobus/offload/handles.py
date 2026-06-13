@@ -4,11 +4,12 @@ from dataclasses import dataclass, field
 import logging
 
 from ..runtime_session import TurboBusRuntimeSession
+from ..runtime.evidence import validate_adapter_transfer_stats_snapshot
 from ..runtime.validation import validate_runtime_receipt
 from ..schema import TransferIntent, TransferReceipt, TransferStatusState
 from .context import AdapterTransferContext, require_runtime_session_open
-from .lifecycle import _runtime_entrypoint_contract
-from .stats import TransferStats, transfer_stats_from_receipt
+from .lifecycle import _runtime_entrypoint_contract, runtime_session_receipt_trace_from_receipts
+from .stats import TransferStats, TransferStatsSnapshot, transfer_stats_from_receipt
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,61 @@ class ReceiptTransferHandle:
         logger.info("提交阶段句柄证据绑定完成, evidence_id: %s", self.evidence_id)
 
     @property
-    def stats(self) -> TransferStats:
+    def stats(self) -> TransferStatsSnapshot:
+        # /*
+        #  * ========================================================================
+        #  * 步骤4：读取 RuntimeSession 绑定 handle stats
+        #  * ========================================================================
+        #  * 数据源：ReceiptTransferHandle runtime_entrypoint 与 TransferReceipt
+        #  * 操作：
+        #  *   1) 不公开裸 direct/relay stats
+        #  *   2) 返回带 RuntimeSession adapter evidence record 的统计快照
+        #  */
+        logger.info("开始读取 RuntimeSession 绑定 handle stats...")
+
+        # // 4.1 生成 RuntimeSession-bound receipt trace
+        trace = runtime_session_receipt_trace_from_receipts(
+            (self.receipt,),
+            self.client,
+            evidence_id=f"{self.evidence_id}-stats",
+            operation="adapter_handle_transfer_stats",
+        )
+        self.runtime_entrypoint = dict(trace["runtime_entrypoint"])
+
+        # // 4.2 生成并校验 evidence-bound stats 快照
+        raw_stats = self._raw_stats
+        snapshot = {
+            "transfer_state": "runtime_session_bound",
+            "intent_id": self.intent.intent_id,
+            "receipt_id": self.receipt.receipt_id,
+            "bytes": int(raw_stats.bytes),
+            "direct_chunks": int(raw_stats.direct_chunks),
+            "relay_chunks": int(raw_stats.relay_chunks),
+            "runtime_entrypoint": dict(self.runtime_entrypoint),
+            "adapter_evidence_record": dict(
+                self.runtime_entrypoint["adapter_evidence_record"]
+            ),
+            "receipt_contracts": list(trace["receipt_contracts"]),
+            "receipt_count": int(trace["receipt_count"]),
+            "receipt_ids": str(trace["receipt_ids"]),
+            "intent_ids": str(trace["intent_ids"]),
+            "decision_ids": str(trace["decision_ids"]),
+            "topology_snapshot_ids": str(trace["topology_snapshot_ids"]),
+            "ticket_ids": str(trace["ticket_ids"]),
+            "receipt_states": str(trace["receipt_states"]),
+            "direct_bytes": int(trace["direct_bytes"]),
+            "relay_bytes": int(trace["relay_bytes"]),
+            "route_policy_visible_to_adapter": False,
+        }
+        validate_adapter_transfer_stats_snapshot(snapshot)
+        logger.info(
+            "RuntimeSession 绑定 handle stats 读取完成, receipt_id: %s",
+            self.receipt.receipt_id,
+        )
+        return TransferStatsSnapshot(snapshot)
+
+    @property
+    def _raw_stats(self) -> TransferStats:
         return transfer_stats_from_receipt(self.receipt)
 
     def wait(self) -> TransferReceipt:

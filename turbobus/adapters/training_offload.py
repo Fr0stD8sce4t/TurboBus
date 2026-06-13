@@ -6,7 +6,7 @@ from typing import Any, Iterable, Mapping
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from ..offload.context import AdapterTransferContext, forbidden_physical_policy_keys
 from ..offload.lifecycle import adapter_lifecycle_evidence_from_handles
-from ..offload.stats import TransferStats
+from ..offload.stats import TransferStatsSnapshot
 from ..offload.store import OffloadBatch, OffloadStore
 from ..schema import WorkloadKind
 
@@ -276,7 +276,7 @@ class TrainingOffloadManager(OffloadStore):
             handles=self._handles_for_names(names),
         )
 
-    def transfer_stats(self, names: Iterable[str]) -> TransferStats:
+    def transfer_stats(self, names: Iterable[str]) -> TransferStatsSnapshot:
         return self.transfer_stats_many(names)
 
     def mark_on_cpu(self, names: Iterable[str] | None = None) -> None:
@@ -353,7 +353,7 @@ class TrainingOffloadManager(OffloadStore):
         names: list[str],
         handles: Iterable[object],
     ) -> dict[str, Any]:
-        transfer_stats = self.transfer_stats_many(names).as_dict()
+        transfer_stats = self._raw_transfer_stats_many(names).as_dict()
         return adapter_lifecycle_evidence_from_handles(
             evidence_id=(
                 f"training-state-{self.transfer_context.session_id}-"

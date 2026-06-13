@@ -131,6 +131,115 @@ def validate_adapter_batch_snapshot(
     )
 
 
+def validate_adapter_transfer_stats_snapshot(
+    snapshot: Mapping[str, object],
+) -> RuntimeEvidenceValidationReport:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：校验 adapter transfer stats 快照
+    #  * ========================================================================
+    #  * 数据源：adapter-facing transfer_stats snapshot
+    #  * 操作：
+    #  *   1) 拒绝裸露 route policy 的 direct/relay 统计
+    #  *   2) 要求统计来自 RuntimeSession adapter evidence record
+    #  */
+    logger.info("开始校验 adapter transfer stats 快照...")
+
+    # // 1.1 校验 transfer stats 快照结构
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("adapter transfer stats snapshot must be a mapping")
+    if bool(snapshot.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("adapter transfer stats snapshot exposes physical route policy")
+    if str(snapshot.get("transfer_state", "")) != "runtime_session_bound":
+        raise ValueError("adapter transfer stats snapshot must be RuntimeSession-bound")
+
+    # // 1.2 复用 batch snapshot 的 RuntimeSession entrypoint 校验
+    lifecycle = _batch_snapshot_lifecycle_view(snapshot)
+    _require_runtime_entrypoint_contract(
+        snapshot.get("runtime_entrypoint"),
+        lifecycle=lifecycle,
+    )
+    _require_batch_adapter_record(snapshot)
+
+    # // 1.3 校验 receipt contract 与统计字节对齐
+    receipt_views = tuple(_receipt_views_from_lifecycle(lifecycle))
+    expected_count = int(snapshot.get("receipt_count", 0) or 0)
+    if expected_count != len(receipt_views):
+        raise ValueError("adapter transfer stats snapshot receipt_count mismatch")
+    observed_bytes = int(snapshot.get("bytes", 0) or 0)
+    expected_bytes = sum(int(item.get("bytes_total", 0) or 0) for item in receipt_views)
+    if observed_bytes != expected_bytes:
+        raise ValueError("adapter transfer stats snapshot byte count mismatch")
+    logger.info(
+        "adapter transfer stats 快照校验完成, receipts: %s",
+        len(receipt_views),
+    )
+    return RuntimeEvidenceValidationReport(
+        source="adapter_transfer_stats_snapshot",
+        receipt_count=len(receipt_views),
+        receipts=receipt_views,
+        lifecycle_count=1,
+        lifecycle_evidence_ids=(
+            str(lifecycle.get("evidence_id")),
+        ),
+    )
+
+
+def validate_adapter_transfer_stats_collection(
+    snapshot: Mapping[str, object],
+) -> RuntimeEvidenceValidationReport:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：校验 adapter transfer stats 聚合快照
+    #  * ========================================================================
+    #  * 数据源：vLLM/group-level transfer stats snapshots
+    #  * 操作：
+    #  *   1) 要求每个 group stats 都已通过 RuntimeSession evidence 绑定
+    #  *   2) 核对聚合字节和 receipt 数量不脱离子快照
+    #  */
+    logger.info("开始校验 adapter transfer stats 聚合快照...")
+
+    # // 2.1 校验聚合快照结构
+    if not isinstance(snapshot, Mapping):
+        raise TypeError("adapter transfer stats collection must be a mapping")
+    if bool(snapshot.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("adapter transfer stats collection exposes route policy")
+    if str(snapshot.get("transfer_state", "")) != "runtime_session_bound":
+        raise ValueError("adapter transfer stats collection must be RuntimeSession-bound")
+    groups = snapshot.get("groups")
+    if not isinstance(groups, list | tuple) or not groups:
+        raise ValueError("adapter transfer stats collection requires group snapshots")
+
+    # // 2.2 校验每个 group 快照
+    receipt_views: list[dict[str, object]] = []
+    lifecycle_ids: list[str] = []
+    total_bytes = 0
+    for group_snapshot in groups:
+        if not isinstance(group_snapshot, Mapping):
+            raise TypeError("adapter transfer stats group snapshot must be a mapping")
+        report = validate_adapter_transfer_stats_snapshot(group_snapshot)
+        receipt_views.extend(dict(item) for item in report.receipts)
+        lifecycle_ids.extend(report.lifecycle_evidence_ids)
+        total_bytes += int(group_snapshot.get("bytes", 0) or 0)
+
+    # // 2.3 核对聚合摘要
+    if int(snapshot.get("receipt_count", 0) or 0) != len(receipt_views):
+        raise ValueError("adapter transfer stats collection receipt_count mismatch")
+    if int(snapshot.get("bytes", 0) or 0) != total_bytes:
+        raise ValueError("adapter transfer stats collection byte count mismatch")
+    logger.info(
+        "adapter transfer stats 聚合快照校验完成, receipts: %s",
+        len(receipt_views),
+    )
+    return RuntimeEvidenceValidationReport(
+        source="adapter_transfer_stats_collection",
+        receipt_count=len(receipt_views),
+        receipts=tuple(receipt_views),
+        lifecycle_count=len(lifecycle_ids),
+        lifecycle_evidence_ids=tuple(lifecycle_ids),
+    )
+
+
 def _require_receipts(receipts: Iterable[TransferReceipt]) -> tuple[TransferReceipt, ...]:
     resolved = tuple(receipts)
     for index, receipt in enumerate(resolved):
@@ -548,5 +657,7 @@ __all__ = [
     "RuntimeEvidenceValidationReport",
     "validate_adapter_batch_snapshot",
     "validate_adapter_lifecycle_evidence",
+    "validate_adapter_transfer_stats_collection",
+    "validate_adapter_transfer_stats_snapshot",
     "validate_runtime_receipts",
 ]

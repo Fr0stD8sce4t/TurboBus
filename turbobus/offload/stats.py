@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+import logging
+from typing import Iterable, Mapping
 
 from ..schema import TransferReceipt
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -20,13 +23,52 @@ class TransferStats:
         }
 
 
+@dataclass(frozen=True)
+class TransferStatsSnapshot:
+    payload: Mapping[str, object]
+
+    @property
+    def bytes(self) -> int:
+        return int(self.payload.get("bytes", 0) or 0)
+
+    @property
+    def direct_chunks(self) -> int:
+        return int(self.payload.get("direct_chunks", 0) or 0)
+
+    @property
+    def relay_chunks(self) -> int:
+        return int(self.payload.get("relay_chunks", 0) or 0)
+
+    def as_dict(self) -> dict[str, object]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：导出 RuntimeSession 绑定 stats 快照
+        #  * ========================================================================
+        #  * 数据源：TransferStatsSnapshot payload
+        #  * 操作：
+        #  *   1) 返回已包含 RuntimeSession adapter evidence 的统计快照
+        #  *   2) 不降级为裸 direct/relay 计数
+        #  */
+        logger.info("开始导出 RuntimeSession 绑定 stats 快照...")
+
+        # // 1.1 复制 evidence-bound payload
+        snapshot = dict(self.payload)
+        logger.info(
+            "RuntimeSession 绑定 stats 快照导出完成, receipts: %s",
+            snapshot.get("receipt_count", 0),
+        )
+        return snapshot
+
+
 def summarize_transfer_handles(handles: Iterable) -> TransferStats:
     unique = []
     seen = set()
     for handle in handles:
         if id(handle) in seen:
             continue
-        stats = getattr(handle, "stats", None)
+        stats = getattr(handle, "_raw_stats", None)
+        if stats is None:
+            stats = getattr(handle, "stats", None)
         if stats is None:
             continue
         seen.add(id(handle))
@@ -67,6 +109,7 @@ def _stat_value(stats, name: str) -> int:
 
 __all__ = [
     "TransferStats",
+    "TransferStatsSnapshot",
     "summarize_transfer_handles",
     "transfer_stats_from_receipt",
 ]

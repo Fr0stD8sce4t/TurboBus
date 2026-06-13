@@ -59,6 +59,7 @@ def validate_adapter_lifecycle_evidence(
     for lifecycle in lifecycles:
         lifecycle_ids.append(str(lifecycle.get("evidence_id", "")))
         _require_adapter_lifecycle_contract(lifecycle)
+        _require_adapter_lifecycle_range_contract(lifecycle)
         receipt_views.extend(_receipt_views_from_lifecycle(lifecycle))
     if not receipt_views:
         raise ValueError("adapter lifecycle evidence contains no receipt contracts")
@@ -409,6 +410,93 @@ def _require_adapter_lifecycle_contract(lifecycle: Mapping[str, object]) -> None
         lifecycle=lifecycle,
     )
     logger.info("适配器生命周期边界校验完成")
+
+
+def _require_adapter_lifecycle_range_contract(
+    lifecycle: Mapping[str, object],
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤6：校验 adapter range/binding 摘要
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle extra range 与 buffer binding 字段
+    #  * 操作：
+    #  *   1) 拒绝 range/binding 字段自带 receipt/ticket/decision/topology
+    #  *   2) 要求运行态对齐只来自 RuntimeSession adapter evidence record
+    #  */
+    logger.info("开始校验 adapter range/binding 摘要...")
+
+    # // 6.1 校验 runtime_buffer_binding
+    binding = lifecycle.get("runtime_buffer_binding")
+    if isinstance(binding, Mapping):
+        _require_no_runtime_identity_fields(
+            binding,
+            source="adapter runtime_buffer_binding",
+        )
+        if bool(binding.get("route_policy_visible_to_adapter", True)):
+            raise ValueError("adapter runtime_buffer_binding exposes route policy")
+
+    # // 6.2 校验 range/binding 集合
+    for field_name in (
+        "bucket_ranges",
+        "bucket_bindings",
+        "tensor_bindings",
+    ):
+        value = lifecycle.get(field_name)
+        if value is None:
+            continue
+        if not isinstance(value, list | tuple):
+            raise TypeError(f"adapter lifecycle {field_name} must be a sequence")
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise TypeError(f"adapter lifecycle {field_name} items must be mappings")
+            _require_no_runtime_identity_fields(
+                item,
+                source=f"adapter lifecycle {field_name}",
+            )
+            if bool(item.get("route_policy_visible_to_adapter", False)):
+                raise ValueError(f"adapter lifecycle {field_name} exposes route policy")
+    logger.info("adapter range/binding 摘要校验完成")
+
+
+def _require_no_runtime_identity_fields(
+    value: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤7：拒绝裸运行态标识字段
+    #  * ========================================================================
+    #  * 数据源：adapter lifecycle extra mapping
+    #  * 操作：
+    #  *   1) 检查 receipt/ticket/decision/topology 标识字段
+    #  *   2) 发现裸运行态字段立即拒绝
+    #  */
+    logger.info("开始检查裸运行态标识字段...")
+
+    # // 7.1 拒绝容易绕过 RuntimeSession record 的运行态字段
+    forbidden = {
+        "last_intent_id",
+        "last_receipt_id",
+        "last_ticket_id",
+        "last_decision_id",
+        "last_topology_snapshot_id",
+        "last_receipt_state",
+        "last_transfer_error",
+        "intent_id",
+        "receipt_id",
+        "ticket_id",
+        "decision_id",
+        "topology_snapshot_id",
+    }
+    leaked = sorted(key for key in forbidden if key in value)
+    if leaked:
+        raise ValueError(
+            f"{source} must use RuntimeSession adapter evidence instead of "
+            + ", ".join(leaked)
+        )
+    logger.info("裸运行态标识字段检查完成")
 
 
 def _require_runtime_entrypoint_contract(

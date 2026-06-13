@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any, Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
@@ -10,6 +11,8 @@ from ..offload.stats import TransferStatsSnapshot
 from ..offload.store import OffloadBatch, OffloadStore
 from ..model_manifest import ModelWeightManifest, ModelWeightTensor
 from ..schema import WorkloadKind
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -398,7 +401,9 @@ class ModelWeightLoader(OffloadStore):
                 "load_direction": "h2d",
                 "adapter_submit_source": "TurboBusRuntimeSession",
                 "adapter_handle_source": "ReceiptTransferHandle",
-                "runtime_buffer_binding": self._runtime_buffer_binding_evidence(),
+                "runtime_buffer_binding": self._runtime_buffer_binding_evidence(
+                    evidence_source="TurboBusRuntimeSession.adapter_evidence_record",
+                ),
                 "tensor_bindings": self._tensor_binding_evidence(names),
                 "bucket_ranges": self._bucket_range_evidence(names),
                 "manifest_tensor_count": (
@@ -419,8 +424,25 @@ class ModelWeightLoader(OffloadStore):
             },
         )
 
-    def _runtime_buffer_binding_evidence(self) -> dict[str, Any]:
-        return {
+    def _runtime_buffer_binding_evidence(
+        self,
+        *,
+        evidence_source: str,
+    ) -> dict[str, Any]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：生成 RuntimeSession buffer binding 摘要
+        #  * ========================================================================
+        #  * 数据源：AdapterTransferContext
+        #  * 操作：
+        #  *   1) 只记录 RuntimeSession buffer/context 结构绑定
+        #  *   2) 不在 binding 内创建 route/receipt/plan 运行态证据
+        #  */
+        logger.info("开始生成 RuntimeSession buffer binding 摘要...")
+
+        # // 1.1 返回 adapter buffer 结构绑定
+        binding = {
+            "evidence_source": str(evidence_source),
             "job_id": self.transfer_context.job_id,
             "session_id": self.transfer_context.session_id,
             "workload_kind": str(self.transfer_context.workload_kind.value),
@@ -429,7 +451,10 @@ class ModelWeightLoader(OffloadStore):
             "intent_prefix": self.transfer_context.intent_prefix,
             "policy_hints": dict(self.transfer_context.policy_hints),
             "metadata": dict(self.transfer_context.metadata),
+            "route_policy_visible_to_adapter": False,
         }
+        logger.info("RuntimeSession buffer binding 摘要生成完成")
+        return binding
 
     def _tensor_binding_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
         bindings: list[dict[str, Any]] = []
@@ -456,6 +481,18 @@ class ModelWeightLoader(OffloadStore):
         return bindings
 
     def _bucket_range_evidence(self, names: Iterable[str]) -> list[dict[str, Any]]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤2：生成结构化 bucket range 摘要
+        #  * ========================================================================
+        #  * 数据源：OffloadBlockInfo structural fields
+        #  * 操作：
+        #  *   1) 只描述 tensor bucket 的 range 结构
+        #  *   2) 运行态 receipt/ticket/decision 只能来自外层 RuntimeSession evidence
+        #  */
+        logger.info("开始生成结构化 bucket range 摘要...")
+
+        # // 2.1 构造不含 receipt 字段的 range 摘要
         ranges: list[dict[str, Any]] = []
         for name in names:
             info = self.block_info(name)
@@ -470,15 +507,13 @@ class ModelWeightLoader(OffloadStore):
                     "bytes": int(info.bytes),
                     "state": info.state.value,
                     "last_operation": info.last_operation,
-                    "last_intent_id": info.last_intent_id,
-                    "last_receipt_id": info.last_receipt_id,
-                    "last_ticket_id": info.last_ticket_id,
-                    "last_decision_id": info.last_decision_id,
-                    "last_topology_snapshot_id": info.last_topology_snapshot_id,
-                    "last_receipt_state": info.last_receipt_state,
-                    "last_transfer_error": info.last_transfer_error,
+                    "runtime_evidence_source": (
+                        "RuntimeSession.adapter_lifecycle_evidence"
+                    ),
+                    "route_policy_visible_to_adapter": False,
                 }
             )
+        logger.info("结构化 bucket range 摘要生成完成, count: %s", len(ranges))
         return ranges
 
     def _handles_for_names(self, names: Iterable[str]) -> list[object]:

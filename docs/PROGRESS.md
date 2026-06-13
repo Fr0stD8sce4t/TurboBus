@@ -29,6 +29,10 @@ completed system capability loop. Do not accumulate implementation history.
 - Public adapter transfer stats reads now return RuntimeSession-bound stats
   snapshots with adapter evidence records and receipt contracts. Raw direct and
   relay counts remain private inputs to lifecycle evidence construction.
+- Model loading and training lifecycle range/binding extras now expose only
+  structural buffer, tensor, bucket, and range summaries. Receipt, ticket,
+  decision, topology, and transfer-state identity must come from
+  RuntimeSession adapter evidence records and receipt contracts.
 - vLLM connector close, saved-prefix reads, and connector event reads remain
   bound to RuntimeSession evidence and keep route policy hidden.
 
@@ -49,8 +53,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining lifecycle range evidence in model loading, training
-offload, inference KV, and vLLM managers. Tighten any range or binding evidence
-that can emit runtime-looking transfer state without consuming
-`TurboBusRuntimeSession` entrypoint adapter evidence records or close entrypoint
-records.
+Next inspect remaining vLLM connector lifecycle event fields and prefix/backing
+manager summaries. Tighten any event field that can expose runtime-looking
+transfer state without consuming `TurboBusRuntimeSession` entrypoint adapter
+evidence records or close entrypoint records.

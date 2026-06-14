@@ -48,8 +48,8 @@ records, snapshots, and real receipts.
   `turbobus/offload/blocks.py`: public batch and transfer stats snapshots use
   RuntimeSession-bound adapter evidence internally, but expose only scalar
   counts, adapter evidence ids, receipt states, and byte summaries. Public
-  block snapshots remain structural and do not expose runtime-looking receipt
-  fields.
+  block info objects, block snapshots, and wildcard exports remain structural
+  and do not expose runtime-looking receipt or transfer identity fields.
 - `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
   evidence, exposed route policy, lifecycle identity drift, public batch
   snapshots, public transfer stats snapshots, and lifecycle range/binding
@@ -82,10 +82,10 @@ records, snapshots, and real receipts.
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter and offload public classes for attributes or methods
-that expose RuntimeSession entrypoint records, adapter evidence records,
-receipt contracts, route policy, or raw transfer identity instead of scalar
-RuntimeSession-bound summaries.
+inspect remaining offload handle and batch public classes for attributes or
+methods that expose RuntimeSession entrypoint records, adapter evidence
+records, receipt contracts, route policy, raw handles, or raw transfer identity
+instead of scalar RuntimeSession-bound summaries.
 
 ## Remaining Risk
 

@@ -28,16 +28,6 @@ class OffloadBlockInfo:
     bytes: int
     state: BlockState
     last_operation: str | None
-    transfer_stats: TransferStats | None
-    last_intent_id: str | None = None
-    last_receipt_id: str | None = None
-    last_ticket_id: str | None = None
-    last_decision_id: str | None = None
-    last_topology_snapshot_id: str | None = None
-    last_job_id: str | None = None
-    last_session_id: str | None = None
-    last_receipt_state: str | None = None
-    last_transfer_error: str | None = None
 
     def as_dict(self) -> dict[str, object]:
         # /*
@@ -111,8 +101,19 @@ class OffloadBlock:
         return summarize_transfer_handles([self.last_handle])
 
     def info(self) -> OffloadBlockInfo:
-        transfer_identity = transfer_identity_from_handle(self.last_handle)
-        return OffloadBlockInfo(
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：生成公开 block 信息对象
+        #  * ========================================================================
+        #  * 数据源：OffloadBlock structural fields
+        #  * 操作：
+        #  *   1) 只复制 block 结构、位置和逻辑状态
+        #  *   2) 不从 handle 提取 receipt/ticket/decision/topology identity
+        #  */
+        logger.info("开始生成公开 block 信息对象...")
+
+        # // 1.1 返回结构化 block 信息，不携带运行态 transfer identity
+        info = OffloadBlockInfo(
             name=self.name,
             block_id=self.block_id,
             cpu_slot=self.cpu_slot,
@@ -122,45 +123,9 @@ class OffloadBlock:
             bytes=self.bytes,
             state=self.state,
             last_operation=self.last_operation,
-            transfer_stats=self.last_transfer_stats,
-            **transfer_identity,
         )
-
-
-def transfer_identity_from_handle(handle: object | None) -> dict[str, str | None]:
-    if handle is None:
-        return {
-            "last_intent_id": None,
-            "last_receipt_id": None,
-            "last_ticket_id": None,
-            "last_decision_id": None,
-            "last_topology_snapshot_id": None,
-            "last_job_id": None,
-            "last_session_id": None,
-            "last_receipt_state": None,
-            "last_transfer_error": None,
-        }
-    intent = getattr(handle, "intent", None)
-    receipt = getattr(handle, "receipt", None)
-    return {
-        "last_intent_id": _optional_str(getattr(intent, "intent_id", None)),
-        "last_receipt_id": _optional_str(getattr(receipt, "receipt_id", None)),
-        "last_ticket_id": _optional_str(getattr(receipt, "ticket_id", None)),
-        "last_decision_id": _optional_str(getattr(receipt, "decision_id", None)),
-        "last_topology_snapshot_id": _optional_str(
-            getattr(receipt, "topology_snapshot_id", None)
-        ),
-        "last_job_id": _optional_str(getattr(receipt, "job_id", None)),
-        "last_session_id": _optional_str(getattr(receipt, "session_id", None)),
-        "last_receipt_state": _optional_str(getattr(receipt, "state", None)),
-        "last_transfer_error": _optional_str(getattr(receipt, "error", None)),
-    }
-
-
-def _optional_str(value: object | None) -> str | None:
-    if value is None:
-        return None
-    return str(value)
+        logger.info("公开 block 信息对象生成完成, name: %s", self.name)
+        return info
 
 
 def _backing_nbytes(backing: object) -> int:
@@ -183,5 +148,4 @@ __all__ = [
     "BlockState",
     "OffloadBlock",
     "OffloadBlockInfo",
-    "transfer_identity_from_handle",
 ]

@@ -47,7 +47,12 @@ completed system capability loop. Do not accumulate implementation history.
   event caches, and backing summaries remain bound to RuntimeSession evidence.
   Public vLLM summaries expose scalar counts, evidence ids, and close-binding
   flags only. Raw receipt, ticket, decision, topology, runtime entrypoint, and
-  receipt-contract identities stay inside the internal validation chain.
+  receipt-contract identities stay inside the internal validation chain. vLLM
+  saved-prefix cleanup/recovery and backing lifecycle summaries now keep
+  RuntimeSession entrypoint records, adapter evidence records, receipt
+  contracts, raw daemon recovery details, and route policy inside internal
+  validation while exposing only adapter evidence ids, counts, sources, and
+  recorded flags.
 
 ## Remaining Risk
 
@@ -66,7 +71,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining vLLM prefix store and connector cleanup/recovery public
-summaries for any runtime-looking identity, route policy, or receipt-contract
+Next inspect remaining adapter public event/cache readers and runtime evidence
+validators for runtime-looking identity, route policy, or receipt-contract
 detail that should stay behind `TurboBusRuntimeSession` adapter evidence
 records.

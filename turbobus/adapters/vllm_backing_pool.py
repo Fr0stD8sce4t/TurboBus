@@ -312,10 +312,15 @@ def _prefix_lifecycle_for_backing_evidence(
     )
 
     # // 1.4 返回 backing evidence 继承字段
+    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
+    if not isinstance(adapter_record, Mapping):
+        raise ValueError(f"{source} missing adapter evidence record")
     result = {
         "lifecycle_source": source,
-        "runtime_entrypoint": runtime_entrypoint,
-        "receipt_contracts": receipt_contracts,
+        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "receipt_contract_count": len(receipt_contracts),
+        "runtime_entrypoint_recorded": True,
+        "receipt_contracts_recorded": True,
         "route_policy_visible_to_adapter": False,
     }
     logger.info("backing lifecycle 边界提取完成, source: %s", source)

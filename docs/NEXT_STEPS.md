@@ -63,13 +63,16 @@ records, snapshots, and real receipts.
   RuntimeSession-bound scalar counts, evidence ids, receipt states, byte
   summaries, structure summaries, and close-binding flags; raw receipt,
   ticket, decision, topology, runtime entrypoint, adapter evidence record, and
-  receipt-contract identities stay internal to validation.
+  receipt-contract identities stay internal to validation. vLLM prefix store
+  cleanup/recovery and backing lifecycle summaries consume internal
+  RuntimeSession evidence, but public/cache-crossing summaries expose only
+  adapter evidence ids, counts, sources, and recorded flags.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining vLLM prefix store and connector cleanup/recovery public
-summaries for any runtime-looking identity, route policy, or receipt-contract
+inspect remaining adapter public event/cache readers and runtime evidence
+validators for runtime-looking identity, route policy, or receipt-contract
 detail that should stay behind `TurboBusRuntimeSession` adapter evidence
 records.
 

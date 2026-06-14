@@ -535,6 +535,52 @@ def _prefix_store_string_set(value: object) -> set[str]:
     return set()
 
 
+def _require_prefix_store_public_summary_no_identity_fields(
+    summary: Mapping[str, Any],
+    *,
+    source: str,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤6：校验 prefix store 公开摘要
+    #  * ========================================================================
+    #  * 目标：公开 prefix/recovery 摘要只保留 adapter evidence id
+    #  * 操作：
+    #  *   1) 拒绝 RuntimeSession entrypoint 和 adapter record 明细
+    #  *   2) 拒绝 receipt/ticket/decision/topology 标识
+    #  */
+    logger.info("开始校验 prefix store 公开摘要...")
+
+    # // 6.1 拒绝公开摘要携带运行态 identity
+    forbidden = {
+        "runtime_entrypoint",
+        "adapter_evidence_record",
+        "receipt_contracts",
+        "receipt_ids",
+        "intent_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+        "ticket_ids",
+        "receipt_id",
+        "intent_id",
+        "decision_id",
+        "topology_snapshot_id",
+        "ticket_id",
+        "daemon_recovery",
+    }
+    leaked = sorted(key for key in forbidden if key in summary)
+    if leaked:
+        raise ValueError(
+            f"{source} exposes RuntimeSession identity fields: "
+            + ", ".join(leaked)
+        )
+
+    # // 6.2 拒绝 route policy 暴露
+    if bool(summary.get("route_policy_visible_to_adapter", True)):
+        raise ValueError(f"{source} exposes route policy to adapter")
+    logger.info("prefix store 公开摘要校验完成")
+
+
 _PREFIX_STORE = TurboBusPrefixStore()
 
 
@@ -842,14 +888,14 @@ def _optional_daemon_recovery_summary_for_prefix_store(
         return None
 
     # // 16.2 校验 RuntimeSession entrypoint 和 adapter evidence record
-    entrypoint = _runtime_entrypoint_for_prefix_store(evidence, source=source)
-    adapter_record = evidence.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
-    if str(adapter_record.get("evidence_id")) != str(
-        entrypoint["adapter_evidence_record"].get("evidence_id")
-    ):
-        raise ValueError(f"{source} adapter evidence_id mismatch")
+    _require_prefix_store_public_summary_no_identity_fields(evidence, source=source)
+    adapter_evidence_id = evidence.get("adapter_evidence_id")
+    if not isinstance(adapter_evidence_id, str) or not adapter_evidence_id:
+        raise ValueError(f"{source} missing adapter_evidence_id")
+    if not bool(evidence.get("runtime_entrypoint_recorded", False)):
+        raise ValueError(f"{source} missing RuntimeSession recorded flag")
+    if not bool(evidence.get("adapter_evidence_recorded", False)):
+        raise ValueError(f"{source} missing adapter evidence recorded flag")
     if bool(evidence.get("route_policy_visible_to_adapter", True)):
         raise ValueError(f"{source} exposes route policy to adapter")
 
@@ -863,7 +909,12 @@ def _optional_daemon_recovery_summary_for_prefix_store(
         "daemon_recovery_sources": str(
             evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "adapter_evidence_id": str(adapter_evidence_id),
+        "runtime_entrypoint_recorded": True,
+        "adapter_evidence_recorded": True,
+        "daemon_recovery_recorded": bool(
+            evidence.get("daemon_recovery_recorded", False)
+        ),
         "route_policy_visible_to_adapter": False,
     }
     logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", True)

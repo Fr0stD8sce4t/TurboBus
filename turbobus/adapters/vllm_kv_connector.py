@@ -780,22 +780,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             request_binding=request_binding,
         )
         saved.last_restore_lifecycle_evidence = lifecycle_evidence
-        saved.daemon_recovery_evidence = {
-            "operation": "restore",
-            "request_id": request.request_id,
-            "runtime_entrypoint": dict(lifecycle_evidence["runtime_entrypoint"]),
-            "adapter_evidence_record": _adapter_evidence_record_for_event(
-                lifecycle_evidence
-            ),
-            "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
-            "daemon_recovery_count": int(
-                receipt_trace.get("daemon_recovery_count", 0) or 0
-            ),
-            "daemon_recovery_sources": str(
-                receipt_trace.get("daemon_recovery_sources", "")
-            ),
-            "route_policy_visible_to_adapter": False,
-        }
+        saved.daemon_recovery_evidence = _daemon_recovery_evidence_summary(
+            lifecycle_evidence,
+            receipt_trace=receipt_trace,
+            operation="restore",
+            request_id=request.request_id,
+        )
         self.state.events.append(
             {
                 "event": "restore",
@@ -1039,22 +1029,12 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             save_layer_count=len(context.ready_layers),
             save_layer_ranges=context.ranges,
             save_lifecycle_evidence=lifecycle_evidence,
-            daemon_recovery_evidence={
-                "operation": "save",
-                "request_id": request.request_id,
-                "runtime_entrypoint": dict(lifecycle_evidence["runtime_entrypoint"]),
-                "adapter_evidence_record": _adapter_evidence_record_for_event(
-                    lifecycle_evidence
-                ),
-                "daemon_recovery": list(receipt_trace.get("daemon_recovery", [])),
-                "daemon_recovery_count": int(
-                    receipt_trace.get("daemon_recovery_count", 0) or 0
-                ),
-                "daemon_recovery_sources": str(
-                    receipt_trace.get("daemon_recovery_sources", "")
-                ),
-                "route_policy_visible_to_adapter": False,
-            },
+            daemon_recovery_evidence=_daemon_recovery_evidence_summary(
+                lifecycle_evidence,
+                receipt_trace=receipt_trace,
+                operation="save",
+                request_id=request.request_id,
+            ),
         )
         mutation = self._store_prefix(prefix)
         _store_saved_prefix_for_connector(prefix)
@@ -1526,6 +1506,51 @@ def _adapter_evidence_id_for_event(
     return evidence_id
 
 
+def _daemon_recovery_evidence_summary(
+    lifecycle_evidence: Mapping[str, Any],
+    *,
+    receipt_trace: Mapping[str, Any],
+    operation: str,
+    request_id: str,
+) -> dict[str, Any]:
+    # /*
+    #  * ========================================================================
+    #  * 姝ラ3锛氭瀯閫?daemon recovery 鍏紑杈圭晫
+    #  * ========================================================================
+    #  * 鐩爣锛氬皢 RuntimeSession evidence 鏄庣粏闄愬畾鍦ㄥ唴閮ㄦ牎楠岄摼
+    #  * 鏁版嵁婧愶細vLLM lifecycle evidence 涓?receipt trace
+    #  * 鎿嶄綔锛?
+    #  *   1) 鏍￠獙 adapter evidence record 宸茬敱 RuntimeSession 璁板綍
+    #  *   2) 只暴露 recovery 计数、来源和 adapter evidence id
+    #  */
+    logger.info("寮€濮嬫瀯閫?daemon recovery 鍏紑杈圭晫...")
+
+    # // 3.1 鏍￠獙 adapter evidence record
+    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+
+    # // 3.2 杩斿洖鍏紑瀹夊叏鎽樿
+    summary = {
+        "operation": str(operation),
+        "request_id": str(request_id),
+        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "runtime_entrypoint_recorded": True,
+        "adapter_evidence_recorded": True,
+        "daemon_recovery_recorded": bool(receipt_trace.get("daemon_recovery")),
+        "daemon_recovery_count": int(
+            receipt_trace.get("daemon_recovery_count", 0) or 0
+        ),
+        "daemon_recovery_sources": str(
+            receipt_trace.get("daemon_recovery_sources", "")
+        ),
+        "route_policy_visible_to_adapter": False,
+    }
+    logger.info(
+        "daemon recovery 鍏紑杈圭晫鏋勯€犲畬鎴? evidence_id: %s",
+        summary["adapter_evidence_id"],
+    )
+    return summary
+
+
 def _public_vllm_lifecycle_summary(
     lifecycle_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -1597,19 +1622,30 @@ def _public_vllm_backing_lifecycle_summary(
     logger.info("开始构造 vLLM backing 公开摘要...")
 
     # // 4.1 统计 receipt contract 数量
-    receipt_contracts = backing_evidence.get("receipt_contracts")
-    receipt_contract_count = (
-        len(receipt_contracts)
-        if isinstance(receipt_contracts, list)
-        else 0
+    adapter_evidence_id = str(backing_evidence.get("adapter_evidence_id", ""))
+    if not adapter_evidence_id:
+        raise ValueError("vLLM backing summary missing adapter_evidence_id")
+    receipt_contract_count = int(
+        backing_evidence.get("receipt_contract_count", 0) or 0
     )
+    if receipt_contract_count <= 0:
+        raise ValueError("vLLM backing summary missing receipt contract count")
+    if bool(backing_evidence.get("route_policy_visible_to_adapter", True)):
+        raise ValueError("vLLM backing summary exposes route policy")
+    if not bool(backing_evidence.get("runtime_entrypoint_recorded", False)):
+        raise ValueError("vLLM backing summary missing RuntimeSession record flag")
+    if not bool(backing_evidence.get("receipt_contracts_recorded", False)):
+        raise ValueError("vLLM backing summary missing receipt contract flag")
 
     # // 4.2 返回公开 backing 摘要
     summary = {
         "action": str(backing_evidence.get("action", "")),
         "lifecycle_source": str(backing_evidence.get("lifecycle_source", "")),
         "backing_count": int(backing_evidence.get("backing_count", 0) or 0),
+        "adapter_evidence_id": adapter_evidence_id,
         "receipt_contract_count": receipt_contract_count,
+        "runtime_entrypoint_recorded": True,
+        "receipt_contracts_recorded": True,
         "route_policy_visible_to_adapter": False,
     }
     logger.info(

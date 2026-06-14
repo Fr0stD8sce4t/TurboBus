@@ -34,6 +34,11 @@ completed system capability loop. Do not accumulate implementation history.
   intent ids, ticket ids, decision ids, topology ids, and route policy stay
   behind RuntimeSession adapter evidence validation. Raw direct and relay
   counts remain private inputs to lifecycle evidence construction.
+- vLLM KV lifecycle request bindings and runtime buffer binding extras now
+  expose only structural summaries, adapter evidence ids, and recorded flags.
+  RuntimeSession entrypoint records, adapter evidence records, receipt
+  contracts, raw receipt/intent ids, and nested route policy are rejected from
+  adapter lifecycle extras.
 - Model loading and training lifecycle range/binding extras now expose only
   structural buffer, tensor, bucket, and range summaries. Receipt, ticket,
   decision, topology, and transfer-state identity must come from
@@ -61,7 +66,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter construction snapshots and adapter lifecycle
-range/binding extras for any runtime-looking identity, route policy, or
-receipt-contract detail that should stay behind `TurboBusRuntimeSession`
-adapter evidence records.
+Next inspect remaining vLLM prefix store and connector cleanup/recovery public
+summaries for any runtime-looking identity, route policy, or receipt-contract
+detail that should stay behind `TurboBusRuntimeSession` adapter evidence
+records.

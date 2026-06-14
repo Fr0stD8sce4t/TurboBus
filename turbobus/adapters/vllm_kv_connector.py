@@ -1663,7 +1663,9 @@ def _vllm_kv_lifecycle_evidence(
     request_binding: Mapping[str, Any],
 ) -> dict[str, Any]:
     receipt_contracts = receipt_trace.get("receipt_contracts")
-    runtime_buffer_bindings = receipt_trace.get("runtime_buffer_bindings")
+    runtime_buffer_bindings = _runtime_buffer_binding_summaries_for_vllm_kv(
+        receipt_trace.get("runtime_buffer_bindings")
+    )
     daemon_recovery = receipt_trace.get("daemon_recovery")
     runtime_entrypoint = _runtime_entrypoint_for_vllm_kv_lifecycle(
         receipt_trace,
@@ -1709,11 +1711,7 @@ def _vllm_kv_lifecycle_evidence(
         "fallback_reason": str(receipt_trace.get("fallback_reason", "")),
         "request_binding": request_binding_evidence,
         "block_ids": list(request.block_ids),
-        "runtime_buffer_bindings": (
-            [dict(item) for item in runtime_buffer_bindings if isinstance(item, Mapping)]
-            if isinstance(runtime_buffer_bindings, list)
-            else []
-        ),
+        "runtime_buffer_bindings": runtime_buffer_bindings,
         "receipt_contracts": (
             [dict(item) for item in receipt_contracts if isinstance(item, Mapping)]
             if isinstance(receipt_contracts, list)
@@ -1809,11 +1807,59 @@ def _request_binding_for_vllm_kv_lifecycle(
         raise ValueError("vLLM KV request binding adapter evidence_id mismatch")
 
     # // 1.3 写入 RuntimeSession 边界字段
-    binding["runtime_entrypoint"] = dict(runtime_entrypoint)
-    binding["adapter_evidence_record"] = dict(adapter_record)
+    binding["adapter_evidence_id"] = str(adapter_record.get("evidence_id", ""))
+    binding["runtime_entrypoint_recorded"] = True
     binding["route_policy_visible_to_adapter"] = False
     logger.info("vLLM KV request evidence 绑定完成, evidence_id: %s", evidence_id)
     return binding
+
+
+def _runtime_buffer_binding_summaries_for_vllm_kv(value: object) -> list[dict[str, Any]]:
+    # /*
+    #  * ========================================================================
+    #  * 步骤2：生成 vLLM KV runtime buffer binding 摘要
+    #  * ========================================================================
+    #  * 目标：
+    #  *   1) 消费 receipt trace 内部 buffer binding。
+    #  *   2) 只公开 buffer 结构和 RuntimeSession 绑定状态。
+    #  *   3) 不把 receipt_id、intent_id 或 receipt contract 明细放入 extra。
+    #  */
+    logger.info("开始生成 vLLM KV runtime buffer binding 摘要...")
+
+    # // 2.1 空或非列表输入返回空摘要
+    if not isinstance(value, list | tuple):
+        logger.info("vLLM KV runtime buffer binding 摘要生成完成, count: %s", 0)
+        return []
+
+    # // 2.2 提取结构字段，丢弃运行态 receipt 标识
+    summaries: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        summaries.append(
+            {
+                "role": str(item.get("role", "")),
+                "buffer_id": item.get("buffer_id"),
+                "handle_type": item.get("handle_type"),
+                "runtime_buffer_kind": item.get("runtime_buffer_kind"),
+                "runtime_session_id": item.get("runtime_session_id"),
+                "runtime_owned": bool(item.get("runtime_owned", False)),
+                "resource_evidence_recorded": isinstance(
+                    item.get("resource_evidence"),
+                    Mapping,
+                ),
+                "cuda_ipc_lifecycle_recorded": isinstance(
+                    item.get("cuda_ipc_lifecycle"),
+                    Mapping,
+                ),
+                "route_policy_visible_to_adapter": False,
+            }
+        )
+    logger.info(
+        "vLLM KV runtime buffer binding 摘要生成完成, count: %s",
+        len(summaries),
+    )
+    return summaries
 
 
 def _runtime_entrypoint_for_vllm_kv_lifecycle(

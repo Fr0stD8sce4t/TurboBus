@@ -581,13 +581,21 @@ def _require_adapter_lifecycle_range_contract(
         "bucket_ranges",
         "bucket_bindings",
         "tensor_bindings",
+        "request_binding",
+        "runtime_buffer_bindings",
     ):
         value = lifecycle.get(field_name)
         if value is None:
             continue
-        if not isinstance(value, list | tuple):
-            raise TypeError(f"adapter lifecycle {field_name} must be a sequence")
-        for item in value:
+        if isinstance(value, Mapping):
+            items = (value,)
+        elif isinstance(value, list | tuple):
+            items = value
+        else:
+            raise TypeError(
+                f"adapter lifecycle {field_name} must be a mapping or sequence"
+            )
+        for item in items:
             if not isinstance(item, Mapping):
                 raise TypeError(f"adapter lifecycle {field_name} items must be mappings")
             _require_no_runtime_identity_fields(
@@ -604,6 +612,7 @@ def _require_no_runtime_identity_fields(
     *,
     source: str,
 ) -> None:
+    _require_no_nested_runtime_identity_fields(value, source=source)
     # /*
     #  * ========================================================================
     #  * 步骤7：拒绝裸运行态标识字段
@@ -617,6 +626,9 @@ def _require_no_runtime_identity_fields(
 
     # // 7.1 拒绝容易绕过 RuntimeSession record 的运行态字段
     forbidden = {
+        "runtime_entrypoint",
+        "adapter_evidence_record",
+        "receipt_contracts",
         "last_intent_id",
         "last_receipt_id",
         "last_ticket_id",
@@ -629,6 +641,11 @@ def _require_no_runtime_identity_fields(
         "ticket_id",
         "decision_id",
         "topology_snapshot_id",
+        "intent_ids",
+        "receipt_ids",
+        "ticket_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
     }
     leaked = sorted(key for key in forbidden if key in value)
     if leaked:
@@ -637,6 +654,64 @@ def _require_no_runtime_identity_fields(
             + ", ".join(leaked)
         )
     logger.info("裸运行态标识字段检查完成")
+
+
+def _require_no_nested_runtime_identity_fields(
+    value: object,
+    *,
+    source: str,
+) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤8：递归拒绝嵌套运行态标识字段
+    #  * ========================================================================
+    #  * 目标：
+    #  *   1) 检查 request binding 和 buffer binding 的嵌套摘要。
+    #  *   2) 防止 adapter 把 receipt/ticket/decision/topology 藏进子对象。
+    #  */
+    logger.info("开始递归检查嵌套运行态标识字段...")
+
+    # // 8.1 深度优先检查 mapping 与序列
+    nested_forbidden = {
+        "runtime_entrypoint",
+        "adapter_evidence_record",
+        "receipt_contracts",
+        "last_intent_id",
+        "last_receipt_id",
+        "last_ticket_id",
+        "last_decision_id",
+        "last_topology_snapshot_id",
+        "last_receipt_state",
+        "last_transfer_error",
+        "intent_id",
+        "receipt_id",
+        "ticket_id",
+        "decision_id",
+        "topology_snapshot_id",
+        "intent_ids",
+        "receipt_ids",
+        "ticket_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+    }
+    stack = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, Mapping):
+            if bool(current.get("route_policy_visible_to_adapter", False)):
+                raise ValueError(f"{source} nested fields expose route policy")
+            if bool(current.get("route_policy_visible_to_application", False)):
+                raise ValueError(f"{source} nested fields expose route policy")
+            leaked = sorted(key for key in nested_forbidden if key in current)
+            if leaked:
+                raise ValueError(
+                    f"{source} nested fields must use RuntimeSession adapter "
+                    "evidence instead of " + ", ".join(leaked)
+                )
+            stack.extend(current.values())
+        elif isinstance(current, list | tuple):
+            stack.extend(current)
+    logger.info("嵌套运行态标识字段递归检查完成")
 
 
 def _require_runtime_entrypoint_contract(

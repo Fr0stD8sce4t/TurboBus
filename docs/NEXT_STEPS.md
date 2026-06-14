@@ -52,23 +52,26 @@ records, snapshots, and real receipts.
   evidence, exposed route policy, lifecycle identity drift, public batch
   snapshots, public transfer stats snapshots, and lifecycle range/binding
   extras or daemon recovery details that are not bound to RuntimeSession
-  adapter evidence.
+  adapter evidence. Range, request, and buffer binding extras must not carry
+  nested runtime entrypoint, adapter evidence record, receipt contract, raw
+  receipt, intent, ticket, decision, topology, or route-policy fields.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, target-GPU policy, or their own
   receipt/ticket/decision summaries inside range/binding extras. vLLM public
-  events, saved-prefix snapshots, backing lifecycle summaries, and transfer
-  stats aggregations expose only RuntimeSession-bound scalar counts, evidence
-  ids, receipt states, byte summaries, and close-binding flags; raw receipt,
-  ticket, decision, topology, runtime entrypoint, and receipt-contract
-  identities stay internal to validation.
+  events, saved-prefix snapshots, backing lifecycle summaries, vLLM KV
+  request/buffer binding extras, and transfer stats aggregations expose only
+  RuntimeSession-bound scalar counts, evidence ids, receipt states, byte
+  summaries, structure summaries, and close-binding flags; raw receipt,
+  ticket, decision, topology, runtime entrypoint, adapter evidence record, and
+  receipt-contract identities stay internal to validation.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter construction snapshots and adapter lifecycle
-range/binding extras for any runtime-looking identity, route policy, or
-receipt-contract detail that should stay behind `TurboBusRuntimeSession`
-adapter evidence records.
+inspect remaining vLLM prefix store and connector cleanup/recovery public
+summaries for any runtime-looking identity, route policy, or receipt-contract
+detail that should stay behind `TurboBusRuntimeSession` adapter evidence
+records.
 
 ## Remaining Risk
 

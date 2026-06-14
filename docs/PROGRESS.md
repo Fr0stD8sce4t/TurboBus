@@ -53,6 +53,12 @@ completed system capability loop. Do not accumulate implementation history.
   contracts, raw daemon recovery details, and route policy inside internal
   validation while exposing only adapter evidence ids, counts, sources, and
   recorded flags.
+- Connector public event/cache reads now recursively reject nested RuntimeSession
+  entrypoints, adapter evidence records, receipt contracts, raw receipt,
+  ticket, decision, topology, transfer, close-entrypoint, and route-policy
+  fields. Runtime evidence public snapshot validators accept only
+  RuntimeSession-bound scalar summaries and reject old public
+  entrypoint/adapter-record helper paths.
 
 ## Remaining Risk
 
@@ -71,7 +77,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter public event/cache readers and runtime evidence
-validators for runtime-looking identity, route policy, or receipt-contract
-detail that should stay behind `TurboBusRuntimeSession` adapter evidence
-records.
+Next inspect remaining repeated runtime-looking adapter paths and
+offload/internal helper exports for entrypoints, adapter records, receipt
+contracts, route policy, or raw transfer identity that should stay behind
+`TurboBusRuntimeSession` adapter evidence records.

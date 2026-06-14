@@ -221,6 +221,7 @@ def _public_connector_event(record: Mapping[str, Any]) -> dict[str, Any]:
     if "runtime_close_entrypoint" in record:
         public["runtime_close_entrypoint_recorded"] = True
 
+    _require_public_connector_event_no_identity_fields(public)
     logger.info("公开 connector event 构造完成, fields: %s", len(public))
     return public
 
@@ -333,6 +334,58 @@ def _require_runtime_close_entrypoint(value: object) -> None:
     if bool(close_record.get("route_policy_visible_to_adapter", True)):
         raise ValueError("connector close event close record exposes route policy")
     logger.info("connector close RuntimeSession entrypoint 校验完成")
+
+
+def _require_public_connector_event_no_identity_fields(record: Mapping[str, Any]) -> None:
+    # /*
+    #  * ========================================================================
+    #  * 步骤9：校验公开 connector event 字段
+    #  * ========================================================================
+    #  * 目标：公开 event 只保留 RuntimeSession-bound 标量摘要
+    #  * 操作：
+    #  *   1) 递归拒绝 runtime entrypoint、adapter record、receipt contract
+    #  *   2) 递归拒绝 receipt/ticket/decision/topology 原始标识
+    #  */
+    logger.info("开始校验公开 connector event 字段...")
+
+    # // 9.1 递归拒绝公开事件携带运行态 identity
+    forbidden = {
+        "runtime_entrypoint",
+        "adapter_evidence_record",
+        "adapter_evidence_records",
+        "receipt_contracts",
+        "receipt_ids",
+        "intent_ids",
+        "decision_ids",
+        "topology_snapshot_ids",
+        "ticket_ids",
+        "transfer_ids",
+        "receipt_id",
+        "intent_id",
+        "decision_id",
+        "topology_snapshot_id",
+        "ticket_id",
+        "transfer_id",
+        "runtime_close_entrypoint",
+    }
+    stack: list[Any] = [record]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, Mapping):
+            if bool(value.get("route_policy_visible_to_adapter", False)):
+                raise ValueError("public connector event exposes route policy")
+            leaked = sorted(key for key in forbidden if key in value)
+            if leaked:
+                raise ValueError(
+                    "public connector event exposes RuntimeSession identity fields: "
+                    + ", ".join(leaked)
+                )
+            stack.extend(value.values())
+        elif isinstance(value, list | tuple):
+            stack.extend(value)
+
+    # // 9.2 完成公开事件校验
+    logger.info("公开 connector event 字段校验完成")
 
 
 __all__ = [

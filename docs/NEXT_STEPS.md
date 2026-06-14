@@ -54,7 +54,10 @@ records, snapshots, and real receipts.
   extras or daemon recovery details that are not bound to RuntimeSession
   adapter evidence. Range, request, and buffer binding extras must not carry
   nested runtime entrypoint, adapter evidence record, receipt contract, raw
-  receipt, intent, ticket, decision, topology, or route-policy fields.
+  receipt, intent, ticket, decision, topology, transfer, daemon recovery, close
+  entrypoint, or route-policy fields. Public snapshot validators accept
+  RuntimeSession-bound scalar summaries only and reject old public
+  entrypoint/adapter-record helper paths.
 - `turbobus/adapters/`: consume RuntimeSession-bound evidence only. Adapters
   must not create route, plan, relay, pool, target-GPU policy, or their own
   receipt/ticket/decision summaries inside range/binding extras. vLLM public
@@ -66,15 +69,18 @@ records, snapshots, and real receipts.
   receipt-contract identities stay internal to validation. vLLM prefix store
   cleanup/recovery and backing lifecycle summaries consume internal
   RuntimeSession evidence, but public/cache-crossing summaries expose only
-  adapter evidence ids, counts, sources, and recorded flags.
+  adapter evidence ids, counts, sources, and recorded flags. Connector event
+  cache reads recursively reject nested RuntimeSession identity and raw receipt,
+  ticket, decision, topology, transfer, close-entrypoint, and route-policy
+  fields before returning public records.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter public event/cache readers and runtime evidence
-validators for runtime-looking identity, route policy, or receipt-contract
-detail that should stay behind `TurboBusRuntimeSession` adapter evidence
-records.
+inspect remaining repeated runtime-looking adapter paths and offload/internal
+helper exports for entrypoints, adapter records, receipt contracts, route
+policy, or raw transfer identity that should stay behind
+`TurboBusRuntimeSession` adapter evidence records.
 
 ## Remaining Risk
 

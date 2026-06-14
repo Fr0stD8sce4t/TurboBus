@@ -267,12 +267,16 @@ def _require_empty_batch_snapshot(snapshot: Mapping[str, object]) -> None:
     forbidden = {
         "runtime_entrypoint",
         "adapter_evidence_record",
+        "adapter_evidence_records",
+        "runtime_close_entrypoint",
         "receipt_contracts",
         "receipt_ids",
         "intent_ids",
         "decision_ids",
         "topology_snapshot_ids",
         "ticket_ids",
+        "transfer_ids",
+        "daemon_recovery",
     }
     leaked = sorted(key for key in forbidden if key in snapshot)
     if leaked:
@@ -303,17 +307,22 @@ def _require_public_runtime_snapshot_no_identity_fields(
     forbidden = {
         "runtime_entrypoint",
         "adapter_evidence_record",
+        "adapter_evidence_records",
+        "runtime_close_entrypoint",
         "receipt_contracts",
         "receipt_ids",
         "intent_ids",
         "decision_ids",
         "topology_snapshot_ids",
         "ticket_ids",
+        "transfer_ids",
         "receipt_id",
         "intent_id",
         "decision_id",
         "topology_snapshot_id",
         "ticket_id",
+        "transfer_id",
+        "daemon_recovery",
     }
     leaked = sorted(key for key in forbidden if key in snapshot)
     if leaked:
@@ -372,6 +381,9 @@ def _require_public_runtime_snapshot_counts(
 def _batch_snapshot_lifecycle_view(
     snapshot: Mapping[str, object],
 ) -> dict[str, object]:
+    raise RuntimeError(
+        "public adapter snapshots must expose adapter_evidence_id summaries only"
+    )
     # /*
     #  * ========================================================================
     #  * 步骤3：构造 batch lifecycle 校验视图
@@ -406,6 +418,9 @@ def _batch_snapshot_lifecycle_view(
 
 
 def _require_batch_adapter_record(snapshot: Mapping[str, object]) -> None:
+    raise RuntimeError(
+        "public adapter snapshots must not expose adapter_evidence_record"
+    )
     # /*
     #  * ========================================================================
     #  * 步骤4：核对 batch adapter evidence record

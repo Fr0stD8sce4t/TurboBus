@@ -62,6 +62,10 @@ completed system capability loop. Do not accumulate implementation history.
   fields. Runtime evidence public snapshot validators accept only
   RuntimeSession-bound scalar summaries and reject old public
   entrypoint/adapter-record helper paths.
+- Adapter package and vLLM connector wildcard exports now expose connector
+  classes and safe summary readers only. Saved-prefix dataclasses, connector
+  metadata, request metadata, and prefix store mutation records stay behind
+  module-internal direct imports.
 
 ## Remaining Risk
 
@@ -80,7 +84,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining adapter `__all__` surfaces and runtime-looking public
-classes for entrypoints, adapter records, receipt contracts, route policy, or
-raw transfer identity that should stay behind `TurboBusRuntimeSession` adapter
-evidence records.
+Next inspect remaining adapter and offload public classes for attributes or
+methods that expose RuntimeSession entrypoint records, adapter evidence records,
+receipt contracts, route policy, or raw transfer identity instead of scalar
+RuntimeSession-bound summaries.

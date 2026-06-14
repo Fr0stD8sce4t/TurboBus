@@ -74,15 +74,18 @@ records, snapshots, and real receipts.
   adapter evidence ids, counts, sources, and recorded flags. Connector event
   cache reads recursively reject nested RuntimeSession identity and raw receipt,
   ticket, decision, topology, transfer, close-entrypoint, and route-policy
-  fields before returning public records.
+  fields before returning public records. Adapter package and vLLM connector
+  wildcard exports expose connector classes and safe summary readers only;
+  saved-prefix dataclasses, connector metadata, request metadata, and prefix
+  store mutation records stay behind module-internal direct imports.
 
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining adapter `__all__` surfaces and runtime-looking public classes
-for entrypoints, adapter records, receipt contracts, route policy, or raw
-transfer identity that should stay behind `TurboBusRuntimeSession` adapter
-evidence records.
+inspect remaining adapter and offload public classes for attributes or methods
+that expose RuntimeSession entrypoint records, adapter evidence records,
+receipt contracts, route policy, or raw transfer identity instead of scalar
+RuntimeSession-bound summaries.
 
 ## Remaining Risk
 

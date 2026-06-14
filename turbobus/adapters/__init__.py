@@ -32,9 +32,6 @@ from .vllm_integration import (
 from .vllm_kv_connector import (
     TurboBusConnector,
     TurboBusConnectorConfig,
-    TurboBusConnectorMetadata,
-    TurboBusRequestMetadata,
-    TurboBusSavedPrefix,
     get_connector_events,
     get_saved_prefix,
 )
@@ -59,9 +56,6 @@ __all__ = [
     "VllmTurboBusIntegration",
     "TurboBusConnector",
     "TurboBusConnectorConfig",
-    "TurboBusConnectorMetadata",
-    "TurboBusRequestMetadata",
-    "TurboBusSavedPrefix",
     "block_bytes_from_vllm_kv_tensor",
     "extract_vllm_block_ids",
     "get_connector_events",

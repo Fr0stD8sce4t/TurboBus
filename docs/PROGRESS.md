@@ -31,7 +31,11 @@ completed system capability loop. Do not accumulate implementation history.
 - Public offload block info objects, block snapshots, and block wildcard
   exports now expose only structural block state. Raw transfer identity and
   receipt/ticket/decision/topology/job/session fields stay out of public block
-  objects. Public offload batch snapshots, handle stats, store transfer stats,
+  objects. Public offload transfer handles now expose only RuntimeSession-bound
+  wait, stats, evidence id, and scalar snapshots. Receipt-bearing handles stay
+  internal to offload lifecycle evidence. Public offload batches keep raw
+  handles out of dataclass fields, repr, compare, and adapter-facing handle
+  lists. Public offload batch snapshots, handle stats, store transfer stats,
   and vLLM transfer stats aggregations generate and validate RuntimeSession
   adapter evidence internally, then expose only scalar counts, adapter
   evidence ids, receipt states, and byte summaries.
@@ -86,7 +90,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining offload handle and batch public classes for attributes
-or methods that expose RuntimeSession entrypoint records, adapter evidence
-records, receipt contracts, route policy, raw handles, or raw transfer identity
-instead of scalar RuntimeSession-bound summaries.
+Next inspect remaining offload store/block public attributes and
+adapter-facing methods for raw handles, RuntimeSession entrypoint records,
+adapter evidence records, receipt contracts, route policy, or raw transfer
+identity instead of scalar RuntimeSession-bound summaries.

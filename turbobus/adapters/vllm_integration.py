@@ -358,6 +358,28 @@ class VllmTurboBusIntegration:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
         return self.require_adapter().submit_save_request(str(request_id))
 
+    def _submit_restore_request_evidence_handles(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter()._submit_restore_request_evidence_handles(
+            str(request_id)
+        )
+
+    def _submit_save_request_evidence_handles(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
+        self.register_request(request_id, cpu_slot_start=cpu_slot_start)
+        return self.require_adapter()._submit_save_request_evidence_handles(
+            str(request_id)
+        )
+
     def _refresh_adapter(self) -> None:
         if not self.state.kv_caches or self._cpu_backings is None:
             self.state.adapter = None

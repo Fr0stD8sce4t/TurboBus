@@ -339,7 +339,7 @@ class ModelWeightLoader(OffloadStore):
         self._record_load_lifecycle(
             operation=operation,
             names=names,
-            handles=batch.handles,
+            handles=batch._handles,
         )
         return list(batch.handles)
 
@@ -349,7 +349,7 @@ class ModelWeightLoader(OffloadStore):
         self._record_load_lifecycle(
             operation=operation,
             names=names,
-            handles=batch.handles,
+            handles=batch._handles,
         )
         return batch
 
@@ -400,7 +400,7 @@ class ModelWeightLoader(OffloadStore):
                 "adapter": "model_weight_loader",
                 "load_direction": "h2d",
                 "adapter_submit_source": "TurboBusRuntimeSession",
-                "adapter_handle_source": "ReceiptTransferHandle",
+                "adapter_handle_source": "RuntimeSessionTransferHandle",
                 "runtime_buffer_binding": self._runtime_buffer_binding_evidence(
                     evidence_source="TurboBusRuntimeSession.adapter_evidence_record",
                 ),

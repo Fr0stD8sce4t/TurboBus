@@ -10,10 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 def _unique_receipts_from_handles(handles: Iterable[object]) -> list[TransferReceipt]:
+    from .handles import _ReceiptTransferHandle
+
     receipts: list[TransferReceipt] = []
     seen = set()
     for handle in handles:
-        receipt = getattr(handle, "receipt", None)
+        receipt = handle._receipt if isinstance(handle, _ReceiptTransferHandle) else None
         if not isinstance(receipt, TransferReceipt):
             continue
         if receipt.receipt_id in seen:

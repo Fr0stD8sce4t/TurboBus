@@ -218,6 +218,12 @@ class VllmKVSlotAdapter:
     def submit_save_request(self, request_id: str) -> list:
         return self._submit_request_transfer(request_id, "save")
 
+    def _submit_restore_request_evidence_handles(self, request_id: str) -> list:
+        return self._submit_request_transfer(request_id, "restore", public=False)
+
+    def _submit_save_request_evidence_handles(self, request_id: str) -> list:
+        return self._submit_request_transfer(request_id, "save", public=False)
+
     def transfer_stats(self, refs: Iterable[VllmKVBlockRef]) -> TransferStatsSnapshot:
         names_by_group = self._register_and_group(refs)
         return self._transfer_stats_snapshot_from_group_names(names_by_group)
@@ -269,14 +275,27 @@ class VllmKVSlotAdapter:
         self,
         request_id: str,
         operation: str,
+        *,
+        public: bool = True,
     ) -> list:
         handles = []
-        submit_method = (
-            "submit_restore_prefix" if operation == "restore" else "submit_save_prefix"
-        )
         for group_id, names in self._group_names_for_request(request_id).items():
-            submit = getattr(self.adapters[group_id], submit_method)
-            _, group_handles = submit(names)
+            if public:
+                submit_method = (
+                    "submit_restore_prefix"
+                    if operation == "restore"
+                    else "submit_save_prefix"
+                )
+                submit = getattr(self.adapters[group_id], submit_method)
+                _, group_handles = submit(names)
+            else:
+                batch_method = (
+                    "submit_restore_batch"
+                    if operation == "restore"
+                    else "submit_save_batch"
+                )
+                batch = getattr(self.adapters[group_id], batch_method)(names)
+                group_handles = batch._handles
             handles.extend(group_handles)
         return handles
 

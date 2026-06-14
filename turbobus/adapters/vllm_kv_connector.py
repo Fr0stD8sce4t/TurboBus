@@ -7,10 +7,10 @@ from typing import Any, Mapping
 
 from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats
-from ..offload.lifecycle import runtime_session_receipt_trace_from_receipts
+from ..offload.lifecycle import runtime_session_receipt_trace_from_handles
 from ..runtime_session import TurboBusRuntimeSession
 from ..runtime_options import RuntimeOptions
-from ..schema import TransferReceipt, WorkloadKind
+from ..schema import WorkloadKind
 from .vllm_backing_pool import TurboBusCPUBackingPool
 from .vllm_config import TurboBusConnectorConfig
 from .vllm_events import (
@@ -741,7 +741,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
         try:
             transfer_start = time.perf_counter()
-            handles = integration.submit_restore_request_prefix(
+            handles = integration._submit_restore_request_evidence_handles(
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
@@ -944,7 +944,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
-            handles = context.integration.submit_save_request_prefix(
+            handles = context.integration._submit_save_request_evidence_handles(
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
@@ -1372,45 +1372,29 @@ def _receipt_trace_from_handles(
     evidence_id: str,
     operation: str,
 ) -> dict[str, Any]:
-    receipts: list[TransferReceipt] = []
-    seen = set()
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：从 RuntimeSession evidence handle 生成 receipt trace
+    #  * ========================================================================
+    #  * 数据源：offload 内部 receipt-bearing handle 与 TurboBusRuntimeSession
+    #  * 操作：
+    #  *   1) 复用 offload lifecycle 内部 receipt 读取边界
+    #  *   2) 不让 vLLM adapter 直接读取 TransferReceipt 对象
+    #  */
+    logger.info("开始从 RuntimeSession evidence handle 生成 receipt trace...")
+
+    # // 1.1 校验 handle 非空并委托 RuntimeSession evidence 入口
     handles = list(handles)
     if not handles:
         raise RuntimeError("vLLM TurboBus transfer produced no handles")
-    for index, handle in enumerate(handles):
-        receipt = getattr(handle, "receipt", None)
-        if not isinstance(receipt, TransferReceipt):
-            raise TypeError(
-                "vLLM TurboBus transfer handle "
-                f"{index} did not expose a TransferReceipt"
-            )
-        if receipt.receipt_id in seen:
-            continue
-        seen.add(receipt.receipt_id)
-        receipts.append(receipt)
-    if not receipts:
-        raise RuntimeError("vLLM TurboBus transfer produced no receipts")
-    return _receipt_trace_from_receipts(
-        receipts,
+    trace = runtime_session_receipt_trace_from_handles(
+        handles,
         runtime_session,
         evidence_id=evidence_id,
         operation=operation,
     )
-
-
-def _receipt_trace_from_receipts(
-    receipts: list[TransferReceipt],
-    runtime_session: TurboBusRuntimeSession,
-    *,
-    evidence_id: str,
-    operation: str,
-) -> dict[str, Any]:
-    return runtime_session_receipt_trace_from_receipts(
-        receipts,
-        runtime_session,
-        evidence_id=evidence_id,
-        operation=operation,
-    )
+    logger.info("RuntimeSession evidence handle receipt trace 生成完成, evidence_id: %s", evidence_id)
+    return trace
 
 
 def _vllm_kv_lifecycle_evidence_id(
@@ -1729,7 +1713,7 @@ def _vllm_kv_lifecycle_evidence(
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
         "adapter_submit_source": "TurboBusRuntimeSession",
-        "adapter_handle_source": "ReceiptTransferHandle",
+        "adapter_handle_source": "RuntimeSessionTransferHandle",
         "policy_source": "daemon_scheduler",
         "route_policy_visible_to_adapter": False,
         "physical_route_source": "daemon_scheduler",

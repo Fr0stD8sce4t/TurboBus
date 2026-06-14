@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 from typing import Iterable, Mapping
 
@@ -13,19 +12,58 @@ from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferIntent, TransferReceipt, WorkloadKind
 from .blocks import BlockState, OffloadBlock, OffloadBlockInfo
 from .context import AdapterTransferContext, require_runtime_session_open
-from .handles import ReceiptTransferHandle, validate_adapter_receipt
+from .handles import (
+    RuntimeSessionTransferHandle,
+    _ReceiptTransferHandle,
+    validate_adapter_receipt,
+)
 from .lifecycle import adapter_lifecycle_evidence_from_handles
 from .stats import TransferStats, TransferStatsSnapshot, summarize_transfer_handles
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
 class OffloadBatch:
-    operation: str
-    names: tuple[str, ...]
-    handles: tuple[object, ...]
-    store: "OffloadStore" = field(repr=False, compare=False)
+    def __init__(
+        self,
+        operation: str,
+        names: Iterable[str],
+        handles: Iterable[object],
+        store: "OffloadStore",
+    ) -> None:
+        self._operation = str(operation)
+        self._names = tuple(str(name) for name in names)
+        self._handles = tuple(handles)
+        self.store = store
+
+    def __repr__(self) -> str:
+        return f"OffloadBatch(operation={self.operation!r}, names={self.names!r})"
+
+    @property
+    def operation(self) -> str:
+        return self._operation
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return self._names
+
+    @property
+    def handles(self) -> tuple[RuntimeSessionTransferHandle, ...]:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：读取公开 batch handle 视图
+        #  * ========================================================================
+        #  * 数据源：OffloadBatch 内部 receipt-bearing handles
+        #  * 操作：
+        #  *   1) 将内部 handle 转换为 RuntimeSession 绑定公开视图
+        #  *   2) 不暴露 receipt、intent、ticket 或 runtime_entrypoint 字段
+        #  */
+        logger.info("开始读取公开 batch handle 视图...")
+
+        # // 1.1 只返回 wait/stats/as_dict 公开能力
+        handles = tuple(_public_transfer_handle(handle) for handle in self._handles)
+        logger.info("公开 batch handle 视图读取完成, handles: %s", len(handles))
+        return handles
 
     def wait(self) -> None:
         self.store.wait_many(self.names)
@@ -52,7 +90,7 @@ class OffloadBatch:
         block_snapshots = [info.as_dict() for info in self.block_infos()]
 
         # // 1.2 空 batch 不伪造 transfer evidence
-        if not self.handles:
+        if not self._handles:
             snapshot = {
                 "operation": self.operation,
                 "names": list(self.names),
@@ -68,7 +106,7 @@ class OffloadBatch:
         evidence = self.store.batch_lifecycle_evidence(
             operation=self.operation,
             names=self.names,
-            handles=self.handles,
+            handles=self._handles,
         )
         snapshot = _public_adapter_evidence_snapshot(
             evidence,
@@ -320,7 +358,7 @@ class OffloadStore:
             extra={
                 "adapter": "offload_store_batch",
                 "adapter_submit_source": "TurboBusRuntimeSession",
-                "adapter_handle_source": "ReceiptTransferHandle",
+                "adapter_handle_source": "RuntimeSessionTransferHandle",
                 "batch_snapshot_source": "OffloadBatch.as_dict",
             },
         )
@@ -429,7 +467,7 @@ class OffloadStore:
         blocks: list[OffloadBlock],
         operation: str,
         ranges: Iterable[dict[str, int]],
-    ) -> ReceiptTransferHandle:
+    ) -> _ReceiptTransferHandle:
         require_runtime_session_open(self.client)
         self.client.open_session()
         register_pending_buffers = getattr(self.client, "_register_pending_buffers", None)
@@ -480,7 +518,7 @@ class OffloadStore:
             intent,
             transfer_context=self.transfer_context,
         )
-        return ReceiptTransferHandle(
+        return _ReceiptTransferHandle(
             client=self.client,
             intent=intent,
             receipt=receipt,
@@ -586,6 +624,29 @@ def _public_adapter_evidence_snapshot(
         snapshot["receipt_count"],
     )
     return snapshot
+
+
+def _public_transfer_handle(handle: object) -> RuntimeSessionTransferHandle:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：转换公开 transfer handle
+    #  * ========================================================================
+    #  * 数据源：OffloadBatch 内部 handle
+    #  * 操作：
+    #  *   1) 复用内部 handle 的 RuntimeSessionTransferHandle 视图
+    #  *   2) 拒绝不属于 RuntimeSession handle 边界的对象
+    #  */
+    logger.info("开始转换公开 transfer handle...")
+
+    # // 1.1 调用内部公开视图工厂
+    public_handle = getattr(handle, "public_handle", None)
+    if not callable(public_handle):
+        raise TypeError("offload batch handle must expose a RuntimeSession view")
+    result = public_handle()
+    if not isinstance(result, RuntimeSessionTransferHandle):
+        raise TypeError("offload batch handle view must be RuntimeSession-bound")
+    logger.info("公开 transfer handle 转换完成, evidence_id: %s", result.evidence_id)
+    return result
 
 
 __all__ = [

@@ -307,7 +307,7 @@ class TrainingOffloadManager(OffloadStore):
         self._record_transfer_lifecycle(
             operation=operation,
             names=names,
-            handles=batch.handles,
+            handles=batch._handles,
         )
         return list(batch.handles)
 
@@ -323,7 +323,7 @@ class TrainingOffloadManager(OffloadStore):
         self._record_transfer_lifecycle(
             operation=operation,
             names=names,
-            handles=batch.handles,
+            handles=batch._handles,
         )
         return batch
 
@@ -375,7 +375,7 @@ class TrainingOffloadManager(OffloadStore):
                 "adapter": "training_offload_manager",
                 "operation_direction": self._operation_direction(operation, names),
                 "adapter_submit_source": "TurboBusRuntimeSession",
-                "adapter_handle_source": "ReceiptTransferHandle",
+                "adapter_handle_source": "RuntimeSessionTransferHandle",
                 "runtime_buffer_binding": self._runtime_buffer_binding_evidence(
                     evidence_source="TurboBusRuntimeSession.adapter_evidence_record",
                 ),

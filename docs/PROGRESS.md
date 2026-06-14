@@ -25,6 +25,9 @@ completed system capability loop. Do not accumulate implementation history.
   adapter lifecycle evidence is reduced to RuntimeSession-bound scalar
   summaries; daemon queue, ticket, lease, buffer, cleanup, and
   completion-evidence internals stay out of adapter-facing recovery evidence.
+  Package-level offload exports now expose only the adapter lifecycle evidence
+  builder; raw RuntimeSession receipt trace helpers stay internal to direct
+  module users.
 - Public offload block snapshots now expose only structural block state.
   Public offload batch snapshots, handle stats, store transfer stats, and vLLM
   transfer stats aggregations generate and validate RuntimeSession adapter
@@ -77,7 +80,7 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining repeated runtime-looking adapter paths and
-offload/internal helper exports for entrypoints, adapter records, receipt
-contracts, route policy, or raw transfer identity that should stay behind
-`TurboBusRuntimeSession` adapter evidence records.
+Next inspect remaining adapter `__all__` surfaces and runtime-looking public
+classes for entrypoints, adapter records, receipt contracts, route policy, or
+raw transfer identity that should stay behind `TurboBusRuntimeSession` adapter
+evidence records.

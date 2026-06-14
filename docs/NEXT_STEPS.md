@@ -39,7 +39,9 @@ records, snapshots, and real receipts.
   receipt collection stay private. Daemon recovery in adapter lifecycle
   evidence is a RuntimeSession-bound scalar summary only; daemon queue,
   ticket, lease, buffer, cleanup, and completion-evidence internals stay out of
-  adapter-facing lifecycle evidence.
+  adapter-facing lifecycle evidence. Package-level offload exports expose only
+  the adapter lifecycle evidence builder; raw RuntimeSession receipt trace
+  helpers stay internal to direct module users.
 - `turbobus/offload/handles.py`: keep low-level handle submit/wait bindings
   tied to RuntimeSession entrypoint records through offload-internal helpers.
 - `turbobus/offload/store.py`, `turbobus/offload/handles.py`, and
@@ -77,10 +79,10 @@ records, snapshots, and real receipts.
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining repeated runtime-looking adapter paths and offload/internal
-helper exports for entrypoints, adapter records, receipt contracts, route
-policy, or raw transfer identity that should stay behind
-`TurboBusRuntimeSession` adapter evidence records.
+inspect remaining adapter `__all__` surfaces and runtime-looking public classes
+for entrypoints, adapter records, receipt contracts, route policy, or raw
+transfer identity that should stay behind `TurboBusRuntimeSession` adapter
+evidence records.
 
 ## Remaining Risk
 

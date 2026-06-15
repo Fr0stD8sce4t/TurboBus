@@ -741,11 +741,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         prepare_ms = (time.perf_counter() - prepare_start) * 1000.0
         try:
             transfer_start = time.perf_counter()
-            handles = integration._submit_restore_request_evidence_handles(
+            batches = integration._submit_restore_request_evidence_handles(
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
-            _wait_transfer_handles(handles)
+            _wait_transfer_batches(batches)
             transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
             total_ms = (time.perf_counter() - total_start) * 1000.0
             stats = integration.transfer_stats_for_request(
@@ -757,8 +757,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 self.session_id,
                 request,
             )
-            receipt_trace = _receipt_trace_from_handles(
-                handles,
+            receipt_trace = _receipt_trace_from_batches(
+                batches,
                 self.runtime_session,
                 evidence_id=evidence_id,
                 operation="restore",
@@ -944,11 +944,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
-            handles = context.integration._submit_save_request_evidence_handles(
+            batches = context.integration._submit_save_request_evidence_handles(
                 request.request_id,
                 cpu_slot_start=request.cpu_slot_start,
             )
-            _wait_transfer_handles(handles)
+            _wait_transfer_batches(batches)
             context.transfer_ms = (time.perf_counter() - transfer_start) * 1000.0
             stats = context.integration.transfer_stats_for_request(
                 request.request_id,
@@ -959,8 +959,8 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 self.session_id,
                 request,
             )
-            receipt_trace = _receipt_trace_from_handles(
-                handles,
+            receipt_trace = _receipt_trace_from_batches(
+                batches,
                 self.runtime_session,
                 evidence_id=evidence_id,
                 operation="save",
@@ -1350,23 +1350,23 @@ def _validate_vllm_kv_request_params(params: Mapping[str, Any]) -> dict[str, Any
         )
     return normalized
 
-def _wait_transfer_handles(handles) -> list[object]:
-    resolved = list(handles)
+def _wait_transfer_batches(batches) -> list[object]:
+    resolved = list(batches)
     seen = set()
-    for handle in resolved:
-        handle_id = id(handle)
+    for batch in resolved:
+        handle_id = id(batch)
         if handle_id in seen:
             continue
         seen.add(handle_id)
-        waiter = getattr(handle, "wait", None)
+        waiter = getattr(batch, "wait", None)
         if not callable(waiter):
-            raise TypeError("vLLM TurboBus transfer handle must expose wait()")
+            raise TypeError("vLLM TurboBus transfer batch must expose wait()")
         waiter()
     return resolved
 
 
-def _receipt_trace_from_handles(
-    handles,
+def _receipt_trace_from_batches(
+    batches,
     runtime_session: TurboBusRuntimeSession,
     *,
     evidence_id: str,
@@ -1374,26 +1374,32 @@ def _receipt_trace_from_handles(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：从 RuntimeSession evidence handle 生成 receipt trace
+    #  * ??1?? RuntimeSession evidence batch ?? receipt trace
     #  * ========================================================================
-    #  * 数据源：offload 内部 receipt-bearing handle 与 TurboBusRuntimeSession
-    #  * 操作：
-    #  *   1) 复用 offload lifecycle 内部 receipt 读取边界
-    #  *   2) 不让 vLLM adapter 直接读取 TransferReceipt 对象
+    #  * ????offload ?? receipt-bearing batch ? TurboBusRuntimeSession
+    #  * ???
+    #  *   1) ?? offload lifecycle ?? receipt ????
+    #  *   2) ?? vLLM adapter ???? TransferReceipt ??
     #  */
-    logger.info("开始从 RuntimeSession evidence handle 生成 receipt trace...")
+    logger.info("??? RuntimeSession evidence batch ?? receipt trace...")
 
-    # // 1.1 校验 handle 非空并委托 RuntimeSession evidence 入口
-    handles = list(handles)
-    if not handles:
-        raise RuntimeError("vLLM TurboBus transfer produced no handles")
+    # // 1.1 ?? batch ????? RuntimeSession evidence ??
+    batches = list(batches)
+    if not batches:
+        raise RuntimeError("vLLM TurboBus transfer produced no batches")
+    handles = []
+    for batch in batches:
+        public_handles = getattr(batch, "handles", None)
+        if public_handles is None:
+            raise TypeError("vLLM TurboBus transfer batch must expose handles")
+        handles.extend(list(public_handles))
     trace = runtime_session_receipt_trace_from_handles(
         handles,
         runtime_session,
         evidence_id=evidence_id,
         operation=operation,
     )
-    logger.info("RuntimeSession evidence handle receipt trace 生成完成, evidence_id: %s", evidence_id)
+    logger.info("RuntimeSession evidence batch receipt trace ????, evidence_id: %s", evidence_id)
     return trace
 
 

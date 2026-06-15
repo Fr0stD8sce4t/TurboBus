@@ -82,7 +82,10 @@ records, snapshots, and real receipts.
   fields before returning public records. Adapter package and vLLM connector
   wildcard exports expose connector classes and safe summary readers only;
   saved-prefix dataclasses, connector metadata, request metadata, and prefix
-  store mutation records stay behind module-internal direct imports.
+  store mutation records stay behind module-internal direct imports. VLLM
+  request transfer entrypoints now return batch views and convert them into
+  RuntimeSession-bound receipt traces before exposing public lifecycle
+  evidence.
 
 ## Next Entry
 

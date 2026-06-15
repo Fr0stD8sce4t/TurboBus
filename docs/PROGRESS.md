@@ -80,6 +80,8 @@ completed system capability loop. Do not accumulate implementation history.
   classes and safe summary readers only. Saved-prefix dataclasses, connector
   metadata, request metadata, and prefix store mutation records stay behind
   module-internal direct imports.
+- vLLM request transfer entrypoints now move through batch views before
+  emitting RuntimeSession-bound receipt traces and public lifecycle evidence.
 
 ## Remaining Risk
 

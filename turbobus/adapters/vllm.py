@@ -12,6 +12,7 @@ from ..runtime.evidence import validate_adapter_transfer_stats_collection
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .inference import InferenceKVSlot, InferenceKVSlotAdapter
+from ..offload.store import OffloadBatch
 
 logger = logging.getLogger(__name__)
 
@@ -194,28 +195,28 @@ class VllmKVSlotAdapter:
     def register_request(self, refs: Iterable[VllmKVBlockRef]) -> list[str]:
         return self.register_blocks(refs)
 
-    def restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+    def restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list[OffloadBatch]:
         return self._transfer_prefix(refs, "restore")
 
-    def save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+    def save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list[OffloadBatch]:
         return self._transfer_prefix(refs, "save")
 
-    def submit_restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+    def submit_restore_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list[OffloadBatch]:
         return self._submit_prefix_transfer(refs, "restore")
 
-    def submit_save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list:
+    def submit_save_prefix(self, refs: Iterable[VllmKVBlockRef]) -> list[OffloadBatch]:
         return self._submit_prefix_transfer(refs, "save")
 
-    def restore_request(self, request_id: str) -> list:
-        return self._run_submitted_handles(self.submit_restore_request(request_id))
+    def restore_request(self, request_id: str) -> list[OffloadBatch]:
+        return self._run_submitted_batches(self.submit_restore_request(request_id))
 
-    def save_request(self, request_id: str) -> list:
-        return self._run_submitted_handles(self.submit_save_request(request_id))
+    def save_request(self, request_id: str) -> list[OffloadBatch]:
+        return self._run_submitted_batches(self.submit_save_request(request_id))
 
-    def submit_restore_request(self, request_id: str) -> list:
+    def submit_restore_request(self, request_id: str) -> list[OffloadBatch]:
         return self._submit_request_transfer(request_id, "restore")
 
-    def submit_save_request(self, request_id: str) -> list:
+    def submit_save_request(self, request_id: str) -> list[OffloadBatch]:
         return self._submit_request_transfer(request_id, "save")
 
     def _submit_restore_request_evidence_handles(self, request_id: str) -> list:
@@ -251,25 +252,29 @@ class VllmKVSlotAdapter:
                 removed.append(name)
         return tuple(removed)
 
-    def _transfer_prefix(self, refs: Iterable[VllmKVBlockRef], operation: str) -> list:
-        handles = self._submit_prefix_transfer(refs, operation)
-        self._wait_handles(handles)
-        return handles
+    def _transfer_prefix(
+        self,
+        refs: Iterable[VllmKVBlockRef],
+        operation: str,
+    ) -> list[OffloadBatch]:
+        batches = self._submit_prefix_transfer(refs, operation)
+        self._wait_batches(batches)
+        return batches
 
     def _submit_prefix_transfer(
         self,
         refs: Iterable[VllmKVBlockRef],
         operation: str,
-    ) -> list:
+    ) -> list[OffloadBatch]:
         refs = list(refs)
         names_by_group = self._register_and_group(refs)
-        handles = []
+        batches = []
         submit_method = "submit_restore_prefix" if operation == "restore" else "submit_save_prefix"
         for group_id, names in names_by_group.items():
             submit = getattr(self.adapters[group_id], submit_method)
-            names, group_handles = submit(names)
-            handles.extend(group_handles)
-        return handles
+            batch = submit(names)
+            batches.append(batch)
+        return batches
 
     def _submit_request_transfer(
         self,
@@ -277,8 +282,8 @@ class VllmKVSlotAdapter:
         operation: str,
         *,
         public: bool = True,
-    ) -> list:
-        handles = []
+    ) -> list[OffloadBatch]:
+        batches = []
         for group_id, names in self._group_names_for_request(request_id).items():
             if public:
                 submit_method = (
@@ -287,7 +292,7 @@ class VllmKVSlotAdapter:
                     else "submit_save_prefix"
                 )
                 submit = getattr(self.adapters[group_id], submit_method)
-                _, group_handles = submit(names)
+                batch = submit(names)
             else:
                 batch_method = (
                     "submit_restore_batch"
@@ -295,27 +300,26 @@ class VllmKVSlotAdapter:
                     else "submit_save_batch"
                 )
                 batch = getattr(self.adapters[group_id], batch_method)(names)
-                group_handles = batch._handles
-            handles.extend(group_handles)
-        return handles
+            batches.append(batch)
+        return batches
 
     @staticmethod
-    def _wait_handles(handles: Iterable[object]) -> None:
+    def _wait_batches(batches: Iterable[OffloadBatch]) -> None:
         seen = set()
-        for handle in handles:
-            handle_id = id(handle)
-            if handle_id in seen:
+        for batch in batches:
+            batch_id = id(batch)
+            if batch_id in seen:
                 continue
-            seen.add(handle_id)
-            waiter = getattr(handle, "wait", None)
+            seen.add(batch_id)
+            waiter = getattr(batch, "wait", None)
             if not callable(waiter):
-                raise TypeError("vLLM TurboBus prefix handle must expose wait()")
+                raise TypeError("vLLM TurboBus prefix batch must expose wait()")
             waiter()
 
     @staticmethod
-    def _run_submitted_handles(handles: Iterable[object]) -> list:
-        resolved = list(handles)
-        VllmKVSlotAdapter._wait_handles(resolved)
+    def _run_submitted_batches(batches: Iterable[OffloadBatch]) -> list[OffloadBatch]:
+        resolved = list(batches)
+        VllmKVSlotAdapter._wait_batches(resolved)
         return resolved
 
     @staticmethod

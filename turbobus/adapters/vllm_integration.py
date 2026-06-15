@@ -332,7 +332,12 @@ class VllmTurboBusIntegration:
             cpu_slot_start=cpu_slot_start,
         )
 
-    def restore_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
+    def restore_request_prefix(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
         return self.require_adapter().restore_request(str(request_id))
 
@@ -345,7 +350,12 @@ class VllmTurboBusIntegration:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
         return self.require_adapter().submit_restore_request(str(request_id))
 
-    def save_request_prefix(self, request_id: str, *, cpu_slot_start: int = 0) -> list:
+    def save_request_prefix(
+        self,
+        request_id: str,
+        *,
+        cpu_slot_start: int = 0,
+    ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
         return self.require_adapter().save_request(str(request_id))
 

@@ -137,32 +137,30 @@ class InferenceKVSlotAdapter(OffloadStore):
     def slot_infos(self, names: Iterable[str] | None = None) -> list[OffloadBlockInfo]:
         return self.block_infos(names)
 
-    def restore_slot(self, name: str):
+    def restore_slot(self, name: str) -> OffloadBatch:
         return self.prefetch(name)
 
-    def restore_prefix(self, names: Iterable[str]) -> list:
+    def restore_prefix(self, names: Iterable[str]) -> OffloadBatch:
         return self._run_prefix_transfer(names, self.submit_restore_prefix)
 
-    def restore_all(self) -> list:
+    def restore_all(self) -> OffloadBatch:
         return self.restore_prefix(self.names())
 
-    def save_slot(self, name: str):
+    def save_slot(self, name: str) -> OffloadBatch:
         return self.evict(name)
 
-    def save_prefix(self, names: Iterable[str]) -> list:
+    def save_prefix(self, names: Iterable[str]) -> OffloadBatch:
         return self._run_prefix_transfer(names, self.submit_save_prefix)
 
-    def save_all(self) -> list:
+    def save_all(self) -> OffloadBatch:
         return self.save_prefix(self.names())
 
     def submit_restore_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
         return self.submit_prefetch_many(names)
 
-    def submit_restore_prefix(self, names: Iterable[str]) -> tuple[list[str], list]:
-        names = list(names)
-        batch = self.submit_restore_batch(names)
-        return names, list(batch.handles)
+    def submit_restore_prefix(self, names: Iterable[str]) -> OffloadBatch:
+        return self.submit_restore_batch(names)
 
     def restore_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
@@ -172,10 +170,8 @@ class InferenceKVSlotAdapter(OffloadStore):
         names = list(names)
         return self.submit_evict_many(names)
 
-    def submit_save_prefix(self, names: Iterable[str]) -> tuple[list[str], list]:
-        names = list(names)
-        batch = self.submit_save_batch(names)
-        return names, list(batch.handles)
+    def submit_save_prefix(self, names: Iterable[str]) -> OffloadBatch:
+        return self.submit_save_batch(names)
 
     def save_batch(self, names: Iterable[str]) -> OffloadBatch:
         names = list(names)
@@ -197,10 +193,10 @@ class InferenceKVSlotAdapter(OffloadStore):
         for name in selected:
             self.set_block_state(name, BlockState.GPU, clear_transfer_state=True)
 
-    def _run_prefix_transfer(self, names: Iterable[str], submit) -> list:
-        names, handles = submit(names)
-        self.wait_prefix(names)
-        return handles
+    def _run_prefix_transfer(self, names: Iterable[str], submit) -> OffloadBatch:
+        batch = submit(names)
+        batch.wait()
+        return batch
 
 
 def make_contiguous_kv_slots(

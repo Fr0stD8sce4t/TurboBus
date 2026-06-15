@@ -87,9 +87,9 @@ records, snapshots, and real receipts.
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining offload store methods that still return internal block
-handles or runtime-looking transfer state instead of scalar
-RuntimeSession-bound summaries.
+inspect remaining offload store methods and adapter entrypoints that still
+return internal block handles or runtime-looking transfer state instead of
+scalar RuntimeSession-bound summaries.
 
 ## Remaining Risk
 

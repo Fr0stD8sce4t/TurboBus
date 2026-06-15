@@ -267,28 +267,33 @@ class ModelWeightLoader(OffloadStore):
     def tensor_infos(self, names: Iterable[str] | None = None) -> list[OffloadBlockInfo]:
         return self.bucket_infos(names)
 
-    def load_bucket(self, name: str):
-        handles = self._load_selected([name], operation="load_bucket")
-        return handles[0]
+    def load_bucket(self, name: str) -> OffloadBatch:
+        batch = self._submit_selected([name], operation="load_bucket")
+        batch.wait()
+        return batch
 
-    def load_buckets(self, names: Iterable[str]) -> list:
-        return self._load_selected(names, operation="load_buckets")
+    def load_buckets(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(names, operation="load_buckets")
+        batch.wait()
+        return batch
 
     def submit_load_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self._submit_selected(names, operation="submit_load_buckets")
 
-    def load_tensor(self, name: str):
+    def load_tensor(self, name: str) -> OffloadBatch:
         return self.load_bucket(name)
 
-    def load_tensors(self, names: Iterable[str]) -> list:
+    def load_tensors(self, names: Iterable[str]) -> OffloadBatch:
         return self.load_buckets(names)
 
     def submit_load_tensors(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_load_buckets(names)
 
-    def load_manifest(self, names: Iterable[str] | None = None) -> list:
+    def load_manifest(self, names: Iterable[str] | None = None) -> OffloadBatch:
         selected = self._manifest_names(names)
-        return self._load_selected(selected, operation="load_manifest")
+        batch = self._submit_selected(selected, operation="load_manifest")
+        batch.wait()
+        return batch
 
     def submit_load_manifest(self, names: Iterable[str] | None = None) -> OffloadBatch:
         selected = self._manifest_names(names)
@@ -297,11 +302,15 @@ class ModelWeightLoader(OffloadStore):
     def load_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_load_buckets(names)
 
-    def load_prefix(self, names: Iterable[str]) -> list:
-        return self._load_selected(names, operation="load_prefix")
+    def load_prefix(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(names, operation="load_prefix")
+        batch.wait()
+        return batch
 
-    def load_all(self) -> list:
-        return self._load_selected(self.names(), operation="load_all")
+    def load_all(self) -> OffloadBatch:
+        batch = self._submit_selected(self.names(), operation="load_all")
+        batch.wait()
+        return batch
 
     def wait_all(self) -> None:
         self.wait_many(self.names())
@@ -329,19 +338,6 @@ class ModelWeightLoader(OffloadStore):
         if self._manifest is not None:
             return self._manifest.names()
         return self.names()
-
-    def _load_selected(self, names: Iterable[str], *, operation: str) -> list:
-        names = self._normalize_names(names)
-        if not names:
-            return []
-        batch = self.submit_prefetch_many(names)
-        super().wait_many(names)
-        self._record_load_lifecycle(
-            operation=operation,
-            names=names,
-            handles=batch._handles,
-        )
-        return list(batch.handles)
 
     def _submit_selected(self, names: Iterable[str], *, operation: str) -> OffloadBatch:
         names = self._normalize_names(names)

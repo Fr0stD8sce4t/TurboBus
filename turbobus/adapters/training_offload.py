@@ -189,20 +189,23 @@ class TrainingOffloadManager(OffloadStore):
     def bucket_infos(self, names: Iterable[str] | None = None) -> list[OffloadBlockInfo]:
         return self.block_infos(names)
 
-    def prefetch_bucket(self, name: str):
-        handles = self._run_selected(
+    def prefetch_bucket(self, name: str) -> OffloadBatch:
+        batch = self._submit_selected(
             [name],
             operation="prefetch_bucket",
             submitter=self.submit_prefetch_many,
         )
-        return handles[0]
+        batch.wait()
+        return batch
 
-    def prefetch_buckets(self, names: Iterable[str]) -> list:
-        return self._run_selected(
+    def prefetch_buckets(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(
             names,
             operation="prefetch_buckets",
             submitter=self.submit_prefetch_many,
         )
+        batch.wait()
+        return batch
 
     def submit_prefetch_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self._submit_selected(
@@ -214,34 +217,41 @@ class TrainingOffloadManager(OffloadStore):
     def prefetch_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_prefetch_buckets(names)
 
-    def prefetch_prefix(self, names: Iterable[str]) -> list:
-        return self._run_selected(
+    def prefetch_prefix(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(
             names,
             operation="prefetch_prefix",
             submitter=self.submit_prefetch_many,
         )
+        batch.wait()
+        return batch
 
-    def prefetch_all(self) -> list:
-        return self._run_selected(
+    def prefetch_all(self) -> OffloadBatch:
+        batch = self._submit_selected(
             self.names(),
             operation="prefetch_all",
             submitter=self.submit_prefetch_many,
         )
+        batch.wait()
+        return batch
 
-    def offload_bucket(self, name: str):
-        handles = self._run_selected(
+    def offload_bucket(self, name: str) -> OffloadBatch:
+        batch = self._submit_selected(
             [name],
             operation="offload_bucket",
             submitter=self.submit_evict_many,
         )
-        return handles[0]
+        batch.wait()
+        return batch
 
-    def offload_buckets(self, names: Iterable[str]) -> list:
-        return self._run_selected(
+    def offload_buckets(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(
             names,
             operation="offload_buckets",
             submitter=self.submit_evict_many,
         )
+        batch.wait()
+        return batch
 
     def submit_offload_buckets(self, names: Iterable[str]) -> OffloadBatch:
         return self._submit_selected(
@@ -253,19 +263,23 @@ class TrainingOffloadManager(OffloadStore):
     def offload_batch(self, names: Iterable[str]) -> OffloadBatch:
         return self.submit_offload_buckets(names)
 
-    def offload_prefix(self, names: Iterable[str]) -> list:
-        return self._run_selected(
+    def offload_prefix(self, names: Iterable[str]) -> OffloadBatch:
+        batch = self._submit_selected(
             names,
             operation="offload_prefix",
             submitter=self.submit_evict_many,
         )
+        batch.wait()
+        return batch
 
-    def offload_all(self) -> list:
-        return self._run_selected(
+    def offload_all(self) -> OffloadBatch:
+        batch = self._submit_selected(
             self.names(),
             operation="offload_all",
             submitter=self.submit_evict_many,
         )
+        batch.wait()
+        return batch
 
     def wait_all(self) -> None:
         self.wait_many(self.names())
@@ -292,25 +306,6 @@ class TrainingOffloadManager(OffloadStore):
         for name in selected:
             self.set_block_state(name, BlockState.GPU, clear_transfer_state=True)
 
-    def _run_selected(
-        self,
-        names: Iterable[str],
-        *,
-        operation: str,
-        submitter,
-    ) -> list:
-        names = self._normalize_names(names)
-        if not names:
-            return []
-        batch = submitter(names)
-        super().wait_many(names)
-        self._record_transfer_lifecycle(
-            operation=operation,
-            names=names,
-            handles=batch._handles,
-        )
-        return list(batch.handles)
-
     def _submit_selected(
         self,
         names: Iterable[str],
@@ -319,6 +314,8 @@ class TrainingOffloadManager(OffloadStore):
         submitter,
     ) -> OffloadBatch:
         names = self._normalize_names(names)
+        if not names:
+            return OffloadBatch(operation, (), (), self)
         batch = submitter(names)
         self._record_transfer_lifecycle(
             operation=operation,

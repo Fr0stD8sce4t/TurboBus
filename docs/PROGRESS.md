@@ -44,6 +44,9 @@ completed system capability loop. Do not accumulate implementation history.
   generate and validate RuntimeSession adapter evidence internally, then
   expose only scalar counts, adapter evidence ids, receipt states, and byte
   summaries.
+- OffloadStore and adapter single-item transfer entrypoints now return
+  RuntimeSession-bound batch objects and wait through batch evidence instead of
+  exposing raw handle returns.
 - Raw RuntimeSession entrypoint records, receipt contracts, receipt ids,
   intent ids, ticket ids, decision ids, topology ids, and route policy stay
   behind RuntimeSession adapter evidence validation. Raw direct and relay

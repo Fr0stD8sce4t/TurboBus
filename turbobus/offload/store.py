@@ -196,20 +196,20 @@ class OffloadStore:
             return [block.info() for block in self._blocks.values()]
         return [self.block(name).info() for name in names]
 
-    def prefetch(self, name: str):
-        return self.submit_prefetch_many([name]).handles[0]
+    def prefetch(self, name: str) -> OffloadBatch:
+        return self.submit_prefetch_many([name])
 
-    def evict(self, name: str):
-        return self.submit_evict_many([name]).handles[0]
+    def evict(self, name: str) -> OffloadBatch:
+        return self.submit_evict_many([name])
 
-    def prefetch_many(self, names: Iterable[str]) -> list:
-        return list(self.submit_prefetch_many(names).handles)
+    def prefetch_many(self, names: Iterable[str]) -> OffloadBatch:
+        return self.submit_prefetch_many(names)
 
     def submit_prefetch_many(self, names: Iterable[str]) -> OffloadBatch:
         return self._submit_many(names, "prefetch")
 
-    def evict_many(self, names: Iterable[str]) -> list:
-        return list(self.submit_evict_many(names).handles)
+    def evict_many(self, names: Iterable[str]) -> OffloadBatch:
+        return self.submit_evict_many(names)
 
     def submit_evict_many(self, names: Iterable[str]) -> OffloadBatch:
         return self._submit_many(names, "evict")
@@ -269,7 +269,11 @@ class OffloadStore:
         return self.transfer_stats_snapshot([name])
 
     def _raw_transfer_stats(self, name: str) -> TransferStats | None:
-        return self._blocks[name].last_transfer_stats
+        block = self._blocks[name]
+        handle = block._last_handle
+        if handle is None:
+            return None
+        return summarize_transfer_handles([handle])
 
     def transfer_stats_many(self, names: Iterable[str]) -> TransferStatsSnapshot:
         return self.transfer_stats_snapshot(names)

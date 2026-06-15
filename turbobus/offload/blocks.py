@@ -100,15 +100,6 @@ class OffloadBlock:
     def info(self) -> OffloadBlockInfo:
         return self._block.info()
 
-    @property
-    def last_stats(self):
-        return self._block.last_stats
-
-    @property
-    def last_transfer_stats(self) -> TransferStats | None:
-        return self._block.last_transfer_stats
-
-
 @dataclass
 class _OffloadBlock:
     name: str

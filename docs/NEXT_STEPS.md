@@ -52,9 +52,9 @@ records, snapshots, and real receipts.
   counts, adapter evidence ids, receipt states, and byte summaries. Public
   batches and block views keep raw handles out of public fields, repr,
   compare, and adapter-facing handle lists; internal lifecycle evidence still
-  consumes receipt-bearing handles. Public block info objects, block views,
-  and wildcard exports remain structural and do not expose runtime-looking
-  receipt or transfer identity fields.
+  consumes receipt-bearing handles. Public block info objects and block views
+  remain structural and do not expose runtime-looking receipt or transfer
+  identity fields.
 - `turbobus/runtime/evidence.py`: reject missing RuntimeSession records, fake
   evidence, exposed route policy, lifecycle identity drift, public batch
   snapshots, public transfer stats snapshots, and lifecycle range/binding
@@ -87,8 +87,8 @@ records, snapshots, and real receipts.
 ## Next Entry
 
 Continue the same production-boundary refactor in the current code path. Next
-inspect remaining offload store/block public methods that still return
-internal block handles or runtime-looking transfer state instead of scalar
+inspect remaining offload store methods that still return internal block
+handles or runtime-looking transfer state instead of scalar
 RuntimeSession-bound summaries.
 
 ## Remaining Risk

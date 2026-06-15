@@ -15,6 +15,9 @@ completed system capability loop. Do not accumulate implementation history.
   session/job registration, buffer registration, adapter construction,
   transfer submission, receipt consumption, recovery, cleanup, and close
   evidence.
+- Public offload block views stay structural. Internal `_OffloadBlock` state
+  still carries the raw transfer handle for lifecycle evidence, but public
+  block accessors do not expose receipt-bearing stats.
 - Adapter construction, handle submit/wait, model loading, training offload,
   and vLLM KV lifecycle evidence record RuntimeSession entrypoint adapter
   evidence records and consume real `TransferReceipt` objects.
@@ -29,16 +32,18 @@ completed system capability loop. Do not accumulate implementation history.
   builder; raw RuntimeSession receipt trace helpers stay internal to direct
   module users.
 - Public offload block info objects, block snapshots, and block wildcard
-  exports now expose only structural block state. Raw transfer identity and
-  receipt/ticket/decision/topology/job/session fields stay out of public block
-  objects. Public offload transfer handles now expose only RuntimeSession-bound
-  wait, stats, evidence id, and scalar snapshots. Receipt-bearing handles stay
-  internal to offload lifecycle evidence. Public offload batches and block
-  views keep raw handles out of public fields, repr, compare, and
-  adapter-facing handle lists. Public offload batch snapshots, handle stats,
-  store transfer stats, and vLLM transfer stats aggregations generate and
-  validate RuntimeSession adapter evidence internally, then expose only scalar
-  counts, adapter evidence ids, receipt states, and byte summaries.
+  exports now expose only structural block state. Public block views no
+  longer surface `last_stats` or `last_transfer_stats`; raw transfer identity
+  and receipt/ticket/decision/topology/job/session fields stay out of public
+  block objects. Public offload transfer handles now expose only
+  RuntimeSession-bound wait, stats, evidence id, and scalar snapshots.
+  Receipt-bearing handles stay internal to offload lifecycle evidence. Public
+  offload batches and block views keep raw handles out of public fields, repr,
+  compare, and adapter-facing handle lists. Public offload batch snapshots,
+  handle stats, store transfer stats, and vLLM transfer stats aggregations
+  generate and validate RuntimeSession adapter evidence internally, then
+  expose only scalar counts, adapter evidence ids, receipt states, and byte
+  summaries.
 - Raw RuntimeSession entrypoint records, receipt contracts, receipt ids,
   intent ids, ticket ids, decision ids, topology ids, and route policy stay
   behind RuntimeSession adapter evidence validation. Raw direct and relay

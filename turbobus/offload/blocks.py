@@ -57,8 +57,60 @@ class OffloadBlockInfo:
         return snapshot
 
 
-@dataclass
 class OffloadBlock:
+    def __init__(self, block: "_OffloadBlock") -> None:
+        self._block = block
+
+    @property
+    def name(self) -> str:
+        return self._block.name
+
+    @property
+    def block_id(self) -> object:
+        return self._block.block_id
+
+    @property
+    def cpu_slot(self) -> object | None:
+        return self._block.cpu_slot
+
+    @property
+    def gpu_slot(self) -> object | None:
+        return self._block.gpu_slot
+
+    @property
+    def cpu_offset(self) -> int:
+        return self._block.cpu_offset
+
+    @property
+    def gpu_offset(self) -> int:
+        return self._block.gpu_offset
+
+    @property
+    def bytes(self) -> int:
+        return self._block.bytes
+
+    @property
+    def state(self) -> BlockState:
+        return self._block.state
+
+    @property
+    def last_operation(self) -> str | None:
+        return self._block.last_operation
+
+    def info(self) -> OffloadBlockInfo:
+        return self._block.info()
+
+    @property
+    def last_stats(self):
+        return self._block.last_stats
+
+    @property
+    def last_transfer_stats(self) -> TransferStats | None:
+        return self._block.last_transfer_stats
+
+
+@dataclass
+class _OffloadBlock:
     name: str
     cpu_tensor: object
     gpu_tensor: object
@@ -69,10 +121,10 @@ class OffloadBlock:
     gpu_offset: int = 0
     byte_count: int | None = None
     state: BlockState = BlockState.CPU
-    last_prefetch: object | None = None
-    last_evict: object | None = None
-    last_handle: object | None = None
-    last_operation: str | None = None
+    _last_prefetch: object | None = None
+    _last_evict: object | None = None
+    _last_handle: object | None = None
+    _last_operation: str | None = None
 
     def __post_init__(self) -> None:
         if self.cpu_tensor is None:
@@ -90,22 +142,26 @@ class OffloadBlock:
 
     @property
     def last_stats(self):
-        if self.last_handle is None:
+        if self._last_handle is None:
             return None
-        return self.last_handle.stats
+        return self._last_handle.stats
 
     @property
     def last_transfer_stats(self) -> TransferStats | None:
-        if self.last_handle is None:
+        if self._last_handle is None:
             return None
-        return summarize_transfer_handles([self.last_handle])
+        return summarize_transfer_handles([self._last_handle])
+
+    @property
+    def last_operation(self) -> str | None:
+        return self._last_operation
 
     def info(self) -> OffloadBlockInfo:
         # /*
         #  * ========================================================================
         #  * 步骤1：生成公开 block 信息对象
         #  * ========================================================================
-        #  * 数据源：OffloadBlock structural fields
+        #  * 数据源：_OffloadBlock structural fields
         #  * 操作：
         #  *   1) 只复制 block 结构、位置和逻辑状态
         #  *   2) 不从 handle 提取 receipt/ticket/decision/topology identity

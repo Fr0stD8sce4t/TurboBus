@@ -520,7 +520,7 @@ class ModelWeightLoader(OffloadStore):
         handles = []
         seen = set()
         for name in names:
-            handle = self.block(name).last_handle
+            handle = self._blocks[str(name)]._last_handle
             if handle is None or id(handle) in seen:
                 continue
             seen.add(id(handle))

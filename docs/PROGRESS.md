@@ -33,12 +33,12 @@ completed system capability loop. Do not accumulate implementation history.
   receipt/ticket/decision/topology/job/session fields stay out of public block
   objects. Public offload transfer handles now expose only RuntimeSession-bound
   wait, stats, evidence id, and scalar snapshots. Receipt-bearing handles stay
-  internal to offload lifecycle evidence. Public offload batches keep raw
-  handles out of dataclass fields, repr, compare, and adapter-facing handle
-  lists. Public offload batch snapshots, handle stats, store transfer stats,
-  and vLLM transfer stats aggregations generate and validate RuntimeSession
-  adapter evidence internally, then expose only scalar counts, adapter
-  evidence ids, receipt states, and byte summaries.
+  internal to offload lifecycle evidence. Public offload batches and block
+  views keep raw handles out of public fields, repr, compare, and
+  adapter-facing handle lists. Public offload batch snapshots, handle stats,
+  store transfer stats, and vLLM transfer stats aggregations generate and
+  validate RuntimeSession adapter evidence internally, then expose only scalar
+  counts, adapter evidence ids, receipt states, and byte summaries.
 - Raw RuntimeSession entrypoint records, receipt contracts, receipt ids,
   intent ids, ticket ids, decision ids, topology ids, and route policy stay
   behind RuntimeSession adapter evidence validation. Raw direct and relay
@@ -90,7 +90,6 @@ completed system capability loop. Do not accumulate implementation history.
 Converge the production boundary around `TurboBusRuntimeSession` and adapter
 lifecycle evidence.
 
-Next inspect remaining offload store/block public attributes and
-adapter-facing methods for raw handles, RuntimeSession entrypoint records,
-adapter evidence records, receipt contracts, route policy, or raw transfer
-identity instead of scalar RuntimeSession-bound summaries.
+Next inspect remaining offload store/block public methods that still return
+internal block handles or runtime-looking transfer state instead of scalar
+RuntimeSession-bound summaries.

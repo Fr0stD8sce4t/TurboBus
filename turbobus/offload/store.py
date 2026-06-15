@@ -10,7 +10,7 @@ from ..runtime.evidence import (
 )
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferIntent, TransferReceipt, WorkloadKind
-from .blocks import BlockState, OffloadBlock, OffloadBlockInfo
+from .blocks import BlockState, OffloadBlock, OffloadBlockInfo, _OffloadBlock
 from .context import AdapterTransferContext, require_runtime_session_open
 from .handles import (
     RuntimeSessionTransferHandle,
@@ -135,7 +135,7 @@ class OffloadStore:
         _require_runtime_session_client(client, transfer_context)
         self.client = client
         self.transfer_context = transfer_context
-        self._blocks: dict[str, OffloadBlock] = {}
+        self._blocks: dict[str, _OffloadBlock] = {}
         self._intent_counter = 0
 
     def add(
@@ -155,7 +155,7 @@ class OffloadStore:
         self._validate_range_fields(cpu_offset, gpu_offset, byte_count)
         if name in self._blocks:
             raise ValueError(f"offload block already exists: {name}")
-        block = OffloadBlock(
+        block = _OffloadBlock(
             name=name,
             cpu_tensor=cpu_tensor,
             gpu_tensor=gpu_tensor,
@@ -167,14 +167,14 @@ class OffloadStore:
             byte_count=int(byte_count) if byte_count is not None else None,
         )
         self._blocks[name] = block
-        return block
+        return OffloadBlock(block)
 
     def remove(self, name: str) -> OffloadBlock:
-        return self._blocks.pop(name)
+        return OffloadBlock(self._blocks.pop(name))
 
     def block(self, name: str) -> OffloadBlock:
         try:
-            return self._blocks[name]
+            return OffloadBlock(self._blocks[name])
         except KeyError as exc:
             raise KeyError(f"unknown offload block: {name}") from exc
 
@@ -185,7 +185,8 @@ class OffloadStore:
         return [block.block_id for block in self._blocks.values()]
 
     def blocks(self) -> Iterable[OffloadBlock]:
-        return self._blocks.values()
+        for block in self._blocks.values():
+            yield OffloadBlock(block)
 
     def block_info(self, name: str) -> OffloadBlockInfo:
         return self.block(name).info()
@@ -245,19 +246,19 @@ class OffloadStore:
         return OffloadBatch(operation, tuple(block.name for block in blocks), handles, self)
 
     def wait(self, name: str) -> None:
-        block = self.block(name)
-        if block.last_handle is None:
+        block = self._blocks[name]
+        if block._last_handle is None:
             return
-        block.last_handle.wait()
+        block._last_handle.wait()
         self._mark_waited(block)
 
     def wait_many(self, names: Iterable[str]) -> None:
         waited = set()
         for name in names:
-            block = self.block(name)
-            handle_key = id(block.last_handle)
-            if block.last_handle is not None and handle_key not in waited:
-                block.last_handle.wait()
+            block = self._blocks[name]
+            handle_key = id(block._last_handle)
+            if block._last_handle is not None and handle_key not in waited:
+                block._last_handle.wait()
                 waited.add(handle_key)
             self._mark_waited(block)
 
@@ -268,7 +269,7 @@ class OffloadStore:
         return self.transfer_stats_snapshot([name])
 
     def _raw_transfer_stats(self, name: str) -> TransferStats | None:
-        return self.block(name).last_transfer_stats
+        return self._blocks[name].last_transfer_stats
 
     def transfer_stats_many(self, names: Iterable[str]) -> TransferStatsSnapshot:
         return self.transfer_stats_snapshot(names)
@@ -313,9 +314,9 @@ class OffloadStore:
 
     def _raw_transfer_stats_many(self, names: Iterable[str]) -> TransferStats:
         return summarize_transfer_handles(
-            block.last_handle
-            for block in (self.block(name) for name in names)
-            if block.last_handle is not None
+            block._last_handle
+            for block in (self._blocks[name] for name in names)
+            if block._last_handle is not None
         )
 
     def batch_lifecycle_evidence(
@@ -375,7 +376,7 @@ class OffloadStore:
         handles = []
         seen = set()
         for name in names:
-            handle = self.block(str(name)).last_handle
+            handle = self._blocks[str(name)]._last_handle
             if handle is None or id(handle) in seen:
                 continue
             seen.add(id(handle))
@@ -389,30 +390,30 @@ class OffloadStore:
         *,
         clear_transfer_state: bool = False,
     ) -> OffloadBlock:
-        block = self.block(name)
+        block = self._blocks[name]
         block.state = state
         if clear_transfer_state:
             self.clear_block_transfer_state(name)
-        return block
+        return OffloadBlock(block)
 
     def clear_block_transfer_state(self, name: str) -> OffloadBlock:
-        block = self.block(name)
-        block.last_prefetch = None
-        block.last_evict = None
-        block.last_handle = None
-        block.last_operation = None
-        return block
+        block = self._blocks[name]
+        block._last_prefetch = None
+        block._last_evict = None
+        block._last_handle = None
+        block._last_operation = None
+        return OffloadBlock(block)
 
-    def _mark_waited(self, block: OffloadBlock) -> None:
-        if block.last_operation == "prefetch":
+    def _mark_waited(self, block: _OffloadBlock) -> None:
+        if block._last_operation == "prefetch":
             block.state = BlockState.GPU
-        elif block.last_operation == "evict":
+        elif block._last_operation == "evict":
             block.state = BlockState.CPU
         else:
             block.state = BlockState.UNKNOWN
 
     @staticmethod
-    def _can_use_range_batch(blocks: list[OffloadBlock]) -> bool:
+    def _can_use_range_batch(blocks: list[_OffloadBlock]) -> bool:
         first = blocks[0]
         if first.byte_count is None:
             return False
@@ -424,7 +425,7 @@ class OffloadStore:
         )
 
     @staticmethod
-    def _ranges(blocks: list[OffloadBlock], operation: str) -> list[dict]:
+    def _ranges(blocks: list[_OffloadBlock], operation: str) -> list[dict]:
         ranges = []
         for block in blocks:
             if operation == "prefetch":
@@ -446,25 +447,25 @@ class OffloadStore:
 
     @staticmethod
     def _record_many(
-        blocks: list[OffloadBlock],
+        blocks: list[_OffloadBlock],
         handle,
         operation: str,
         state: BlockState,
     ) -> None:
         for block in blocks:
             if operation == "prefetch":
-                block.last_prefetch = handle
+                block._last_prefetch = handle
             elif operation == "evict":
-                block.last_evict = handle
+                block._last_evict = handle
             else:
                 raise ValueError(f"unknown offload operation: {operation}")
-            block.last_handle = handle
-            block.last_operation = operation
+            block._last_handle = handle
+            block._last_operation = operation
             block.state = state
 
     def _submit_transfer(
         self,
-        blocks: list[OffloadBlock],
+        blocks: list[_OffloadBlock],
         operation: str,
         ranges: Iterable[dict[str, int]],
     ) -> _ReceiptTransferHandle:

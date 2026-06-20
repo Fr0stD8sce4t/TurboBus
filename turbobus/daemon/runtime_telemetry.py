@@ -56,6 +56,13 @@ def daemon_runtime_telemetry_snapshot(
             relay_quotas=relay_quotas,
         ),
         "pcie_bandwidth_pool": runtime_telemetry_pcie_bandwidth_pool(runtime_state),
+        "hardware_monitoring": runtime_telemetry_hardware_monitoring(runtime_state),
+        "tenant_usage": dict(runtime_state.get("tenant_usage", {}) or {}),
+        "quota_rejections": tuple(
+            dict(item)
+            for item in runtime_state.get("quota_rejections", ()) or ()
+            if isinstance(item, Mapping)
+        ),
         "jobs": runtime_telemetry_jobs_snapshot(runtime_state, jobs),
         "sessions": runtime_telemetry_sessions_snapshot(sessions),
         "worker_feedback": dict(summary.get("runtime_feedback_metrics", {}) or {}),
@@ -173,6 +180,47 @@ def runtime_telemetry_pcie_bandwidth_pool(
         "topology_version": pool.get("topology_version"),
         "paths": _mapping_records_by_key(pool.get("paths", {})),
         "edges": _mapping_records_by_key(pool.get("edges", {})),
+    }
+
+
+def runtime_telemetry_hardware_monitoring(
+    runtime_state: Mapping[str, object],
+) -> dict[str, object]:
+    monitoring = runtime_state.get("hardware_monitoring", {})
+    if not isinstance(monitoring, Mapping):
+        return {
+            "source": "nvidia_smi_dmon",
+            "known": False,
+            "error": "missing_hardware_monitoring",
+            "counters": (),
+        }
+    return {
+        "source": str(monitoring.get("source", "unknown")),
+        "known": bool(monitoring.get("known", False)),
+        "sampled_at": float(monitoring.get("sampled_at", 0.0) or 0.0),
+        "sample_age_ms": float(monitoring.get("sample_age_ms", 0.0) or 0.0),
+        "error": monitoring.get("error"),
+        "counters": tuple(
+            _public_hardware_counter(item)
+            for item in monitoring.get("counters", ()) or ()
+            if isinstance(item, Mapping)
+        ),
+    }
+
+
+def _public_hardware_counter(counter: Mapping[str, object]) -> dict[str, object]:
+    device_id = counter.get("device_id")
+    rx_mib_s = counter.get("rx_mib_s")
+    tx_mib_s = counter.get("tx_mib_s")
+    sample_age_ms = counter.get("sample_age_ms")
+    return {
+        "device_id": -1 if device_id is None else int(device_id),
+        "rx_mib_s": 0.0 if rx_mib_s is None else float(rx_mib_s),
+        "tx_mib_s": 0.0 if tx_mib_s is None else float(tx_mib_s),
+        "sample_age_ms": 0.0 if sample_age_ms is None else float(sample_age_ms),
+        "source": str(counter.get("source", "unknown")),
+        "known": bool(counter.get("known", False)),
+        "error": counter.get("error"),
     }
 
 

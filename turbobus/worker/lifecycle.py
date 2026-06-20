@@ -63,7 +63,7 @@ class WorkerAsyncExecutionPoolError(RuntimeError):
     pass
 
 
-class _WorkerTransferAuthorizer:
+class WorkerTransferAuthorizer:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
@@ -101,7 +101,7 @@ class _WorkerTransferAuthorizer:
             ) from exc
 
 
-class _WorkerTransferStatusReporter:
+class WorkerTransferStatusReporter:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
@@ -134,7 +134,7 @@ class _WorkerTransferStatusReporter:
         return status_update, response
 
 
-class _WorkerTransferCleanupCoordinator:
+class WorkerTransferCleanupCoordinator:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
@@ -166,6 +166,8 @@ class _WorkerTransferCleanupCoordinator:
                     "skip_reason": str(exc),
                 },
             )
+
+
         return self._cleanup_authorized_scope(
             target_kind=target_kind,
             session_id=str(cleanup_contract["session_id"]),
@@ -535,6 +537,11 @@ class _WorkerTransferCleanupCoordinator:
         if owner_binding is not None:
             normalized_payload["owner_binding"] = dict(owner_binding)
         return DaemonResponse(ok=response.ok, payload=normalized_payload, error=response.error)
+
+
+_WorkerTransferAuthorizer = WorkerTransferAuthorizer
+_WorkerTransferStatusReporter = WorkerTransferStatusReporter
+_WorkerTransferCleanupCoordinator = WorkerTransferCleanupCoordinator
 
 
 class WorkerAsyncExecutionPool:
@@ -1606,6 +1613,18 @@ class WorkerTransferService:
         except (KeyError, TypeError, ValueError) as exc:
             return WorkerServiceResponseEnvelope.from_error(str(exc))
 
+    def submit_report_cleanup_lifecycle(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        cleanup_target_kind: str = "reservation",
+        report_terminal_status: bool = True,
+    ) -> WorkerTransferLifecycleRecord:
+        return self.transfer_client.submit_report_cleanup_lifecycle(
+            request,
+            cleanup_target_kind=cleanup_target_kind,
+            report_terminal_status=bool(report_terminal_status),
+        )
+
     def handle_envelope_payload(
         self,
         envelope: WorkerServiceRequestEnvelope | Mapping[str, object],
@@ -2193,6 +2212,36 @@ def execute_worker_transfer(
     )
 
 
+def execute_authorized_worker_lifecycle(
+    daemon_client,
+    request: WorkerTransferAuthorizationRequest | Mapping[str, object],
+    *,
+    executor: object | None = None,
+    resource_binder: WorkerDataPlaneResourceBinder | None = None,
+    staging_pool: WorkerStagingPool | None = None,
+    execution_pool: WorkerAsyncExecutionPool | None = None,
+    worker_startup_evidence: Mapping[str, object] | None = None,
+    report_terminal_status: bool = True,
+) -> WorkerTransferLifecycleRecord:
+    if isinstance(request, WorkerTransferAuthorizationRequest):
+        authorization_request = request
+    else:
+        authorization_request = parse_worker_authorization_request_payload(request)
+    client = WorkerTransferClient(
+        daemon_client,
+        executor=executor,
+        resource_binder=resource_binder,
+        staging_pool=staging_pool,
+        execution_pool=execution_pool,
+        worker_startup_evidence=worker_startup_evidence,
+    )
+    return client.submit_report_cleanup_lifecycle(
+        authorization_request,
+        cleanup_target_kind="reservation",
+        report_terminal_status=bool(report_terminal_status),
+    )
+
+
 def submit_worker_transfer(
     executor,
     request: WorkerTransferRequest,
@@ -2266,6 +2315,7 @@ __all__ = [
     "WorkerTransferService",
     "cleanup_target_id",
     "default_worker_executor",
+    "execute_authorized_worker_lifecycle",
     "execute_worker_transfer",
     "expected_worker_completion_bytes",
     "failed_worker_result_from_exception",

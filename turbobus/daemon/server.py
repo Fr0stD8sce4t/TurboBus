@@ -29,7 +29,12 @@ from . import profiles as daemon_profiles
 from . import receipts as daemon_receipts
 from . import block_runtime as daemon_block_runtime
 from . import transfer_lifecycle as daemon_transfer_lifecycle
-from .pcie_load_sampler import pcie_load_from_active_paths as _pcie_load_from_active_paths
+from .pcie_load_sampler import (
+    HardwarePcieSample,
+    HardwarePcieSamplerConfig,
+    NvidiaSmiPcieLoadSampler,
+    pcie_load_from_active_paths as _pcie_load_from_active_paths,
+)
 from .runtime_paths import (
     runtime_active_path_records_for_transfer as _runtime_active_path_records_for_transfer,
 )
@@ -44,6 +49,8 @@ from .runtime_state_summary import (
     job_runtime_state_from_records as _job_runtime_state_from_records,
     runtime_transfer_summary_from_records as _runtime_transfer_summary_from_records,
 )
+from .runtime_state import DaemonRuntimeState
+from .services import DaemonRequestRouter, DaemonTransferLifecycleService
 from .evidence import (
     merge_completion_evidence,
     normalize_completion_evidence,
@@ -71,10 +78,17 @@ from ..schema import (
     WorkerTransferAuthorizationRequest,
 )
 from ..planner_engine import PlannerEngineOptions
-from ..socket_security import secure_unix_socket, unlink_stale_socket
+from ..socket_security import (
+    UnixSocketSecurityPolicy,
+    secure_unix_socket,
+    unlink_stale_socket,
+)
 from ..topology import TopologyProvider
 from ..topology.pcie_fabric import pcie_fabric_snapshot_from_inventory
-from ..scheduler.bandwidth_pool import build_bandwidth_pool_snapshot as _build_bandwidth_pool_snapshot
+from ..scheduler.bandwidth_pool import (
+    build_bandwidth_pool_snapshot as _build_bandwidth_pool_snapshot,
+    build_runtime_edge_load_snapshot as _build_runtime_edge_load_snapshot,
+)
 from ..scheduler.block_plan import block_plan_from_mapping as _block_plan_from_mapping
 from ..scheduler.block_queue import (
     queue_records_for_block_plan as _queue_records_for_block_plan,
@@ -107,6 +121,25 @@ _DEFAULT_PLAN_TTL_SECONDS = 30.0
 _TOPOLOGY_UNAVAILABLE_ERROR = (
     "topology provider is required; synthetic topology is test fixture only"
 )
+_PUBLIC_REDACTED_VALUE = "<redacted>"
+_PUBLIC_SENSITIVE_FIELD_NAMES = {
+    "address",
+    "allocation_base_ptr",
+    "buffer_address",
+    "cuda_ipc_handle",
+    "device_ipc_base_ptr",
+    "host_ptr",
+    "device_ptr",
+    "ipc_handle",
+    "lease_token",
+    "token",
+}
+_PUBLIC_SENSITIVE_FIELD_FRAGMENTS = (
+    "host_ptr",
+    "cuda_ipc_handle",
+    "device_ptr",
+    "lease_token",
+)
 
 
 class TurboBusDaemon:
@@ -130,51 +163,19 @@ class TurboBusDaemon:
         relay_min_direct_ratio: float = 0.0,
         topology_provider: TopologyProvider | None = None,
         require_authenticated_peers: bool = False,
+        pcie_sample_max_age_seconds: float = 1.0,
+        pcie_sample_timeout_seconds: float = 1.0,
+        socket_security_policy: UnixSocketSecurityPolicy | None = None,
+        max_sessions_per_uid: int = 16,
+        max_jobs_per_uid: int = 64,
+        max_buffers_per_uid: int = 4096,
+        max_buffer_bytes_per_uid: int = 0,
     ) -> None:
         relays = tuple(self._normalize_relays(relay_gpus))
         self._lock = threading.Lock()
-        self._jobs: dict[str, JobIdentity] = {}
-        self._job_peer_identities: dict[str, PeerIdentity] = {}
-        self._session_peer_identities: dict[str, PeerIdentity] = {}
-        self._buffers: dict[str, BufferRegistration] = {}
-        self._sessions: dict[str, Session] = {}
-        self._reservations: dict[str, TransferReservation] = {}
-        self._reservation_transfers: dict[str, str] = {}
-        self._transfer_intents: dict[str, TransferIntent] = {}
-        self._intent_transfers: dict[str, str] = {}
-        self._transfer_queue: list[str] = []
-        self._transfer_queue_records: dict[str, dict[str, object]] = {}
-        self._runtime_state_version = 0
-        self._transfer_plan_requests: dict[str, dict[str, object]] = {}
-        self._transfer_plan_generations: dict[str, int] = {}
-        self._transfer_plan_expirations: dict[str, float] = {}
-        self._transfer_admissions: dict[str, dict[str, object]] = {}
-        self._lease_plan_generations: dict[str, int] = {}
-        self._transfer_plans: dict[str, dict[str, object]] = {}
-        self._block_runtime_records: dict[str, tuple[dict[str, object], ...]] = {}
-        self._scheduling_decisions: dict[str, SchedulingDecision] = {}
-        self._execution_tickets: dict[str, ExecutionTicket] = {}
-        self._transfer_tickets: dict[str, str] = {}
-        self._transfer_completion_tickets: dict[str, ExecutionTicket] = {}
-        self._lease_tokens: dict[str, LeaseToken] = {}
-        self._transfer_statuses: dict[str, TransferStatus] = {}
-        self._transfer_completion_sources: dict[str, str] = {}
-        self._transfer_completion_evidence: dict[str, dict[str, object]] = {}
-        self._transfer_buffer_snapshots: dict[str, dict[str, dict[str, object]]] = {}
-        self._transfer_peer_identities: dict[str, PeerIdentity] = {}
-        self._recent_terminal_feedback_records: dict[str, dict[str, object]] = {}
-        self._recent_terminal_feedback_order: list[str] = []
-        self._recent_terminal_feedback_capacity = 64
-        self._transfer_receipt_archive: dict[str, dict[str, object]] = {}
-        self._archived_intent_transfers: dict[str, str] = {}
-        self._retired_cleanup_targets: dict[tuple[str, str], dict[str, object]] = {}
-        self._staging_records: dict[str, dict[str, object]] = {}
-        self._audit_records: list[dict[str, object]] = []
-        self._connection_scoped_sessions: set[str] = set()
-        self._connection_scoped_session_connections: dict[str, str] = {}
-        self._cleanup_events: list[CleanupRequest] = []
-        self._system_cleanup_events: list[CleanupRequest] = []
-        self._profile_cache: dict[str, dict] = {}
+        DaemonRuntimeState().bind_to(self)
+        self._request_router = DaemonRequestRouter(self)
+        self._transfer_lifecycle_service = DaemonTransferLifecycleService(self)
         self._scheduler = DaemonScheduler(
             planner_options=PlannerEngineOptions(
                 min_pool_bytes=int(min_pool_bytes),
@@ -187,6 +188,23 @@ class TurboBusDaemon:
         self._session_timeout_seconds = max(0.0, float(session_timeout_seconds))
         self._profile_max_age_seconds = max(0.0, float(profile_max_age_seconds))
         self._require_authenticated_peers = bool(require_authenticated_peers)
+        self._pcie_sampler = NvidiaSmiPcieLoadSampler(
+            HardwarePcieSamplerConfig(
+                timeout_seconds=max(0.001, float(pcie_sample_timeout_seconds))
+            )
+        )
+        self._last_pcie_sample = None
+        self._pcie_sample_max_age_seconds = max(0.0, float(pcie_sample_max_age_seconds))
+        self._socket_security_policy = socket_security_policy or UnixSocketSecurityPolicy()
+        self._last_socket_security_record = None
+        self._tenant_quota_policy = {
+            "max_sessions_per_uid": max(0, int(max_sessions_per_uid)),
+            "max_jobs_per_uid": max(0, int(max_jobs_per_uid)),
+            "max_buffers_per_uid": max(0, int(max_buffers_per_uid)),
+            "max_buffer_bytes_per_uid": max(0, int(max_buffer_bytes_per_uid)),
+        }
+        self._tenant_usage_by_uid: dict[str, dict[str, int]] = {}
+        self._quota_rejections: list[dict[str, object]] = []
         self._relay_quotas = {
             int(gpu): RelayQuota(
                 relay_gpu=int(gpu),
@@ -244,6 +262,7 @@ class TurboBusDaemon:
     def discover_relays(
         self,
         target_gpu: int | None = None,
+        requested_relays: Iterable[int] | None = None,
     ) -> DaemonResponse:
         now = time.time()
         target = None if target_gpu is None else int(target_gpu)
@@ -255,7 +274,11 @@ class TurboBusDaemon:
                     _TOPOLOGY_UNAVAILABLE_ERROR,
                 )
             inventory = self._topology_provider.snapshot()
-            candidates = tuple(sorted(self._relay_quotas))
+            candidates = (
+                tuple(self._normalize_relays(requested_relays))
+                if requested_relays is not None
+                else tuple(sorted(self._relay_quotas))
+            )
             return DaemonResponse(
                 ok=True,
                 payload={
@@ -284,6 +307,13 @@ class TurboBusDaemon:
         with self._lock:
             self._reap_stale_sessions_locked(now)
             self._refresh_admission_state_locked(now=now)
+            quota_response = self._tenant_quota_precheck_locked(
+                peer_identity,
+                field="active_sessions",
+                delta_count=1,
+            )
+            if quota_response is not None:
+                return quota_response
             try:
                 relays = self._relays_for_new_session_locked(target)
             except ValueError as exc:
@@ -355,6 +385,13 @@ class TurboBusDaemon:
         with self._lock:
             if job.session_id is not None and job.session_id not in self._sessions:
                 return DaemonResponse(ok=False, error="unknown session")
+            quota_response = self._tenant_quota_precheck_locked(
+                peer_identity,
+                field="registered_jobs",
+                delta_count=0 if job.job_id in self._jobs else 1,
+            )
+            if quota_response is not None:
+                return quota_response
             session_peer = (
                 None
                 if job.session_id is None
@@ -422,6 +459,14 @@ class TurboBusDaemon:
             self._refresh_admission_state_locked(now=now)
             if buffer.job_id not in self._jobs:
                 return DaemonResponse(ok=False, error="unknown job")
+            quota_response = self._tenant_quota_precheck_locked(
+                peer_identity,
+                field="registered_buffers",
+                delta_count=0 if buffer.buffer_id in self._buffers else 1,
+                delta_bytes=0 if buffer.buffer_id in self._buffers else buffer.size_bytes,
+            )
+            if quota_response is not None:
+                return quota_response
             try:
                 self._validate_peer_owns_job_locked(
                     job_id=buffer.job_id,
@@ -1626,6 +1671,16 @@ class TurboBusDaemon:
         intent: TransferIntent,
         peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
+        return self._transfer_lifecycle_service.submit_transfer_intent(
+            intent,
+            peer_identity=peer_identity,
+        )
+
+    def _submit_transfer_intent_impl(
+        self,
+        intent: TransferIntent,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
         if not isinstance(intent, TransferIntent):
             return DaemonResponse(ok=False, error="intent must be a TransferIntent")
         try:
@@ -1634,6 +1689,13 @@ class TurboBusDaemon:
         except (TypeError, ValueError) as exc:
             return DaemonResponse(ok=False, error=str(exc))
         with self._lock:
+            quota_response = self._tenant_quota_precheck_locked(
+                peer_identity,
+                field="active_transfers",
+                delta_count=1,
+            )
+            if quota_response is not None:
+                return quota_response
             terminal_receipt = self._terminal_receipt_response_for_intent_locked(
                 intent,
                 peer_identity=peer_identity,
@@ -1815,6 +1877,18 @@ class TurboBusDaemon:
         timeout_seconds: float | None = None,
         peer_identity: PeerIdentity | None = None,
     ) -> DaemonResponse:
+        return self._transfer_lifecycle_service.wait_transfer_receipt(
+            intent_id,
+            timeout_seconds=timeout_seconds,
+            peer_identity=peer_identity,
+        )
+
+    def _wait_transfer_receipt_impl(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
         normalized_intent_id = str(intent_id)
         deadline = (
             None
@@ -1847,6 +1921,19 @@ class TurboBusDaemon:
             time.sleep(min(0.01, max(0.0, deadline - time.time())))
 
     def recover_transfer_state(
+        self,
+        *,
+        intent_id: str | None = None,
+        transfer_id: str | None = None,
+        peer_identity: PeerIdentity | None = None,
+    ) -> DaemonResponse:
+        return self._transfer_lifecycle_service.recover_transfer_state(
+            intent_id=intent_id,
+            transfer_id=transfer_id,
+            peer_identity=peer_identity,
+        )
+
+    def _recover_transfer_state_impl(
         self,
         *,
         intent_id: str | None = None,
@@ -2115,10 +2202,6 @@ class TurboBusDaemon:
     ) -> DaemonResponse:
         related_leases_tuple = tuple(related_leases)
         try:
-            authorized_ranges = daemon_receipts.ticket_ranges_for_plan(
-                plan,
-                direction=request.direction,
-            )
             authorized_relay_ranges = planning_helpers.relay_ranges_from_plan(
                 plan,
                 relay_gpu=tuple(item.relay_gpu for item in related_leases_tuple),
@@ -2126,10 +2209,10 @@ class TurboBusDaemon:
             )
         except ValueError as exc:
             return DaemonResponse(ok=False, error=str(exc))
-        if request.ranges and request.ranges != authorized_ranges:
+        if request.ranges and request.ranges != authorized_relay_ranges:
             return DaemonResponse(
                 ok=False,
-                error="worker ranges do not match daemon plan",
+                error="worker ranges do not match daemon relay plan",
             )
         requested_bytes = sum(item["bytes"] for item in authorized_relay_ranges)
         reservation_bytes = sum(
@@ -2144,7 +2227,7 @@ class TurboBusDaemon:
             )
         return DaemonResponse(
             ok=True,
-            payload={"authorized_ranges": authorized_ranges},
+            payload={"authorized_ranges": authorized_relay_ranges},
         )
 
     def _worker_authorization_buffers_locked(
@@ -4530,7 +4613,8 @@ class TurboBusDaemon:
             active_reservations=relay_state["active_reservations"],
             active_leases=relay_state["active_leases"],
         )
-        pcie_pool_state = self._runtime_pcie_bandwidth_pool_locked(
+        pcie_pool_state = self._refresh_pcie_bandwidth_pool_locked(
+            now=captured_at,
             active_paths=relay_state["path_records"],
         )
         runtime_state = {
@@ -4553,6 +4637,9 @@ class TurboBusDaemon:
             "pcie_fabric": pcie_pool_state["pcie_fabric"],
             "pcie_edge_load": pcie_pool_state["pcie_edge_load"],
             "pcie_bandwidth_pool": pcie_pool_state["pcie_bandwidth_pool"],
+            "hardware_monitoring": pcie_pool_state["hardware_monitoring"],
+            "tenant_usage": self._tenant_usage_snapshot_locked(),
+            "quota_rejections": tuple(self._quota_rejections[-128:]),
             "summary": self._runtime_resource_summary_locked(
                 transfer_groups=transfer_groups,
                 terminal_transfer_count=int(
@@ -4568,6 +4655,148 @@ class TurboBusDaemon:
         }
         _refresh_runtime_feedback_summary(runtime_state)
         return runtime_state
+
+    def _tenant_quota_precheck_locked(
+        self,
+        peer_identity: PeerIdentity | None,
+        *,
+        field: str,
+        delta_count: int = 0,
+        delta_bytes: int = 0,
+    ) -> DaemonResponse | None:
+        uid = peer_auth.peer_uid(peer_identity)
+        if uid is None:
+            if self._require_authenticated_peers:
+                return peer_auth.authenticated_peer_required_response(peer_identity)
+            return None
+        usage = self._tenant_usage_snapshot_locked()
+        current = dict(usage.get(uid, {}))
+        if field == "registered_buffers":
+            limit = int(self._tenant_quota_policy["max_buffers_per_uid"])
+            if limit > 0 and int(current.get(field, 0) or 0) + int(delta_count) > limit:
+                return self._tenant_quota_rejection_locked(uid, field)
+            byte_limit = int(self._tenant_quota_policy["max_buffer_bytes_per_uid"])
+            if (
+                byte_limit > 0
+                and int(current.get("registered_buffer_bytes", 0) or 0)
+                + int(delta_bytes)
+                > byte_limit
+            ):
+                return self._tenant_quota_rejection_locked(
+                    uid,
+                    "registered_buffer_bytes",
+                )
+            return None
+        policy_field = {
+            "active_sessions": "max_sessions_per_uid",
+            "registered_jobs": "max_jobs_per_uid",
+        }.get(field)
+        if policy_field is None:
+            return None
+        limit = int(self._tenant_quota_policy[policy_field])
+        if limit > 0 and int(current.get(field, 0) or 0) + int(delta_count) > limit:
+            return self._tenant_quota_rejection_locked(uid, field)
+        return None
+
+    def _tenant_quota_rejection_locked(
+        self,
+        uid: str,
+        field: str,
+    ) -> DaemonResponse:
+        record = {
+            "uid": str(uid),
+            "field": str(field),
+            "rejected_at": time.time(),
+        }
+        self._quota_rejections.append(record)
+        self._quota_rejections[:] = self._quota_rejections[-128:]
+        return DaemonResponse(
+            ok=False,
+            error=f"tenant quota exceeded: {field}",
+            payload={"tenant_quota_rejection": dict(record)},
+        )
+
+    def _tenant_usage_snapshot_locked(self) -> dict[str, dict[str, int]]:
+        usage: dict[str, dict[str, int]] = {}
+        for uid in self._known_tenant_uids_locked():
+            usage[uid] = {
+                "active_sessions": 0,
+                "registered_jobs": 0,
+                "registered_buffers": 0,
+                "registered_buffer_bytes": 0,
+                "active_leases": 0,
+                "active_transfers": 0,
+            }
+        for session_id, session in self._sessions.items():
+            if not session.active:
+                continue
+            uid = peer_auth.peer_uid(self._session_peer_identities.get(session_id))
+            if uid is not None:
+                usage.setdefault(uid, _empty_tenant_usage())["active_sessions"] += 1
+        for job_id, job in self._jobs.items():
+            uid = peer_auth.peer_uid(self._job_peer_identities.get(job_id)) or (
+                None if job.user_id is None else str(job.user_id)
+            )
+            if uid is not None:
+                usage.setdefault(uid, _empty_tenant_usage())["registered_jobs"] += 1
+        for buffer in self._buffers.values():
+            job = self._jobs.get(buffer.job_id)
+            uid = peer_auth.peer_uid(self._job_peer_identities.get(buffer.job_id)) or (
+                None if job is None or job.user_id is None else str(job.user_id)
+            )
+            if uid is not None:
+                tenant = usage.setdefault(uid, _empty_tenant_usage())
+                tenant["registered_buffers"] += 1
+                tenant["registered_buffer_bytes"] += int(buffer.size_bytes)
+        for lease_id, lease in self._lease_tokens.items():
+            if lease_id not in self._reservations:
+                continue
+            uid = self._uid_for_job_locked(lease.job_id)
+            if uid is not None:
+                usage.setdefault(uid, _empty_tenant_usage())["active_leases"] += 1
+        for status in self._transfer_statuses.values():
+            if TransferStatusState(status.state) in _TERMINAL_TRANSFER_STATES:
+                continue
+            uid = self._uid_for_transfer_locked(status.transfer_id)
+            if uid is not None:
+                usage.setdefault(uid, _empty_tenant_usage())["active_transfers"] += 1
+        self._tenant_usage_by_uid = {key: dict(value) for key, value in usage.items()}
+        return {key: dict(value) for key, value in usage.items()}
+
+    def _known_tenant_uids_locked(self) -> set[str]:
+        uids = {
+            uid
+            for uid in (
+                peer_auth.peer_uid(peer)
+                for peer in (
+                    *self._session_peer_identities.values(),
+                    *self._job_peer_identities.values(),
+                )
+            )
+            if uid is not None
+        }
+        uids.update(str(job.user_id) for job in self._jobs.values() if job.user_id is not None)
+        return set(uids)
+
+    def _uid_for_job_locked(self, job_id: str | None) -> str | None:
+        if job_id is None:
+            return None
+        job_key = str(job_id)
+        uid = peer_auth.peer_uid(self._job_peer_identities.get(job_key))
+        if uid is not None:
+            return uid
+        job = self._jobs.get(job_key)
+        return None if job is None or job.user_id is None else str(job.user_id)
+
+    def _uid_for_transfer_locked(self, transfer_id: str) -> str | None:
+        record = self._transfer_queue_records.get(str(transfer_id), {})
+        job_id = record.get("job_id")
+        if job_id is not None:
+            return self._uid_for_job_locked(str(job_id))
+        status = self._transfer_statuses.get(str(transfer_id))
+        if status is not None:
+            return self._uid_for_job_locked(status.job_id)
+        return None
 
     def _runtime_transfer_records_locked(
         self,
@@ -4630,6 +4859,18 @@ class TurboBusDaemon:
         *,
         active_paths: object,
     ) -> dict[str, object]:
+        return self._refresh_pcie_bandwidth_pool_locked(
+            now=time.time(),
+            active_paths=active_paths,
+        )
+
+    def _refresh_pcie_bandwidth_pool_locked(
+        self,
+        *,
+        now: float,
+        active_paths: object,
+    ) -> dict[str, object]:
+        hardware_sample = self._refresh_pcie_hardware_sample_locked()
         if self._topology_provider is None:
             unavailable = {
                 "source": "daemon_pcie_bandwidth_pool",
@@ -4642,6 +4883,9 @@ class TurboBusDaemon:
                 "pcie_fabric": {},
                 "pcie_edge_load": {},
                 "pcie_bandwidth_pool": unavailable,
+                "hardware_monitoring": self._hardware_monitoring_summary_locked(
+                    hardware_sample
+                ),
             }
         try:
             inventory = self._topology_provider.snapshot()
@@ -4657,6 +4901,9 @@ class TurboBusDaemon:
                 "pcie_fabric": {},
                 "pcie_edge_load": {},
                 "pcie_bandwidth_pool": unavailable,
+                "hardware_monitoring": self._hardware_monitoring_summary_locked(
+                    hardware_sample
+                ),
             }
         fabric = pcie_fabric_snapshot_from_inventory(inventory)
         fabric_record = fabric.as_dict()
@@ -4673,13 +4920,62 @@ class TurboBusDaemon:
             path_edge_map=path_edge_map,
             capacity_by_edge=capacity_by_edge,
         )
+        runtime_edge_load = _build_runtime_edge_load_snapshot(
+            fabric=fabric,
+            hardware_sample=hardware_sample,
+            active_path_load=edge_load,
+        )
         return {
             "pcie_fabric": fabric_record,
-            "pcie_edge_load": edge_load,
+            "pcie_edge_load": runtime_edge_load,
             "pcie_bandwidth_pool": _build_bandwidth_pool_snapshot(
                 pcie_fabric=fabric_record,
-                edge_load=edge_load,
+                edge_load=runtime_edge_load,
             ),
+            "hardware_monitoring": self._hardware_monitoring_summary_locked(
+                hardware_sample
+            ),
+        }
+
+    def _refresh_pcie_hardware_sample_locked(self):
+        sample = self._last_pcie_sample
+        if sample is not None and self._pcie_sample_max_age_seconds > 0.0:
+            sampled_at = float(getattr(sample, "sampled_at", 0.0) or 0.0)
+            if sampled_at > 0.0 and time.time() - sampled_at <= self._pcie_sample_max_age_seconds:
+                return sample
+        sampler = self._pcie_sampler
+        try:
+            sample = sampler.sample()
+        except Exception as exc:
+            sample = HardwarePcieSample(
+                sampled_at=time.time(),
+                known=False,
+                error=str(exc) or exc.__class__.__name__,
+            )
+        self._last_pcie_sample = sample
+        return sample
+
+    def _hardware_monitoring_summary_locked(self, sample=None) -> dict[str, object]:
+        resolved = self._last_pcie_sample if sample is None else sample
+        if resolved is None:
+            return {
+                "source": "nvidia_smi_dmon",
+                "known": False,
+                "sampled_at": 0.0,
+                "sample_age_ms": 0.0,
+                "error": "hardware monitoring has not sampled yet",
+                "counters": [],
+            }
+        as_dict = getattr(resolved, "as_dict", None)
+        if callable(as_dict):
+            return dict(as_dict())
+        return {
+            "source": str(getattr(resolved, "source", "unknown")),
+            "known": bool(getattr(resolved, "known", False)),
+            "sampled_at": float(getattr(resolved, "sampled_at", 0.0) or 0.0),
+            "sample_age_ms": float(getattr(resolved, "sample_age_ms", 0.0) or 0.0),
+            "error": getattr(resolved, "error", None),
+            "counters": [],
         }
 
     def _runtime_active_resource_usage_locked(
@@ -5294,6 +5590,30 @@ class TurboBusDaemon:
             "peer_identity": (
                 None if peer_identity is None else asdict(peer_identity)
             ),
+        }
+
+    def _public_buffer_records_locked(self) -> dict[str, dict[str, object]]:
+        return {
+            key: self._public_buffer_record_locked(value)
+            for key, value in sorted(self._buffers.items())
+        }
+
+    def _public_buffer_record_locked(
+        self,
+        buffer: BufferRegistration,
+    ) -> dict[str, object]:
+        metadata = _redact_public_payload(dict(buffer.metadata))
+        return {
+            "buffer_id": buffer.buffer_id,
+            "job_id": buffer.job_id,
+            "kind": str(buffer.kind),
+            "size_bytes": int(buffer.size_bytes),
+            "device_index": buffer.device_index,
+            "pinned": bool(buffer.pinned),
+            "handle_type": str(buffer.handle_type),
+            "metadata": metadata,
+            "redacted_fields": ("address",),
+            "metadata_redacted": _public_payload_has_redaction(metadata),
         }
 
     def _active_buffer_ticket_ids_locked(self, buffer_id: str) -> tuple[str, ...]:
@@ -7589,6 +7909,7 @@ class TurboBusDaemon:
             self._reap_stale_sessions_locked(now)
             self._refresh_admission_state_locked(now=now)
             self._purge_stale_profiles_locked(now)
+            runtime_state = self._runtime_resource_state_locked(now=now)
             return DaemonResponse(
                 ok=True,
                 payload={
@@ -7597,7 +7918,8 @@ class TurboBusDaemon:
                         key: asdict(value)
                         for key, value in self._job_peer_identities.items()
                     },
-                    "buffers": {key: asdict(value) for key, value in self._buffers.items()},
+                    "buffers": self._public_buffer_records_locked(),
+                    "buffer_records_are_redacted": True,
                     "buffer_ownership": {
                         key: self._buffer_ownership_record_locked(key)
                         for key in sorted(self._buffers)
@@ -7611,9 +7933,13 @@ class TurboBusDaemon:
                         key: asdict(value) for key, value in self._reservations.items()
                     },
                     "staging_records": {
-                        key: dict(value) for key, value in self._staging_records.items()
+                        key: _redact_public_payload(dict(value))
+                        for key, value in self._staging_records.items()
                     },
-                    "audit_records": [dict(record) for record in self._audit_records],
+                    "audit_records": [
+                        _redact_public_payload(dict(record))
+                        for record in self._audit_records
+                    ],
                     "connection_scoped_sessions": sorted(
                         self._connection_scoped_sessions
                     ),
@@ -7621,13 +7947,27 @@ class TurboBusDaemon:
                         key: asdict(value) for key, value in self._transfer_statuses.items()
                     },
                     "transfer_queue": [
-                        dict(self._transfer_queue_records[transfer_id])
+                        _redact_public_payload(
+                            dict(self._transfer_queue_records[transfer_id])
+                        )
                         for transfer_id in self._transfer_queue
                         if transfer_id in self._transfer_queue_records
                     ],
-                    "runtime_resource_state": self._runtime_resource_state_locked(
-                        now=now,
+                    "runtime_resource_state": _redact_public_payload(runtime_state),
+                    "hardware_monitoring": runtime_state.get("hardware_monitoring", {}),
+                    "security_policy": {
+                        "source": "daemon_security_policy",
+                        "require_authenticated_peers": self._require_authenticated_peers,
+                        "socket": self._socket_security_policy.as_dict(),
+                    },
+                    "socket_security": (
+                        None
+                        if self._last_socket_security_record is None
+                        else self._last_socket_security_record.as_dict()
                     ),
+                    "tenant_quota_policy": dict(self._tenant_quota_policy),
+                    "tenant_usage": self._tenant_usage_snapshot_locked(),
+                    "quota_rejections": tuple(self._quota_rejections[-128:]),
                     "cleanup_events": [asdict(item) for item in self._cleanup_events],
                     "system_cleanup_events": [
                         asdict(item) for item in self._system_cleanup_events
@@ -7643,7 +7983,8 @@ class TurboBusDaemon:
                         for key, quota in self._relay_quotas.items()
                     },
                     "profile_cache": {
-                        key: dict(value) for key, value in self._profile_cache.items()
+                        key: _redact_public_payload(dict(value))
+                        for key, value in self._profile_cache.items()
                     },
                     "require_authenticated_peers": self._require_authenticated_peers,
                     "requester_peer_identity": (
@@ -7675,20 +8016,29 @@ class TurboBusDaemon:
         request: DaemonRequest,
         connection_id: str | None = None,
     ) -> DaemonResponse:
-        if self._requires_authenticated_peer_for_request(request):
-            return peer_auth.authenticated_peer_required_response(request.peer_identity)
-        try:
-            return self._handle_request(request, connection_id=connection_id)
-        except (KeyError, TypeError, ValueError) as exc:
-            return DaemonResponse(ok=False, error=f"invalid request: {exc}")
+        return self._request_router.handle_request(
+            request,
+            connection_id=connection_id,
+        )
 
     def _requires_authenticated_peer_for_request(self, request: DaemonRequest) -> bool:
         if not self._require_authenticated_peers:
             return False
+        protected = {
+            RequestType.REGISTER_SESSION,
+            RequestType.REGISTER_JOB,
+            RequestType.REGISTER_BUFFER,
+            RequestType.SUBMIT_TRANSFER_INTENT,
+            RequestType.VALIDATE_LEASE,
+            RequestType.AUTHORIZE_WORKER_TRANSFER,
+            RequestType.CLEANUP,
+        }
+        if request.request_type not in protected:
+            return False
         peer_identity = request.peer_identity
         return peer_identity is None or not peer_identity.authenticated
 
-    def _handle_request(
+    def _handle_request_impl(
         self,
         request: DaemonRequest,
         connection_id: str | None = None,
@@ -8044,7 +8394,10 @@ class TurboBusDaemon:
 
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(socket_path)
-        secure_unix_socket(socket_path)
+        self._last_socket_security_record = secure_unix_socket(
+            socket_path,
+            policy=self._socket_security_policy,
+        )
         server.listen()
         server.settimeout(0.1)
 
@@ -8164,6 +8517,51 @@ def _block_queue_runtime_record(plan: Mapping[str, object]) -> dict[str, object]
         "available": True,
         "records": tuple(record.as_dict() for record in queue_records),
     }
+
+
+def _empty_tenant_usage() -> dict[str, int]:
+    return {
+        "active_sessions": 0,
+        "registered_jobs": 0,
+        "registered_buffers": 0,
+        "registered_buffer_bytes": 0,
+        "active_leases": 0,
+        "active_transfers": 0,
+    }
+
+
+def _redact_public_payload(value: object) -> object:
+    if isinstance(value, Mapping):
+        redacted: dict[str, object] = {}
+        for raw_key, raw_item in value.items():
+            key = str(raw_key)
+            if _public_field_is_sensitive(key):
+                redacted[key] = _PUBLIC_REDACTED_VALUE
+            else:
+                redacted[key] = _redact_public_payload(raw_item)
+        return redacted
+    if isinstance(value, tuple):
+        return tuple(_redact_public_payload(item) for item in value)
+    if isinstance(value, list):
+        return [_redact_public_payload(item) for item in value]
+    return value
+
+
+def _public_payload_has_redaction(value: object) -> bool:
+    if value == _PUBLIC_REDACTED_VALUE:
+        return True
+    if isinstance(value, Mapping):
+        return any(_public_payload_has_redaction(item) for item in value.values())
+    if isinstance(value, (tuple, list)):
+        return any(_public_payload_has_redaction(item) for item in value)
+    return False
+
+
+def _public_field_is_sensitive(field_name: str) -> bool:
+    normalized = str(field_name).strip().lower()
+    return normalized in _PUBLIC_SENSITIVE_FIELD_NAMES or any(
+        fragment in normalized for fragment in _PUBLIC_SENSITIVE_FIELD_FRAGMENTS
+    )
 
 
 def _runtime_state_without_transfer(

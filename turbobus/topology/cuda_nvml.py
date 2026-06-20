@@ -72,7 +72,7 @@ class CudaTopologyProbe(Protocol):
 @dataclass(frozen=True)
 class NvidiaSmiProbe:
     executable: str = "nvidia-smi"
-    timeout_seconds: float = 5.0
+    timeout_seconds: float = 30.0
 
     def query_gpu_inventory(self) -> Sequence[Mapping[str, object]]:
         last_error: TopologyDiscoveryError | None = None

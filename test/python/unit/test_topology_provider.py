@@ -15,11 +15,16 @@ from turbobus.topology import (
     GpuInventoryRecord,
     PciePathRecord,
 )
-from turbobus.topology.cuda_nvml import CudaNvmlTopologyProvider
+from turbobus.topology.cuda_nvml import CudaNvmlTopologyProvider, NvidiaSmiProbe
 from test.python.fixtures.topology import StaticTopologyProvider
 
 
 class TopologyProviderTest(unittest.TestCase):
+    def test_nvidia_smi_probe_allows_large_topology_queries(self) -> None:
+        probe = NvidiaSmiProbe()
+
+        self.assertGreaterEqual(probe.timeout_seconds, 30.0)
+
     def test_cuda_provider_builds_versioned_inventory_and_schema_snapshot(self) -> None:
         clock = FakeClock(100.0)
         provider = CudaNvmlTopologyProvider(

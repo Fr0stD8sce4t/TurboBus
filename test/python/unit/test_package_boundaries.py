@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 
-from turbobus.daemon.server import TurboBusDaemon
+import turbobus
+from turbobus.schema import RequestType
 
 
 class PackageBoundaryTest(unittest.TestCase):
-    def test_daemon_does_not_construct_synthetic_topology_by_default(self) -> None:
-        daemon = TurboBusDaemon(relay_gpus=[1])
+    def test_public_package_exports_runtime_session_not_legacy_client(self) -> None:
+        self.assertIn("TurboBusRuntimeSession", turbobus.__all__)
+        self.assertNotIn("TurboBusClient", turbobus.__all__)
+        self.assertFalse(hasattr(turbobus, "TurboBusClient"))
+        self.assertFalse(Path(turbobus.__file__).with_name("api.py").exists())
 
-        inventory = daemon.get_inventory()
-        discovered = daemon.discover_relays(target_gpu=0, requested_relays=[1])
+    def test_daemon_protocol_does_not_expose_legacy_transfer_requests(self) -> None:
+        names = {item.name for item in RequestType}
 
-        self.assertFalse(inventory.ok)
-        self.assertFalse(discovered.ok)
-        self.assertIn("topology provider is required", inventory.error)
-        self.assertIn("topology provider is required", discovered.error)
+        self.assertIn("SUBMIT_TRANSFER_INTENT", names)
+        self.assertIn("WAIT_TRANSFER_RECEIPT", names)
+        self.assertNotIn("PLAN_TRANSFER", names)
+        self.assertNotIn("RESERVE_TRANSFER", names)
 
 
 if __name__ == "__main__":

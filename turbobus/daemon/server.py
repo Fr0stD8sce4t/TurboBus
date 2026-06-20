@@ -11,6 +11,7 @@ from typing import Iterable, Mapping
 
 from . import dispatch as daemon_dispatch
 from .admission_priority import (
+    admission_priority_record as _admission_priority_record,
     admission_with_priority_evidence as _admission_with_priority_evidence,
     ordered_delayed_admission_records as _ordered_delayed_admission_records,
 )
@@ -7859,8 +7860,8 @@ class TurboBusDaemon:
             current.get("topology_snapshot_id", "")
         ):
             return False
-        if int(binding.get("topology_version", -1) or -1) != int(
-            current.get("topology_version", -2) or -2
+        if int(binding.get("topology_version", -1)) != int(
+            current.get("topology_version", -2)
         ):
             return False
         return tuple(int(item) for item in binding.get("relay_gpus", ()) or ()) == tuple(

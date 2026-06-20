@@ -22,8 +22,10 @@ class IntentExecutorEvidenceTest(unittest.TestCase):
             "require_authenticated_peers": False,
         }
         worker = {
-            "verified_bytes": 32,
+            "verified_bytes": 64,
             "content_match": True,
+            "direct_bytes": 32,
+            "relay_bytes": 32,
             "relay_chunks": 2,
             "worker_startup": worker_startup,
             "resource_evidence": {"path": "relay"},

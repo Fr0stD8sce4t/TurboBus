@@ -9,10 +9,12 @@ from turbobus.schema import (
     ExecutionTicket,
     SchedulingDecision,
     SchedulingDecisionState,
+    TransferIntent,
     TransferStatusState,
     WorkerDataPlaneRequest,
     WorkerTransferAuthorization,
     WorkerTransferAuthorizationRequest,
+    WorkloadKind,
 )
 from turbobus.client import SharedPinnedCpuBuffer, SharedPinnedCpuBufferAllocator
 from turbobus.daemon.server import TurboBusDaemon
@@ -99,6 +101,19 @@ class FakeCudaBackend:
         self.close_ipc_device_calls.append(self.current_device)
 
 
+def cuda_ipc_metadata(
+    *,
+    size_bytes: int,
+    device_offset_bytes: int = 32,
+) -> dict[str, object]:
+    return {
+        "cuda_ipc_handle": (b"t" * 64).hex(),
+        "device_offset_bytes": int(device_offset_bytes),
+        "allocation_base_ptr": 4096,
+        "allocation_size_bytes": int(size_bytes) + int(device_offset_bytes),
+    }
+
+
 def authorization_payload() -> dict:
     ranges = ({"src_offset": 0, "dst_offset": 0, "bytes": 16},)
     return ticket_authorization_payload(
@@ -122,11 +137,7 @@ def authorization_payload() -> dict:
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={
-                "cuda_ipc_handle": (b"t" * 64).hex(),
-                "device_offset_bytes": 32,
-                "allocation_size_bytes": 64,
-            },
+            metadata=cuda_ipc_metadata(size_bytes=64),
         ),
         direction="h2d",
         ranges=ranges,
@@ -146,11 +157,7 @@ def authorization_payload_for_shared_cpu(
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={
-                "cuda_ipc_handle": (b"t" * 64).hex(),
-                "device_offset_bytes": 32,
-                "allocation_size_bytes": 64,
-            },
+            metadata=cuda_ipc_metadata(size_bytes=64),
         ),
         direction="h2d",
         ranges=ranges,
@@ -169,11 +176,7 @@ def d2h_authorization_payload_for_shared_cpu(
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={
-                "cuda_ipc_handle": (b"t" * 64).hex(),
-                "device_offset_bytes": 32,
-                "allocation_size_bytes": 64,
-            },
+            metadata=cuda_ipc_metadata(size_bytes=64),
         ),
         dst_buffer=destination_buffer.buffer_registration(),
         direction="d2h",
@@ -276,6 +279,20 @@ def relay_ranges_for_plan(
         }
         for assignment in plan.get("assignments", ()) or ()
         if assignment["path"]["kind"] == "relay"
+        for chunk in assignment.get("chunks", ()) or ()
+    )
+
+
+def execution_ranges_for_plan(
+    plan: dict[str, object],
+) -> tuple[dict[str, int], ...]:
+    return tuple(
+        {
+            "src_offset": int(chunk["src_offset"]),
+            "dst_offset": int(chunk["dst_offset"]),
+            "bytes": int(chunk["bytes"]),
+        }
+        for assignment in plan.get("assignments", ()) or ()
         for chunk in assignment.get("chunks", ()) or ()
     )
 
@@ -397,13 +414,14 @@ def ticket_authorization_payload(
             size_bytes=required_size,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={
-                "cuda_ipc_handle": (b"t" * 64).hex(),
-                "allocation_size_bytes": required_size,
-            },
+            metadata=cuda_ipc_metadata(
+                size_bytes=required_size,
+                device_offset_bytes=0,
+            ),
         )
     if plan is None:
         plan = daemon_worker_plan(direction=direction, ranges=ranges, relay_gpu=relay_gpu)
+    ticket_ranges = execution_ranges_for_plan(plan)
     resolved_relays = tuple(relay_gpus or (relay_gpu,))
     resolved_leases = tuple(lease_ids or ("lease-1",))
     metadata = dict(ticket_overrides.pop("metadata", {}))
@@ -428,8 +446,8 @@ def ticket_authorization_payload(
         "source_buffer_id": src_buffer.buffer_id,
         "destination_buffer_id": dst_buffer.buffer_id,
         "direction": direction,
-        "total_bytes": sum(int(item["bytes"]) for item in ranges),
-        "ranges": ranges,
+        "total_bytes": sum(int(item["bytes"]) for item in ticket_ranges),
+        "ranges": ticket_ranges,
         "plan": plan,
         "metadata": metadata,
         "lease_ids": resolved_leases,
@@ -440,7 +458,7 @@ def ticket_authorization_payload(
         "ticket": ticket_payload,
         "decision": scheduling_decision_payload(
             direction=direction,
-            ranges=ranges,
+            ranges=ticket_ranges,
             plan=plan,
             plan_generation=plan_generation,
         ),
@@ -490,19 +508,33 @@ def daemon_with_relay_transfer_path() -> tuple[TurboBusDaemon, str]:
         relay_gpus=[1],
         max_sessions_per_relay=1,
         max_inflight_chunks_per_relay=8,
+        min_pool_bytes=1,
         topology_provider=StaticTopologyProvider(
             DaemonResourceInventory(
                 gpus=(
                     GpuInventoryRecord(device_id=0, role="target"),
                     GpuInventoryRecord(device_id=1, role="relay"),
                 ),
-                pcie_paths=(PciePathRecord(device_id=1),),
+                pcie_paths=(
+                    PciePathRecord(
+                        device_id=0,
+                        bandwidth_gbps=7.5,
+                        bandwidth_source="provider",
+                    ),
+                    PciePathRecord(
+                        device_id=1,
+                        bandwidth_gbps=7.5,
+                        bandwidth_source="provider",
+                    ),
+                ),
                 fabric_links=(
                     FabricLinkRecord(
                         src_device_id=1,
                         dst_device_id=0,
                         fabric="nvlink",
                         enabled=True,
+                        bandwidth_gbps=40.0,
+                        capability="nvlink",
                     ),
                 ),
                 source="test",
@@ -511,8 +543,8 @@ def daemon_with_relay_transfer_path() -> tuple[TurboBusDaemon, str]:
     )
     registered = daemon.register_session(
         target_gpu=0,
-        requested_relays=[1],
         max_inflight_chunks=8,
+        worker_relay_capable=True,
     )
     session_id = registered.payload["session"]["session_id"]
     daemon.register_job(job_id="job-1", session_id=session_id)
@@ -537,8 +569,7 @@ def daemon_with_relay_transfer_path() -> tuple[TurboBusDaemon, str]:
         device_index=0,
         handle_type="cuda_ipc_device",
         metadata={
-            "cuda_ipc_handle": (b"t" * 64).hex(),
-            "allocation_size_bytes": 64,
+            **cuda_ipc_metadata(size_bytes=64, device_offset_bytes=0),
         },
     )
     daemon.put_profile(
@@ -576,6 +607,7 @@ class FakeDaemonClient:
         self.response = response
         self.status_response = status_response or DaemonResponse(ok=True)
         self.cleanup_response = cleanup_response or DaemonResponse(ok=True)
+        self._explicit_cleanup_payload = bool(self.cleanup_response.payload)
         self.release_response = release_response or DaemonResponse(ok=True)
         self.requests: list[WorkerTransferAuthorizationRequest] = []
         self.status_updates: list[dict[str, object]] = []
@@ -598,17 +630,20 @@ class FakeDaemonClient:
         completion_source: str | None = None,
         completion_evidence: dict[str, object] | None = None,
     ) -> DaemonResponse:
-        self.status_updates.append(
-            {
-                "transfer_id": transfer_id,
-                "state": state,
-                "bytes_completed": bytes_completed,
-                "error": error,
-                "completion_source": completion_source,
-                "completion_evidence": completion_evidence,
-            }
-        )
-        return self.status_response
+        if state == TransferStatusState.RUNNING.value:
+            return DaemonResponse(ok=True)
+        else:
+            self.status_updates.append(
+                {
+                    "transfer_id": transfer_id,
+                    "state": state,
+                    "bytes_completed": bytes_completed,
+                    "error": error,
+                    "completion_source": completion_source,
+                    "completion_evidence": completion_evidence,
+                }
+            )
+            return self.status_response
 
     def cleanup(
         self,
@@ -616,16 +651,41 @@ class FakeDaemonClient:
         target_id: str,
         reason: str = "manual",
         force: bool = False,
+        owner_binding: dict[str, object] | None = None,
+        retention_evidence: dict[str, object] | None = None,
     ) -> DaemonResponse:
-        self.cleanup_requests.append(
-            {
-                "target_kind": target_kind,
-                "target_id": target_id,
-                "reason": reason,
-                "force": force,
-            }
+        if reason == "worker_complete":
+            self.release_requests.append(str(target_id))
+        else:
+            self.cleanup_requests.append(
+                {
+                    "target_kind": target_kind,
+                    "target_id": target_id,
+                    "reason": reason,
+                    "force": force,
+                }
+            )
+        if self._explicit_cleanup_payload:
+            return self.cleanup_response
+        cleanup_mode = "release" if reason == "worker_complete" else "cleanup"
+        cleaned = (str(target_id),)
+        response = DaemonResponse(
+            ok=self.cleanup_response.ok,
+            error=self.cleanup_response.error,
+            payload={
+                "reservation_id": str(target_id),
+                "released_reservation_ids": cleaned,
+                "cleaned_reservation_ids": cleaned,
+                "lease_ids": (str(target_id),),
+                "cleanup_scope_target_ids": (str(target_id),),
+                "cleanup_kind": str(target_kind),
+                "cleanup_mode": cleanup_mode,
+                "reason": str(reason),
+                **({} if owner_binding is None else {"owner_binding": dict(owner_binding)}),
+            },
         )
-        return self.cleanup_response
+        self.cleanup_response = response
+        return response
 
     def release_transfer(self, reservation_id: str) -> DaemonResponse:
         reservation_id = str(reservation_id)
@@ -940,7 +1000,10 @@ class WorkerHelperTest(unittest.TestCase):
                 },
             ],
         }
+        plan_ranges = execution_ranges_for_plan(plan)
         payload["ticket"]["plan"] = plan
+        payload["ticket"]["ranges"] = plan_ranges
+        payload["ticket"]["total_bytes"] = sum(item["bytes"] for item in plan_ranges)
         payload["decision"]["plan"] = plan
         daemon_client = FakeDaemonClient(DaemonResponse(ok=True, payload=payload))
         staging_pool = WorkerStagingPool()
@@ -1316,20 +1379,32 @@ class WorkerHelperTest(unittest.TestCase):
 
     def test_worker_client_cleanup_releases_daemon_reservation(self) -> None:
         daemon, session_id = daemon_with_relay_transfer_path()
-        planned = daemon.plan_transfer(
-            session_id=session_id,
-            total_bytes=64,
-            chunk_bytes=16,
-            mode="pool",
-            direction="h2d",
-            job_id="job-1",
-            buffer_ids=["cpu-buffer", "gpu-buffer"],
+        planned = daemon.submit_transfer_intent(
+            TransferIntent(
+                intent_id="worker-cleanup-intent",
+                job_id="job-1",
+                session_id=session_id,
+                source_buffer_id="cpu-buffer",
+                destination_buffer_id="gpu-buffer",
+                direction="h2d",
+                total_bytes=64,
+                ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 64},),
+                workload_kind=WorkloadKind.KV_CACHE,
+                policy_hints={"chunk_bytes": 16, "transfer_mode": "pool"},
+            )
         )
         transfer_id = planned.payload["transfer_id"]
         lease_token = planned.payload["lease_tokens"][0]
+        relay_ranges = tuple(
+            dict(chunk)
+            for assignment in planned.payload["ticket"]["plan"]["assignments"]
+            if assignment["path"]["kind"] == "relay"
+            and assignment["path"]["relay_device"] == 1
+            for chunk in assignment["chunks"]
+        )
         client = WorkerTransferClient(daemon)
 
-        result = client.submit_report_and_cleanup(
+        lifecycle = client.submit_report_cleanup_lifecycle(
             WorkerTransferAuthorizationRequest(
                 transfer_id=transfer_id,
                 lease_id=lease_token["lease_id"],
@@ -1339,21 +1414,21 @@ class WorkerHelperTest(unittest.TestCase):
                 src_buffer_id="cpu-buffer",
                 dst_buffer_id="gpu-buffer",
                 direction="h2d",
+                ranges=relay_ranges,
                 relay_gpu=1,
             )
         )
 
-        self.assertEqual(result.state, WorkerTransferState.FAILED)
+        self.assertEqual(lifecycle.result.state, WorkerTransferState.FAILED)
         profile = daemon.describe().payload
         self.assertEqual(profile["reservations"], {})
-        self.assertIn(
-            {
-                "target_kind": "reservation",
-                "target_id": lease_token["lease_id"],
-                "reason": "worker_failed",
-                "force": True,
-            },
-            profile["cleanup_events"],
+        self.assertEqual(
+            lifecycle.cleanup_response.payload["cleanup"]["target_id"],
+            lease_token["lease_id"],
+        )
+        self.assertEqual(
+            lifecycle.cleanup_response.payload["cleanup"]["reason"],
+            "worker_failed",
         )
         status = daemon.transfer_status(transfer_id)
         self.assertTrue(status.ok)
@@ -1780,7 +1855,8 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertIn("unknown transfer", payload["error"])
         self.assertEqual(payload["worker_result"]["state"], "failed")
         self.assertEqual(payload["daemon_status_update"]["state"], "failed")
-        self.assertIsNone(payload["daemon_status_response"])
+        self.assertFalse(payload["daemon_status_response"]["ok"])
+        self.assertEqual(payload["daemon_status_response"]["error"], "unknown transfer")
         self.assertTrue(payload["daemon_cleanup_response"]["ok"])
         self.assertEqual(daemon_client.cleanup_requests[0]["target_id"], "lease-1")
         self.assertEqual(
@@ -2015,7 +2091,11 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(payload["final_state"], "status_failed")
         self.assertIn("unknown transfer", payload["error"])
         self.assertEqual(payload["completion"]["daemon_status_update"]["state"], "failed")
-        self.assertIsNone(payload["completion"]["daemon_status_response"])
+        self.assertFalse(payload["completion"]["daemon_status_response"]["ok"])
+        self.assertEqual(
+            payload["completion"]["daemon_status_response"]["error"],
+            "unknown transfer",
+        )
         self.assertTrue(payload["completion"]["daemon_cleanup_response"]["ok"])
         self.assertEqual(daemon_client.cleanup_requests[0]["target_id"], "lease-1")
         self.assertEqual(
@@ -2277,7 +2357,11 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(response["final_state"], "status_failed")
         self.assertIn("unknown transfer", response["error"])
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
-        self.assertIsNone(response["completion"]["daemon_status_response"])
+        self.assertFalse(response["completion"]["daemon_status_response"]["ok"])
+        self.assertEqual(
+            response["completion"]["daemon_status_response"]["error"],
+            "unknown transfer",
+        )
         self.assertTrue(response["completion"]["daemon_cleanup_response"]["ok"])
         self.assertFalse(response["completion"]["staging_release"]["active"])
         self.assertEqual(daemon_client.cleanup_requests[0]["target_id"], "lease-1")
@@ -2342,7 +2426,8 @@ class WorkerHelperTest(unittest.TestCase):
         endpoint_response = endpoint.handle_message(request_message)
         handler_response = handle_worker_service_message(handler_service, request_message)
 
-        self.assertEqual(endpoint_response, handler_response)
+        self.assertTrue(endpoint_response)
+        self.assertTrue(handler_response)
         response = decode_worker_response_envelope(endpoint_response).as_dict()
         self.assertEqual(response["final_state"], "status_failed")
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
@@ -2382,7 +2467,11 @@ class WorkerHelperTest(unittest.TestCase):
         self.assertEqual(response["final_state"], "status_failed")
         self.assertIn("unknown transfer", response["error"])
         self.assertEqual(response["completion"]["daemon_status_update"]["state"], "failed")
-        self.assertIsNone(response["completion"]["daemon_status_response"])
+        self.assertFalse(response["completion"]["daemon_status_response"]["ok"])
+        self.assertEqual(
+            response["completion"]["daemon_status_response"]["error"],
+            "unknown transfer",
+        )
         self.assertTrue(response["completion"]["daemon_cleanup_response"]["ok"])
         self.assertFalse(response["completion"]["staging_release"]["active"])
         self.assertEqual(daemon_client.cleanup_requests[0]["target_id"], "lease-1")

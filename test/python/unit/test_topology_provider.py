@@ -153,7 +153,13 @@ class TopologyProviderTest(unittest.TestCase):
                 GpuInventoryRecord(device_id=0, backend="cuda", vendor="nvidia"),
                 GpuInventoryRecord(device_id=1, backend="cuda", vendor="nvidia"),
             ),
-            pcie_paths=(PciePathRecord(device_id=1),),
+            pcie_paths=(
+                PciePathRecord(
+                    device_id=1,
+                    bandwidth_gbps=63.0,
+                    bandwidth_source="provider",
+                ),
+            ),
             fabric_links=(
                 FabricLinkRecord(
                     src_device_id=1,
@@ -185,6 +191,8 @@ class TopologyProviderTest(unittest.TestCase):
                 "--allow-missing-pcie",
                 "--topology-provider",
                 "cuda-nvml",
+                "--socket-path",
+                "/tmp/turbobusd.sock",
             ]
         )
         config = startup_config_from_args(args)
@@ -286,8 +294,18 @@ def production_inventory() -> DaemonResourceInventory:
             ),
         ),
         pcie_paths=(
-            PciePathRecord(device_id=0, root_complex="0000:01"),
-            PciePathRecord(device_id=1, root_complex="0000:02"),
+            PciePathRecord(
+                device_id=0,
+                root_complex="0000:01",
+                bandwidth_gbps=63.0,
+                bandwidth_source="provider",
+            ),
+            PciePathRecord(
+                device_id=1,
+                root_complex="0000:02",
+                bandwidth_gbps=63.0,
+                bandwidth_source="provider",
+            ),
         ),
         fabric_links=(
             FabricLinkRecord(

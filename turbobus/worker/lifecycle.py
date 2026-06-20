@@ -67,6 +67,12 @@ class WorkerTransferAuthorizer:
     def __init__(self, daemon_client) -> None:
         self.daemon_client = daemon_client
 
+    def authorize(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+    ) -> WorkerTransferRequest:
+        return self._authorize(request)
+
     def _authorize(
         self,
         request: WorkerTransferAuthorizationRequest,
@@ -462,6 +468,7 @@ class WorkerTransferCleanupCoordinator:
             "reservation_id": lease_ids[0],
             "lease_ids": lease_ids,
             "cleaned_reservation_ids": tuple(cleaned_ids),
+            "released_reservation_ids": tuple(cleaned_ids),
             "cleanup_scope_target_ids": lease_ids,
             "lease_responses": tuple(responses),
             "cleanup_kind": target_kind,
@@ -977,6 +984,48 @@ class WorkerTransferClient:
     def close_execution_pool(self, *, cancel_queued: bool = True) -> dict[str, object]:
         return self._execution_pool.close(cancel_queued=cancel_queued)
 
+    @property
+    def executor(self):
+        return self._executor
+
+    @property
+    def resource_binder(self):
+        return self._resource_binder
+
+    def submit(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+    ) -> WorkerTransferResult:
+        worker_request = self._authorize(request)
+        staging_slot = self._staging_pool.allocate(worker_request.data_plane)
+        try:
+            return self._execute_lifecycle_transfer(worker_request, staging_slot)
+        finally:
+            self._staging_pool.release(staging_slot.slot_id)
+
+    def submit_and_report(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+    ) -> WorkerTransferResult:
+        result = self.submit(request)
+        self._status_reporter.report(result)
+        return result
+
+    def submit_report_and_cleanup(
+        self,
+        request: WorkerTransferAuthorizationRequest,
+        cleanup_target_kind: str = "reservation",
+    ) -> WorkerTransferResult:
+        lifecycle = self.submit_report_cleanup_lifecycle(
+            request,
+            cleanup_target_kind=cleanup_target_kind,
+        )
+        if lifecycle.worker_request is None:
+            raise WorkerAuthorizationError(lifecycle.error or "worker authorization failed")
+        if lifecycle.result is None:
+            raise WorkerStatusReportError(lifecycle.error or "worker transfer failed")
+        return lifecycle.result
+
     def submit_report_cleanup_lifecycle(
         self,
         request: WorkerTransferAuthorizationRequest,
@@ -1381,7 +1430,7 @@ class WorkerTransferClient:
             cleanup_target_kind=cleanup_target_kind,
             cleanup_target_id=cleanup_target_id,
             cleanup_response=cleanup_response,
-            final_state=result.state.value,
+            final_state="status_failed",
             error=str(error),
         )
 
@@ -2086,6 +2135,7 @@ def require_daemon_worker_plan(request: WorkerTransferRequest) -> None:
         raise ValueError("worker target handle requires a CUDA device index")
     target_device = int(target_handle.device_index)
     execution_ranges: list[dict[str, int]] = []
+    full_plan_total_bytes = 0
     plan_total_bytes = 0
     for assignment in assignments:
         if not isinstance(assignment, Mapping):
@@ -2102,12 +2152,17 @@ def require_daemon_worker_plan(request: WorkerTransferRequest) -> None:
             raise ValueError("daemon plan target does not match worker device")
         if not bool(path.get("enabled", True)):
             raise ValueError("daemon plan path is disabled")
+        assignment_chunks = assignment.get("chunks", ()) or ()
+        for chunk in assignment_chunks:
+            if not isinstance(chunk, Mapping):
+                raise ValueError("daemon plan chunk must be an object")
+            full_plan_total_bytes += int(chunk["bytes"])
         if path_kind == "direct":
-            chunks = assignment.get("chunks", ()) or ()
+            continue
         else:
             if int(path.get("relay_device", -1)) not in relay_gpus:
                 raise ValueError("daemon plan relay is not authorized by worker ticket")
-            chunks = assignment.get("chunks", ()) or ()
+            chunks = assignment_chunks
         for chunk in chunks:
             if not isinstance(chunk, Mapping):
                 raise ValueError("daemon plan chunk must be an object")
@@ -2120,7 +2175,10 @@ def require_daemon_worker_plan(request: WorkerTransferRequest) -> None:
             execution_ranges.append(chunk_payload)
     if plan_total_bytes <= 0:
         raise ValueError("daemon plan has no assigned bytes")
-    declared_total_bytes = int(plan.get("total_bytes", -1))
+    declared_full_bytes = int(plan.get("total_bytes", -1))
+    if declared_full_bytes != full_plan_total_bytes:
+        raise ValueError("daemon plan total bytes do not match assigned chunks")
+    declared_total_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
     if declared_total_bytes != plan_total_bytes:
         raise ValueError("daemon plan total bytes do not match assigned chunks")
     if not execution_ranges:

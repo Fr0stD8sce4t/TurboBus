@@ -25,16 +25,23 @@ from turbobus.worker.process import (
 
 class WorkerProcessTest(unittest.TestCase):
     def test_build_worker_service_transport_wires_daemon_and_worker_sockets(self) -> None:
-        transport = build_worker_service_transport(
-            "/tmp/turbobusd.sock",
-            "/tmp/turbobus-worker.sock",
-        )
+        startup_evidence = production_worker_startup_evidence()
+
+        with patch(
+            "turbobus.worker.process.worker_startup_evidence_from_daemon",
+            return_value=startup_evidence,
+        ) as startup:
+            transport = build_worker_service_transport(
+                "/tmp/turbobusd.sock",
+                "/tmp/turbobus-worker.sock",
+            )
 
         self.assertIsInstance(transport, WorkerServiceUnixSocketTransport)
         self.assertIsInstance(transport.endpoint, WorkerServiceEndpoint)
         self.assertEqual(transport.socket_path, "/tmp/turbobus-worker.sock")
+        startup.assert_called_once_with("/tmp/turbobusd.sock")
         self.assertEqual(
-            transport.endpoint.service.transfer_client.authorizer.daemon_client.socket_path,
+            transport.endpoint.service.transfer_client._authorizer.daemon_client.socket_path,
             "/tmp/turbobusd.sock",
         )
         self.assertIsInstance(
@@ -48,23 +55,32 @@ class WorkerProcessTest(unittest.TestCase):
     def test_run_worker_service_process_uses_the_transport(self) -> None:
         stop_event = Event()
         fake_transport = Mock()
+        fake_transfer_client = Mock()
+        fake_transfer_client.close_execution_pool.return_value = {
+            "cancel_queued": True,
+            "cancelled_transfer_ids": (),
+        }
+        startup_evidence = production_worker_startup_evidence()
 
         with patch(
-            "turbobus.worker.process.build_worker_service_transport",
-            return_value=fake_transport,
-        ) as build:
+            "turbobus.worker.process._build_worker_service_runtime",
+            return_value=(fake_transport, fake_transfer_client, startup_evidence),
+        ) as build_runtime:
             run_worker_service_process(
                 "/tmp/turbobusd.sock",
                 "/tmp/turbobus-worker.sock",
                 stop_event=stop_event,
             )
 
-        build.assert_called_once_with(
+        build_runtime.assert_called_once_with(
             "/tmp/turbobusd.sock",
             "/tmp/turbobus-worker.sock",
         )
         fake_transport.serve_forever.assert_called_once_with(
             stop_event=stop_event,
+        )
+        fake_transfer_client.close_execution_pool.assert_called_once_with(
+            cancel_queued=True,
         )
 
     def test_main_parses_args_and_runs_service_process(self) -> None:
@@ -146,6 +162,23 @@ def _send_worker_message(socket_path: str, message: str | bytes) -> str:
         return data.partition(b"\n")[0].decode("utf-8")
     finally:
         client.close()
+
+
+def production_worker_startup_evidence() -> dict[str, object]:
+    return {
+        "startup_source": "worker_process_daemon_inventory",
+        "daemon_socket_path": "/tmp/turbobusd.sock",
+        "topology_snapshot_id": "topology-production-v1",
+        "inventory_source": "cuda_nvml",
+        "inventory_version": 1,
+        "inventory_discovered_at": 1.0,
+        "gpu_count": 2,
+        "pcie_path_count": 2,
+        "fabric_link_count": 1,
+        "require_authenticated_peers": False,
+        "daemon_peer_identity": None,
+        "daemon_peer_authenticated": False,
+    }
 
 
 if __name__ == "__main__":

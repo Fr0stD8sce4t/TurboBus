@@ -56,6 +56,7 @@ _EXECUTION_CONTRACT_METADATA_KEYS = (
     "ticket_id",
     "transfer_id",
     "plan_generation",
+    "owner_binding",
     "block_progress",
     "block_runtime",
     "failure_source",

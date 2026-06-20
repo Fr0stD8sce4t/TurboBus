@@ -135,6 +135,7 @@ class WorkerTransferRequest:
         if relay not in resolved_relays:
             raise ValueError("ticket relay does not match daemon plan")
         worker_validation.execution_ranges_from_ticket_plan(ticket)
+        worker_validation.validate_ticket_plan_bounds(ticket, src_buffer, dst_buffer)
         ranges = worker_validation.relay_ranges_from_ticket_plan(
             ticket,
             relay_gpus=resolved_relays,

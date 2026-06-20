@@ -30,6 +30,32 @@ def validate_ticket_matches_buffers(
         raise ValueError("ticket job does not match worker buffers")
 
 
+def validate_ticket_plan_bounds(
+    ticket: ExecutionTicket,
+    src_buffer: BufferRegistration,
+    dst_buffer: BufferRegistration,
+) -> None:
+    src_size = int(src_buffer.size_bytes)
+    dst_size = int(dst_buffer.size_bytes)
+    for assignment in ticket.plan.get("assignments", ()) or ():
+        if not isinstance(assignment, Mapping):
+            raise ValueError("daemon plan assignment must be a mapping")
+        for chunk in assignment.get("chunks", ()) or ():
+            if not isinstance(chunk, Mapping):
+                raise ValueError("daemon plan chunk must be a mapping")
+            src_offset = int(chunk["src_offset"])
+            dst_offset = int(chunk["dst_offset"])
+            bytes_count = int(chunk["bytes"])
+            if src_offset < 0 or dst_offset < 0:
+                raise ValueError("daemon plan chunk offsets must be non-negative")
+            if bytes_count <= 0:
+                raise ValueError("daemon plan chunk bytes must be positive")
+            if src_offset + bytes_count > src_size:
+                raise ValueError("daemon plan chunk exceeds src buffer size")
+            if dst_offset + bytes_count > dst_size:
+                raise ValueError("daemon plan chunk exceeds dst buffer size")
+
+
 def validate_ticket_matches_decision(
     ticket: ExecutionTicket,
     decision: SchedulingDecision,
@@ -512,6 +538,7 @@ __all__ = [
     "relay_ranges_from_ticket_plan",
     "transfer_id_for_ticket",
     "validate_daemon_issued_ticket",
+    "validate_ticket_plan_bounds",
     "validate_ticket_matches_buffers",
     "validate_ticket_matches_decision",
     "validate_ticket_matches_worker_request",

@@ -39,7 +39,10 @@ def data_plane_request(
             size_bytes=bytes_count,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "allocation_size_bytes": bytes_count,
+            },
         ),
         direction="h2d",
         ranges=({"src_offset": 0, "dst_offset": 0, "bytes": bytes_count},),

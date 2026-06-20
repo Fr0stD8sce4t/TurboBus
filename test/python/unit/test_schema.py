@@ -16,10 +16,12 @@ from turbobus.schema import (
     RelayQuota,
     RequestType,
     Session,
+    TransferIntent,
+    TransferReceipt,
     TransferMode,
-    TransferReservation,
     TransferStatus,
     TransferStatusState,
+    WorkloadKind,
     WorkerBufferHandle,
     WorkerDataPlaneCompletion,
     WorkerDataPlaneRequest,
@@ -37,6 +39,15 @@ from turbobus.topology import (
 
 CUDA_IPC_SOURCE_HANDLE = (b"s" * 64).hex()
 CUDA_IPC_TARGET_HANDLE = (b"t" * 64).hex()
+
+
+def cuda_ipc_metadata(handle: str, *, allocation_size_bytes: int = 4096) -> dict:
+    return {
+        "cuda_ipc_handle": handle,
+        "device_offset_bytes": 0,
+        "allocation_base_ptr": 4096,
+        "allocation_size_bytes": int(allocation_size_bytes),
+    }
 
 
 class SchemaTest(unittest.TestCase):
@@ -57,7 +68,7 @@ class SchemaTest(unittest.TestCase):
         self.assertEqual(payload["resolved_mode"], "pool")
         self.assertEqual(payload["eligible_relay_devices"], [1, 2])
 
-    def test_daemon_protocol_round_trip(self) -> None:
+    def test_daemon_submit_transfer_intent_protocol_round_trip(self) -> None:
         peer = PeerIdentity(
             authenticated=True,
             source="test",
@@ -65,10 +76,21 @@ class SchemaTest(unittest.TestCase):
             process_id=42,
             group_id=100,
         )
-        request = DaemonRequest(
-            request_type=RequestType.RESERVE_TRANSFER,
+        intent = TransferIntent(
+            intent_id="intent-1",
+            job_id="job-1",
             session_id="session-1",
-            payload={"relay_gpu": 1, "chunks": 2},
+            source_buffer_id="cpu-buffer",
+            destination_buffer_id="gpu-buffer",
+            direction="h2d",
+            total_bytes=4096,
+            ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 4096},),
+            workload_kind=WorkloadKind.KV_CACHE,
+        )
+        request = DaemonRequest(
+            request_type=RequestType.SUBMIT_TRANSFER_INTENT,
+            session_id="session-1",
+            payload={"intent": asdict(intent)},
             peer_identity=peer,
         )
         session = Session(
@@ -77,50 +99,54 @@ class SchemaTest(unittest.TestCase):
             relay_gpus=[1],
             max_inflight_chunks=4,
         )
-        reservation = TransferReservation(
-            reservation_id="reservation-1",
+        receipt = TransferReceipt(
+            receipt_id="receipt-1",
+            ticket_id="ticket-1",
+            intent_id="intent-1",
+            decision_id="decision-1",
+            topology_snapshot_id="topology-1",
+            job_id="job-1",
             session_id="session-1",
-            relay_gpu=1,
-            chunks=2,
-            bytes=4096,
-            direction="h2d",
+            state=TransferStatusState.SUBMITTED,
+            bytes_total=4096,
+            bytes_completed=0,
+            path_stats=({"kind": "relay", "bytes": 4096},),
         )
         response = DaemonResponse(
             ok=True,
             payload={
                 "session": asdict(session),
-                "reservation": asdict(reservation),
+                "receipt": asdict(receipt),
             },
         )
 
         request_payload = json.loads(json.dumps(asdict(request)))
         response_payload = json.loads(json.dumps(asdict(response)))
 
-        self.assertEqual(request_payload["request_type"], "RESERVE_TRANSFER")
+        self.assertEqual(request_payload["request_type"], "SUBMIT_TRANSFER_INTENT")
+        self.assertEqual(request_payload["payload"]["intent"]["intent_id"], "intent-1")
         self.assertTrue(request_payload["peer_identity"]["authenticated"])
         self.assertEqual(request_payload["peer_identity"]["user_id"], "1000")
         self.assertEqual(response_payload["payload"]["session"]["session_id"], "session-1")
         self.assertEqual(
-            response_payload["payload"]["reservation"]["reservation_id"],
-            "reservation-1",
+            response_payload["payload"]["receipt"]["receipt_id"],
+            "receipt-1",
         )
 
-    def test_plan_transfer_request_is_serializable(self) -> None:
+    def test_wait_transfer_receipt_request_is_serializable(self) -> None:
         request = DaemonRequest(
-            request_type=RequestType.PLAN_TRANSFER,
+            request_type=RequestType.WAIT_TRANSFER_RECEIPT,
             session_id="session-1",
             payload={
-                "total_bytes": 64,
-                "chunk_bytes": 16,
-                "mode": "pool",
-                "direction": "h2d",
+                "intent_id": "intent-1",
+                "timeout_seconds": 1.5,
             },
         )
 
         payload = json.loads(json.dumps(asdict(request)))
 
-        self.assertEqual(payload["request_type"], "PLAN_TRANSFER")
-        self.assertEqual(payload["payload"]["mode"], "pool")
+        self.assertEqual(payload["request_type"], "WAIT_TRANSFER_RECEIPT")
+        self.assertEqual(payload["payload"]["intent_id"], "intent-1")
 
     def test_relay_quota_limits(self) -> None:
         quota = RelayQuota(relay_gpu=1, max_sessions=1, max_inflight_chunks=4)
@@ -207,7 +233,7 @@ class SchemaTest(unittest.TestCase):
                 size_bytes=4096,
                 device_index=0,
                 handle_type="cuda_ipc_device",
-                metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+                metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
             ),
             direction="h2d",
             relay_gpu=1,
@@ -380,6 +406,8 @@ class SchemaTest(unittest.TestCase):
                 metadata={
                     "cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE,
                     "device_offset_bytes": -1,
+                    "allocation_base_ptr": 4096,
+                    "allocation_size_bytes": 4096,
                 },
             )
         with self.assertRaises(ValueError):
@@ -536,7 +564,7 @@ class SchemaTest(unittest.TestCase):
             size_bytes=64,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+            metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
         )
 
         with self.assertRaisesRegex(ValueError, "src buffer size"):
@@ -581,7 +609,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=8,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
                     ),
                     direction="h2d",
                     ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 16},),
@@ -617,7 +645,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=64,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
                     ),
                     direction="h2d",
                     ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 16},),
@@ -674,7 +702,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=64,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_SOURCE_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_SOURCE_HANDLE),
                     ),
                     dst_buffer=BufferRegistration(
                         buffer_id="target-buffer",
@@ -683,7 +711,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=64,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
                     ),
                     direction="h2d",
                     ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 16},),
@@ -705,7 +733,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=64,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_SOURCE_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_SOURCE_HANDLE),
                     ),
                     dst_buffer=BufferRegistration(
                         buffer_id="target-buffer",
@@ -714,7 +742,7 @@ class SchemaTest(unittest.TestCase):
                         size_bytes=64,
                         device_index=0,
                         handle_type="cuda_ipc_device",
-                        metadata={"cuda_ipc_handle": CUDA_IPC_TARGET_HANDLE},
+                        metadata=cuda_ipc_metadata(CUDA_IPC_TARGET_HANDLE),
                     ),
                     direction="d2h",
                     ranges=({"src_offset": 0, "dst_offset": 0, "bytes": 16},),
@@ -812,21 +840,26 @@ class SchemaTest(unittest.TestCase):
                 GpuInventoryRecord(device_id=2, role="relay"),
             ),
             pcie_paths=(
-                PciePathRecord(device_id=1),
-                PciePathRecord(device_id=2),
+                PciePathRecord(device_id=0, bandwidth_gbps=7.5, bandwidth_source="provider"),
+                PciePathRecord(device_id=1, bandwidth_gbps=8.0, bandwidth_source="provider"),
+                PciePathRecord(device_id=2, bandwidth_gbps=8.0, bandwidth_source="provider"),
             ),
             fabric_links=(
                 FabricLinkRecord(
                     src_device_id=1,
                     dst_device_id=0,
                     fabric="nvlink",
+                    bandwidth_gbps=40.0,
                     enabled=True,
+                    capability="nvlink",
                 ),
                 FabricLinkRecord(
                     src_device_id=2,
                     dst_device_id=0,
                     fabric="nvlink",
+                    bandwidth_gbps=40.0,
                     enabled=False,
+                    capability="nvlink",
                 ),
             ),
         )
@@ -840,9 +873,18 @@ class SchemaTest(unittest.TestCase):
             requested_relays=[1, 2],
         )
         self.assertEqual(eligibility["requested_relays"], [1, 2])
-        self.assertEqual(eligibility["eligible_relays"], [{"relay_gpu": 1, "reason": "eligible"}])
         self.assertEqual(
-            eligibility["filtered_relays"],
+            [
+                {"relay_gpu": item["relay_gpu"], "reason": item["reason"]}
+                for item in eligibility["eligible_relays"]
+            ],
+            [{"relay_gpu": 1, "reason": "eligible"}],
+        )
+        self.assertEqual(
+            [
+                {"relay_gpu": item["relay_gpu"], "reason": item["reason"]}
+                for item in eligibility["filtered_relays"]
+            ],
             [{"relay_gpu": 2, "reason": "missing enabled fabric link"}],
         )
 

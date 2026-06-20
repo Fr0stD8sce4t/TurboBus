@@ -311,7 +311,9 @@ def collect_workload_metrics(workload: str, paths: dict[str, Path]) -> tuple[obj
     data = read_json(paths["json"], {})
     if workload == "model-loading":
         return data, collect_model_metrics(data)
-    if workload in STATE_OFFLOAD_WORKLOAD_KINDS:
+    if workload == "training-offload":
+        return data, collect_training_metrics(data, workload=workload)
+    if workload == "optimizer-offload":
         return data, collect_training_metrics(data, workload=workload)
     raise ValueError(f"unsupported workload: {workload}")
 

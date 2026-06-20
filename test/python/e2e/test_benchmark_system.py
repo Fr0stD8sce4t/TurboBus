@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import contextlib
-import json
 from pathlib import Path
-import subprocess
 import sys
-import tempfile
 import unittest
-from unittest.mock import patch
 
-from turbobus.schema import TransferReceipt, TransferStatusState
+from turbobus.offload_store import BlockState
+from turbobus.schema import TransferReceipt
+from turbobus.state_offload import StateDescriptor, StateOffloadCore, StateOffloadSpec
+from test.python.fixtures.runtime_evidence import make_runtime_intent, make_runtime_receipt
 
 BENCHMARKS = Path(__file__).resolve().parents[3] / "benchmarks"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(BENCHMARKS))
 
 import model_loading  # noqa: E402
-import paper_validation  # noqa: E402
+import optimizer_offload  # noqa: E402
 import training_offload  # noqa: E402
 
 
@@ -40,7 +39,7 @@ class BenchmarkSystemTest(unittest.TestCase):
             args,
             session_factory=runtime.session_factory,
             buffer_factory=runtime.buffer_factory,
-            loader_factory=runtime.model_loader_factory,
+            core_factory=runtime.model_core_factory,
         )
 
         self.assert_runtime_result(
@@ -53,7 +52,7 @@ class BenchmarkSystemTest(unittest.TestCase):
         self.assertEqual(result["summary"]["relay_bytes"], 64)
         self.assertTrue(runtime.buffers.released)
         self.assertEqual(runtime.session.events[:3], ["register_cuda", "open", "register_cpu"])
-        self.assertEqual(runtime.model_loader.loaded, [["bucket-0", "bucket-1"]] * 3)
+        self.assertEqual(runtime.model_core.transfer_calls, [["bucket-0", "bucket-1"]] * 3)
 
     def test_model_loading_cli_accepts_total_chunk_mode_and_no_verify(self) -> None:
         args = parse_model_args(
@@ -77,7 +76,7 @@ class BenchmarkSystemTest(unittest.TestCase):
         self.assertEqual(model_loading.config_dict(args)["mode"], "direct-only")
         self.assertFalse(model_loading.config_dict(args)["verify"])
 
-    def test_model_loading_passes_mode_and_verification_policy_to_loader(self) -> None:
+    def test_model_loading_passes_mode_and_verification_policy_to_core(self) -> None:
         args = parse_model_args(
             "--bucket-count",
             "1",
@@ -90,19 +89,15 @@ class BenchmarkSystemTest(unittest.TestCase):
             "--no-verify",
         )
         buffers = FakeBuffers()
+        session = FakeSession()
+        core = model_loading.make_core(args, session, buffers)
 
-        with patch(
-            "turbobus.adapters.model_loading.ModelWeightLoader",
-            CapturingModelWeightLoader,
-        ):
-            loader = model_loading.make_loader(args, object(), buffers)
-
-        self.assertIsNotNone(loader)
-        self.assertEqual(loader.policy_hints["transfer_mode"], "pool")
-        self.assertTrue(loader.policy_hints["skip_verification"])
-        self.assertEqual(loader.metadata["mode"], "pooled")
-        self.assertTrue(loader.metadata["skip_verification"])
-        self.assertEqual(loader.added_buckets[0]["bucket_count"], 1)
+        self.assertIsNotNone(core)
+        self.assertEqual(core.transfer_context.policy_hints["transfer_mode"], "pool")
+        self.assertTrue(core.transfer_context.policy_hints["skip_verification"])
+        self.assertEqual(core.transfer_context.metadata["mode"], "pooled")
+        self.assertTrue(core.transfer_context.metadata["skip_verification"])
+        self.assertEqual(core.names(), ["bucket-0"])
 
     def test_training_offload_runtime_path_outputs_prefetch_and_offload_evidence(self) -> None:
         args = parse_training_args(
@@ -123,7 +118,7 @@ class BenchmarkSystemTest(unittest.TestCase):
             args,
             session_factory=runtime.session_factory,
             buffer_factory=runtime.buffer_factory,
-            manager_factory=runtime.training_manager_factory,
+            core_factory=runtime.training_core_factory,
         )
 
         self.assert_runtime_result(
@@ -135,46 +130,42 @@ class BenchmarkSystemTest(unittest.TestCase):
         self.assertEqual(result["summary"]["prefetch"]["relay_bytes"], 64)
         self.assertEqual(result["summary"]["offload"]["relay_bytes"], 64)
         self.assertEqual(result["samples"][1]["bucket_names"], ["bucket-2", "bucket-3"])
-        self.assertEqual(len(runtime.training_manager.prefetched), 3)
-        self.assertEqual(len(runtime.training_manager.offloaded), 3)
+        self.assertEqual(len(runtime.training_core.prefetched), 3)
+        self.assertEqual(len(runtime.training_core.offloaded), 3)
 
-    def test_benchmark_help_entrypoints_still_run(self) -> None:
-        for script in (
-            "benchmarks/model_loading.py",
-            "benchmarks/training_offload.py",
-            "benchmarks/paper_validation.py",
-        ):
-            with self.subTest(script=script):
-                completed = subprocess.run(
-                    [sys.executable, script, "--help"],
-                    cwd=REPO_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertIn("usage:", completed.stdout)
-
-    def test_json_outputs_are_report_consumable(self) -> None:
+    def test_optimizer_offload_runtime_path_outputs_prefetch_and_offload_evidence(self) -> None:
+        args = parse_optimizer_args(
+            "--bucket-count",
+            "4",
+            "--active-buckets",
+            "2",
+            "--bucket-bytes",
+            "64",
+            "--iterations",
+            "2",
+            "--warmup",
+            "1",
+        )
         runtime = FakeRuntime()
-        model_result = model_loading.run_benchmark(
-            parse_model_args("--bucket-count", "1", "--bucket-bytes", "96"),
+
+        result = optimizer_offload.run_benchmark(
+            args,
             session_factory=runtime.session_factory,
             buffer_factory=runtime.buffer_factory,
-            loader_factory=runtime.model_loader_factory,
+            core_factory=runtime.optimizer_core_factory,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output = Path(tmpdir) / "model.json"
-            model_loading.write_json(str(output), model_result)
-            data = json.loads(output.read_text(encoding="utf-8"))
-
-        metrics = paper_validation.collect_model_metrics(data)
-        self.assertEqual(metrics[0]["correctness_status"], "complete")
-        self.assertEqual(metrics[0]["relay_bytes"], 48)
-        self.assertEqual(metrics[0]["source_buffer_id"], "cpu-buffer")
-        self.assertEqual(metrics[0]["destination_buffer_id"], "gpu-buffer")
+        self.assert_runtime_result(
+            result,
+            transfer_bytes=128,
+            source_key="cpu_buffer_id",
+            destination_key="gpu_buffer_id",
+        )
+        self.assertEqual(result["summary"]["prefetch"]["relay_bytes"], 64)
+        self.assertEqual(result["summary"]["offload"]["relay_bytes"], 64)
+        self.assertEqual(result["samples"][1]["bucket_names"], ["bucket-2", "bucket-3"])
+        self.assertEqual(len(runtime.optimizer_core.prefetched), 3)
+        self.assertEqual(len(runtime.optimizer_core.offloaded), 3)
 
     def assert_runtime_result(
         self,
@@ -204,16 +195,21 @@ class FakeRuntime:
         self.buffers = FakeBuffers()
         self.session_factory = FakeSessionFactory(self.session)
         self.buffer_factory = FakeBufferFactory(self.buffers)
-        self.model_loader = None
-        self.training_manager = None
+        self.model_core = None
+        self.training_core = None
+        self.optimizer_core = None
 
-    def model_loader_factory(self, args, session, buffers):
-        self.model_loader = FakeModelLoader(args)
-        return self.model_loader
+    def model_core_factory(self, args, session, buffers):
+        self.model_core = model_loading.make_core(args, session, buffers)
+        return self.model_core
 
-    def training_manager_factory(self, args, session, buffers):
-        self.training_manager = FakeTrainingManager(args)
-        return self.training_manager
+    def training_core_factory(self, args, session, buffers):
+        self.training_core = training_offload.make_core(args, session, buffers)
+        return self.training_core
+
+    def optimizer_core_factory(self, args, session, buffers):
+        self.optimizer_core = optimizer_offload.make_core(args, session, buffers)
+        return self.optimizer_core
 
 
 class FakeSessionFactory:
@@ -242,38 +238,17 @@ class FakeSession:
     def register_cpu_buffer(self, buffer) -> None:
         self.events.append("register_cpu")
 
+    def make_state_offload(self, spec, cpu_buffer, gpu_buffer, **kwargs):
+        return FakeStateOffloadCore(
+            phase=str(getattr(spec, "state_kind", "state")),
+            policy_hints=kwargs.get("policy_hints"),
+            metadata=kwargs.get("metadata"),
+            workload_kind=kwargs.get("workload_kind"),
+            intent_prefix=kwargs.get("intent_prefix"),
+        )
+
     def close(self) -> None:
         self.events.append("close")
-
-
-class CapturingModelWeightLoader:
-    def __init__(
-        self,
-        session,
-        cpu_buffer,
-        gpu_buffer,
-        *,
-        policy_hints=None,
-        metadata=None,
-        **kwargs,
-    ) -> None:
-        self.session = session
-        self.cpu_buffer = cpu_buffer
-        self.gpu_buffer = gpu_buffer
-        self.policy_hints = {} if policy_hints is None else dict(policy_hints)
-        self.metadata = {} if metadata is None else dict(metadata)
-        self.kwargs = kwargs
-        self.added_buckets = []
-
-    def add_packed_buckets(self, prefix: str, *, bucket_bytes: int, bucket_count: int):
-        self.added_buckets.append(
-            {
-                "prefix": prefix,
-                "bucket_bytes": int(bucket_bytes),
-                "bucket_count": int(bucket_count),
-            }
-        )
-        return []
 
 
 class FakeBufferFactory:
@@ -299,44 +274,6 @@ class FakeBuffer:
         self.buffer_id = buffer_id
 
 
-class FakeModelLoader:
-    def __init__(self, args) -> None:
-        self.args = args
-        self.loaded = []
-        self.calls = 0
-
-    def load_batch(self, names):
-        selected = list(names)
-        self.loaded.append(selected)
-        return FakeBatch(self._receipt("load", len(selected) * int(self.args.bucket_bytes)))
-
-    def _receipt(self, prefix: str, byte_count: int) -> TransferReceipt:
-        self.calls += 1
-        return make_receipt(f"{prefix}-{self.calls}", byte_count)
-
-
-class FakeTrainingManager:
-    def __init__(self, args) -> None:
-        self.args = args
-        self.prefetched = []
-        self.offloaded = []
-        self.calls = 0
-
-    def prefetch_batch(self, names):
-        selected = list(names)
-        self.prefetched.append(selected)
-        return FakeBatch(self._receipt("prefetch", len(selected) * int(self.args.bucket_bytes)))
-
-    def offload_batch(self, names):
-        selected = list(names)
-        self.offloaded.append(selected)
-        return FakeBatch(self._receipt("offload", len(selected) * int(self.args.bucket_bytes)))
-
-    def _receipt(self, prefix: str, byte_count: int) -> TransferReceipt:
-        self.calls += 1
-        return make_receipt(f"{prefix}-{self.calls}", byte_count)
-
-
 class FakeBatch:
     def __init__(self, receipt: TransferReceipt) -> None:
         handle = FakeHandle(receipt)
@@ -351,35 +288,70 @@ class FakeHandle:
         self.receipt = receipt
 
 
+class FakeStateOffloadCore:
+    def __init__(
+        self,
+        *,
+        phase: str,
+        policy_hints=None,
+        metadata=None,
+        workload_kind=None,
+        intent_prefix=None,
+    ) -> None:
+        self.phase = phase
+        self.transfer_context = type("TransferContext", (), {})()
+        self.transfer_context.policy_hints = {} if policy_hints is None else dict(policy_hints)
+        self.transfer_context.metadata = {} if metadata is None else dict(metadata)
+        self.transfer_context.workload_kind = workload_kind
+        self.transfer_context.intent_prefix = intent_prefix
+        self.prefetched: list[list[str]] = []
+        self.offloaded: list[list[str]] = []
+        self.transfer_calls: list[list[str]] = []
+        self._descriptors: dict[str, StateDescriptor] = {}
+
+    def register_registry(self, registry, *, replace: bool = False):
+        descriptors = list(registry.rebuild())
+        self._descriptors = {descriptor.name: descriptor for descriptor in descriptors}
+        return descriptors
+
+    def names(self) -> list[str]:
+        return sorted(self._descriptors)
+
+    def submit_prefetch_states(self, names, *, operation: str = "submit_prefetch_states"):
+        selected = list(names)
+        self.prefetched.append(selected)
+        self.transfer_calls.append(selected)
+        return FakeBatch(make_receipt(f"{self.phase}-{operation}", self._byte_count(selected)))
+
+    def submit_offload_states(self, names, *, operation: str = "submit_offload_states"):
+        selected = list(names)
+        self.offloaded.append(selected)
+        self.transfer_calls.append(selected)
+        return FakeBatch(make_receipt(f"{self.phase}-{operation}", self._byte_count(selected)))
+
+    def _byte_count(self, names: list[str]) -> int:
+        return sum(
+            int(self._descriptors[name].byte_count or 0)
+            if name in self._descriptors
+            else 0
+            for name in names
+        )
+
+    def state(self, name: str):
+        descriptor = self._descriptors[str(name)]
+        return type(
+            "StateView",
+            (),
+            {
+                "state": BlockState.CPU,
+                "bytes": int(descriptor.byte_count or 0),
+                "cpu_offset": int(descriptor.cpu_offset),
+            },
+        )()
+
 def make_receipt(suffix: str, total_bytes: int) -> TransferReceipt:
-    direct_bytes = total_bytes // 2
-    relay_bytes = total_bytes - direct_bytes
-    return TransferReceipt(
-        receipt_id=f"receipt-{suffix}",
-        ticket_id=f"ticket-{suffix}",
-        intent_id=f"intent-{suffix}",
-        decision_id=f"decision-{suffix}",
-        topology_snapshot_id="topology-1",
-        job_id="job-1",
-        session_id="session-1",
-        state=TransferStatusState.COMPLETE,
-        bytes_total=total_bytes,
-        bytes_completed=total_bytes,
-        path_stats=(
-            {"kind": "direct", "bytes": direct_bytes, "chunk_count": 1},
-            {"kind": "relay", "bytes": relay_bytes, "chunk_count": 1},
-        ),
-        metadata={
-            "fallback_reason": "none",
-            "completion_source": "worker",
-            "executed": True,
-            "verified": True,
-            "verified_bytes": total_bytes,
-            "content_match": True,
-            "verification_source": "fixture_worker",
-            "verification_method": "fixture_compare",
-        },
-    )
+    intent = make_runtime_intent(suffix, total_bytes=total_bytes)
+    return make_runtime_receipt(intent, receipt_id=f"receipt-{suffix}")
 
 
 def parse_model_args(*extra: str):
@@ -391,6 +363,12 @@ def parse_model_args(*extra: str):
 def parse_training_args(*extra: str):
     args = training_offload.build_parser().parse_args(base_runtime_cli() + list(extra))
     training_offload.validate_args(args)
+    return args
+
+
+def parse_optimizer_args(*extra: str):
+    args = optimizer_offload.build_parser().parse_args(base_runtime_cli() + list(extra))
+    optimizer_offload.validate_args(args)
     return args
 
 

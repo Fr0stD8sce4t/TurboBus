@@ -108,7 +108,11 @@ def validate_ticket_matches_worker_request(
     )
     if authorization.relay_gpu not in relay_gpus:
         raise ValueError("ticket relay does not match worker authorization")
-    if execution_ranges_from_ticket_plan(ticket) != authorization.ranges:
+    authorized_ranges = relay_ranges_from_ticket_plan(
+        ticket,
+        relay_gpus=relay_gpus,
+    )
+    if authorized_ranges != authorization.ranges:
         raise ValueError("ticket ranges do not match worker authorization")
 
 

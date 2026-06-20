@@ -28,6 +28,7 @@ class OffloadBlockInfo:
     bytes: int
     state: BlockState
     last_operation: str | None
+    transfer_stats: object | None = None
 
     def as_dict(self) -> dict[str, object]:
         # /*
@@ -70,6 +71,14 @@ class OffloadBlock:
         return self._block.block_id
 
     @property
+    def cpu_tensor(self) -> object:
+        return self._block.cpu_tensor
+
+    @property
+    def gpu_tensor(self) -> object:
+        return self._block.gpu_tensor
+
+    @property
     def cpu_slot(self) -> object | None:
         return self._block.cpu_slot
 
@@ -96,6 +105,10 @@ class OffloadBlock:
     @property
     def last_operation(self) -> str | None:
         return self._block.last_operation
+
+    @property
+    def last_handle(self) -> object | None:
+        return self._block._last_handle
 
     def info(self) -> OffloadBlockInfo:
         return self._block.info()

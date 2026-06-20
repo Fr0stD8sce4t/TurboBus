@@ -125,6 +125,7 @@ def authorization_payload() -> dict:
             metadata={
                 "cuda_ipc_handle": (b"t" * 64).hex(),
                 "device_offset_bytes": 32,
+                "allocation_size_bytes": 64,
             },
         ),
         direction="h2d",
@@ -148,6 +149,7 @@ def authorization_payload_for_shared_cpu(
             metadata={
                 "cuda_ipc_handle": (b"t" * 64).hex(),
                 "device_offset_bytes": 32,
+                "allocation_size_bytes": 64,
             },
         ),
         direction="h2d",
@@ -170,6 +172,7 @@ def d2h_authorization_payload_for_shared_cpu(
             metadata={
                 "cuda_ipc_handle": (b"t" * 64).hex(),
                 "device_offset_bytes": 32,
+                "allocation_size_bytes": 64,
             },
         ),
         dst_buffer=destination_buffer.buffer_registration(),
@@ -394,7 +397,10 @@ def ticket_authorization_payload(
             size_bytes=required_size,
             device_index=0,
             handle_type="cuda_ipc_device",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "allocation_size_bytes": required_size,
+            },
         )
     if plan is None:
         plan = daemon_worker_plan(direction=direction, ranges=ranges, relay_gpu=relay_gpu)
@@ -404,6 +410,20 @@ def ticket_authorization_payload(
     metadata.setdefault("issuer", "turbobus-daemon")
     metadata.setdefault("transfer_id", "transfer-1")
     metadata.setdefault("plan_generation", int(plan_generation))
+    metadata.setdefault(
+        "owner_binding",
+        {
+            "job_id": "job-1",
+            "session_id": "session-1",
+            "transfer_id": "transfer-1",
+            "lease_ids": resolved_leases,
+            "relay_gpus": resolved_relays,
+            "cleanup_scope": {
+                "target_kind": "reservation",
+                "target_ids": resolved_leases,
+            },
+        },
+    )
     ticket_fields = {
         "source_buffer_id": src_buffer.buffer_id,
         "destination_buffer_id": dst_buffer.buffer_id,
@@ -516,7 +536,10 @@ def daemon_with_relay_transfer_path() -> tuple[TurboBusDaemon, str]:
         size_bytes=64,
         device_index=0,
         handle_type="cuda_ipc_device",
-        metadata={"cuda_ipc_handle": (b"t" * 64).hex()},
+        metadata={
+            "cuda_ipc_handle": (b"t" * 64).hex(),
+            "allocation_size_bytes": 64,
+        },
     )
     daemon.put_profile(
         target_gpu=0,

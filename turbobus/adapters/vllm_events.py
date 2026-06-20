@@ -31,8 +31,8 @@ _RUNTIME_EVIDENCE_KEYS = frozenset(
 
 _PRIVATE_EVENT_KEYS = frozenset(
     {
-        "adapter_evidence_record",
-        "adapter_evidence_records",
+        "transfer_evidence_record",
+        "transfer_evidence_records",
         "runtime_close_entrypoint",
         "receipt_ids",
         "decision_ids",
@@ -51,8 +51,8 @@ def clear_connector_events() -> None:
     #  * ========================================================================
     #  * 步骤1：拒绝公开清理 connector events
     #  * ========================================================================
-    #  * 目标：防止外部代码删除 RuntimeSession-bound adapter event evidence
-    #  * 数据源：公共 adapter API
+    #  * 目标：防止外部代码删除 RuntimeSession-bound transfer event evidence
+    #  * 数据源：公共 connector API
     #  * 操作：
     #  *   1) 拒绝公开清理
     #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
@@ -92,7 +92,7 @@ def get_connector_events() -> list[dict[str, Any]]:
     #  * 目标：只公开 RuntimeSession 证据绑定后的事件记录
     #  * 数据源：内存事件列表 _CONNECTOR_EVENTS
     #  * 操作：
-    #  *   1) 校验 receipt/lifecycle/cleanup 摘要事件绑定 adapter evidence
+    #  *   1) 校验 receipt/lifecycle/cleanup 摘要事件绑定 transfer evidence
     #  *   2) 返回复制后的事件快照，避免外部修改内部状态
     #  */
     logger.info("开始读取 connector 事件快照...")
@@ -113,7 +113,7 @@ def emit_event(event: str, **fields) -> None:
     #  * ========================================================================
     #  * 步骤2：记录 connector 事件
     #  * ========================================================================
-    #  * 目标：把公开事件绑定到 RuntimeSession adapter evidence
+    #  * 目标：把公开事件绑定到 RuntimeSession transfer evidence
     #  * 数据源：vLLM connector lifecycle/cleanup 调用点
     #  * 操作：
     #  *   1) 对 runtime-looking 事件做 evidence record 校验
@@ -145,7 +145,7 @@ def _validated_connector_event(event: Mapping[str, Any]) -> dict[str, Any]:
     #  * 数据源：单条 connector event
     #  * 操作：
     #  *   1) 判断事件是否包含 receipt/lifecycle/cleanup 摘要字段
-    #  *   2) 要求 runtime-looking 事件携带 adapter evidence record
+    #  *   2) 要求 runtime-looking 事件携带 transfer evidence record
     #  */
     logger.info("开始校验 connector 事件边界...")
 
@@ -155,25 +155,25 @@ def _validated_connector_event(event: Mapping[str, Any]) -> dict[str, Any]:
         logger.info("connector 事件边界校验完成, runtime_summary: %s", False)
         return record
 
-    # // 3.2 校验 route policy 不向 adapter 暴露
-    if bool(record.get("route_policy_visible_to_adapter", False)):
-        raise ValueError("connector event exposes route policy to adapter")
+    # // 3.2 校验 route policy 不向 transfer 边界暴露
+    if bool(record.get("route_policy_visible_to_transfer", False)):
+        raise ValueError("connector event exposes route policy to transfer")
 
-    # // 3.3 校验单条或多条 RuntimeSession adapter evidence record
-    requires_adapter_record = _requires_adapter_record(record)
-    adapter_record = record.get("adapter_evidence_record")
-    adapter_records = record.get("adapter_evidence_records")
-    if isinstance(adapter_record, Mapping):
-        _require_adapter_evidence_record(adapter_record)
-    elif isinstance(adapter_records, list):
-        if not adapter_records and requires_adapter_record:
-            raise ValueError("connector event missing adapter evidence records")
-        for item in adapter_records:
+    # // 3.3 校验单条或多条 RuntimeSession transfer evidence record
+    requires_transfer_record = _requires_transfer_record(record)
+    transfer_record = record.get("transfer_evidence_record")
+    transfer_records = record.get("transfer_evidence_records")
+    if isinstance(transfer_record, Mapping):
+        _require_transfer_evidence_record(transfer_record)
+    elif isinstance(transfer_records, list):
+        if not transfer_records and requires_transfer_record:
+            raise ValueError("connector event missing transfer evidence records")
+        for item in transfer_records:
             if not isinstance(item, Mapping):
-                raise ValueError("connector event adapter evidence records must be mappings")
-            _require_adapter_evidence_record(item)
-    elif requires_adapter_record:
-        raise ValueError("connector event missing adapter evidence record")
+                raise ValueError("connector event transfer evidence records must be mappings")
+            _require_transfer_evidence_record(item)
+    elif requires_transfer_record:
+        raise ValueError("connector event missing transfer evidence record")
 
     if "free_backing_cleanup_groups" in record:
         _require_runtime_close_entrypoint(record.get("runtime_close_entrypoint"))
@@ -191,7 +191,7 @@ def _public_connector_event(record: Mapping[str, Any]) -> dict[str, Any]:
     #  * 数据源：已校验 connector event
     #  * 操作：
     #  *   1) 删除 receipt/ticket/decision/topology 原始标识
-    #  *   2) 保留 adapter evidence 的 id 和数量摘要
+    #  *   2) 保留 transfer evidence 的 id 和数量摘要
     #  */
     logger.info("开始构造公开 connector event...")
 
@@ -202,20 +202,20 @@ def _public_connector_event(record: Mapping[str, Any]) -> dict[str, Any]:
         if key not in _PRIVATE_EVENT_KEYS
     }
 
-    # // 8.2 记录单条 adapter evidence 摘要
-    adapter_record = record.get("adapter_evidence_record")
-    if isinstance(adapter_record, Mapping):
-        public["adapter_evidence_id"] = str(adapter_record.get("evidence_id", ""))
+    # // 8.2 记录单条 transfer evidence 摘要
+    transfer_record = record.get("transfer_evidence_record")
+    if isinstance(transfer_record, Mapping):
+        public["transfer_evidence_id"] = str(transfer_record.get("evidence_id", ""))
 
-    # // 8.3 记录多条 adapter evidence 摘要
-    adapter_records = record.get("adapter_evidence_records")
-    if isinstance(adapter_records, list):
+    # // 8.3 记录多条 transfer evidence 摘要
+    transfer_records = record.get("transfer_evidence_records")
+    if isinstance(transfer_records, list):
         evidence_ids = [
             str(item.get("evidence_id", ""))
-            for item in adapter_records
+            for item in transfer_records
             if isinstance(item, Mapping) and str(item.get("evidence_id", "")).strip()
         ]
-        public["adapter_evidence_count"] = len(evidence_ids)
+        public["transfer_evidence_count"] = len(evidence_ids)
 
     # // 8.4 记录 close entrypoint 已绑定摘要
     if "runtime_close_entrypoint" in record:
@@ -245,18 +245,18 @@ def _has_runtime_summary(record: Mapping[str, Any]) -> bool:
     return result
 
 
-def _requires_adapter_record(record: Mapping[str, Any]) -> bool:
+def _requires_transfer_record(record: Mapping[str, Any]) -> bool:
     # /*
     #  * ========================================================================
-    #  * 步骤5：判断 adapter evidence 是否必需
+    #  * 步骤5：判断 transfer evidence 是否必需
     #  * ========================================================================
     #  * 目标：允许空 cleanup 汇总，但拒绝已有 runtime 摘要无证据
     #  * 数据源：connector event 字段
     #  * 操作：
-    #  *   1) 空 prefix cleanup 汇总不要求 adapter record
-    #  *   2) 其他 runtime-looking 事件必须有 adapter record
+    #  *   1) 空 prefix cleanup 汇总不要求 transfer record
+    #  *   2) 其他 runtime-looking 事件必须有 transfer record
     #  */
-    logger.info("开始判断 adapter evidence 是否必需...")
+    logger.info("开始判断 transfer evidence 是否必需...")
 
     # // 5.1 识别空 prefix cleanup 汇总
     cleanup_ids = record.get("prefix_cleanup_mutation_ids")
@@ -264,38 +264,38 @@ def _requires_adapter_record(record: Mapping[str, Any]) -> bool:
         key in record
         for key in _RUNTIME_EVIDENCE_KEYS - {"prefix_cleanup_mutation_ids"}
     ):
-        logger.info("adapter evidence 必需判断完成, required: %s", False)
+        logger.info("transfer evidence 必需判断完成, required: %s", False)
         return False
 
     # // 5.2 其他 runtime 摘要必须绑定证据
-    logger.info("adapter evidence 必需判断完成, required: %s", True)
+    logger.info("transfer evidence 必需判断完成, required: %s", True)
     return True
 
 
-def _require_adapter_evidence_record(record: Mapping[str, Any]) -> None:
+def _require_transfer_evidence_record(record: Mapping[str, Any]) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤6：校验 adapter evidence record
+    #  * 步骤6：校验 transfer evidence record
     #  * ========================================================================
     #  * 目标：确认事件来源于 RuntimeSession entrypoint 记录
-    #  * 数据源：RuntimeSession adapter evidence record
+    #  * 数据源：RuntimeSession transfer evidence record
     #  * 操作：
     #  *   1) 要求 evidence_id 存在
     #  *   2) 要求 intent 和 receipt 都已写入 RuntimeSession 记录
     #  */
-    logger.info("开始校验 adapter evidence record...")
+    logger.info("开始校验 transfer evidence record...")
 
     # // 6.1 校验证据标识
     if not str(record.get("evidence_id", "")).strip():
-        raise ValueError("connector event adapter evidence record missing evidence_id")
+        raise ValueError("connector event transfer evidence record missing evidence_id")
 
     # // 6.2 校验 RuntimeSession 已记录 intent 与 receipt
     if not bool(record.get("intents_recorded", False)):
-        raise ValueError("connector event adapter intents were not recorded")
+        raise ValueError("connector event transfer intents were not recorded")
     if not bool(record.get("receipts_recorded", False)):
-        raise ValueError("connector event adapter receipts were not recorded")
+        raise ValueError("connector event transfer receipts were not recorded")
     logger.info(
-        "adapter evidence record 校验完成, evidence_id: %s",
+        "transfer evidence record 校验完成, evidence_id: %s",
         record.get("evidence_id"),
     )
 
@@ -320,8 +320,8 @@ def _require_runtime_close_entrypoint(value: object) -> None:
         raise ValueError("connector close event RuntimeSession entrypoint mismatch")
     if str(value.get("plan_source")) != "daemon_scheduler":
         raise ValueError("connector close event plan_source mismatch")
-    if bool(value.get("route_policy_visible_to_adapter", True)):
-        raise ValueError("connector close event exposes route policy to adapter")
+    if bool(value.get("route_policy_visible_to_transfer", True)):
+        raise ValueError("connector close event exposes route policy to transfer")
     if bool(value.get("route_policy_visible_to_application", True)):
         raise ValueError("connector close event exposes route policy to application")
 
@@ -331,7 +331,7 @@ def _require_runtime_close_entrypoint(value: object) -> None:
         raise ValueError("connector close event missing RuntimeSession close record")
     if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
         raise ValueError("connector close event close record mismatch")
-    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+    if bool(close_record.get("route_policy_visible_to_transfer", True)):
         raise ValueError("connector close event close record exposes route policy")
     logger.info("connector close RuntimeSession entrypoint 校验完成")
 
@@ -343,7 +343,7 @@ def _require_public_connector_event_no_identity_fields(record: Mapping[str, Any]
     #  * ========================================================================
     #  * 目标：公开 event 只保留 RuntimeSession-bound 标量摘要
     #  * 操作：
-    #  *   1) 递归拒绝 runtime entrypoint、adapter record、receipt contract
+    #  *   1) 递归拒绝 runtime entrypoint、transfer record、receipt contract
     #  *   2) 递归拒绝 receipt/ticket/decision/topology 原始标识
     #  */
     logger.info("开始校验公开 connector event 字段...")
@@ -351,8 +351,8 @@ def _require_public_connector_event_no_identity_fields(record: Mapping[str, Any]
     # // 9.1 递归拒绝公开事件携带运行态 identity
     forbidden = {
         "runtime_entrypoint",
-        "adapter_evidence_record",
-        "adapter_evidence_records",
+        "transfer_evidence_record",
+        "transfer_evidence_records",
         "receipt_contracts",
         "receipt_ids",
         "intent_ids",
@@ -372,7 +372,7 @@ def _require_public_connector_event_no_identity_fields(record: Mapping[str, Any]
     while stack:
         value = stack.pop()
         if isinstance(value, Mapping):
-            if bool(value.get("route_policy_visible_to_adapter", False)):
+            if bool(value.get("route_policy_visible_to_transfer", False)):
                 raise ValueError("public connector event exposes route policy")
             leaked = sorted(key for key in forbidden if key in value)
             if leaked:

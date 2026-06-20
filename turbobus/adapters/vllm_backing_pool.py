@@ -114,7 +114,7 @@ class TurboBusCPUBackingPool:
                         "action": "close_free_backing_group",
                         "backings": self.close_backings(cpu_backings),
                         "runtime_close_entrypoint": close_entrypoint,
-                        "route_policy_visible_to_adapter": False,
+                        "route_policy_visible_to_transfer": False,
                     }
                 )
         self._free_by_shape.clear()
@@ -261,8 +261,8 @@ def _runtime_close_entrypoint_for_free_backing_cleanup(
         raise ValueError("free backing cleanup close entrypoint mismatch")
     if str(entrypoint.get("plan_source")) != "daemon_scheduler":
         raise ValueError("free backing cleanup close plan_source mismatch")
-    if bool(entrypoint.get("route_policy_visible_to_adapter", True)):
-        raise ValueError("free backing cleanup exposes route policy to adapter")
+    if bool(entrypoint.get("route_policy_visible_to_transfer", True)):
+        raise ValueError("free backing cleanup exposes route policy to transfer")
     if bool(entrypoint.get("route_policy_visible_to_application", True)):
         raise ValueError("free backing cleanup exposes route policy to application")
 
@@ -272,7 +272,7 @@ def _runtime_close_entrypoint_for_free_backing_cleanup(
         raise ValueError("free backing cleanup missing RuntimeSession close record")
     if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
         raise ValueError("free backing cleanup close record mismatch")
-    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+    if bool(close_record.get("route_policy_visible_to_transfer", True)):
         raise ValueError("free backing close record exposes route policy")
 
     # // 2.3 返回隔离副本
@@ -312,16 +312,16 @@ def _prefix_lifecycle_for_backing_evidence(
     )
 
     # // 1.4 返回 backing evidence 继承字段
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError(f"{source} missing transfer evidence record")
     result = {
         "lifecycle_source": source,
-        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "transfer_evidence_id": str(transfer_record.get("evidence_id", "")),
         "receipt_contract_count": len(receipt_contracts),
         "runtime_entrypoint_recorded": True,
         "receipt_contracts_recorded": True,
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
     logger.info("backing lifecycle 边界提取完成, source: %s", source)
     return result
@@ -368,7 +368,7 @@ def _runtime_entrypoint_for_backing_evidence(
     #  * 数据源：prefix lifecycle evidence
     #  * 操作：
     #  *   1) 拒绝缺失 RuntimeSession entrypoint 的 backing evidence
-    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  *   2) 拒绝缺失 transfer evidence 记录明细或暴露 route policy 的合约
     #  */
     logger.info("开始提取 backing RuntimeSession 合约...")
 
@@ -379,22 +379,22 @@ def _runtime_entrypoint_for_backing_evidence(
     contract = dict(runtime_entrypoint)
 
     # // 3.2 拒绝 route policy 暴露
-    if bool(contract.get("route_policy_visible_to_adapter", True)):
-        raise ValueError(f"{source} exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_transfer", True)):
+        raise ValueError(f"{source} exposes route policy to transfer")
     if bool(contract.get("route_policy_visible_to_application", True)):
         raise ValueError(f"{source} exposes route policy to application")
 
-    # // 3.3 校验 adapter evidence 记录明细
-    adapter_record = contract.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
-    if not bool(adapter_record.get("intents_recorded", False)):
-        raise ValueError(f"{source} adapter intents were not recorded")
-    if not bool(adapter_record.get("receipts_recorded", False)):
-        raise ValueError(f"{source} adapter receipts were not recorded")
+    # // 3.3 校验 transfer evidence 记录明细
+    transfer_record = contract.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError(f"{source} missing transfer evidence record")
+    if not bool(transfer_record.get("intents_recorded", False)):
+        raise ValueError(f"{source} transfer intents were not recorded")
+    if not bool(transfer_record.get("receipts_recorded", False)):
+        raise ValueError(f"{source} transfer receipts were not recorded")
 
     # // 3.4 保留 RuntimeSession 记录摘要
-    contract["adapter_evidence_record"] = dict(adapter_record)
+    contract["transfer_evidence_record"] = dict(transfer_record)
     logger.info("backing RuntimeSession 合约提取完成, source: %s", source)
     return contract
 
@@ -412,7 +412,7 @@ def _receipt_contracts_for_backing_evidence(
     #  * 数据源：prefix lifecycle evidence
     #  * 操作：
     #  *   1) 拒绝缺失 receipt contracts 的 backing evidence
-    #  *   2) 核对 receipt contracts 已进入 RuntimeSession adapter evidence
+    #  *   2) 核对 receipt contracts 已进入 RuntimeSession transfer evidence
     #  */
     logger.info("开始提取 backing receipt contracts...")
 
@@ -427,7 +427,7 @@ def _receipt_contracts_for_backing_evidence(
         raise ValueError(f"{source} contains invalid receipt contracts")
 
     # // 4.3 核对 receipt contracts 与 RuntimeSession 记录
-    _require_backing_adapter_record_receipts(
+    _require_backing_transfer_record_receipts(
         runtime_entrypoint,
         receipt_contracts=copied,
         source=source,
@@ -436,7 +436,7 @@ def _receipt_contracts_for_backing_evidence(
     return copied
 
 
-def _require_backing_adapter_record_receipts(
+def _require_backing_transfer_record_receipts(
     runtime_entrypoint: Mapping[str, Any],
     *,
     receipt_contracts: list[dict[str, Any]],
@@ -446,17 +446,17 @@ def _require_backing_adapter_record_receipts(
     #  * ========================================================================
     #  * 步骤5：核对 backing receipt 记录
     #  * ========================================================================
-    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
+    #  * 数据源：receipt contracts 与 RuntimeSession transfer evidence record
     #  * 操作：
     #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
-    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  *   2) 确认 RuntimeSession transfer evidence record 包含这些标识
     #  */
     logger.info("开始核对 backing receipt 记录...")
 
-    # // 5.1 读取 RuntimeSession adapter evidence 记录
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
+    # // 5.1 读取 RuntimeSession transfer evidence 记录
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError(f"{source} missing transfer evidence record")
 
     # // 5.2 提取 receipt contract 标识
     expected_intent_ids, expected_receipt_ids = _backing_receipt_contract_ids(
@@ -464,15 +464,15 @@ def _require_backing_adapter_record_receipts(
         source=source,
     )
 
-    # // 5.3 提取 RuntimeSession adapter evidence 标识
-    recorded_intent_ids = _backing_string_set(adapter_record.get("intent_ids"))
-    recorded_receipt_ids = _backing_string_set(adapter_record.get("receipt_ids"))
+    # // 5.3 提取 RuntimeSession transfer evidence 标识
+    recorded_intent_ids = _backing_string_set(transfer_record.get("intent_ids"))
+    recorded_receipt_ids = _backing_string_set(transfer_record.get("receipt_ids"))
 
     # // 5.4 核对 receipt contract 是否都进入 RuntimeSession 记录
     if not expected_intent_ids.issubset(recorded_intent_ids):
-        raise ValueError(f"{source} adapter intent_ids mismatch")
+        raise ValueError(f"{source} transfer intent_ids mismatch")
     if not expected_receipt_ids.issubset(recorded_receipt_ids):
-        raise ValueError(f"{source} adapter receipt_ids mismatch")
+        raise ValueError(f"{source} transfer receipt_ids mismatch")
     logger.info("backing receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
 
 
@@ -488,7 +488,7 @@ def _backing_receipt_contract_ids(
     #  * 数据源：backing receipt contracts
     #  * 操作：
     #  *   1) 读取每个 receipt contract 的 intent_id 和 receipt_id
-    #  *   2) 返回用于 RuntimeSession adapter evidence 核对的集合
+    #  *   2) 返回用于 RuntimeSession transfer evidence 核对的集合
     #  */
     logger.info("开始提取 backing receipt contract 标识...")
 
@@ -518,7 +518,7 @@ def _backing_string_set(value: object) -> set[str]:
     #  * ========================================================================
     #  * 步骤7：归一化 backing 字符串集合
     #  * ========================================================================
-    #  * 数据源：RuntimeSession adapter evidence record
+    #  * 数据源：RuntimeSession transfer evidence record
     #  * 操作：
     #  *   1) 字符串按单个标识处理
     #  *   2) 列表和元组转为字符串集合

@@ -51,8 +51,10 @@ def _handle_register_buffer(daemon, request: DaemonRequest, connection_id: str |
 
 def _handle_discover_relays(daemon, request: DaemonRequest, connection_id: str | None):
     target_gpu = request.payload.get("target_gpu")
+    requested_relays = request.payload.get("requested_relays")
     return daemon.discover_relays(
         target_gpu=None if target_gpu is None else int(target_gpu),
+        requested_relays=requested_relays,
     )
 
 

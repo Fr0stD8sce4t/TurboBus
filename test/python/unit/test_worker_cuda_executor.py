@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from turbobus.backends.base import BackendSubmission
 from turbobus.schema import BufferRegistration, ExecutionTicket, WorkerTransferAuthorization
 from turbobus.worker import (
     CudaWorkerExecutor,
@@ -98,6 +99,34 @@ class FakeBackend:
     def initialize_runtime(self, runtime, target_device, relay_gpus):
         self.initialize_calls.append((runtime, target_device, list(relay_gpus)))
 
+    def submit_exact_plan(self, runtime, request):
+        native_plan = self.make_transfer_plan(request.plan)
+        if request.direction == "h2d":
+            handle = self.fetch_plan_to_gpu(
+                runtime,
+                request.host_ptr,
+                request.host_bytes,
+                request.device_ptr,
+                request.device_bytes,
+                native_plan,
+            )
+        else:
+            handle = self.offload_plan_to_cpu(
+                runtime,
+                request.device_ptr,
+                request.device_bytes,
+                request.host_ptr,
+                request.host_bytes,
+                native_plan,
+            )
+        return BackendSubmission(
+            backend_name="cuda",
+            runtime=runtime,
+            handle=handle,
+            native_plan=native_plan,
+            direction=request.direction,
+        )
+
     def fetch_plan_to_gpu(
         self,
         runtime,
@@ -165,9 +194,11 @@ class FakeBackend:
 class FakeCpuBuffer:
     address = 1000
     size_bytes = 64
+    closed = False
+    cuda_registered = False
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def relay_plan(direction: str = "h2d") -> dict[str, object]:
@@ -326,13 +357,24 @@ def worker_request(
     direction: str = "h2d",
     *,
     plan: dict[str, object] | None = None,
-    ranges=({"src_offset": 4, "dst_offset": 8, "bytes": 16},),
+    ranges=None,
     relay_gpus=(1,),
     lease_ids=("lease-1",),
     ticket_metadata: dict[str, object] | None = None,
 ) -> WorkerTransferRequest:
     if plan is None:
         plan = relay_plan(direction)
+    ticket_ranges = tuple(
+        {
+            "src_offset": int(chunk["src_offset"]),
+            "dst_offset": int(chunk["dst_offset"]),
+            "bytes": int(chunk["bytes"]),
+        }
+        for assignment in plan.get("assignments", ()) or ()
+        for chunk in assignment.get("chunks", ()) or ()
+    )
+    if ranges is None:
+        ranges = ticket_ranges
     buffer_size = max(
         64,
         *(
@@ -365,7 +407,10 @@ def worker_request(
                 "shared_memory_size_bytes": buffer_size,
             }
             if direction == "h2d"
-            else {"cuda_ipc_handle": (b"t" * 64).hex()},
+            else {
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "allocation_size_bytes": buffer_size,
+            },
         ),
         dst_buffer=BufferRegistration(
             buffer_id="gpu-buffer" if direction == "h2d" else "cpu-buffer",
@@ -375,7 +420,10 @@ def worker_request(
             device_index=0 if direction == "h2d" else None,
             pinned=direction == "d2h",
             handle_type="cuda_ipc_device" if direction == "h2d" else "shared_pinned_cpu",
-            metadata={"cuda_ipc_handle": (b"t" * 64).hex()}
+            metadata={
+                "cuda_ipc_handle": (b"t" * 64).hex(),
+                "allocation_size_bytes": buffer_size,
+            }
             if direction == "h2d"
             else {
                 "shared_memory_name": "tb-job-1-dst",
@@ -398,8 +446,8 @@ def worker_request(
         source_buffer_id=authorization.src_buffer.buffer_id,
         destination_buffer_id=authorization.dst_buffer.buffer_id,
         direction=direction,
-        total_bytes=sum(int(item["bytes"]) for item in ranges),
-        ranges=ranges,
+        total_bytes=sum(int(item["bytes"]) for item in ticket_ranges),
+        ranges=ticket_ranges,
         plan=plan,
         issued_at=1.0,
         expires_at=10.0,

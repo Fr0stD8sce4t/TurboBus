@@ -10,7 +10,7 @@ from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
 from .vllm import (
     VllmKVBlockRef,
-    VllmKVSlotAdapter,
+    VllmKVSlotBinding,
     block_bytes_from_vllm_kv_tensor,
     make_vllm_layer_groups_from_kv_caches,
     make_vllm_layer_range_refs_from_ids,
@@ -80,7 +80,7 @@ class VllmIntegrationState:
     kv_caches: list[object] = field(default_factory=list)
     allocations: dict[str, VllmAllocationEvent] = field(default_factory=dict)
     request_cpu_slot_starts: dict[str, int] = field(default_factory=dict)
-    adapter: VllmKVSlotAdapter | None = None
+    kv_binding: VllmKVSlotBinding | None = None
 
 
 class VllmTurboBusIntegration:
@@ -110,7 +110,7 @@ class VllmTurboBusIntegration:
         self._cpu_backings = list(cpu_backings) if cpu_backings is not None else None
         self._next_cpu_backing_id = itertools.count(1)
         self._cpu_buffer_id_prefix = str(cpu_buffer_id)
-        self._runtime_adapter_options = {
+        self._runtime_connector_options = {
             "workload_kind": workload_kind,
             "priority": int(priority),
             "metadata": {} if metadata is None else dict(metadata),
@@ -176,11 +176,11 @@ class VllmTurboBusIntegration:
     def bind_kv_caches(self, kv_caches: Iterable, kv_cache_config=None) -> None:
         self.state.kv_cache_config = kv_cache_config
         self.state.kv_caches = list(kv_caches)
-        self._refresh_adapter()
+        self._refresh_kv_binding()
 
     def set_cpu_backings(self, cpu_backings: Iterable) -> None:
         self._cpu_backings = list(cpu_backings)
-        self._refresh_adapter()
+        self._refresh_kv_binding()
 
     def set_allocation_callback(self, callback: AllocationCallback | None) -> None:
         self._allocation_callback = callback
@@ -260,7 +260,7 @@ class VllmTurboBusIntegration:
         request_id = str(request_id)
         slot_start = self._resolve_cpu_slot_start(request_id, cpu_slot_start)
         refs = self.make_refs_for_request(request_id, cpu_slot_start=slot_start)
-        names = self.require_adapter().register_request(refs)
+        names = self.require_kv_binding().register_request(refs)
         self.state.request_cpu_slot_starts[request_id] = slot_start
         return names
 
@@ -273,7 +273,7 @@ class VllmTurboBusIntegration:
         request_id = str(request_id)
         slot_start = self._resolve_cpu_slot_start(request_id, cpu_slot_start)
         refs = self.make_refs_for_request(request_id, cpu_slot_start=slot_start)
-        adapter = self.require_adapter()
+        kv_binding = self.require_kv_binding()
         return {
             "request_id": request_id,
             "cpu_slot_start": int(slot_start),
@@ -286,8 +286,8 @@ class VllmTurboBusIntegration:
                 0 if self._cpu_backings is None else len(self._cpu_backings)
             ),
             "range_refs": [_vllm_ref_lifecycle(ref) for ref in refs],
-            "registered_block_names": adapter.block_names_for_request(request_id),
-            "adapter_group_bindings": adapter.lifecycle_group_bindings(),
+            "registered_block_names": kv_binding.block_names_for_request(request_id),
+            "kv_group_bindings": kv_binding.lifecycle_group_bindings(),
         }
 
     def block_names_for_request(
@@ -297,7 +297,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list[str]:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().block_names_for_request(str(request_id))
+        return self.require_kv_binding().block_names_for_request(str(request_id))
 
     def transfer_stats_for_request(
         self,
@@ -306,16 +306,16 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ):
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().transfer_stats_for_request(str(request_id))
+        return self.require_kv_binding().transfer_stats_for_request(str(request_id))
 
     def forget_request(self, request_id: str) -> tuple[str, ...]:
         request_id = str(request_id)
         self.state.allocations.pop(request_id, None)
         self.state.request_cpu_slot_starts.pop(request_id, None)
-        adapter = self.state.adapter
-        if adapter is None:
+        kv_binding = self.state.kv_binding
+        if kv_binding is None:
             return ()
-        return adapter.forget_request(request_id)
+        return kv_binding.forget_request(request_id)
 
     def make_refs_for_request(
         self,
@@ -339,7 +339,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().restore_request(str(request_id))
+        return self.require_kv_binding().restore_request(str(request_id))
 
     def submit_restore_request_prefix(
         self,
@@ -348,7 +348,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().submit_restore_request(str(request_id))
+        return self.require_kv_binding().submit_restore_request(str(request_id))
 
     def save_request_prefix(
         self,
@@ -357,7 +357,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().save_request(str(request_id))
+        return self.require_kv_binding().save_request(str(request_id))
 
     def submit_save_request_prefix(
         self,
@@ -366,7 +366,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter().submit_save_request(str(request_id))
+        return self.require_kv_binding().submit_save_request(str(request_id))
 
     def _submit_restore_request_evidence_handles(
         self,
@@ -375,7 +375,7 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter()._submit_restore_request_evidence_handles(
+        return self.require_kv_binding()._submit_restore_request_evidence_handles(
             str(request_id)
         )
 
@@ -386,13 +386,13 @@ class VllmTurboBusIntegration:
         cpu_slot_start: int = 0,
     ) -> list:
         self.register_request(request_id, cpu_slot_start=cpu_slot_start)
-        return self.require_adapter()._submit_save_request_evidence_handles(
+        return self.require_kv_binding()._submit_save_request_evidence_handles(
             str(request_id)
         )
 
-    def _refresh_adapter(self) -> None:
+    def _refresh_kv_binding(self) -> None:
         if not self.state.kv_caches or self._cpu_backings is None:
-            self.state.adapter = None
+            self.state.kv_binding = None
             return
         if len(self._cpu_backings) != len(self.state.kv_caches):
             raise ValueError("cpu_backings must match the number of vLLM KV cache tensors")
@@ -400,17 +400,15 @@ class VllmTurboBusIntegration:
             self._cpu_backings,
             self.state.kv_caches,
         )
-        self.state.adapter = self.runtime_session.make_vllm_kv_slot_adapter(
+        self.state.kv_binding = self.runtime_session.make_vllm_kv_binding(
             groups,
-            **self._runtime_adapter_options,
+            **self._runtime_connector_options,
         )
 
-    def require_adapter(self) -> VllmKVSlotAdapter:
-        if self.state.adapter is None:
+    def require_kv_binding(self) -> VllmKVSlotBinding:
+        if self.state.kv_binding is None:
             raise RuntimeError("vLLM KV caches and CPU backings must be bound before restore/save")
-        return self.state.adapter
-
-    _require_adapter = require_adapter
+        return self.state.kv_binding
 
     def _allocation_for_request(self, request_id: str) -> VllmAllocationEvent:
         request_id = str(request_id)

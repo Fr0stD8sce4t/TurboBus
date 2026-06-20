@@ -1,11 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import asdict
 from types import SimpleNamespace
 import unittest
 
 from turbobus.offload_store import (
-    AdapterTransferContext,
+    TransferContext,
     BlockState,
     OffloadBatch,
     OffloadBlockInfo,
@@ -16,6 +15,12 @@ from turbobus.offload_store import (
     transfer_stats_from_receipt,
 )
 from turbobus.schema import TransferIntent, TransferReceipt, TransferStatusState, WorkloadKind
+from test.python.fixtures.runtime_evidence import (
+    FakeRuntimeSession,
+    make_runtime_receipt,
+    unverified_runtime_metadata,
+    verified_runtime_metadata,
+)
 
 
 class FakeTensor:
@@ -29,14 +34,22 @@ class FakeTensor:
         return 1
 
 
-class FakeClient:
+class FakeClient(FakeRuntimeSession):
     def __init__(self) -> None:
-        self.submitted: list[TransferIntent] = []
-        self.waited: list[tuple[str, float | None]] = []
+        super().__init__()
 
-    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+    def submit_transfer_intent(
+        self,
+        intent: TransferIntent,
+        *,
+        wait: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        self._record_intent(intent)
         self.submitted.append(intent)
-        return make_receipt(intent, receipt_id=f"submitted-{intent.intent_id}")
+        receipt = make_receipt(intent, receipt_id=f"submitted-{intent.intent_id}")
+        self._record_receipt(receipt)
+        return receipt
 
     def wait_transfer_receipt(
         self,
@@ -45,7 +58,9 @@ class FakeClient:
     ) -> TransferReceipt:
         self.waited.append((str(intent_id), timeout_seconds))
         intent = next(item for item in self.submitted if item.intent_id == intent_id)
-        return make_receipt(intent, receipt_id=f"receipt-{intent_id}")
+        receipt = make_receipt(intent, receipt_id=f"receipt-{intent_id}")
+        self._record_receipt(receipt)
+        return receipt
 
 
 class FakeHandle:
@@ -415,7 +430,13 @@ class MismatchedWaitClient(FakeClient):
 
 
 class IntentOnlyCompleteClient(FakeClient):
-    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+    def submit_transfer_intent(
+        self,
+        intent: TransferIntent,
+        *,
+        wait: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
         self.submitted.append(intent)
         return make_receipt(
             intent,
@@ -425,9 +446,18 @@ class IntentOnlyCompleteClient(FakeClient):
 
 
 class PendingThenIntentOnlyCompleteClient(FakeClient):
-    def submit_transfer_intent(self, intent: TransferIntent) -> TransferReceipt:
+    def submit_transfer_intent(
+        self,
+        intent: TransferIntent,
+        *,
+        wait: bool = False,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        self._record_intent(intent)
         self.submitted.append(intent)
-        return make_submitted_receipt(intent, receipt_id=f"submitted-{intent.intent_id}")
+        receipt = make_receipt(intent, receipt_id=f"submitted-{intent.intent_id}")
+        self._record_receipt(receipt)
+        return receipt
 
     def wait_transfer_receipt(
         self,
@@ -443,19 +473,21 @@ class PendingThenIntentOnlyCompleteClient(FakeClient):
         )
 
 
-def make_context(**overrides) -> AdapterTransferContext:
+def make_context(**overrides) -> TransferContext:
     values = {
         "job_id": "job-1",
         "session_id": "session-1",
         "cpu_buffer_id": "cpu-buffer",
         "gpu_buffer_id": "gpu-buffer",
+        "cpu_buffer": object(),
+        "gpu_buffer": object(),
         "workload_kind": WorkloadKind.KV_CACHE,
         "metadata": {"chunk_bytes": 32},
         "intent_prefix": "test-intent",
         "wait_timeout_seconds": 2.5,
     }
     values.update(overrides)
-    return AdapterTransferContext(**values)
+    return TransferContext(**values)
 
 
 def make_store(client: FakeClient | None = None) -> OffloadStore:
@@ -482,23 +514,9 @@ def make_receipt(
     receipt_id: str,
     metadata: dict[str, object] | None = None,
 ) -> TransferReceipt:
-    direct_bytes = intent.total_bytes // 2
-    relay_bytes = intent.total_bytes - direct_bytes
-    return TransferReceipt(
+    return make_runtime_receipt(
+        intent,
         receipt_id=receipt_id,
-        ticket_id=f"ticket-{intent.intent_id}",
-        intent_id=intent.intent_id,
-        decision_id=f"decision-{intent.intent_id}",
-        topology_snapshot_id="topology-1",
-        job_id=intent.job_id,
-        session_id=intent.session_id,
-        state=TransferStatusState.COMPLETE,
-        bytes_total=intent.total_bytes,
-        bytes_completed=intent.total_bytes,
-        path_stats=(
-            {"kind": "direct", "bytes": direct_bytes, "chunk_count": 1},
-            {"kind": "relay", "bytes": relay_bytes, "chunk_count": 1},
-        ),
         metadata=verified_metadata(intent) if metadata is None else metadata,
     )
 
@@ -516,32 +534,18 @@ def make_submitted_receipt(intent: TransferIntent, *, receipt_id: str) -> Transf
         bytes_total=intent.total_bytes,
         bytes_completed=0,
         path_stats=(),
-        metadata={"payload": asdict(intent)},
+        metadata={"payload": intent.metadata},
     )
 
 
 def verified_metadata(intent: TransferIntent) -> dict[str, object]:
-    return {
-        "payload": asdict(intent),
-        "completion_source": "worker",
-        "executed": True,
-        "verified": True,
-        "verified_bytes": intent.total_bytes,
-        "content_match": True,
-        "verification_source": "fixture_worker",
-        "verification_method": "fixture_compare",
-    }
+    return verified_runtime_metadata(intent)
 
 
 def unverified_metadata() -> dict[str, object]:
-    return {
-        "completion_source": "worker",
-        "executed": True,
-        "verified": False,
-        "verified_bytes": 0,
-        "content_match": False,
-    }
+    return unverified_runtime_metadata()
 
 
 if __name__ == "__main__":
     unittest.main()
+

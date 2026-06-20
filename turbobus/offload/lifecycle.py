@@ -94,28 +94,26 @@ def runtime_session_receipt_trace_from_receipts(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：生成 RuntimeSession 绑定 receipt trace
+    #  * 姝ラ1锛氱敓鎴?RuntimeSession 缁戝畾 receipt trace
     #  * ========================================================================
-    #  * 数据源：TransferReceipt 集合与 TurboBusRuntimeSession snapshot
-    #  * 操作：
-    #  *   1) 校验 receipt 属于当前 RuntimeSession
-    #  *   2) 生成 receipt trace 和 daemon recovery evidence
-    #  *   3) 写入 RuntimeSession adapter evidence record
+    #  * 鏁版嵁婧愶細TransferReceipt 闆嗗悎涓?TurboBusRuntimeSession snapshot
+    #  * 鎿嶄綔锛?    #  *   1) 鏍￠獙 receipt 灞炰簬褰撳墠 RuntimeSession
+    #  *   2) 鐢熸垚 receipt trace 鍜?daemon recovery evidence
+    #  *   3) 鍐欏叆 RuntimeSession transfer evidence record
     #  */
-    logger.info("开始生成 RuntimeSession 绑定 receipt trace...")
+    logger.info("寮€濮嬬敓鎴?RuntimeSession 缁戝畾 receipt trace...")
 
-    # // 1.1 校验 RuntimeSession entrypoint 能提供生产边界快照
-    _require_runtime_session_contract(runtime_session)
+    # // 1.1 鏍￠獙 RuntimeSession entrypoint 鑳芥彁渚涚敓浜ц竟鐣屽揩鐓?    _require_runtime_session_contract(runtime_session)
 
-    # // 1.2 归一化 receipt 并拒绝空 evidence
+    # // 1.2 褰掍竴鍖?receipt 骞舵嫆缁濈┖ evidence
     receipt_list = list(receipts)
     if not receipt_list:
         raise RuntimeError("RuntimeSession receipt trace requires receipts")
 
-    # // 1.3 校验 receipt 由当前 RuntimeSession 产生
+    # // 1.3 鏍￠獙 receipt 鐢卞綋鍓?RuntimeSession 浜х敓
     _validate_runtime_session_receipts(receipt_list, runtime_session)
 
-    # // 1.4 生成 trace 并绑定 daemon recovery evidence
+    # // 1.4 鐢熸垚 trace 骞剁粦瀹?daemon recovery evidence
     trace = _receipt_trace_from_receipts(receipt_list)
     recovery = _daemon_recovery_from_receipts(receipt_list, runtime_session)
     trace["daemon_recovery"] = recovery
@@ -124,7 +122,7 @@ def runtime_session_receipt_trace_from_receipts(
         item.get("source") for item in recovery
     )
 
-    # // 1.5 写入 RuntimeSession adapter evidence record
+    # // 1.5 鍐欏叆 RuntimeSession transfer evidence record
     trace["runtime_entrypoint"] = _runtime_entrypoint_contract(
         runtime_session,
         receipts=receipt_list,
@@ -132,7 +130,7 @@ def runtime_session_receipt_trace_from_receipts(
         operation=str(operation),
     )
     logger.info(
-        "RuntimeSession 绑定 receipt trace 生成完成, evidence_id: %s, receipts: %s",
+        "RuntimeSession 缁戝畾 receipt trace 鐢熸垚瀹屾垚, evidence_id: %s, receipts: %s",
         evidence_id,
         len(receipt_list),
     )
@@ -148,21 +146,20 @@ def runtime_session_receipt_trace_from_handles(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤2：从 adapter handle 生成 RuntimeSession receipt trace
+    #  * 姝ラ2锛氫粠 adapter handle 鐢熸垚 RuntimeSession receipt trace
     #  * ========================================================================
-    #  * 数据源：adapter transfer handles 与 TurboBusRuntimeSession
-    #  * 操作：
-    #  *   1) 提取唯一真实 TransferReceipt
-    #  *   2) 复用 RuntimeSession 绑定 trace 入口
+    #  * 鏁版嵁婧愶細adapter transfer handles 涓?TurboBusRuntimeSession
+    #  * 鎿嶄綔锛?    #  *   1) 鎻愬彇鍞竴鐪熷疄 TransferReceipt
+    #  *   2) 澶嶇敤 RuntimeSession 缁戝畾 trace 鍏ュ彛
     #  */
-    logger.info("开始从 adapter handle 生成 RuntimeSession receipt trace...")
+    logger.info("寮€濮嬩粠 adapter handle 鐢熸垚 RuntimeSession receipt trace...")
 
-    # // 2.1 归一化 handle 集合并拒绝空输入
+    # // 2.1 褰掍竴鍖?handle 闆嗗悎骞舵嫆缁濈┖杈撳叆
     handle_list = list(handles)
     if not handle_list:
         raise RuntimeError("RuntimeSession receipt trace requires handles")
 
-    # // 2.2 提取唯一 receipt 并绑定 RuntimeSession trace
+    # // 2.2 鎻愬彇鍞竴 receipt 骞剁粦瀹?RuntimeSession trace
     receipts = _unique_receipts_from_handles(handle_list)
     if not receipts:
         raise RuntimeError("RuntimeSession receipt trace requires TransferReceipt")
@@ -173,13 +170,13 @@ def runtime_session_receipt_trace_from_handles(
         operation=operation,
     )
     logger.info(
-        "adapter handle RuntimeSession receipt trace 生成完成, evidence_id: %s",
+        "adapter handle RuntimeSession receipt trace 鐢熸垚瀹屾垚, evidence_id: %s",
         evidence_id,
     )
     return trace
 
 
-def adapter_lifecycle_evidence_from_handles(
+def transfer_lifecycle_evidence_from_handles(
     *,
     evidence_id: str,
     operation: str,
@@ -194,28 +191,26 @@ def adapter_lifecycle_evidence_from_handles(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：生成 RuntimeSession 绑定证据
+    #  * 姝ラ1锛氱敓鎴?RuntimeSession 缁戝畾 transfer 璇佹嵁
     #  * ========================================================================
-    #  * 数据源：adapter transfer handles 与 TurboBusRuntimeSession snapshot
-    #  * 操作：
-    #  *   1) 从 handle 提取真实 TransferReceipt
-    #  *   2) 生成 RuntimeSession entrypoint 合约
-    #  *   3) 拒绝 adapter 覆盖核心生产边界字段
-    #  */
-    logger.info("开始生成 RuntimeSession 绑定证据...")
+    #  * 鏁版嵁婧愶細transfer handles 涓?TurboBusRuntimeSession snapshot
+    #  * 鎿嶄綔锛?    #  *   1) 浠?handle 鎻愬彇鐪熷疄 TransferReceipt
+    #  *   2) 鐢熸垚 RuntimeSession entrypoint 鍚堢害
+    #  *   3) 鎷掔粷璋冪敤鏂硅鐩栨牳蹇冪敓浜ц竟鐣屽瓧娈?    #  */
+    logger.info("寮€濮嬬敓鎴?RuntimeSession 缁戝畾 transfer 璇佹嵁...")
 
-    # // 1.1 归一化 adapter item 与 handle
+    # // 1.1 褰掍竴鍖?adapter item 涓?handle
     names = tuple(str(name) for name in item_names)
     handle_list = list(handles)
 
-    # // 1.2 提取唯一 TransferReceipt 证据
+    # // 1.2 鎻愬彇鍞竴 TransferReceipt 璇佹嵁
     receipts = _unique_receipts_from_handles(handle_list)
     if names and not receipts:
         raise RuntimeError(
             f"{operation} completed without TransferReceipt evidence"
         )
 
-    # // 1.3 校验 RuntimeSession 入口并生成 receipt trace
+    # // 1.3 鏍￠獙 RuntimeSession 鍏ュ彛骞剁敓鎴?receipt trace
     trace = runtime_session_receipt_trace_from_receipts(
         receipts,
         runtime_session,
@@ -223,7 +218,7 @@ def adapter_lifecycle_evidence_from_handles(
         operation=str(operation),
     )
     runtime_entrypoint = trace["runtime_entrypoint"]
-    extra_payload = _adapter_extra_without_contract_overrides(extra)
+    extra_payload = _transfer_extra_without_contract_overrides(extra)
     evidence = {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
@@ -234,7 +229,7 @@ def adapter_lifecycle_evidence_from_handles(
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
         "policy_source": "daemon_scheduler",
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
         "physical_route_source": "daemon_scheduler",
         "daemon_recovery_source": "TurboBusRuntimeSession",
         "cpu_buffer_id": transfer_context.cpu_buffer_id,
@@ -247,14 +242,14 @@ def adapter_lifecycle_evidence_from_handles(
         **extra_payload,
     }
     logger.info(
-        "RuntimeSession 绑定证据生成完成, evidence_id: %s, receipts: %s",
+        "RuntimeSession 缁戝畾 transfer 璇佹嵁鐢熸垚瀹屾垚, evidence_id: %s, receipts: %s",
         evidence_id,
         len(receipts),
     )
     return evidence
 
 
-def _adapter_extra_without_contract_overrides(
+def _transfer_extra_without_contract_overrides(
     extra: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     if extra is None:
@@ -266,7 +261,7 @@ def _adapter_extra_without_contract_overrides(
         "receipt_source",
         "policy_source",
         "physical_route_source",
-        "route_policy_visible_to_adapter",
+        "route_policy_visible_to_transfer",
         "daemon_recovery_source",
         "runtime_entrypoint",
         "receipt_contracts",
@@ -274,7 +269,7 @@ def _adapter_extra_without_contract_overrides(
     overridden = sorted(key for key in payload if key in protected)
     if overridden:
         raise ValueError(
-            "adapter lifecycle extra must not override production boundary fields: "
+            "transfer lifecycle extra must not override production boundary fields: "
             + ", ".join(overridden)
         )
     return payload
@@ -300,22 +295,20 @@ def _daemon_recovery_from_receipts(
 ) -> list[dict[str, Any]]:
     # /*
     #  * ========================================================================
-    #  * 步骤3：构造 RuntimeSession recovery 摘要
+    #  * 姝ラ3锛氭瀯閫?RuntimeSession recovery 鎽樿
     #  * ========================================================================
-    #  * 数据源：TransferReceipt metadata 与 TurboBusRuntimeSession recovery API
-    #  * 操作：
-    #  *   1) 通过 RuntimeSession 主动恢复 transfer 状态
-    #  *   2) 只返回 adapter 可消费的标量摘要，不公开 ticket/lease/queue 明细
+    #  * 鏁版嵁婧愶細TransferReceipt metadata 涓?TurboBusRuntimeSession recovery API
+    #  * 鎿嶄綔锛?    #  *   1) 閫氳繃 RuntimeSession 涓诲姩鎭㈠ transfer 鐘舵€?    #  *   2) 鍙繑鍥?adapter 鍙秷璐圭殑鏍囬噺鎽樿锛屼笉鍏紑 ticket/lease/queue 鏄庣粏
     #  */
-    logger.info("开始构造 RuntimeSession recovery 摘要...")
+    logger.info("寮€濮嬫瀯閫?RuntimeSession recovery 鎽樿...")
 
-    # // 3.1 读取 RuntimeSession recovery 入口
+    # // 3.1 璇诲彇 RuntimeSession recovery 鍏ュ彛
     recover = getattr(runtime_session, "recover_transfer_state", None)
     if not callable(recover):
-        logger.info("RuntimeSession recovery 摘要构造完成, recovered: %s", 0)
+        logger.info("RuntimeSession recovery 鎽樿鏋勯€犲畬鎴? recovered: %s", 0)
         return []
 
-    # // 3.2 逐个 receipt 触发 RuntimeSession recovery
+    # // 3.2 閫愪釜 receipt 瑙﹀彂 RuntimeSession recovery
     recovered: list[dict[str, Any]] = []
     for receipt in receipts:
         metadata = receipt.metadata if isinstance(receipt.metadata, Mapping) else {}
@@ -332,11 +325,11 @@ def _daemon_recovery_from_receipts(
                 "state": recovery.get("state"),
                 "archived": bool(recovery.get("archived", False)),
                 "receipt_recorded": isinstance(recovery.get("receipt"), Mapping),
-                "route_policy_visible_to_adapter": False,
+                "route_policy_visible_to_transfer": False,
             }
         )
     logger.info(
-        "RuntimeSession recovery 摘要构造完成, recovered: %s",
+        "RuntimeSession recovery 鎽樿鏋勯€犲畬鎴? recovered: %s",
         len(recovered),
     )
     return recovered
@@ -351,34 +344,34 @@ def _runtime_entrypoint_contract(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤2：构造 RuntimeSession 入口合约
+    #  * 姝ラ2锛氭瀯閫?RuntimeSession 鍏ュ彛鍚堢害
     #  * ========================================================================
-    #  * 数据源：TurboBusRuntimeSession.runtime_entrypoint_snapshot
-    #  * 操作：
-    #  *   1) 读取 RuntimeSession snapshot
-    #  *   2) 核对 adapter receipt 与 intent 已进入 entrypoint record
-    #  *   3) 回写 adapter evidence 绑定快照
+    #  * 鏁版嵁婧愶細TurboBusRuntimeSession.runtime_entrypoint_snapshot
+    #  * 鎿嶄綔锛?    #  *   1) 璇诲彇 RuntimeSession snapshot
+    #  *   2) 鏍稿 adapter receipt 涓?intent 宸茶繘鍏?entrypoint record
+    #  *   3) 鍥炲啓 transfer evidence 缁戝畾蹇収
     #  */
-    logger.info("开始构造 RuntimeSession 入口合约...")
+    logger.info("寮€濮嬫瀯閫?RuntimeSession 鍏ュ彛鍚堢害...")
 
-    # // 2.1 确认 runtime_session 暴露生产入口快照
+    # // 2.1 纭 runtime_session 鏆撮湶鐢熶骇鍏ュ彛蹇収
     _require_runtime_session_contract(runtime_session)
     receipt_list = list(receipts)
     if receipt_list:
         _validate_runtime_session_receipts(receipt_list, runtime_session)
     snapshotter = getattr(runtime_session, "runtime_entrypoint_snapshot", None)
 
-    # // 2.2 读取当前 RuntimeSession snapshot
+    # // 2.2 璇诲彇褰撳墠 RuntimeSession snapshot
     snapshot = snapshotter()
     if not isinstance(snapshot, Mapping):
         raise TypeError("runtime entrypoint snapshot must be a mapping")
 
-    # // 2.3 提取 receipt 与 intent 绑定
+    # // 2.3 鎻愬彇 receipt 涓?intent 缁戝畾
     receipt_ids = [receipt.receipt_id for receipt in receipt_list]
     intent_ids = [receipt.intent_id for receipt in receipt_list]
     receipts_view = snapshot.get("receipts")
     intents_view = snapshot.get("intents")
-    adapter_contexts_view = snapshot.get("adapter_contexts")
+    transfer_contexts_view = snapshot.get("transfer_contexts")
+    contexts_view = transfer_contexts_view
     contract = {
         "schema": snapshot.get("schema"),
         "entrypoint": snapshot.get("entrypoint"),
@@ -390,20 +383,20 @@ def _runtime_entrypoint_contract(
         "route_policy_visible_to_application": bool(
             snapshot.get("route_policy_visible_to_application", True)
         ),
-        "route_policy_visible_to_adapter": bool(
-            snapshot.get("route_policy_visible_to_adapter", True)
+        "route_policy_visible_to_transfer": bool(
+            snapshot.get("route_policy_visible_to_transfer", True)
         ),
         "receipt_ids": receipt_ids,
         "intent_ids": intent_ids,
         "receipts_recorded": _snapshot_receipts_contain_all(receipts_view, receipt_ids),
         "intents_recorded": _snapshot_contains_all(intents_view, intent_ids),
-        "adapter_context_recorded": _snapshot_adapter_context_for_receipts(
-            adapter_contexts_view,
+        "transfer_context_recorded": _snapshot_transfer_context_for_receipts(
+            contexts_view,
             receipt_list,
         ),
     }
     if evidence_id is not None:
-        _record_runtime_adapter_evidence(
+        _record_runtime_transfer_evidence(
             runtime_session,
             evidence_id=str(evidence_id),
             operation=str(operation or ""),
@@ -412,17 +405,18 @@ def _runtime_entrypoint_contract(
         )
         refreshed = snapshotter()
         if isinstance(refreshed, Mapping):
-            adapter_evidence = refreshed.get("adapter_evidence")
-            contract["adapter_evidence_recorded"] = _snapshot_contains_all(
-                adapter_evidence,
+            transfer_evidence = refreshed.get("transfer_evidence")
+            evidence_view = transfer_evidence
+            contract["transfer_evidence_recorded"] = _snapshot_contains_all(
+                evidence_view,
                 [str(evidence_id)],
             )
-            contract["adapter_evidence_record"] = _snapshot_adapter_evidence_record(
-                adapter_evidence,
+            contract["transfer_evidence_record"] = _snapshot_transfer_evidence_record(
+                evidence_view,
                 evidence_id=str(evidence_id),
             )
     logger.info(
-        "RuntimeSession 入口合约构造完成, receipts: %s",
+        "RuntimeSession 鍏ュ彛鍚堢害鏋勯€犲畬鎴? receipts: %s",
         len(receipt_ids),
     )
     return contract
@@ -443,22 +437,21 @@ def _validate_runtime_session_receipts(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤3：校验 RuntimeSession receipt 归属
+    #  * 姝ラ3锛氭牎楠?RuntimeSession receipt 褰掑睘
     #  * ========================================================================
-    #  * 数据源：TransferReceipt 与 TurboBusRuntimeSession 标识
-    #  * 操作：
-    #  *   1) 读取 RuntimeSession job_id/session_id
-    #  *   2) 要求 receipt 是当前 RuntimeSession 的真实执行 evidence
+    #  * 鏁版嵁婧愶細TransferReceipt 涓?TurboBusRuntimeSession 鏍囪瘑
+    #  * 鎿嶄綔锛?    #  *   1) 璇诲彇 RuntimeSession job_id/session_id
+    #  *   2) 瑕佹眰 receipt 鏄綋鍓?RuntimeSession 鐨勭湡瀹炴墽琛?evidence
     #  */
-    logger.info("开始校验 RuntimeSession receipt 归属...")
+    logger.info("寮€濮嬫牎楠?RuntimeSession receipt 褰掑睘...")
 
-    # // 3.1 读取 RuntimeSession 标识
+    # // 3.1 璇诲彇 RuntimeSession 鏍囪瘑
     job_id = getattr(runtime_session, "job_id", None)
     session_id = getattr(runtime_session, "session_id", None)
     if job_id is None or session_id is None:
         raise TypeError("RuntimeSession receipt trace requires job_id and session_id")
 
-    # // 3.2 逐个校验 receipt 归属与真实执行 evidence
+    # // 3.2 閫愪釜鏍￠獙 receipt 褰掑睘涓庣湡瀹炴墽琛?evidence
     count = 0
     for receipt in receipts:
         if not isinstance(receipt, TransferReceipt):
@@ -470,10 +463,10 @@ def _validate_runtime_session_receipts(
             session_id=str(session_id),
         )
         count += 1
-    logger.info("RuntimeSession receipt 归属校验完成, receipts: %s", count)
+    logger.info("RuntimeSession receipt 褰掑睘鏍￠獙瀹屾垚, receipts: %s", count)
 
 
-def _record_runtime_adapter_evidence(
+def _record_runtime_transfer_evidence(
     runtime_session,
     *,
     evidence_id: str,
@@ -481,11 +474,11 @@ def _record_runtime_adapter_evidence(
     intent_ids: Iterable[str],
     receipt_ids: Iterable[str],
 ) -> None:
-    recorder = getattr(runtime_session, "record_adapter_lifecycle_evidence", None)
+    recorder = getattr(runtime_session, "record_transfer_lifecycle_evidence", None)
     if not callable(recorder):
         raise TypeError(
-            "adapter lifecycle evidence requires TurboBusRuntimeSession "
-            "adapter evidence recording"
+            "transfer lifecycle evidence requires TurboBusRuntimeSession "
+            "transfer evidence recording"
         )
     recorder(
         evidence_id=evidence_id,
@@ -501,34 +494,35 @@ def _snapshot_contains_all(value: object, keys: Iterable[str]) -> bool:
     return all(str(key) in value for key in keys)
 
 
-def _snapshot_adapter_evidence_record(
+def _snapshot_transfer_evidence_record(
     value: object,
     *,
     evidence_id: str,
 ) -> dict[str, object] | None:
     # /*
     #  * ========================================================================
-    #  * 步骤4：提取 adapter evidence 记录
+    #  * ??4??? transfer evidence ??
     #  * ========================================================================
-    #  * 数据源：RuntimeSession entrypoint snapshot
-    #  * 操作：
-    #  *   1) 按 evidence_id 读取 RuntimeSession 记录
-    #  *   2) 只返回验证端需要的 intent/receipt 对齐摘要
+    #  * ???? RuntimeSession entrypoint snapshot ????? evidence
+    #  * ????RuntimeSession transfer evidence records
+    #  * ???
+    #  *   1) ? evidence_id ????
+    #  *   2) ??? intent/receipt ??????
     #  */
-    logger.info("开始提取 adapter evidence 记录...")
+    logger.info("???? transfer evidence ??...")
 
-    # // 4.1 校验 adapter_evidence snapshot 结构
+    # // 4.1 ?? transfer evidence records ??
     if not isinstance(value, Mapping):
-        logger.info("adapter evidence 记录提取完成, found: %s", False)
+        logger.info("transfer evidence ??????, found: %s", False)
         return None
 
-    # // 4.2 读取指定 evidence_id 的记录
+    # // 4.2 ? evidence_id ????
     record = value.get(str(evidence_id))
     if not isinstance(record, Mapping):
-        logger.info("adapter evidence 记录提取完成, found: %s", False)
+        logger.info("transfer evidence ??????, found: %s", False)
         return None
 
-    # // 4.3 生成验证用摘要
+    # // 4.3 ??????
     summary = {
         "evidence_id": str(record.get("evidence_id", evidence_id)),
         "operation": str(record.get("operation", "")),
@@ -543,36 +537,37 @@ def _snapshot_adapter_evidence_record(
         "intents_recorded": bool(record.get("intents_recorded", False)),
         "receipts_recorded": bool(record.get("receipts_recorded", False)),
     }
-    logger.info("adapter evidence 记录提取完成, found: %s", True)
+    logger.info("transfer evidence ??????, found: %s", True)
     return summary
 
 
 def _sequence_or_empty(value: object) -> tuple[object, ...]:
     # /*
     #  * ========================================================================
-    #  * 步骤5：归一化序列字段
+    #  * ??5???? evidence ????
     #  * ========================================================================
-    #  * 数据源：RuntimeSession adapter evidence 字段
-    #  * 操作：
-    #  *   1) 保留字符串为单个标识
-    #  *   2) 将其他可迭代对象转为 tuple
+    #  * ???? RuntimeSession transfer evidence ???? tuple
+    #  * ????receipt / intent / ticket id ??
+    #  * ???
+    #  *   1) ?????????
+    #  *   2) ??????? tuple
     #  */
-    logger.info("开始归一化序列字段...")
+    logger.info("????? evidence ????...")
 
-    # // 5.1 字符串按单值处理
+    # // 5.1 ?????????
     if isinstance(value, str):
         result = (value,)
-        logger.info("序列字段归一化完成, count: %s", len(result))
+        logger.info("evidence ?????????, count: %s", len(result))
         return result
 
-    # // 5.2 其他可迭代对象转为 tuple
+    # // 5.2 ??????? tuple
     if isinstance(value, Iterable):
         result = tuple(value)
-        logger.info("序列字段归一化完成, count: %s", len(result))
+        logger.info("evidence ?????????, count: %s", len(result))
         return result
 
-    # // 5.3 非序列值返回空 tuple
-    logger.info("序列字段归一化完成, count: %s", 0)
+    # // 5.3 ??????? tuple
+    logger.info("evidence ?????????, count: %s", 0)
     return ()
 
 
@@ -587,7 +582,7 @@ def _snapshot_receipts_contain_all(value: object, receipt_ids: Iterable[str]) ->
     return all(str(receipt_id) in observed for receipt_id in receipt_ids)
 
 
-def _snapshot_adapter_context_for_receipts(
+def _snapshot_transfer_context_for_receipts(
     value: object,
     receipts: Iterable[TransferReceipt],
 ) -> bool:
@@ -692,8 +687,6 @@ def _runtime_buffer_bindings(
         registration_metadata = registration_mapping.get("metadata")
         bindings.append(
             {
-                "receipt_id": receipt.receipt_id,
-                "intent_id": receipt.intent_id,
                 "role": role,
                 "buffer_id": record.get("buffer_id"),
                 "handle_type": registration_mapping.get("handle_type"),
@@ -721,5 +714,5 @@ def _runtime_buffer_bindings(
 
 
 __all__ = [
-    "adapter_lifecycle_evidence_from_handles",
+    "transfer_lifecycle_evidence_from_handles",
 ]

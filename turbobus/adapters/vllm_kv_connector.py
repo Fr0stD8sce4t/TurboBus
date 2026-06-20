@@ -85,7 +85,7 @@ class _LayerSaveContext:
     client_init_ms: float = 0.0
     cpu_alloc_ms: float = 0.0
     group_ms: float = 0.0
-    adapter_ms: float = 0.0
+    binding_ms: float = 0.0
     refs_ms: float = 0.0
     transfer_ms: float = 0.0
     bytes: int = 0
@@ -240,14 +240,14 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "connector_session_id": self.connector_session_id,
                 "prefixes": closed_prefixes["count"],
                 "prefix_cleanup_mutation_ids": closed_prefixes["cleanup_mutation_ids"],
-                "adapter_evidence_count": len(
-                    closed_prefixes["adapter_evidence_records"]
+                "transfer_evidence_count": len(
+                    closed_prefixes["transfer_evidence_records"]
                 ),
                 "free_backing_cleanup": _public_free_backing_cleanup_summary(
                     free_backing_cleanup
                 ),
                 "runtime_close_entrypoint_recorded": True,
-                "route_policy_visible_to_adapter": False,
+                "route_policy_visible_to_transfer": False,
                 "pending_saves": closed_pending_saves,
                 **closed_pending_metadata,
             }
@@ -260,10 +260,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             connector_session_id=self.connector_session_id,
             prefixes=closed_prefixes["count"],
             prefix_cleanup_mutation_ids=",".join(closed_prefixes["cleanup_mutation_ids"]),
-            adapter_evidence_records=closed_prefixes["adapter_evidence_records"],
+            transfer_evidence_records=closed_prefixes["transfer_evidence_records"],
             free_backing_cleanup_groups=len(free_backing_cleanup),
             runtime_close_entrypoint=runtime_close_entrypoint,
-            route_policy_visible_to_adapter=False,
+            route_policy_visible_to_transfer=False,
             pending_saves=closed_pending_saves,
             **closed_pending_metadata,
         )
@@ -696,7 +696,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         integration, _, client_init_ms = self._make_integration(
             saved.cpu_backings,
             workload_kind=WorkloadKind.KV_CACHE,
-            metadata=self._adapter_metadata(
+            metadata=self._connector_metadata(
                 {
                     "prefix_key": saved.key,
                     "request_id": request.request_id,
@@ -806,10 +806,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "lifecycle_evidence": _public_vllm_lifecycle_summary(
                     lifecycle_evidence
                 ),
-                "adapter_evidence_id": _adapter_evidence_id_for_event(
+                "transfer_evidence_id": _transfer_evidence_id_for_event(
                     lifecycle_evidence
                 ),
-                "route_policy_visible_to_adapter": False,
+                "route_policy_visible_to_transfer": False,
                 **stats,
                 **_event_receipt_trace_fields(receipt_trace),
             }
@@ -831,7 +831,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             layers=len(kv_caches),
             ranges=len(range_names),
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
-            adapter_evidence_record=_adapter_evidence_record_for_event(
+            transfer_evidence_record=_transfer_evidence_record_for_event(
                 lifecycle_evidence
             ),
             **stats,
@@ -854,7 +854,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             integration, _, client_init_ms = self._make_integration(
                 cpu_backings,
                 workload_kind=WorkloadKind.KV_CACHE,
-                metadata=self._adapter_metadata(
+                metadata=self._connector_metadata(
                     {
                         "prefix_key": request.prefix_key,
                         "request_id": request.request_id,
@@ -1007,13 +1007,13 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 context.cpu_alloc_ms
                 + context.client_init_ms
                 + context.group_ms
-                + context.adapter_ms
+                + context.binding_ms
                 + context.refs_ms
             ),
             cpu_alloc_ms=context.cpu_alloc_ms,
             reused_backing=context.reused_backing,
             group_ms=context.group_ms,
-            adapter_ms=context.adapter_ms,
+            binding_ms=context.binding_ms,
             refs_ms=context.refs_ms,
             transfer_ms=context.transfer_ms,
             bytes=context.bytes,
@@ -1055,7 +1055,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             source_request_id=request.request_id,
             layers=len(context.cpu_backings),
             store_mutation_id=mutation.evidence["mutation_id"],
-            adapter_evidence_record=_adapter_evidence_record_for_event(
+            transfer_evidence_record=_transfer_evidence_record_for_event(
                 mutation.evidence
             ),
             removed_prefixes=len(mutation.removals),
@@ -1103,7 +1103,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "cpu_alloc_ms": context.cpu_alloc_ms,
                 "reused_backing": context.reused_backing,
                 "group_ms": context.group_ms,
-                "adapter_ms": context.adapter_ms,
+                "binding_ms": context.binding_ms,
                 "refs_ms": context.refs_ms,
                 "transfer_ms": context.transfer_ms,
                 "register_ms": register_ms,
@@ -1116,10 +1116,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 "store_lifecycle_evidence": _public_vllm_lifecycle_summary(
                     mutation.evidence
                 ),
-                "adapter_evidence_id": _adapter_evidence_id_for_event(
+                "transfer_evidence_id": _transfer_evidence_id_for_event(
                     lifecycle_evidence
                 ),
-                "route_policy_visible_to_adapter": False,
+                "route_policy_visible_to_transfer": False,
                 **stats,
                 **_event_receipt_trace_fields(receipt_trace),
             }
@@ -1137,7 +1137,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             cpu_alloc_ms=f"{context.cpu_alloc_ms:.3f}",
             reused_backing=context.reused_backing,
             group_ms=f"{context.group_ms:.3f}",
-            adapter_ms=f"{context.adapter_ms:.3f}",
+            binding_ms=f"{context.binding_ms:.3f}",
             refs_ms=f"{context.refs_ms:.3f}",
             transfer_ms=f"{context.transfer_ms:.3f}",
             register_ms=f"{register_ms:.3f}",
@@ -1146,7 +1146,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             ranges=context.ranges,
             lifecycle_evidence_id=lifecycle_evidence["evidence_id"],
             store_mutation_id=mutation.evidence["mutation_id"],
-            adapter_evidence_record=_adapter_evidence_record_for_event(
+            transfer_evidence_record=_transfer_evidence_record_for_event(
                 lifecycle_evidence
             ),
             **stats,
@@ -1209,10 +1209,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "backing_lifecycle": _public_vllm_backing_lifecycle_summary(
                         backing_evidence
                     ),
-                    "adapter_evidence_id": _adapter_evidence_id_for_event(
+                    "transfer_evidence_id": _transfer_evidence_id_for_event(
                         removal.cleanup_evidence
                     ),
-                    "route_policy_visible_to_adapter": False,
+                    "route_policy_visible_to_transfer": False,
                 }
             )
             _emit_event(
@@ -1223,11 +1223,11 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 source_request_id=removed.source_request_id,
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
-                adapter_evidence_record=_adapter_evidence_record_for_event(
+                transfer_evidence_record=_transfer_evidence_record_for_event(
                     removal.cleanup_evidence
                 ),
                 backing_lifecycle_action=backing_evidence["action"],
-                route_policy_visible_to_adapter=False,
+                route_policy_visible_to_transfer=False,
             )
         return mutation
 
@@ -1238,14 +1238,14 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
             reason="connector_close",
         )
         cleanup_mutation_ids: list[str] = []
-        adapter_evidence_records: list[dict[str, Any]] = []
+        transfer_evidence_records: list[dict[str, Any]] = []
         for removal in drained.removals:
             prefix = removal.prefix
             backing_evidence = self._backing_pool.close_prefix(prefix)
             removal.cleanup_evidence["backing_lifecycle"] = backing_evidence
             cleanup_mutation_ids.append(str(removal.cleanup_evidence["mutation_id"]))
-            adapter_evidence_records.append(
-                _adapter_evidence_record_for_event(removal.cleanup_evidence)
+            transfer_evidence_records.append(
+                _transfer_evidence_record_for_event(removal.cleanup_evidence)
             )
             self.state.events.append(
                 {
@@ -1261,10 +1261,10 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                     "backing_lifecycle": _public_vllm_backing_lifecycle_summary(
                         backing_evidence
                     ),
-                    "adapter_evidence_id": _adapter_evidence_id_for_event(
+                    "transfer_evidence_id": _transfer_evidence_id_for_event(
                         removal.cleanup_evidence
                     ),
-                    "route_policy_visible_to_adapter": False,
+                    "route_policy_visible_to_transfer": False,
                 }
             )
             _emit_event(
@@ -1275,16 +1275,16 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
                 source_request_id=prefix.source_request_id,
                 reason=removal.reason,
                 cleanup_mutation_id=removal.cleanup_evidence["mutation_id"],
-                adapter_evidence_record=_adapter_evidence_record_for_event(
+                transfer_evidence_record=_transfer_evidence_record_for_event(
                     removal.cleanup_evidence
                 ),
                 backing_lifecycle_action=backing_evidence["action"],
-                route_policy_visible_to_adapter=False,
+                route_policy_visible_to_transfer=False,
             )
         return {
             "count": len(drained.prefixes),
             "cleanup_mutation_ids": cleanup_mutation_ids,
-            "adapter_evidence_records": adapter_evidence_records,
+            "transfer_evidence_records": transfer_evidence_records,
             "drain_mutation_id": drained.evidence["mutation_id"],
         }
 
@@ -1318,7 +1318,7 @@ class TurboBusConnector(KVConnectorBase_V1, SupportsHMA):
         self.state.finished_recving.clear()
         return closed
 
-    def _adapter_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+    def _connector_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         return {
             **metadata,
             "connector": "vllm_kv",
@@ -1379,7 +1379,7 @@ def _receipt_trace_from_batches(
     #  * ????offload ?? receipt-bearing batch ? TurboBusRuntimeSession
     #  * ???
     #  *   1) ?? offload lifecycle ?? receipt ????
-    #  *   2) ?? vLLM adapter ???? TransferReceipt ??
+    #  *   2) ?? vLLM connector ???? TransferReceipt ??
     #  */
     logger.info("??? RuntimeSession evidence batch ?? receipt trace...")
 
@@ -1417,16 +1417,16 @@ def _vllm_kv_lifecycle_evidence_id(
 def _event_receipt_trace_fields(receipt_trace: Mapping[str, Any]) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：构造 adapter event receipt 摘要
+    #  * 姝ラ1锛氭瀯閫?transfer event receipt 鎽樿
     #  * ========================================================================
-    #  * 数据源：RuntimeSession receipt trace
-    #  * 操作：
-    #  *   1) 只保留控制台事件需要的标量摘要
-    #  *   2) 显式拒绝在 event 输出中暴露 route policy 或大块证据对象
+    #  * 鏁版嵁婧愶細RuntimeSession receipt trace
+    #  * 鎿嶄綔锛?
+    #  *   1) 鍙繚鐣欐帶鍒跺彴浜嬩欢闇€瑕佺殑鏍囬噺鎽樿
+    #  *   2) 鏄惧紡鎷掔粷鍦?event 杈撳嚭涓毚闇?route policy 鎴栧ぇ鍧楄瘉鎹璞?
     #  */
-    logger.info("开始构造 adapter event receipt 摘要...")
+    logger.info("寮€濮嬫瀯閫?transfer event receipt 鎽樿...")
 
-    # // 1.1 保留标量 receipt trace 字段
+    # // 1.1 淇濈暀鏍囬噺 receipt trace 瀛楁
     allowed_keys = (
         "direct_bytes",
         "relay_bytes",
@@ -1436,63 +1436,63 @@ def _event_receipt_trace_fields(receipt_trace: Mapping[str, Any]) -> dict[str, A
     )
     event_fields = {key: receipt_trace.get(key) for key in allowed_keys}
 
-    # // 1.2 写入 route policy 拒绝字段
-    event_fields["route_policy_visible_to_adapter"] = False
-    logger.info("adapter event receipt 摘要构造完成, fields: %s", len(event_fields))
+    # // 1.2 鍐欏叆 route policy 鎷掔粷瀛楁
+    event_fields["route_policy_visible_to_transfer"] = False
+    logger.info("transfer event receipt 鎽樿鏋勯€犲畬鎴? fields: %s", len(event_fields))
     return event_fields
 
 
-def _adapter_evidence_record_for_event(
+def _transfer_evidence_record_for_event(
     lifecycle_evidence: Mapping[str, Any],
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤2：提取 adapter event 证据记录
+    #  * 姝ラ2锛氭彁鍙?transfer event 璇佹嵁璁板綍
     #  * ========================================================================
-    #  * 数据源：adapter lifecycle evidence
-    #  * 操作：
-    #  *   1) 从 lifecycle runtime_entrypoint 提取 adapter evidence record
-    #  *   2) 拒绝缺失 RuntimeSession 证据链的 adapter event
+    #  * 鏁版嵁婧愶細transfer lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 浠?lifecycle runtime_entrypoint 鎻愬彇 transfer evidence record
+    #  *   2) 鎷掔粷缂哄け RuntimeSession 璇佹嵁閾剧殑 transfer event
     #  */
-    logger.info("开始提取 adapter event 证据记录...")
+    logger.info("寮€濮嬫彁鍙?transfer event 璇佹嵁璁板綍...")
 
-    # // 2.1 读取 RuntimeSession entrypoint 合约
+    # // 2.1 璇诲彇 RuntimeSession entrypoint 鍚堢害
     runtime_entrypoint = lifecycle_evidence.get("runtime_entrypoint")
     if not isinstance(runtime_entrypoint, Mapping):
-        raise ValueError("adapter event missing RuntimeSession entrypoint")
+        raise ValueError("transfer event missing RuntimeSession entrypoint")
 
-    # // 2.2 提取 adapter evidence record
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError("adapter event missing adapter evidence record")
+    # // 2.2 鎻愬彇 transfer evidence record
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError("transfer event missing transfer evidence record")
 
-    # // 2.3 返回事件摘要
-    result = dict(adapter_record)
-    logger.info("adapter event 证据记录提取完成, evidence_id: %s", result.get("evidence_id"))
+    # // 2.3 杩斿洖浜嬩欢鎽樿
+    result = dict(transfer_record)
+    logger.info("transfer event 璇佹嵁璁板綍鎻愬彇瀹屾垚, evidence_id: %s", result.get("evidence_id"))
     return result
 
 
-def _adapter_evidence_id_for_event(
+def _transfer_evidence_id_for_event(
     lifecycle_evidence: Mapping[str, Any],
 ) -> str:
     # /*
     #  * ========================================================================
-    #  * 步骤3：提取 adapter event 证据标识
+    #  * 姝ラ3锛氭彁鍙?transfer event 璇佹嵁鏍囪瘑
     #  * ========================================================================
-    #  * 目标：公开事件缓存不携带完整 adapter evidence record
-    #  * 数据源：adapter lifecycle evidence
-    #  * 操作：
-    #  *   1) 复用 RuntimeSession evidence record 校验
-    #  *   2) 只返回 evidence_id
+    #  * 鐩爣锛氬叕寮€浜嬩欢缂撳瓨涓嶆惡甯﹀畬鏁?transfer evidence record
+    #  * 鏁版嵁婧愶細transfer lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 澶嶇敤 RuntimeSession evidence record 鏍￠獙
+    #  *   2) 鍙繑鍥?evidence_id
     #  */
-    logger.info("开始提取 adapter event 证据标识...")
+    logger.info("寮€濮嬫彁鍙?transfer event 璇佹嵁鏍囪瘑...")
 
-    # // 3.1 提取并校验 adapter evidence record
-    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+    # // 3.1 鎻愬彇骞舵牎楠?transfer evidence record
+    transfer_record = _transfer_evidence_record_for_event(lifecycle_evidence)
 
-    # // 3.2 返回公开 evidence id
-    evidence_id = str(adapter_record.get("evidence_id", ""))
-    logger.info("adapter event 证据标识提取完成, evidence_id: %s", evidence_id)
+    # // 3.2 杩斿洖鍏紑 evidence id
+    evidence_id = str(transfer_record.get("evidence_id", ""))
+    logger.info("transfer event 璇佹嵁鏍囪瘑鎻愬彇瀹屾垚, evidence_id: %s", evidence_id)
     return evidence_id
 
 
@@ -1505,26 +1505,26 @@ def _daemon_recovery_evidence_summary(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 姝ラ3锛氭瀯閫?daemon recovery 鍏紑杈圭晫
+    #  * 濮濄儵顎?閿涙碍鐎柅?daemon recovery 閸忣剙绱戞潏鍦櫕
     #  * ========================================================================
-    #  * 鐩爣锛氬皢 RuntimeSession evidence 鏄庣粏闄愬畾鍦ㄥ唴閮ㄦ牎楠岄摼
-    #  * 鏁版嵁婧愶細vLLM lifecycle evidence 涓?receipt trace
-    #  * 鎿嶄綔锛?
-    #  *   1) 鏍￠獙 adapter evidence record 宸茬敱 RuntimeSession 璁板綍
-    #  *   2) 只暴露 recovery 计数、来源和 adapter evidence id
+    #  * 閻╊喗鐖ｉ敍姘殺 RuntimeSession evidence 閺勫海绮忛梽鎰暰閸︺劌鍞撮柈銊︾墡妤犲矂鎽?
+    #  * 閺佺増宓佸┃鎰剁窗vLLM lifecycle evidence 娑?receipt trace
+    #  * 閹垮秳缍旈敍?
+    #  *   1) 閺嶏繝鐛?transfer evidence record 瀹歌尙鏁?RuntimeSession 鐠佹澘缍?
+    #  *   2) 鍙毚闇?recovery 璁℃暟銆佹潵婧愬拰 transfer evidence id
     #  */
-    logger.info("寮€濮嬫瀯閫?daemon recovery 鍏紑杈圭晫...")
+    logger.info("瀵偓婵鐎柅?daemon recovery 閸忣剙绱戞潏鍦櫕...")
 
-    # // 3.1 鏍￠獙 adapter evidence record
-    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+    # // 3.1 閺嶏繝鐛?transfer evidence record
+    transfer_record = _transfer_evidence_record_for_event(lifecycle_evidence)
 
-    # // 3.2 杩斿洖鍏紑瀹夊叏鎽樿
+    # // 3.2 鏉╂柨娲栭崗顒€绱戠€瑰鍙忛幗妯款洣
     summary = {
         "operation": str(operation),
         "request_id": str(request_id),
-        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "transfer_evidence_id": str(transfer_record.get("evidence_id", "")),
         "runtime_entrypoint_recorded": True,
-        "adapter_evidence_recorded": True,
+        "transfer_evidence_recorded": True,
         "daemon_recovery_recorded": bool(receipt_trace.get("daemon_recovery")),
         "daemon_recovery_count": int(
             receipt_trace.get("daemon_recovery_count", 0) or 0
@@ -1532,11 +1532,11 @@ def _daemon_recovery_evidence_summary(
         "daemon_recovery_sources": str(
             receipt_trace.get("daemon_recovery_sources", "")
         ),
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
     logger.info(
-        "daemon recovery 鍏紑杈圭晫鏋勯€犲畬鎴? evidence_id: %s",
-        summary["adapter_evidence_id"],
+        "daemon recovery 閸忣剙绱戞潏鍦櫕閺嬪嫰鈧姴鐣幋? evidence_id: %s",
+        summary["transfer_evidence_id"],
     )
     return summary
 
@@ -1546,20 +1546,20 @@ def _public_vllm_lifecycle_summary(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤3：构造 vLLM lifecycle 公开摘要
+    #  * 姝ラ3锛氭瀯閫?vLLM lifecycle 鍏紑鎽樿
     #  * ========================================================================
-    #  * 目标：事件缓存只保留 RuntimeSession 绑定后的标量证据
-    #  * 数据源：已生成的 vLLM lifecycle evidence
-    #  * 操作：
-    #  *   1) 提取 adapter evidence id
-    #  *   2) 只返回数量、状态、来源和 route policy 隐藏标记
+    #  * 鐩爣锛氫簨浠剁紦瀛樺彧淇濈暀 RuntimeSession 缁戝畾鍚庣殑鏍囬噺璇佹嵁
+    #  * 鏁版嵁婧愶細宸茬敓鎴愮殑 vLLM lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎻愬彇 transfer evidence id
+    #  *   2) 鍙繑鍥炴暟閲忋€佺姸鎬併€佹潵婧愬拰 route policy 闅愯棌鏍囪
     #  */
-    logger.info("开始构造 vLLM lifecycle 公开摘要...")
+    logger.info("寮€濮嬫瀯閫?vLLM lifecycle 鍏紑鎽樿...")
 
-    # // 3.1 提取 adapter evidence record
-    adapter_record = _adapter_evidence_record_for_event(lifecycle_evidence)
+    # // 3.1 鎻愬彇 transfer evidence record
+    transfer_record = _transfer_evidence_record_for_event(lifecycle_evidence)
 
-    # // 3.2 统计 receipt contract 数量
+    # // 3.2 缁熻 receipt contract 鏁伴噺
     receipt_contracts = lifecycle_evidence.get("receipt_contracts")
     receipt_contract_count = (
         len(receipt_contracts)
@@ -1567,7 +1567,7 @@ def _public_vllm_lifecycle_summary(
         else 0
     )
 
-    # // 3.3 返回公开标量摘要
+    # // 3.3 杩斿洖鍏紑鏍囬噺鎽樿
     summary = {
         "evidence_id": str(lifecycle_evidence.get("evidence_id", "")),
         "mutation_id": str(lifecycle_evidence.get("mutation_id", "")),
@@ -1585,13 +1585,13 @@ def _public_vllm_lifecycle_summary(
         "daemon_recovery_sources": str(
             lifecycle_evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_id": str(adapter_record.get("evidence_id", "")),
+        "transfer_evidence_id": str(transfer_record.get("evidence_id", "")),
         "receipt_contract_count": receipt_contract_count,
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
     logger.info(
-        "vLLM lifecycle 公开摘要构造完成, evidence_id: %s",
-        summary["adapter_evidence_id"],
+        "vLLM lifecycle 鍏紑鎽樿鏋勯€犲畬鎴? evidence_id: %s",
+        summary["transfer_evidence_id"],
     )
     return summary
 
@@ -1601,45 +1601,45 @@ def _public_vllm_backing_lifecycle_summary(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤4：构造 vLLM backing 公开摘要
+    #  * 姝ラ4锛氭瀯閫?vLLM backing 鍏紑鎽樿
     #  * ========================================================================
-    #  * 目标：backing 事件不公开 RuntimeSession entrypoint 和 receipt contracts
-    #  * 数据源：backing lifecycle evidence
-    #  * 操作：
-    #  *   1) 读取 backing 动作和规模
-    #  *   2) 只返回 receipt contract 数量
+    #  * 鐩爣锛歜acking 浜嬩欢涓嶅叕寮€ RuntimeSession entrypoint 鍜?receipt contracts
+    #  * 鏁版嵁婧愶細backing lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 璇诲彇 backing 鍔ㄤ綔鍜岃妯?
+    #  *   2) 鍙繑鍥?receipt contract 鏁伴噺
     #  */
-    logger.info("开始构造 vLLM backing 公开摘要...")
+    logger.info("寮€濮嬫瀯閫?vLLM backing 鍏紑鎽樿...")
 
-    # // 4.1 统计 receipt contract 数量
-    adapter_evidence_id = str(backing_evidence.get("adapter_evidence_id", ""))
-    if not adapter_evidence_id:
-        raise ValueError("vLLM backing summary missing adapter_evidence_id")
+    # // 4.1 缁熻 receipt contract 鏁伴噺
+    transfer_evidence_id = str(backing_evidence.get("transfer_evidence_id", ""))
+    if not transfer_evidence_id:
+        raise ValueError("vLLM backing summary missing transfer_evidence_id")
     receipt_contract_count = int(
         backing_evidence.get("receipt_contract_count", 0) or 0
     )
     if receipt_contract_count <= 0:
         raise ValueError("vLLM backing summary missing receipt contract count")
-    if bool(backing_evidence.get("route_policy_visible_to_adapter", True)):
+    if bool(backing_evidence.get("route_policy_visible_to_transfer", True)):
         raise ValueError("vLLM backing summary exposes route policy")
     if not bool(backing_evidence.get("runtime_entrypoint_recorded", False)):
         raise ValueError("vLLM backing summary missing RuntimeSession record flag")
     if not bool(backing_evidence.get("receipt_contracts_recorded", False)):
         raise ValueError("vLLM backing summary missing receipt contract flag")
 
-    # // 4.2 返回公开 backing 摘要
+    # // 4.2 杩斿洖鍏紑 backing 鎽樿
     summary = {
         "action": str(backing_evidence.get("action", "")),
         "lifecycle_source": str(backing_evidence.get("lifecycle_source", "")),
         "backing_count": int(backing_evidence.get("backing_count", 0) or 0),
-        "adapter_evidence_id": adapter_evidence_id,
+        "transfer_evidence_id": transfer_evidence_id,
         "receipt_contract_count": receipt_contract_count,
         "runtime_entrypoint_recorded": True,
         "receipt_contracts_recorded": True,
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
     logger.info(
-        "vLLM backing 公开摘要构造完成, action: %s",
+        "vLLM backing 鍏紑鎽樿鏋勯€犲畬鎴? action: %s",
         summary["action"],
     )
     return summary
@@ -1650,26 +1650,26 @@ def _public_free_backing_cleanup_summary(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤5：构造 free backing cleanup 公开摘要
+    #  * 姝ラ5锛氭瀯閫?free backing cleanup 鍏紑鎽樿
     #  * ========================================================================
-    #  * 目标：close 事件只说明 RuntimeSession close 已绑定
-    #  * 数据源：backing pool close evidence
-    #  * 操作：
-    #  *   1) 统计 cleanup group
-    #  *   2) 不公开完整 close entrypoint
+    #  * 鐩爣锛歝lose 浜嬩欢鍙鏄?RuntimeSession close 宸茬粦瀹?
+    #  * 鏁版嵁婧愶細backing pool close evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 缁熻 cleanup group
+    #  *   2) 涓嶅叕寮€瀹屾暣 close entrypoint
     #  */
-    logger.info("开始构造 free backing cleanup 公开摘要...")
+    logger.info("寮€濮嬫瀯閫?free backing cleanup 鍏紑鎽樿...")
 
-    # // 5.1 统计 cleanup group
+    # // 5.1 缁熻 cleanup group
     group_count = len(free_backing_cleanup)
 
-    # // 5.2 返回 RuntimeSession close 绑定摘要
+    # // 5.2 杩斿洖 RuntimeSession close 缁戝畾鎽樿
     summary = {
         "group_count": group_count,
         "runtime_close_entrypoint_recorded": True,
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
-    logger.info("free backing cleanup 公开摘要构造完成, groups: %s", group_count)
+    logger.info("free backing cleanup 鍏紑鎽樿鏋勯€犲畬鎴? groups: %s", group_count)
     return summary
 
 
@@ -1718,10 +1718,10 @@ def _vllm_kv_lifecycle_evidence(
         "buffer_registration_source": "TurboBusRuntimeSession",
         "intent_source": "TransferIntent",
         "receipt_source": "TransferReceipt",
-        "adapter_submit_source": "TurboBusRuntimeSession",
-        "adapter_handle_source": "RuntimeSessionTransferHandle",
+        "transfer_submit_source": "TurboBusRuntimeSession",
+        "transfer_handle_source": "RuntimeSessionTransferHandle",
         "policy_source": "daemon_scheduler",
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
         "physical_route_source": "daemon_scheduler",
         "intent_ids": str(receipt_trace.get("intent_ids", "")),
         "receipt_count": int(receipt_trace.get("receipt_count", 0) or 0),
@@ -1763,16 +1763,16 @@ def _runtime_close_entrypoint_for_connector_close(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：提取 connector close 的 RuntimeSession entrypoint
+    #  * 姝ラ1锛氭彁鍙?connector close 鐨?RuntimeSession entrypoint
     #  * ========================================================================
-    #  * 数据源：TurboBusRuntimeSession.close response payload
-    #  * 操作：
-    #  *   1) 拒绝缺失 RuntimeSession close snapshot
-    #  *   2) 拒绝 close 证据暴露 route policy
+    #  * 鏁版嵁婧愶細TurboBusRuntimeSession.close response payload
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎷掔粷缂哄け RuntimeSession close snapshot
+    #  *   2) 鎷掔粷 close 璇佹嵁鏆撮湶 route policy
     #  */
-    logger.info("开始提取 connector close RuntimeSession entrypoint...")
+    logger.info("寮€濮嬫彁鍙?connector close RuntimeSession entrypoint...")
 
-    # // 1.1 读取 close payload 中的 RuntimeSession entrypoint
+    # // 1.1 璇诲彇 close payload 涓殑 RuntimeSession entrypoint
     if not isinstance(close_payload, Mapping):
         raise ValueError("connector close requires RuntimeSession close payload")
     runtime_entrypoint = close_payload.get("runtime_entrypoint")
@@ -1780,28 +1780,28 @@ def _runtime_close_entrypoint_for_connector_close(
         raise ValueError("connector close missing RuntimeSession entrypoint")
     contract = dict(runtime_entrypoint)
 
-    # // 1.2 校验生产入口和 route policy 边界
+    # // 1.2 鏍￠獙鐢熶骇鍏ュ彛鍜?route policy 杈圭晫
     if str(contract.get("entrypoint")) != "TurboBusRuntimeSession":
         raise ValueError("connector close RuntimeSession entrypoint mismatch")
     if str(contract.get("plan_source")) != "daemon_scheduler":
         raise ValueError("connector close RuntimeSession plan_source mismatch")
-    if bool(contract.get("route_policy_visible_to_adapter", True)):
-        raise ValueError("connector close exposes route policy to adapter")
+    if bool(contract.get("route_policy_visible_to_transfer", True)):
+        raise ValueError("connector close exposes route policy to transfer")
     if bool(contract.get("route_policy_visible_to_application", True)):
         raise ValueError("connector close exposes route policy to application")
 
-    # // 1.3 校验 close record 已写入 entrypoint
+    # // 1.3 鏍￠獙 close record 宸插啓鍏?entrypoint
     close_record = contract.get("close")
     if not isinstance(close_record, Mapping):
         raise ValueError("connector close missing RuntimeSession close record")
     if str(close_record.get("entrypoint")) != "TurboBusRuntimeSession.close":
         raise ValueError("connector close record mismatch")
-    if bool(close_record.get("route_policy_visible_to_adapter", True)):
+    if bool(close_record.get("route_policy_visible_to_transfer", True)):
         raise ValueError("connector close record exposes route policy")
 
-    # // 1.4 返回隔离副本供 cleanup evidence 消费
+    # // 1.4 杩斿洖闅旂鍓湰渚?cleanup evidence 娑堣垂
     contract["close"] = dict(close_record)
-    logger.info("connector close RuntimeSession entrypoint 提取完成")
+    logger.info("connector close RuntimeSession entrypoint 鎻愬彇瀹屾垚")
     return contract
 
 
@@ -1813,51 +1813,51 @@ def _request_binding_for_vllm_kv_lifecycle(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：绑定 vLLM KV request evidence
+    #  * 姝ラ1锛氱粦瀹?vLLM KV request evidence
     #  * ========================================================================
-    #  * 数据源：integration request binding 与 RuntimeSession entrypoint
-    #  * 操作：
-    #  *   1) 复制 integration request binding
-    #  *   2) 绑定 RuntimeSession adapter evidence record 和 route policy 拒绝字段
+    #  * 鏁版嵁婧愶細integration request binding 涓?RuntimeSession entrypoint
+    #  * 鎿嶄綔锛?
+    #  *   1) 澶嶅埗 integration request binding
+    #  *   2) 缁戝畾 RuntimeSession transfer evidence record 鍜?route policy 鎷掔粷瀛楁
     #  */
-    logger.info("开始绑定 vLLM KV request evidence...")
+    logger.info("寮€濮嬬粦瀹?vLLM KV request evidence...")
 
-    # // 1.1 复制 integration request binding
+    # // 1.1 澶嶅埗 integration request binding
     binding = dict(request_binding)
 
-    # // 1.2 校验 RuntimeSession adapter evidence record
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError("vLLM KV request binding missing adapter evidence record")
-    if str(adapter_record.get("evidence_id")) != str(evidence_id):
-        raise ValueError("vLLM KV request binding adapter evidence_id mismatch")
+    # // 1.2 鏍￠獙 RuntimeSession transfer evidence record
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError("vLLM KV request binding missing transfer evidence record")
+    if str(transfer_record.get("evidence_id")) != str(evidence_id):
+        raise ValueError("vLLM KV request binding transfer evidence_id mismatch")
 
-    # // 1.3 写入 RuntimeSession 边界字段
-    binding["adapter_evidence_id"] = str(adapter_record.get("evidence_id", ""))
+    # // 1.3 鍐欏叆 RuntimeSession 杈圭晫瀛楁
+    binding["transfer_evidence_id"] = str(transfer_record.get("evidence_id", ""))
     binding["runtime_entrypoint_recorded"] = True
-    binding["route_policy_visible_to_adapter"] = False
-    logger.info("vLLM KV request evidence 绑定完成, evidence_id: %s", evidence_id)
+    binding["route_policy_visible_to_transfer"] = False
+    logger.info("vLLM KV request evidence 缁戝畾瀹屾垚, evidence_id: %s", evidence_id)
     return binding
 
 
 def _runtime_buffer_binding_summaries_for_vllm_kv(value: object) -> list[dict[str, Any]]:
     # /*
     #  * ========================================================================
-    #  * 步骤2：生成 vLLM KV runtime buffer binding 摘要
+    #  * 姝ラ2锛氱敓鎴?vLLM KV runtime buffer binding 鎽樿
     #  * ========================================================================
-    #  * 目标：
-    #  *   1) 消费 receipt trace 内部 buffer binding。
-    #  *   2) 只公开 buffer 结构和 RuntimeSession 绑定状态。
-    #  *   3) 不把 receipt_id、intent_id 或 receipt contract 明细放入 extra。
+    #  * 鐩爣锛?
+    #  *   1) 娑堣垂 receipt trace 鍐呴儴 buffer binding銆?
+    #  *   2) 鍙叕寮€ buffer 缁撴瀯鍜?RuntimeSession 缁戝畾鐘舵€併€?
+    #  *   3) 涓嶆妸 receipt_id銆乮ntent_id 鎴?receipt contract 鏄庣粏鏀惧叆 extra銆?
     #  */
-    logger.info("开始生成 vLLM KV runtime buffer binding 摘要...")
+    logger.info("寮€濮嬬敓鎴?vLLM KV runtime buffer binding 鎽樿...")
 
-    # // 2.1 空或非列表输入返回空摘要
+    # // 2.1 绌烘垨闈炲垪琛ㄨ緭鍏ヨ繑鍥炵┖鎽樿
     if not isinstance(value, list | tuple):
-        logger.info("vLLM KV runtime buffer binding 摘要生成完成, count: %s", 0)
+        logger.info("vLLM KV runtime buffer binding 鎽樿鐢熸垚瀹屾垚, count: %s", 0)
         return []
 
-    # // 2.2 提取结构字段，丢弃运行态 receipt 标识
+    # // 2.2 鎻愬彇缁撴瀯瀛楁锛屼涪寮冭繍琛屾€?receipt 鏍囪瘑
     summaries: list[dict[str, Any]] = []
     for item in value:
         if not isinstance(item, Mapping):
@@ -1878,11 +1878,11 @@ def _runtime_buffer_binding_summaries_for_vllm_kv(value: object) -> list[dict[st
                     item.get("cuda_ipc_lifecycle"),
                     Mapping,
                 ),
-                "route_policy_visible_to_adapter": False,
+                "route_policy_visible_to_transfer": False,
             }
         )
     logger.info(
-        "vLLM KV runtime buffer binding 摘要生成完成, count: %s",
+        "vLLM KV runtime buffer binding 鎽樿鐢熸垚瀹屾垚, count: %s",
         len(summaries),
     )
     return summaries
@@ -1896,81 +1896,81 @@ def _runtime_entrypoint_for_vllm_kv_lifecycle(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：提取 vLLM KV RuntimeSession 合约
+    #  * 姝ラ1锛氭彁鍙?vLLM KV RuntimeSession 鍚堢害
     #  * ========================================================================
-    #  * 数据源：receipt_trace.runtime_entrypoint
-    #  * 操作：
-    #  *   1) 拒绝缺失 RuntimeSession entrypoint 合约的 vLLM KV evidence
-    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  * 鏁版嵁婧愶細receipt_trace.runtime_entrypoint
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎷掔粷缂哄け RuntimeSession entrypoint 鍚堢害鐨?vLLM KV evidence
+    #  *   2) 鎷掔粷缂哄け transfer evidence 璁板綍鏄庣粏鎴栨毚闇?route policy 鐨勫悎绾?
     #  */
-    logger.info("开始提取 vLLM KV RuntimeSession 合约...")
+    logger.info("寮€濮嬫彁鍙?vLLM KV RuntimeSession 鍚堢害...")
 
-    # // 1.1 读取 RuntimeSession entrypoint 合约
+    # // 1.1 璇诲彇 RuntimeSession entrypoint 鍚堢害
     runtime_entrypoint = receipt_trace.get("runtime_entrypoint")
     if not isinstance(runtime_entrypoint, Mapping):
         raise ValueError("vLLM KV evidence missing RuntimeSession entrypoint")
     contract = dict(runtime_entrypoint)
 
-    # // 1.2 拒绝 route policy 暴露
-    if bool(contract.get("route_policy_visible_to_adapter", True)):
-        raise ValueError("vLLM KV evidence exposes route policy to adapter")
+    # // 1.2 鎷掔粷 route policy 鏆撮湶
+    if bool(contract.get("route_policy_visible_to_transfer", True)):
+        raise ValueError("vLLM KV evidence exposes route policy to transfer")
     if bool(contract.get("route_policy_visible_to_application", True)):
         raise ValueError("vLLM KV evidence exposes route policy to application")
 
-    # // 1.3 校验 adapter evidence 记录明细
-    adapter_record = contract.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError("vLLM KV evidence missing adapter evidence record")
-    if str(adapter_record.get("evidence_id")) != str(evidence_id):
-        raise ValueError("vLLM KV evidence adapter evidence_id mismatch")
-    if not bool(adapter_record.get("intents_recorded", False)):
-        raise ValueError("vLLM KV evidence adapter intents were not recorded")
-    if not bool(adapter_record.get("receipts_recorded", False)):
-        raise ValueError("vLLM KV evidence adapter receipts were not recorded")
+    # // 1.3 鏍￠獙 transfer evidence 璁板綍鏄庣粏
+    transfer_record = contract.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError("vLLM KV evidence missing transfer evidence record")
+    if str(transfer_record.get("evidence_id")) != str(evidence_id):
+        raise ValueError("vLLM KV evidence transfer evidence_id mismatch")
+    if not bool(transfer_record.get("intents_recorded", False)):
+        raise ValueError("vLLM KV evidence transfer intents were not recorded")
+    if not bool(transfer_record.get("receipts_recorded", False)):
+        raise ValueError("vLLM KV evidence transfer receipts were not recorded")
 
-    # // 1.4 核对 receipt contracts 与 RuntimeSession 记录
-    _require_vllm_kv_adapter_record_receipts(
-        adapter_record,
+    # // 1.4 鏍稿 receipt contracts 涓?RuntimeSession 璁板綍
+    _require_vllm_kv_transfer_record_receipts(
+        transfer_record,
         receipt_contracts=receipt_contracts,
     )
 
-    # // 1.5 保留 RuntimeSession 记录摘要
-    contract["adapter_evidence_record"] = dict(adapter_record)
-    logger.info("vLLM KV RuntimeSession 合约提取完成, evidence_id: %s", evidence_id)
+    # // 1.5 淇濈暀 RuntimeSession 璁板綍鎽樿
+    contract["transfer_evidence_record"] = dict(transfer_record)
+    logger.info("vLLM KV RuntimeSession 鍚堢害鎻愬彇瀹屾垚, evidence_id: %s", evidence_id)
     return contract
 
 
-def _require_vllm_kv_adapter_record_receipts(
-    adapter_record: Mapping[str, object],
+def _require_vllm_kv_transfer_record_receipts(
+    transfer_record: Mapping[str, object],
     *,
     receipt_contracts: object,
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤2：核对 vLLM KV receipt 记录
+    #  * 姝ラ2锛氭牳瀵?vLLM KV receipt 璁板綍
     #  * ========================================================================
-    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
-    #  * 操作：
-    #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
-    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  * 鏁版嵁婧愶細receipt contracts 涓?RuntimeSession transfer evidence record
+    #  * 鎿嶄綔锛?
+    #  *   1) 浠?receipt contracts 鎻愬彇 intent_id 鍜?receipt_id
+    #  *   2) 纭 RuntimeSession transfer evidence record 鍖呭惈杩欎簺鏍囪瘑
     #  */
-    logger.info("开始核对 vLLM KV receipt 记录...")
+    logger.info("寮€濮嬫牳瀵?vLLM KV receipt 璁板綍...")
 
-    # // 2.1 提取 receipt contract 标识
+    # // 2.1 鎻愬彇 receipt contract 鏍囪瘑
     expected_intent_ids, expected_receipt_ids = _vllm_kv_receipt_contract_ids(
         receipt_contracts
     )
 
-    # // 2.2 提取 RuntimeSession adapter evidence 标识
-    recorded_intent_ids = _vllm_kv_string_set(adapter_record.get("intent_ids"))
-    recorded_receipt_ids = _vllm_kv_string_set(adapter_record.get("receipt_ids"))
+    # // 2.2 鎻愬彇 RuntimeSession transfer evidence 鏍囪瘑
+    recorded_intent_ids = _vllm_kv_string_set(transfer_record.get("intent_ids"))
+    recorded_receipt_ids = _vllm_kv_string_set(transfer_record.get("receipt_ids"))
 
-    # // 2.3 核对 receipt contract 是否都进入 RuntimeSession 记录
+    # // 2.3 鏍稿 receipt contract 鏄惁閮借繘鍏?RuntimeSession 璁板綍
     if not expected_intent_ids.issubset(recorded_intent_ids):
-        raise ValueError("vLLM KV evidence adapter intent_ids mismatch")
+        raise ValueError("vLLM KV evidence transfer intent_ids mismatch")
     if not expected_receipt_ids.issubset(recorded_receipt_ids):
-        raise ValueError("vLLM KV evidence adapter receipt_ids mismatch")
-    logger.info("vLLM KV receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
+        raise ValueError("vLLM KV evidence transfer receipt_ids mismatch")
+    logger.info("vLLM KV receipt 璁板綍鏍稿瀹屾垚, receipts: %s", len(expected_receipt_ids))
 
 
 def _vllm_kv_receipt_contract_ids(
@@ -1978,20 +1978,20 @@ def _vllm_kv_receipt_contract_ids(
 ) -> tuple[set[str], set[str]]:
     # /*
     #  * ========================================================================
-    #  * 步骤3：提取 vLLM KV receipt contract 标识
+    #  * 姝ラ3锛氭彁鍙?vLLM KV receipt contract 鏍囪瘑
     #  * ========================================================================
-    #  * 数据源：receipt_trace.receipt_contracts
-    #  * 操作：
-    #  *   1) 校验 receipt_contracts 为列表
-    #  *   2) 提取 intent_id 和 receipt_id 集合
+    #  * 鏁版嵁婧愶細receipt_trace.receipt_contracts
+    #  * 鎿嶄綔锛?
+    #  *   1) 鏍￠獙 receipt_contracts 涓哄垪琛?
+    #  *   2) 鎻愬彇 intent_id 鍜?receipt_id 闆嗗悎
     #  */
-    logger.info("开始提取 vLLM KV receipt contract 标识...")
+    logger.info("寮€濮嬫彁鍙?vLLM KV receipt contract 鏍囪瘑...")
 
-    # // 3.1 校验 receipt_contracts 结构
+    # // 3.1 鏍￠獙 receipt_contracts 缁撴瀯
     if not isinstance(receipt_contracts, list):
         raise ValueError("vLLM KV evidence missing receipt contracts")
 
-    # // 3.2 收集 intent_id 与 receipt_id
+    # // 3.2 鏀堕泦 intent_id 涓?receipt_id
     intent_ids: set[str] = set()
     receipt_ids: set[str] = set()
     for index, contract in enumerate(receipt_contracts):
@@ -2007,39 +2007,39 @@ def _vllm_kv_receipt_contract_ids(
         intent_ids.add(str(intent_id))
         receipt_ids.add(str(receipt_id))
 
-    # // 3.3 拒绝空 receipt contract
+    # // 3.3 鎷掔粷绌?receipt contract
     if not receipt_ids:
         raise ValueError("vLLM KV evidence contains no receipt contracts")
-    logger.info("vLLM KV receipt contract 标识提取完成, receipts: %s", len(receipt_ids))
+    logger.info("vLLM KV receipt contract 鏍囪瘑鎻愬彇瀹屾垚, receipts: %s", len(receipt_ids))
     return intent_ids, receipt_ids
 
 
 def _vllm_kv_string_set(value: object) -> set[str]:
     # /*
     #  * ========================================================================
-    #  * 步骤4：归一化 vLLM KV 字符串集合
+    #  * 姝ラ4锛氬綊涓€鍖?vLLM KV 瀛楃涓查泦鍚?
     #  * ========================================================================
-    #  * 数据源：RuntimeSession adapter evidence record
-    #  * 操作：
-    #  *   1) 字符串按单个标识处理
-    #  *   2) 列表和元组转为字符串集合
+    #  * 鏁版嵁婧愶細RuntimeSession transfer evidence record
+    #  * 鎿嶄綔锛?
+    #  *   1) 瀛楃涓叉寜鍗曚釜鏍囪瘑澶勭悊
+    #  *   2) 鍒楄〃鍜屽厓缁勮浆涓哄瓧绗︿覆闆嗗悎
     #  */
-    logger.info("开始归一化 vLLM KV 字符串集合...")
+    logger.info("寮€濮嬪綊涓€鍖?vLLM KV 瀛楃涓查泦鍚?..")
 
-    # // 4.1 字符串按单值处理
+    # // 4.1 瀛楃涓叉寜鍗曞€煎鐞?
     if isinstance(value, str):
         result = {value}
-        logger.info("vLLM KV 字符串集合归一化完成, count: %s", len(result))
+        logger.info("vLLM KV 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", len(result))
         return result
 
-    # // 4.2 列表和元组转为字符串集合
+    # // 4.2 鍒楄〃鍜屽厓缁勮浆涓哄瓧绗︿覆闆嗗悎
     if isinstance(value, list | tuple):
         result = {str(item) for item in value}
-        logger.info("vLLM KV 字符串集合归一化完成, count: %s", len(result))
+        logger.info("vLLM KV 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", len(result))
         return result
 
-    # // 4.3 非序列值返回空集合
-    logger.info("vLLM KV 字符串集合归一化完成, count: %s", 0)
+    # // 4.3 闈炲簭鍒楀€艰繑鍥炵┖闆嗗悎
+    logger.info("vLLM KV 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", 0)
     return set()
 
 

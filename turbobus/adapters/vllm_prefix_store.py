@@ -34,7 +34,7 @@ class TurboBusSavedPrefix:
     cpu_alloc_ms: float = 0.0
     reused_backing: bool = False
     group_ms: float = 0.0
-    adapter_ms: float = 0.0
+    binding_ms: float = 0.0
     refs_ms: float = 0.0
     transfer_ms: float = 0.0
     register_ms: float = 0.0
@@ -297,7 +297,7 @@ class TurboBusPrefixStore:
             ),
             "runtime_entrypoint": runtime_entrypoint,
             "receipt_contracts": receipt_contracts,
-            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_transfer": False,
             "removed_count": int(removed_count),
             "capacity": self.max_prefixes,
             "store_size_after": len(self._prefixes),
@@ -338,7 +338,7 @@ class TurboBusPrefixStore:
             ),
             "runtime_entrypoint": runtime_entrypoint,
             "receipt_contracts": receipt_contracts,
-            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_transfer": False,
             "created_at": time.time(),
         }
         prefix.cleanup_lifecycle_evidence = evidence
@@ -356,39 +356,39 @@ def _runtime_entrypoint_for_prefix_store(
 ) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤1：提取 prefix store RuntimeSession 合约
+    #  * 姝ラ1锛氭彁鍙?prefix store RuntimeSession 鍚堢害
     #  * ========================================================================
-    #  * 数据源：vLLM save/store lifecycle evidence
-    #  * 操作：
-    #  *   1) 拒绝缺失 RuntimeSession entrypoint 的 prefix store evidence
-    #  *   2) 拒绝缺失 adapter evidence 记录明细或暴露 route policy 的合约
+    #  * 鏁版嵁婧愶細vLLM save/store lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎷掔粷缂哄け RuntimeSession entrypoint 鐨?prefix store evidence
+    #  *   2) 鎷掔粷缂哄け transfer evidence 璁板綍鏄庣粏鎴栨毚闇?route policy 鐨勫悎绾?
     #  */
-    logger.info("开始提取 prefix store RuntimeSession 合约...")
+    logger.info("寮€濮嬫彁鍙?prefix store RuntimeSession 鍚堢害...")
 
-    # // 1.1 读取 RuntimeSession entrypoint 合约
+    # // 1.1 璇诲彇 RuntimeSession entrypoint 鍚堢害
     runtime_entrypoint = evidence.get("runtime_entrypoint")
     if not isinstance(runtime_entrypoint, Mapping):
         raise ValueError(f"{source} missing RuntimeSession entrypoint")
     contract = dict(runtime_entrypoint)
 
-    # // 1.2 拒绝 route policy 暴露
-    if bool(contract.get("route_policy_visible_to_adapter", True)):
-        raise ValueError(f"{source} exposes route policy to adapter")
+    # // 1.2 鎷掔粷 route policy 鏆撮湶
+    if bool(contract.get("route_policy_visible_to_transfer", True)):
+        raise ValueError(f"{source} exposes route policy to transfer")
     if bool(contract.get("route_policy_visible_to_application", True)):
         raise ValueError(f"{source} exposes route policy to application")
 
-    # // 1.3 校验 adapter evidence 记录明细
-    adapter_record = contract.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
-    if not bool(adapter_record.get("intents_recorded", False)):
-        raise ValueError(f"{source} adapter intents were not recorded")
-    if not bool(adapter_record.get("receipts_recorded", False)):
-        raise ValueError(f"{source} adapter receipts were not recorded")
+    # // 1.3 鏍￠獙 transfer evidence 璁板綍鏄庣粏
+    transfer_record = contract.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError(f"{source} missing transfer evidence record")
+    if not bool(transfer_record.get("intents_recorded", False)):
+        raise ValueError(f"{source} transfer intents were not recorded")
+    if not bool(transfer_record.get("receipts_recorded", False)):
+        raise ValueError(f"{source} transfer receipts were not recorded")
 
-    # // 1.4 保留 RuntimeSession 记录摘要
-    contract["adapter_evidence_record"] = dict(adapter_record)
-    logger.info("prefix store RuntimeSession 合约提取完成, source: %s", source)
+    # // 1.4 淇濈暀 RuntimeSession 璁板綍鎽樿
+    contract["transfer_evidence_record"] = dict(transfer_record)
+    logger.info("prefix store RuntimeSession 鍚堢害鎻愬彇瀹屾垚, source: %s", source)
     return contract
 
 
@@ -400,36 +400,36 @@ def _receipt_contracts_for_prefix_store(
 ) -> list[dict[str, Any]]:
     # /*
     #  * ========================================================================
-    #  * 步骤2：提取 prefix store receipt contracts
+    #  * 姝ラ2锛氭彁鍙?prefix store receipt contracts
     #  * ========================================================================
-    #  * 数据源：vLLM save/store lifecycle evidence
-    #  * 操作：
-    #  *   1) 拒绝缺失 receipt contracts 的 prefix store evidence
-    #  *   2) 复制 receipt contracts 供 store/remove 证据链继续校验
+    #  * 鏁版嵁婧愶細vLLM save/store lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎷掔粷缂哄け receipt contracts 鐨?prefix store evidence
+    #  *   2) 澶嶅埗 receipt contracts 渚?store/remove 璇佹嵁閾剧户缁牎楠?
     #  */
-    logger.info("开始提取 prefix store receipt contracts...")
+    logger.info("寮€濮嬫彁鍙?prefix store receipt contracts...")
 
-    # // 2.1 校验 receipt contracts 结构
+    # // 2.1 鏍￠獙 receipt contracts 缁撴瀯
     contracts = evidence.get("receipt_contracts")
     if not isinstance(contracts, list):
         raise ValueError(f"{source} missing receipt contracts")
 
-    # // 2.2 复制 receipt contracts
+    # // 2.2 澶嶅埗 receipt contracts
     copied = [dict(item) for item in contracts if isinstance(item, Mapping)]
     if len(copied) != len(contracts) or not copied:
         raise ValueError(f"{source} contains invalid receipt contracts")
 
-    # // 2.3 核对 receipt contracts 与 RuntimeSession 记录
-    _require_prefix_store_adapter_record_receipts(
+    # // 2.3 鏍稿 receipt contracts 涓?RuntimeSession 璁板綍
+    _require_prefix_store_transfer_record_receipts(
         runtime_entrypoint,
         receipt_contracts=copied,
         source=source,
     )
-    logger.info("prefix store receipt contracts 提取完成, count: %s", len(copied))
+    logger.info("prefix store receipt contracts 鎻愬彇瀹屾垚, count: %s", len(copied))
     return copied
 
 
-def _require_prefix_store_adapter_record_receipts(
+def _require_prefix_store_transfer_record_receipts(
     runtime_entrypoint: Mapping[str, Any],
     *,
     receipt_contracts: list[dict[str, Any]],
@@ -437,36 +437,36 @@ def _require_prefix_store_adapter_record_receipts(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤3：核对 prefix store receipt 记录
+    #  * 姝ラ3锛氭牳瀵?prefix store receipt 璁板綍
     #  * ========================================================================
-    #  * 数据源：receipt contracts 与 RuntimeSession adapter evidence record
-    #  * 操作：
-    #  *   1) 从 receipt contracts 提取 intent_id 和 receipt_id
-    #  *   2) 确认 RuntimeSession adapter evidence record 包含这些标识
+    #  * 鏁版嵁婧愶細receipt contracts 涓?RuntimeSession transfer evidence record
+    #  * 鎿嶄綔锛?
+    #  *   1) 浠?receipt contracts 鎻愬彇 intent_id 鍜?receipt_id
+    #  *   2) 纭 RuntimeSession transfer evidence record 鍖呭惈杩欎簺鏍囪瘑
     #  */
-    logger.info("开始核对 prefix store receipt 记录...")
+    logger.info("寮€濮嬫牳瀵?prefix store receipt 璁板綍...")
 
-    # // 3.1 读取 RuntimeSession adapter evidence 记录
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError(f"{source} missing adapter evidence record")
+    # // 3.1 璇诲彇 RuntimeSession transfer evidence 璁板綍
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError(f"{source} missing transfer evidence record")
 
-    # // 3.2 提取 receipt contract 标识
+    # // 3.2 鎻愬彇 receipt contract 鏍囪瘑
     expected_intent_ids, expected_receipt_ids = _prefix_store_receipt_contract_ids(
         receipt_contracts,
         source=source,
     )
 
-    # // 3.3 提取 RuntimeSession adapter evidence 标识
-    recorded_intent_ids = _prefix_store_string_set(adapter_record.get("intent_ids"))
-    recorded_receipt_ids = _prefix_store_string_set(adapter_record.get("receipt_ids"))
+    # // 3.3 鎻愬彇 RuntimeSession transfer evidence 鏍囪瘑
+    recorded_intent_ids = _prefix_store_string_set(transfer_record.get("intent_ids"))
+    recorded_receipt_ids = _prefix_store_string_set(transfer_record.get("receipt_ids"))
 
-    # // 3.4 核对 receipt contract 是否都进入 RuntimeSession 记录
+    # // 3.4 鏍稿 receipt contract 鏄惁閮借繘鍏?RuntimeSession 璁板綍
     if not expected_intent_ids.issubset(recorded_intent_ids):
-        raise ValueError(f"{source} adapter intent_ids mismatch")
+        raise ValueError(f"{source} transfer intent_ids mismatch")
     if not expected_receipt_ids.issubset(recorded_receipt_ids):
-        raise ValueError(f"{source} adapter receipt_ids mismatch")
-    logger.info("prefix store receipt 记录核对完成, receipts: %s", len(expected_receipt_ids))
+        raise ValueError(f"{source} transfer receipt_ids mismatch")
+    logger.info("prefix store receipt 璁板綍鏍稿瀹屾垚, receipts: %s", len(expected_receipt_ids))
 
 
 def _prefix_store_receipt_contract_ids(
@@ -476,16 +476,16 @@ def _prefix_store_receipt_contract_ids(
 ) -> tuple[set[str], set[str]]:
     # /*
     #  * ========================================================================
-    #  * 步骤4：提取 prefix store receipt contract 标识
+    #  * 姝ラ4锛氭彁鍙?prefix store receipt contract 鏍囪瘑
     #  * ========================================================================
-    #  * 数据源：prefix store receipt contracts
-    #  * 操作：
-    #  *   1) 读取每个 receipt contract 的 intent_id 和 receipt_id
-    #  *   2) 返回用于 RuntimeSession adapter evidence 核对的集合
+    #  * 鏁版嵁婧愶細prefix store receipt contracts
+    #  * 鎿嶄綔锛?
+    #  *   1) 璇诲彇姣忎釜 receipt contract 鐨?intent_id 鍜?receipt_id
+    #  *   2) 杩斿洖鐢ㄤ簬 RuntimeSession transfer evidence 鏍稿鐨勯泦鍚?
     #  */
-    logger.info("开始提取 prefix store receipt contract 标识...")
+    logger.info("寮€濮嬫彁鍙?prefix store receipt contract 鏍囪瘑...")
 
-    # // 4.1 收集 intent_id 与 receipt_id
+    # // 4.1 鏀堕泦 intent_id 涓?receipt_id
     intent_ids: set[str] = set()
     receipt_ids: set[str] = set()
     for contract in receipt_contracts:
@@ -496,11 +496,11 @@ def _prefix_store_receipt_contract_ids(
         intent_ids.add(str(intent_id))
         receipt_ids.add(str(receipt_id))
 
-    # // 4.2 拒绝空 receipt contract
+    # // 4.2 鎷掔粷绌?receipt contract
     if not receipt_ids:
         raise ValueError(f"{source} contains no receipt contracts")
     logger.info(
-        "prefix store receipt contract 标识提取完成, receipts: %s",
+        "prefix store receipt contract 鏍囪瘑鎻愬彇瀹屾垚, receipts: %s",
         len(receipt_ids),
     )
     return intent_ids, receipt_ids
@@ -509,29 +509,29 @@ def _prefix_store_receipt_contract_ids(
 def _prefix_store_string_set(value: object) -> set[str]:
     # /*
     #  * ========================================================================
-    #  * 步骤5：归一化 prefix store 字符串集合
+    #  * 姝ラ5锛氬綊涓€鍖?prefix store 瀛楃涓查泦鍚?
     #  * ========================================================================
-    #  * 数据源：RuntimeSession adapter evidence record
-    #  * 操作：
-    #  *   1) 字符串按单个标识处理
-    #  *   2) 列表和元组转为字符串集合
+    #  * 鏁版嵁婧愶細RuntimeSession transfer evidence record
+    #  * 鎿嶄綔锛?
+    #  *   1) 瀛楃涓叉寜鍗曚釜鏍囪瘑澶勭悊
+    #  *   2) 鍒楄〃鍜屽厓缁勮浆涓哄瓧绗︿覆闆嗗悎
     #  */
-    logger.info("开始归一化 prefix store 字符串集合...")
+    logger.info("寮€濮嬪綊涓€鍖?prefix store 瀛楃涓查泦鍚?..")
 
-    # // 5.1 字符串按单值处理
+    # // 5.1 瀛楃涓叉寜鍗曞€煎鐞?
     if isinstance(value, str):
         result = {value}
-        logger.info("prefix store 字符串集合归一化完成, count: %s", len(result))
+        logger.info("prefix store 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", len(result))
         return result
 
-    # // 5.2 列表和元组转为字符串集合
+    # // 5.2 鍒楄〃鍜屽厓缁勮浆涓哄瓧绗︿覆闆嗗悎
     if isinstance(value, list | tuple):
         result = {str(item) for item in value}
-        logger.info("prefix store 字符串集合归一化完成, count: %s", len(result))
+        logger.info("prefix store 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", len(result))
         return result
 
-    # // 5.3 非序列值返回空集合
-    logger.info("prefix store 字符串集合归一化完成, count: %s", 0)
+    # // 5.3 闈炲簭鍒楀€艰繑鍥炵┖闆嗗悎
+    logger.info("prefix store 瀛楃涓查泦鍚堝綊涓€鍖栧畬鎴? count: %s", 0)
     return set()
 
 
@@ -542,19 +542,19 @@ def _require_prefix_store_public_summary_no_identity_fields(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤6：校验 prefix store 公开摘要
+    #  * 姝ラ6锛氭牎楠?prefix store 鍏紑鎽樿
     #  * ========================================================================
-    #  * 目标：公开 prefix/recovery 摘要只保留 adapter evidence id
-    #  * 操作：
-    #  *   1) 拒绝 RuntimeSession entrypoint 和 adapter record 明细
-    #  *   2) 拒绝 receipt/ticket/decision/topology 标识
+    #  * 鐩爣锛氬叕寮€ prefix/recovery 鎽樿鍙繚鐣?transfer evidence id
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎷掔粷 RuntimeSession entrypoint 鍜?transfer record 鏄庣粏
+    #  *   2) 鎷掔粷 receipt/ticket/decision/topology 鏍囪瘑
     #  */
-    logger.info("开始校验 prefix store 公开摘要...")
+    logger.info("寮€濮嬫牎楠?prefix store 鍏紑鎽樿...")
 
-    # // 6.1 拒绝公开摘要携带运行态 identity
+    # // 6.1 鎷掔粷鍏紑鎽樿鎼哄甫杩愯鎬?identity
     forbidden = {
         "runtime_entrypoint",
-        "adapter_evidence_record",
+        "transfer_evidence_record",
         "receipt_contracts",
         "receipt_ids",
         "intent_ids",
@@ -575,10 +575,10 @@ def _require_prefix_store_public_summary_no_identity_fields(
             + ", ".join(leaked)
         )
 
-    # // 6.2 拒绝 route policy 暴露
-    if bool(summary.get("route_policy_visible_to_adapter", True)):
-        raise ValueError(f"{source} exposes route policy to adapter")
-    logger.info("prefix store 公开摘要校验完成")
+    # // 6.2 鎷掔粷 route policy 鏆撮湶
+    if bool(summary.get("route_policy_visible_to_transfer", True)):
+        raise ValueError(f"{source} exposes route policy to transfer")
+    logger.info("prefix store 鍏紑鎽樿鏍￠獙瀹屾垚")
 
 
 _PREFIX_STORE = TurboBusPrefixStore()
@@ -590,17 +590,17 @@ def clear_saved_prefixes(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤6：拒绝公共 prefix 清空
+    #  * 姝ラ6锛氭嫆缁濆叕鍏?prefix 娓呯┖
     #  * ========================================================================
-    #  * 目标：防止外部代码绕过 connector cleanup lifecycle
-    #  * 数据源：公共 adapter API
-    #  * 操作：
-    #  *   1) 统一拒绝公共清空
-    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  * 鐩爣锛氶槻姝㈠閮ㄤ唬鐮佺粫杩?connector cleanup lifecycle
+    #  * 鏁版嵁婧愶細鍏叡 connector API
+    #  * 鎿嶄綔锛?
+    #  *   1) 缁熶竴鎷掔粷鍏叡娓呯┖
+    #  *   2) 鎸囧悜 TurboBusRuntimeSession connector lifecycle
     #  */
-    logger.info("开始拒绝公共 prefix 清空...")
+    logger.info("寮€濮嬫嫆缁濆叕鍏?prefix 娓呯┖...")
 
-    # // 6.1 拒绝公共清空
+    # // 6.1 鎷掔粷鍏叡娓呯┖
     raise RuntimeError(
         "saved prefix cleanup must go through TurboBusRuntimeSession connector lifecycle"
     )
@@ -612,19 +612,19 @@ def _clear_saved_prefixes_for_connector(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤7：清空 connector 内部 prefix 缓存
+    #  * 姝ラ7锛氭竻绌?connector 鍐呴儴 prefix 缂撳瓨
     #  * ========================================================================
-    #  * 目标：只供 connector 完成 lifecycle cleanup 后删除全局缓存
-    #  * 数据源：全局 prefix store
-    #  * 操作：
-    #  *   1) 按 session/job 清空内部缓存
-    #  *   2) 不作为公共导出暴露
+    #  * 鐩爣锛氬彧渚?connector 瀹屾垚 lifecycle cleanup 鍚庡垹闄ゅ叏灞€缂撳瓨
+    #  * 鏁版嵁婧愶細鍏ㄥ眬 prefix store
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎸?session/job 娓呯┖鍐呴儴缂撳瓨
+    #  *   2) 涓嶄綔涓哄叕鍏卞鍑烘毚闇?
     #  */
-    logger.info("开始清空 connector 内部 prefix 缓存...")
+    logger.info("寮€濮嬫竻绌?connector 鍐呴儴 prefix 缂撳瓨...")
 
-    # // 7.1 清理内部缓存
+    # // 7.1 娓呯悊鍐呴儴缂撳瓨
     _PREFIX_STORE.clear(session_id, job_id=job_id)
-    logger.info("connector 内部 prefix 缓存清空完成")
+    logger.info("connector 鍐呴儴 prefix 缂撳瓨娓呯┖瀹屾垚")
 
 
 def get_saved_prefix(
@@ -634,25 +634,25 @@ def get_saved_prefix(
 ) -> dict[str, Any] | None:
     # /*
     #  * ========================================================================
-    #  * 步骤8：读取 saved prefix 公开快照
+    #  * 姝ラ8锛氳鍙?saved prefix 鍏紑蹇収
     #  * ========================================================================
-    #  * 目标：禁止公共入口返回可变 prefix 对象和完整 lifecycle evidence
-    #  * 数据源：全局 prefix store
-    #  * 操作：
-    #  *   1) 读取 connector 私有 prefix 记录
-    #  *   2) 返回 RuntimeSession adapter evidence 绑定后的标量快照
+    #  * 鐩爣锛氱姝㈠叕鍏卞叆鍙ｈ繑鍥炲彲鍙?prefix 瀵硅薄鍜屽畬鏁?lifecycle evidence
+    #  * 鏁版嵁婧愶細鍏ㄥ眬 prefix store
+    #  * 鎿嶄綔锛?
+    #  *   1) 璇诲彇 connector 绉佹湁 prefix 璁板綍
+    #  *   2) 杩斿洖 RuntimeSession transfer evidence 缁戝畾鍚庣殑鏍囬噺蹇収
     #  */
-    logger.info("开始读取 saved prefix 公开快照...")
+    logger.info("寮€濮嬭鍙?saved prefix 鍏紑蹇収...")
 
-    # // 8.1 读取内部 prefix 对象
+    # // 8.1 璇诲彇鍐呴儴 prefix 瀵硅薄
     prefix = _get_saved_prefix_for_connector(str(key), str(session_id), job_id=job_id)
     if prefix is None:
-        logger.info("saved prefix 公开快照读取完成, found: %s", False)
+        logger.info("saved prefix 鍏紑蹇収璇诲彇瀹屾垚, found: %s", False)
         return None
 
-    # // 8.2 构造公开快照
+    # // 8.2 鏋勯€犲叕寮€蹇収
     snapshot = saved_prefix_runtime_snapshot(prefix)
-    logger.info("saved prefix 公开快照读取完成, found: %s", True)
+    logger.info("saved prefix 鍏紑蹇収璇诲彇瀹屾垚, found: %s", True)
     return snapshot
 
 
@@ -663,36 +663,36 @@ def _get_saved_prefix_for_connector(
 ) -> TurboBusSavedPrefix | None:
     # /*
     #  * ========================================================================
-    #  * 步骤9：读取 connector 内部 prefix 对象
+    #  * 姝ラ9锛氳鍙?connector 鍐呴儴 prefix 瀵硅薄
     #  * ========================================================================
-    #  * 目标：只供 vLLM connector 内部继续执行 restore/save lifecycle
-    #  * 数据源：全局 prefix store
-    #  * 操作：
-    #  *   1) 按 job/session/key 精确读取对象
-    #  *   2) 不作为公共导出暴露
+    #  * 鐩爣锛氬彧渚?vLLM connector 鍐呴儴缁х画鎵ц restore/save lifecycle
+    #  * 鏁版嵁婧愶細鍏ㄥ眬 prefix store
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎸?job/session/key 绮剧‘璇诲彇瀵硅薄
+    #  *   2) 涓嶄綔涓哄叕鍏卞鍑烘毚闇?
     #  */
-    logger.info("开始读取 connector 内部 prefix 对象...")
+    logger.info("寮€濮嬭鍙?connector 鍐呴儴 prefix 瀵硅薄...")
 
-    # // 9.1 读取内部对象
+    # // 9.1 璇诲彇鍐呴儴瀵硅薄
     prefix = _PREFIX_STORE.get(str(key), str(session_id), job_id=job_id)
-    logger.info("connector 内部 prefix 对象读取完成, found: %s", prefix is not None)
+    logger.info("connector 鍐呴儴 prefix 瀵硅薄璇诲彇瀹屾垚, found: %s", prefix is not None)
     return prefix
 
 
 def _store_saved_prefix_for_connector(prefix: TurboBusSavedPrefix) -> list[TurboBusSavedPrefix]:
     # /*
     #  * ========================================================================
-    #  * 步骤10：写入 connector 内部 prefix 对象
+    #  * 姝ラ10锛氬啓鍏?connector 鍐呴儴 prefix 瀵硅薄
     #  * ========================================================================
-    #  * 目标：只允许已带 RuntimeSession lifecycle evidence 的 connector 对象进入全局缓存
-    #  * 数据源：TurboBusSavedPrefix.save_lifecycle_evidence
-    #  * 操作：
-    #  *   1) 校验 save evidence 继承 RuntimeSession entrypoint
-    #  *   2) 写入全局 prefix store
+    #  * 鐩爣锛氬彧鍏佽宸插甫 RuntimeSession lifecycle evidence 鐨?connector 瀵硅薄杩涘叆鍏ㄥ眬缂撳瓨
+    #  * 鏁版嵁婧愶細TurboBusSavedPrefix.save_lifecycle_evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 鏍￠獙 save evidence 缁ф壙 RuntimeSession entrypoint
+    #  *   2) 鍐欏叆鍏ㄥ眬 prefix store
     #  */
-    logger.info("开始写入 connector 内部 prefix 对象...")
+    logger.info("寮€濮嬪啓鍏?connector 鍐呴儴 prefix 瀵硅薄...")
 
-    # // 10.1 校验 save lifecycle evidence
+    # // 10.1 鏍￠獙 save lifecycle evidence
     save_entrypoint = _runtime_entrypoint_for_prefix_store(
         prefix.save_lifecycle_evidence,
         source="save_lifecycle_evidence",
@@ -703,26 +703,26 @@ def _store_saved_prefix_for_connector(prefix: TurboBusSavedPrefix) -> list[Turbo
         source="save_lifecycle_evidence",
     )
 
-    # // 10.2 写入全局 store
+    # // 10.2 鍐欏叆鍏ㄥ眬 store
     evicted = _PREFIX_STORE.put(prefix)
-    logger.info("connector 内部 prefix 对象写入完成, evicted: %s", len(evicted))
+    logger.info("connector 鍐呴儴 prefix 瀵硅薄鍐欏叆瀹屾垚, evicted: %s", len(evicted))
     return evicted
 
 
 def store_saved_prefix(prefix: TurboBusSavedPrefix) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤11：拒绝公共 prefix 写入
+    #  * 姝ラ11锛氭嫆缁濆叕鍏?prefix 鍐欏叆
     #  * ========================================================================
-    #  * 目标：防止外部代码伪造 saved prefix 和 receipt evidence
-    #  * 数据源：公共 adapter API
-    #  * 操作：
-    #  *   1) 统一拒绝公共写入
-    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  * 鐩爣锛氶槻姝㈠閮ㄤ唬鐮佷吉閫?saved prefix 鍜?receipt evidence
+    #  * 鏁版嵁婧愶細鍏叡 connector API
+    #  * 鎿嶄綔锛?
+    #  *   1) 缁熶竴鎷掔粷鍏叡鍐欏叆
+    #  *   2) 鎸囧悜 TurboBusRuntimeSession connector lifecycle
     #  */
-    logger.info("开始拒绝公共 prefix 写入...")
+    logger.info("寮€濮嬫嫆缁濆叕鍏?prefix 鍐欏叆...")
 
-    # // 11.1 拒绝公共写入
+    # // 11.1 鎷掔粷鍏叡鍐欏叆
     raise RuntimeError(
         "saved prefix writes must go through TurboBusRuntimeSession connector lifecycle"
     )
@@ -731,17 +731,17 @@ def store_saved_prefix(prefix: TurboBusSavedPrefix) -> dict[str, Any]:
 def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]:
     # /*
     #  * ========================================================================
-    #  * 步骤12：构造 saved prefix RuntimeSession 快照
+    #  * 姝ラ12锛氭瀯閫?saved prefix RuntimeSession 蹇収
     #  * ========================================================================
-    #  * 目标：公开只含标量摘要和 adapter evidence record 的 prefix 视图
-    #  * 数据源：TurboBusSavedPrefix save/store lifecycle evidence
-    #  * 操作：
-    #  *   1) 校验 save/store evidence 继承 RuntimeSession entrypoint
-    #  *   2) 复制 adapter evidence record 并删除完整 runtime_entrypoint
+    #  * 鐩爣锛氬叕寮€鍙惈鏍囬噺鎽樿鍜?transfer evidence record 鐨?prefix 瑙嗗浘
+    #  * 鏁版嵁婧愶細TurboBusSavedPrefix save/store lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 鏍￠獙 save/store evidence 缁ф壙 RuntimeSession entrypoint
+    #  *   2) 澶嶅埗 transfer evidence record 骞跺垹闄ゅ畬鏁?runtime_entrypoint
     #  */
-    logger.info("开始构造 saved prefix RuntimeSession 快照...")
+    logger.info("寮€濮嬫瀯閫?saved prefix RuntimeSession 蹇収...")
 
-    # // 12.1 校验 store lifecycle evidence
+    # // 12.1 鏍￠獙 store lifecycle evidence
     store_entrypoint = _runtime_entrypoint_for_prefix_store(
         prefix.store_lifecycle_evidence,
         source="store_lifecycle_evidence",
@@ -752,7 +752,7 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
         source="store_lifecycle_evidence",
     )
 
-    # // 12.2 校验 save lifecycle evidence
+    # // 12.2 鏍￠獙 save lifecycle evidence
     save_entrypoint = _runtime_entrypoint_for_prefix_store(
         prefix.save_lifecycle_evidence,
         source="save_lifecycle_evidence",
@@ -763,7 +763,7 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
         source="save_lifecycle_evidence",
     )
 
-    # // 12.3 返回公开标量快照
+    # // 12.3 杩斿洖鍏紑鏍囬噺蹇収
     restore_summary = _optional_lifecycle_summary_for_prefix_store(
         prefix.last_restore_lifecycle_evidence,
         source="last_restore_lifecycle_evidence",
@@ -800,13 +800,13 @@ def saved_prefix_runtime_snapshot(prefix: TurboBusSavedPrefix) -> dict[str, Any]
         "store_mutation_id": str(
             prefix.store_lifecycle_evidence.get("mutation_id", "")
         ),
-        "adapter_evidence_id": str(
-            store_entrypoint["adapter_evidence_record"].get("evidence_id", "")
+        "transfer_evidence_id": str(
+            store_entrypoint["transfer_evidence_record"].get("evidence_id", "")
         ),
         "receipt_contract_count": len(store_receipt_contracts),
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
-    logger.info("saved prefix RuntimeSession 快照构造完成, key: %s", prefix.key)
+    logger.info("saved prefix RuntimeSession 蹇収鏋勯€犲畬鎴? key: %s", prefix.key)
     if restore_summary is not None:
         snapshot["last_restore_lifecycle"] = restore_summary
     if recovery_summary is not None:
@@ -821,22 +821,22 @@ def _optional_lifecycle_summary_for_prefix_store(
 ) -> dict[str, Any] | None:
     # /*
     #  * ========================================================================
-    #  * 步骤15：读取可选 lifecycle 公开摘要
+    #  * 姝ラ15锛氳鍙栧彲閫?lifecycle 鍏紑鎽樿
     #  * ========================================================================
-    #  * 数据源：TurboBusSavedPrefix lifecycle evidence
-    #  * 操作：
-    #  *   1) 空 evidence 直接跳过
-    #  *   2) 校验 RuntimeSession adapter evidence record
-    #  *   3) 只返回标量摘要和 adapter evidence record
+    #  * 鏁版嵁婧愶細TurboBusSavedPrefix lifecycle evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 绌?evidence 鐩存帴璺宠繃
+    #  *   2) 鏍￠獙 RuntimeSession transfer evidence record
+    #  *   3) 鍙繑鍥炴爣閲忔憳瑕佸拰 transfer evidence record
     #  */
-    logger.info("开始读取可选 lifecycle 公开摘要...")
+    logger.info("寮€濮嬭鍙栧彲閫?lifecycle 鍏紑鎽樿...")
 
-    # // 15.1 空 evidence 不进入公开摘要
+    # // 15.1 绌?evidence 涓嶈繘鍏ュ叕寮€鎽樿
     if not evidence:
-        logger.info("可选 lifecycle 公开摘要读取完成, present: %s", False)
+        logger.info("鍙€?lifecycle 鍏紑鎽樿璇诲彇瀹屾垚, present: %s", False)
         return None
 
-    # // 15.2 校验 RuntimeSession entrypoint 和 receipt contracts
+    # // 15.2 鏍￠獙 RuntimeSession entrypoint 鍜?receipt contracts
     entrypoint = _runtime_entrypoint_for_prefix_store(evidence, source=source)
     receipt_contracts = _receipt_contracts_for_prefix_store(
         evidence,
@@ -844,7 +844,7 @@ def _optional_lifecycle_summary_for_prefix_store(
         source=source,
     )
 
-    # // 15.3 返回公开标量摘要
+    # // 15.3 杩斿洖鍏紑鏍囬噺鎽樿
     summary = {
         "evidence_id": str(evidence.get("evidence_id", "")),
         "operation": str(evidence.get("operation", "")),
@@ -855,13 +855,13 @@ def _optional_lifecycle_summary_for_prefix_store(
         "daemon_recovery_sources": str(
             evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_id": str(
-            entrypoint["adapter_evidence_record"].get("evidence_id", "")
+        "transfer_evidence_id": str(
+            entrypoint["transfer_evidence_record"].get("evidence_id", "")
         ),
         "receipt_contract_count": len(receipt_contracts),
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
-    logger.info("可选 lifecycle 公开摘要读取完成, present: %s", True)
+    logger.info("鍙€?lifecycle 鍏紑鎽樿璇诲彇瀹屾垚, present: %s", True)
     return summary
 
 
@@ -872,34 +872,34 @@ def _optional_daemon_recovery_summary_for_prefix_store(
 ) -> dict[str, Any] | None:
     # /*
     #  * ========================================================================
-    #  * 步骤16：读取可选 daemon recovery 公开摘要
+    #  * 姝ラ16锛氳鍙栧彲閫?daemon recovery 鍏紑鎽樿
     #  * ========================================================================
-    #  * 数据源：TurboBusSavedPrefix daemon recovery evidence
-    #  * 操作：
-    #  *   1) 空 recovery evidence 直接跳过
-    #  *   2) 校验 RuntimeSession adapter evidence record
-    #  *   3) 只返回 recovery 标量摘要
+    #  * 鏁版嵁婧愶細TurboBusSavedPrefix daemon recovery evidence
+    #  * 鎿嶄綔锛?
+    #  *   1) 绌?recovery evidence 鐩存帴璺宠繃
+    #  *   2) 鏍￠獙 RuntimeSession transfer evidence record
+    #  *   3) 鍙繑鍥?recovery 鏍囬噺鎽樿
     #  */
-    logger.info("开始读取可选 daemon recovery 公开摘要...")
+    logger.info("寮€濮嬭鍙栧彲閫?daemon recovery 鍏紑鎽樿...")
 
-    # // 16.1 空 evidence 不进入公开摘要
+    # // 16.1 绌?evidence 涓嶈繘鍏ュ叕寮€鎽樿
     if not evidence:
-        logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", False)
+        logger.info("鍙€?daemon recovery 鍏紑鎽樿璇诲彇瀹屾垚, present: %s", False)
         return None
 
-    # // 16.2 校验 RuntimeSession entrypoint 和 adapter evidence record
+    # // 16.2 鏍￠獙 RuntimeSession entrypoint 鍜?transfer evidence record
     _require_prefix_store_public_summary_no_identity_fields(evidence, source=source)
-    adapter_evidence_id = evidence.get("adapter_evidence_id")
-    if not isinstance(adapter_evidence_id, str) or not adapter_evidence_id:
-        raise ValueError(f"{source} missing adapter_evidence_id")
+    transfer_evidence_id = evidence.get("transfer_evidence_id")
+    if not isinstance(transfer_evidence_id, str) or not transfer_evidence_id:
+        raise ValueError(f"{source} missing transfer_evidence_id")
     if not bool(evidence.get("runtime_entrypoint_recorded", False)):
         raise ValueError(f"{source} missing RuntimeSession recorded flag")
-    if not bool(evidence.get("adapter_evidence_recorded", False)):
-        raise ValueError(f"{source} missing adapter evidence recorded flag")
-    if bool(evidence.get("route_policy_visible_to_adapter", True)):
-        raise ValueError(f"{source} exposes route policy to adapter")
+    if not bool(evidence.get("transfer_evidence_recorded", False)):
+        raise ValueError(f"{source} missing transfer evidence recorded flag")
+    if bool(evidence.get("route_policy_visible_to_transfer", True)):
+        raise ValueError(f"{source} exposes route policy to transfer")
 
-    # // 16.3 返回公开标量摘要
+    # // 16.3 杩斿洖鍏紑鏍囬噺鎽樿
     summary = {
         "operation": str(evidence.get("operation", "")),
         "request_id": str(evidence.get("request_id", "")),
@@ -909,15 +909,15 @@ def _optional_daemon_recovery_summary_for_prefix_store(
         "daemon_recovery_sources": str(
             evidence.get("daemon_recovery_sources", "")
         ),
-        "adapter_evidence_id": str(adapter_evidence_id),
+        "transfer_evidence_id": str(transfer_evidence_id),
         "runtime_entrypoint_recorded": True,
-        "adapter_evidence_recorded": True,
+        "transfer_evidence_recorded": True,
         "daemon_recovery_recorded": bool(
             evidence.get("daemon_recovery_recorded", False)
         ),
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
     }
-    logger.info("可选 daemon recovery 公开摘要读取完成, present: %s", True)
+    logger.info("鍙€?daemon recovery 鍏紑鎽樿璇诲彇瀹屾垚, present: %s", True)
     return summary
 
 
@@ -928,19 +928,19 @@ def _remove_saved_prefix_for_connector(
 ) -> TurboBusSavedPrefix | None:
     # /*
     #  * ========================================================================
-    #  * 步骤13：删除 connector 内部 prefix 对象
+    #  * 姝ラ13锛氬垹闄?connector 鍐呴儴 prefix 瀵硅薄
     #  * ========================================================================
-    #  * 目标：只供 connector 在 lifecycle cleanup 后移除全局对象
-    #  * 数据源：全局 prefix store
-    #  * 操作：
-    #  *   1) 按 job/session/key 删除对象
-    #  *   2) 不作为公共导出暴露
+    #  * 鐩爣锛氬彧渚?connector 鍦?lifecycle cleanup 鍚庣Щ闄ゅ叏灞€瀵硅薄
+    #  * 鏁版嵁婧愶細鍏ㄥ眬 prefix store
+    #  * 鎿嶄綔锛?
+    #  *   1) 鎸?job/session/key 鍒犻櫎瀵硅薄
+    #  *   2) 涓嶄綔涓哄叕鍏卞鍑烘毚闇?
     #  */
-    logger.info("开始删除 connector 内部 prefix 对象...")
+    logger.info("寮€濮嬪垹闄?connector 鍐呴儴 prefix 瀵硅薄...")
 
-    # // 13.1 删除内部对象
+    # // 13.1 鍒犻櫎鍐呴儴瀵硅薄
     prefix = _PREFIX_STORE.remove(key, session_id, job_id=job_id)
-    logger.info("connector 内部 prefix 对象删除完成, found: %s", prefix is not None)
+    logger.info("connector 鍐呴儴 prefix 瀵硅薄鍒犻櫎瀹屾垚, found: %s", prefix is not None)
     return prefix
 
 
@@ -951,17 +951,17 @@ def remove_saved_prefix(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤14：拒绝公共 prefix 删除
+    #  * 姝ラ14锛氭嫆缁濆叕鍏?prefix 鍒犻櫎
     #  * ========================================================================
-    #  * 目标：防止外部代码绕过 connector cleanup lifecycle
-    #  * 数据源：公共 adapter API
-    #  * 操作：
-    #  *   1) 统一拒绝公共删除
-    #  *   2) 指向 TurboBusRuntimeSession connector lifecycle
+    #  * 鐩爣锛氶槻姝㈠閮ㄤ唬鐮佺粫杩?connector cleanup lifecycle
+    #  * 鏁版嵁婧愶細鍏叡 connector API
+    #  * 鎿嶄綔锛?
+    #  *   1) 缁熶竴鎷掔粷鍏叡鍒犻櫎
+    #  *   2) 鎸囧悜 TurboBusRuntimeSession connector lifecycle
     #  */
-    logger.info("开始拒绝公共 prefix 删除...")
+    logger.info("寮€濮嬫嫆缁濆叕鍏?prefix 鍒犻櫎...")
 
-    # // 14.1 拒绝公共删除
+    # // 14.1 鎷掔粷鍏叡鍒犻櫎
     raise RuntimeError(
         "saved prefix removal must go through TurboBusRuntimeSession connector lifecycle"
     )

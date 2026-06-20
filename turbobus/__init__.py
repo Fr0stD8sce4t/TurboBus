@@ -9,7 +9,7 @@ from .client import (
 from .model_manifest import ModelWeightManifest, ModelWeightTensor
 from .runtime.evidence import (
     RuntimeEvidenceValidationReport,
-    validate_adapter_lifecycle_evidence,
+    validate_transfer_lifecycle_evidence,
     validate_runtime_receipts,
 )
 from .runtime_session import TurboBusRuntimeSession
@@ -50,7 +50,7 @@ __all__ = [
     "TurboBusClient",
     "TurboBusRuntimeSession",
     "WorkloadKind",
-    "validate_adapter_lifecycle_evidence",
+    "validate_transfer_lifecycle_evidence",
     "validate_runtime_receipts",
     "validated_real_execution_evidence",
 ]

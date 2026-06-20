@@ -69,3 +69,7 @@ results/
 benchmarks/results/
 profiles/
 *.jsonl
+
+docs
+AGENTS.md
+

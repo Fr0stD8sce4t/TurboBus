@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 
 from ..runtime_session import TurboBusRuntimeSession
-from ..runtime.evidence import validate_adapter_transfer_stats_snapshot
+from ..runtime.evidence import validate_transfer_stats_snapshot
 from ..runtime.validation import validate_runtime_receipt
 from ..schema import TransferIntent, TransferReceipt, TransferStatusState
-from .context import AdapterTransferContext, require_runtime_session_open
+from .context import TransferContext, require_runtime_session_open
 from .lifecycle import _runtime_entrypoint_contract, runtime_session_receipt_trace_from_receipts
 from .stats import TransferStats, TransferStatsSnapshot, transfer_stats_from_receipt
 
@@ -20,6 +20,10 @@ class RuntimeSessionTransferHandle:
     @property
     def evidence_id(self) -> str | None:
         return self._handle.evidence_id
+
+    @property
+    def wait_calls(self) -> int:
+        return int(getattr(self._handle, "wait_calls", 0) or 0)
 
     @property
     def stats(self) -> TransferStatsSnapshot:
@@ -60,7 +64,7 @@ class RuntimeSessionTransferHandle:
         snapshot = self.stats.as_dict()
         logger.info(
             "公开 handle 摘要导出完成, evidence_id: %s",
-            snapshot.get("adapter_evidence_id"),
+            snapshot.get("transfer_evidence_id"),
         )
         return snapshot
 
@@ -72,7 +76,7 @@ class _ReceiptTransferHandle:
         client: TurboBusRuntimeSession,
         intent: TransferIntent,
         receipt: TransferReceipt,
-        transfer_context: AdapterTransferContext | None = None,
+        transfer_context: TransferContext | None = None,
         wait_timeout_seconds: float | None = None,
         evidence_id: str | None = None,
     ) -> None:
@@ -92,13 +96,13 @@ class _ReceiptTransferHandle:
         #  * ========================================================================
         #  * 数据源：ReceiptTransferHandle 初始 TransferReceipt
         #  * 操作：
-        #  *   1) 校验 handle receipt 与 TransferIntent、AdapterTransferContext 对齐
+        #  *   1) 校验 handle receipt 与 TransferIntent、TransferContext 对齐
         #  *   2) 写入 RuntimeSession entrypoint record
         #  */
         logger.info("开始绑定提交阶段句柄证据...")
 
         # // 1.1 校验初始 receipt 来源与 adapter context
-        validate_adapter_receipt(
+        validate_transfer_receipt(
             self._receipt,
             self._intent,
             transfer_context=self._transfer_context,
@@ -106,7 +110,7 @@ class _ReceiptTransferHandle:
 
         # // 1.2 生成稳定 evidence_id 并记录 RuntimeSession 入口合约
         if self.evidence_id is None:
-            self.evidence_id = _adapter_handle_evidence_id(self._intent)
+            self.evidence_id = _transfer_handle_evidence_id(self._intent)
         self._record_runtime_entrypoint_binding(phase="submit")
         logger.info("提交阶段句柄证据绑定完成, evidence_id: %s", self.evidence_id)
 
@@ -133,24 +137,24 @@ class _ReceiptTransferHandle:
             (self._receipt,),
             self._client,
             evidence_id=f"{self.evidence_id}-stats",
-            operation="adapter_handle_transfer_stats",
+            operation="transfer_handle_stats",
         )
         self._runtime_entrypoint = dict(trace["runtime_entrypoint"])
 
         # // 4.2 生成并校验 evidence-bound stats 快照
         raw_stats = self._raw_stats
-        adapter_record = self._runtime_entrypoint.get("adapter_evidence_record")
-        if not isinstance(adapter_record, dict):
-            raise ValueError("handle stats missing RuntimeSession adapter evidence")
-        adapter_evidence_id = adapter_record.get("evidence_id")
-        if adapter_evidence_id is None:
-            raise ValueError("handle stats missing adapter evidence_id")
+        transfer_record = self._runtime_entrypoint.get("transfer_evidence_record")
+        if not isinstance(transfer_record, dict):
+            raise ValueError("handle stats missing RuntimeSession transfer evidence")
+        transfer_evidence_id = transfer_record.get("evidence_id")
+        if transfer_evidence_id is None:
+            raise ValueError("handle stats missing transfer evidence_id")
         receipt_contracts = trace.get("receipt_contracts")
         if not isinstance(receipt_contracts, list | tuple):
             raise ValueError("handle stats missing receipt contracts")
         snapshot = {
             "transfer_state": "runtime_session_bound",
-            "adapter_evidence_id": str(adapter_evidence_id),
+            "transfer_evidence_id": str(transfer_evidence_id),
             "bytes": int(raw_stats.bytes),
             "direct_chunks": int(raw_stats.direct_chunks),
             "relay_chunks": int(raw_stats.relay_chunks),
@@ -159,9 +163,9 @@ class _ReceiptTransferHandle:
             "receipt_states": str(trace["receipt_states"]),
             "direct_bytes": int(trace["direct_bytes"]),
             "relay_bytes": int(trace["relay_bytes"]),
-            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_transfer": False,
         }
-        validate_adapter_transfer_stats_snapshot(snapshot)
+        validate_transfer_stats_snapshot(snapshot)
         logger.info(
             "RuntimeSession 绑定 handle stats 读取完成, receipt_id: %s",
             self._receipt.receipt_id,
@@ -199,7 +203,7 @@ class _ReceiptTransferHandle:
             raise TypeError("wait_transfer_receipt must return a TransferReceipt")
 
         # // 2.3 校验 receipt 并刷新 RuntimeSession 入口合约
-        validate_adapter_receipt(
+        validate_transfer_receipt(
             self._receipt,
             self._intent,
             transfer_context=self._transfer_context,
@@ -226,7 +230,7 @@ class _ReceiptTransferHandle:
         logger.info("开始写入 RuntimeSession 入口绑定...")
 
         # // 3.1 构造 adapter handle 操作名
-        operation = _adapter_handle_operation(self._intent, phase=phase)
+        operation = _transfer_handle_operation(self._intent, phase=phase)
 
         # // 3.2 记录并缓存 RuntimeSession entrypoint contract
         self._runtime_entrypoint = _runtime_entrypoint_contract(
@@ -238,11 +242,11 @@ class _ReceiptTransferHandle:
         logger.info("RuntimeSession 入口绑定写入完成, evidence_id: %s", self.evidence_id)
 
 
-def validate_adapter_receipt(
+def validate_transfer_receipt(
     receipt: TransferReceipt,
     intent: TransferIntent,
     *,
-    transfer_context: AdapterTransferContext | None = None,
+    transfer_context: TransferContext | None = None,
 ) -> None:
     if receipt.intent_id != intent.intent_id:
         raise ValueError("receipt intent_id does not match transfer intent")
@@ -252,9 +256,9 @@ def validate_adapter_receipt(
         raise ValueError("receipt session_id does not match transfer intent")
     if transfer_context is not None:
         if receipt.job_id != transfer_context.job_id:
-            raise ValueError("receipt job_id does not match adapter context")
+            raise ValueError("receipt job_id does not match transfer context")
         if receipt.session_id != transfer_context.session_id:
-            raise ValueError("receipt session_id does not match adapter context")
+            raise ValueError("receipt session_id does not match transfer context")
     validate_runtime_receipt(
         receipt,
         intent_id=intent.intent_id,
@@ -263,17 +267,18 @@ def validate_adapter_receipt(
     )
 
 
-def _adapter_handle_evidence_id(intent: TransferIntent) -> str:
-    return f"adapter-handle-{intent.intent_id}"
+def _transfer_handle_evidence_id(intent: TransferIntent) -> str:
+    return f"transfer-handle-{intent.intent_id}"
 
 
-def _adapter_handle_operation(intent: TransferIntent, *, phase: str) -> str:
+def _transfer_handle_operation(intent: TransferIntent, *, phase: str) -> str:
     metadata = intent.metadata if isinstance(intent.metadata, dict) else {}
     operation = str(metadata.get("operation") or intent.direction)
-    return f"adapter_handle_{operation}_{phase}"
+    return f"transfer_handle_{operation}_{phase}"
 
 
 __all__ = [
     "RuntimeSessionTransferHandle",
-    "validate_adapter_receipt",
+    "validate_transfer_receipt",
 ]
+

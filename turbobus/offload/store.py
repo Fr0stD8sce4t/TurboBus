@@ -1,23 +1,23 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from typing import Iterable, Mapping
 
 from ..runtime.evidence import (
-    validate_adapter_batch_snapshot,
-    validate_adapter_lifecycle_evidence,
-    validate_adapter_transfer_stats_snapshot,
+    validate_transfer_batch_snapshot,
+    validate_transfer_lifecycle_evidence,
+    validate_transfer_stats_snapshot,
 )
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import TransferIntent, TransferReceipt, WorkloadKind
 from .blocks import BlockState, OffloadBlock, OffloadBlockInfo, _OffloadBlock
-from .context import AdapterTransferContext, require_runtime_session_open
+from .context import TransferContext, require_runtime_session_open
 from .handles import (
     RuntimeSessionTransferHandle,
     _ReceiptTransferHandle,
-    validate_adapter_receipt,
+    validate_transfer_receipt,
 )
-from .lifecycle import adapter_lifecycle_evidence_from_handles
+from .lifecycle import transfer_lifecycle_evidence_from_handles
 from .stats import TransferStats, TransferStatsSnapshot, summarize_transfer_handles
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,27 @@ class OffloadBatch:
 
     def __repr__(self) -> str:
         return f"OffloadBatch(operation={self.operation!r}, names={self.names!r})"
+
+    def __iter__(self):
+        return iter(self._handles)
+
+    def __len__(self) -> int:
+        return len(self._handles)
+
+    def __getitem__(self, index):
+        return self._handles[index]
+
+    @property
+    def wait_calls(self) -> int:
+        unique = []
+        seen = set()
+        for handle in self._handles:
+            key = id(handle)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(handle)
+        return sum(int(getattr(handle, "wait_calls", 0) or 0) for handle in unique)
 
     @property
     def operation(self) -> str:
@@ -65,10 +86,16 @@ class OffloadBatch:
         logger.info("公开 batch handle 视图读取完成, handles: %s", len(handles))
         return handles
 
+    @property
+    def receipt_handles(self) -> tuple[object, ...]:
+        return self._handles
+
     def wait(self) -> None:
         self.store.wait_many(self.names)
 
     def transfer_stats(self) -> TransferStatsSnapshot:
+        if not self._handles:
+            return TransferStatsSnapshot(TransferStats().as_dict())
         return self.store.transfer_stats_snapshot(self.names)
 
     def block_infos(self) -> list[OffloadBlockInfo]:
@@ -96,9 +123,10 @@ class OffloadBatch:
                 "names": list(self.names),
                 "transfer_state": "empty",
                 "blocks": block_snapshots,
-                "route_policy_visible_to_adapter": False,
+                "transfer_stats": TransferStats().as_dict(),
+                "route_policy_visible_to_transfer": False,
             }
-            validate_adapter_batch_snapshot(snapshot)
+            validate_transfer_batch_snapshot(snapshot)
             logger.info("RuntimeSession 绑定 batch 快照生成完成, receipts: %s", 0)
             return snapshot
 
@@ -108,13 +136,18 @@ class OffloadBatch:
             names=self.names,
             handles=self._handles,
         )
-        snapshot = _public_adapter_evidence_snapshot(
+        snapshot = _public_transfer_evidence_snapshot(
             evidence,
             operation=self.operation,
             names=list(self.names),
             blocks=block_snapshots,
+            transfer_stats={
+                "bytes": int(evidence.get("bytes", 0) or 0),
+                "direct_chunks": int(evidence.get("direct_chunks", 0) or 0),
+                "relay_chunks": int(evidence.get("relay_chunks", 0) or 0),
+            },
         )
-        validate_adapter_batch_snapshot(snapshot)
+        validate_transfer_batch_snapshot(snapshot)
         logger.info(
             "RuntimeSession 绑定 batch 快照生成完成, receipts: %s",
             snapshot["receipt_count"],
@@ -128,15 +161,33 @@ class OffloadStore:
     def __init__(
         self,
         client: TurboBusRuntimeSession,
-        transfer_context: AdapterTransferContext,
+        transfer_context: TransferContext,
     ) -> None:
-        if not isinstance(transfer_context, AdapterTransferContext):
-            raise TypeError("transfer_context must be an AdapterTransferContext")
+        if not isinstance(transfer_context, TransferContext):
+            raise TypeError("transfer_context must be a TransferContext")
         _require_runtime_session_client(client, transfer_context)
         self.client = client
         self.transfer_context = transfer_context
         self._blocks: dict[str, _OffloadBlock] = {}
+        self._block_views: dict[str, OffloadBlock] = {}
         self._intent_counter = 0
+        recorder = getattr(client, "record_transfer_context", None)
+        if callable(recorder):
+            recorder(
+                context_id=(
+                    f"offload-store-{transfer_context.session_id}-"
+                    f"{transfer_context.intent_prefix}-"
+                    f"{transfer_context.cpu_buffer_id}-"
+                    f"{transfer_context.gpu_buffer_id}"
+                ),
+                workload_kind=str(transfer_context.workload_kind.value),
+                cpu_buffer_id=transfer_context.cpu_buffer_id,
+                gpu_buffer_id=transfer_context.gpu_buffer_id,
+                intent_prefix=transfer_context.intent_prefix,
+                priority=transfer_context.priority,
+                policy_hints=transfer_context.policy_hints,
+                metadata=transfer_context.metadata,
+            )
 
     def add(
         self,
@@ -167,16 +218,25 @@ class OffloadStore:
             byte_count=int(byte_count) if byte_count is not None else None,
         )
         self._blocks[name] = block
-        return OffloadBlock(block)
+        view = OffloadBlock(block)
+        self._block_views[name] = view
+        return view
+
+    def add_block(self, name: str, cpu_tensor, gpu_tensor, **kwargs) -> OffloadBlock:
+        return self.add(name, cpu_tensor, gpu_tensor, **kwargs)
 
     def remove(self, name: str) -> OffloadBlock:
-        return OffloadBlock(self._blocks.pop(name))
+        self._blocks.pop(name)
+        return self._block_views.pop(name)
 
     def block(self, name: str) -> OffloadBlock:
         try:
-            return OffloadBlock(self._blocks[name])
+            return self._block_views[name]
         except KeyError as exc:
             raise KeyError(f"unknown offload block: {name}") from exc
+
+    def get_block(self, name: str) -> OffloadBlock:
+        return self.block(name)
 
     def names(self) -> list[str]:
         return list(self._blocks)
@@ -215,7 +275,7 @@ class OffloadStore:
         return self._submit_many(names, "evict")
 
     def _submit_many(self, names: Iterable[str], operation: str) -> OffloadBatch:
-        blocks = [self.block(name) for name in names]
+        blocks = [self._blocks[str(name)] for name in names]
         if not blocks:
             return OffloadBatch(operation, (), (), self)
         if self._can_use_range_batch(blocks):
@@ -294,7 +354,7 @@ class OffloadStore:
         selected_names = tuple(str(name) for name in names)
         handles = tuple(self._handles_for_names(selected_names))
         if not selected_names or not handles:
-            raise RuntimeError("adapter transfer stats require RuntimeSession receipts")
+            raise RuntimeError("transfer stats require RuntimeSession receipts")
 
         # // 3.2 生成 RuntimeSession-bound lifecycle evidence
         evidence = self.batch_lifecycle_evidence(
@@ -302,14 +362,14 @@ class OffloadStore:
             names=selected_names,
             handles=handles,
         )
-        snapshot = _public_adapter_evidence_snapshot(
+        snapshot = _public_transfer_evidence_snapshot(
             evidence,
             names=list(selected_names),
             bytes=int(evidence.get("bytes", 0) or 0),
             direct_chunks=int(evidence.get("direct_chunks", 0) or 0),
             relay_chunks=int(evidence.get("relay_chunks", 0) or 0),
         )
-        validate_adapter_transfer_stats_snapshot(snapshot)
+        validate_transfer_stats_snapshot(snapshot)
         logger.info(
             "RuntimeSession 绑定 transfer stats 快照生成完成, receipts: %s",
             snapshot["receipt_count"],
@@ -346,7 +406,7 @@ class OffloadStore:
         selected_handles = tuple(handles)
 
         # // 2.2 基于真实 receipt 生成 RuntimeSession-bound evidence
-        evidence = adapter_lifecycle_evidence_from_handles(
+        evidence = transfer_lifecycle_evidence_from_handles(
             evidence_id=(
                 f"offload-batch-{self.transfer_context.session_id}-"
                 f"{self.transfer_context.intent_prefix}-{operation}-"
@@ -361,15 +421,15 @@ class OffloadStore:
             transfer_stats=self._raw_transfer_stats_many(selected_names).as_dict(),
             runtime_session=self.client,
             extra={
-                "adapter": "offload_store_batch",
-                "adapter_submit_source": "TurboBusRuntimeSession",
-                "adapter_handle_source": "RuntimeSessionTransferHandle",
+                "transfer_source": "offload_store_batch",
+                "transfer_submit_source": "TurboBusRuntimeSession",
+                "transfer_handle_source": "RuntimeSessionTransferHandle",
                 "batch_snapshot_source": "OffloadBatch.as_dict",
             },
         )
 
         # // 2.3 用 runtime/evidence 严格校验 RuntimeSession adapter record
-        validate_adapter_lifecycle_evidence(evidence)
+        validate_transfer_lifecycle_evidence(evidence)
         logger.info(
             "batch lifecycle evidence 绑定完成, evidence_id: %s",
             evidence["evidence_id"],
@@ -518,7 +578,7 @@ class OffloadStore:
         receipt = self.client.submit_transfer_intent(intent, wait=False)
         if not isinstance(receipt, TransferReceipt):
             raise TypeError("submit_transfer_intent must return a TransferReceipt")
-        validate_adapter_receipt(
+        validate_transfer_receipt(
             receipt,
             intent,
             transfer_context=self.transfer_context,
@@ -562,7 +622,7 @@ def _direction_for_operation(operation: str) -> str:
 
 def _require_runtime_session_client(
     client: TurboBusRuntimeSession,
-    transfer_context: AdapterTransferContext,
+    transfer_context: TransferContext,
 ) -> None:
     require_runtime_session_open(client)
     if str(client.job_id) != transfer_context.job_id:
@@ -581,7 +641,7 @@ def _require_runtime_session_client(
         )
 
 
-def _public_adapter_evidence_snapshot(
+def _public_transfer_evidence_snapshot(
     evidence: Mapping[str, object],
     **payload: object,
 ) -> dict[str, object]:
@@ -596,16 +656,16 @@ def _public_adapter_evidence_snapshot(
     #  */
     logger.info("开始构建公开 RuntimeSession evidence 快照...")
 
-    # // 1.1 读取 RuntimeSession 持有的 adapter evidence id
+    # // 1.1 读取 RuntimeSession 持有的 transfer evidence id
     runtime_entrypoint = evidence.get("runtime_entrypoint")
     if not isinstance(runtime_entrypoint, Mapping):
-        raise ValueError("public adapter snapshot missing RuntimeSession entrypoint")
-    adapter_record = runtime_entrypoint.get("adapter_evidence_record")
-    if not isinstance(adapter_record, Mapping):
-        raise ValueError("public adapter snapshot missing adapter evidence record")
-    evidence_id = adapter_record.get("evidence_id")
+        raise ValueError("public transfer snapshot missing RuntimeSession entrypoint")
+    transfer_record = runtime_entrypoint.get("transfer_evidence_record")
+    if not isinstance(transfer_record, Mapping):
+        raise ValueError("public transfer snapshot missing transfer evidence record")
+    evidence_id = transfer_record.get("evidence_id")
     if evidence_id is None:
-        raise ValueError("public adapter snapshot missing adapter evidence_id")
+        raise ValueError("public transfer snapshot missing transfer evidence_id")
 
     # // 1.2 统计内部 receipt contracts，不公开 contract 明细
     receipt_contracts = evidence.get("receipt_contracts")
@@ -615,13 +675,13 @@ def _public_adapter_evidence_snapshot(
     # // 1.3 只发布 RuntimeSession 绑定后的标量 evidence
     snapshot = {
         "transfer_state": "runtime_session_bound",
-        "adapter_evidence_id": str(evidence_id),
+        "transfer_evidence_id": str(evidence_id),
         "receipt_count": int(evidence.get("receipt_count", 0) or 0),
         "receipt_contract_count": len(receipt_contracts),
         "receipt_states": str(evidence.get("receipt_states", "")),
         "direct_bytes": int(evidence.get("direct_bytes", 0) or 0),
         "relay_bytes": int(evidence.get("relay_bytes", 0) or 0),
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
         **payload,
     }
     logger.info(
@@ -658,3 +718,4 @@ __all__ = [
     "OffloadBatch",
     "OffloadStore",
 ]
+

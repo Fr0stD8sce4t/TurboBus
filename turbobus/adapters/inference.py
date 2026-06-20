@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 from ..offload.blocks import BlockState, OffloadBlock, OffloadBlockInfo
-from ..offload.context import AdapterTransferContext
+from ..offload.context import TransferContext
 from ..offload.stats import TransferStatsSnapshot
 from ..offload.store import OffloadBatch, OffloadStore
 from ..schema import WorkloadKind
@@ -23,7 +23,7 @@ class InferenceKVSlot:
     gpu_slot: object | None = None
 
 
-class InferenceKVSlotAdapter(OffloadStore):
+class InferenceKVSlotBinding(OffloadStore):
     """Register framework KV slots and restore/save them through TurboBus."""
 
     def __init__(
@@ -38,7 +38,7 @@ class InferenceKVSlotAdapter(OffloadStore):
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ) -> None:
-        transfer_context = runtime_session.make_adapter_transfer_context(
+        transfer_context = runtime_session.make_transfer_context(
             cpu_backing,
             gpu_kv_backing,
             workload_kind=workload_kind,
@@ -47,9 +47,9 @@ class InferenceKVSlotAdapter(OffloadStore):
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
-        if not isinstance(transfer_context, AdapterTransferContext):
+        if not isinstance(transfer_context, TransferContext):
             raise TypeError(
-                "runtime session adapter context factory must return an AdapterTransferContext"
+                "runtime session transfer context factory must return a TransferContext"
             )
         self._init_from_transfer_context(
             runtime_session,
@@ -62,10 +62,10 @@ class InferenceKVSlotAdapter(OffloadStore):
     def _from_transfer_context(
         cls,
         client,
-        transfer_context: AdapterTransferContext,
+        transfer_context: TransferContext,
         cpu_backing,
         gpu_kv_backing,
-    ) -> "InferenceKVSlotAdapter":
+    ) -> "InferenceKVSlotBinding":
         instance = cls.__new__(cls)
         instance._init_from_transfer_context(
             client,
@@ -78,7 +78,7 @@ class InferenceKVSlotAdapter(OffloadStore):
     def _init_from_transfer_context(
         self,
         client,
-        transfer_context: AdapterTransferContext,
+        transfer_context: TransferContext,
         cpu_backing,
         gpu_kv_backing,
     ) -> None:
@@ -224,6 +224,7 @@ def make_contiguous_kv_slots(
 
 __all__ = [
     "InferenceKVSlot",
-    "InferenceKVSlotAdapter",
+    "InferenceKVSlotBinding",
     "make_contiguous_kv_slots",
 ]
+

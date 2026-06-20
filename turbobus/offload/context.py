@@ -10,7 +10,7 @@ from ..schema import WorkloadKind
 
 
 @dataclass(frozen=True)
-class AdapterTransferContext:
+class TransferContext:
     job_id: str
     session_id: str
     cpu_buffer_id: str
@@ -49,7 +49,7 @@ class AdapterTransferContext:
             validate_policy_hints_no_physical(self.policy_hints),
         )
         object.__setattr__(self, "metadata", dict(self.metadata))
-        prefix = self.intent_prefix or f"adapter-{uuid.uuid4()}"
+        prefix = self.intent_prefix or f"transfer-{uuid.uuid4()}"
         object.__setattr__(
             self,
             "intent_prefix",
@@ -63,7 +63,7 @@ class AdapterTransferContext:
 
 def require_runtime_session_open(runtime_session) -> None:
     if not isinstance(runtime_session, TurboBusRuntimeSession):
-        raise TypeError("offload adapters require a TurboBusRuntimeSession")
+        raise TypeError("offload transfers require a TurboBusRuntimeSession")
     if bool(getattr(runtime_session, "closed", False)):
         raise RuntimeError("runtime session is closed")
 
@@ -122,7 +122,7 @@ def _require_non_empty(value: object, field_name: str) -> str:
 
 
 __all__ = [
-    "AdapterTransferContext",
+    "TransferContext",
     "forbidden_physical_policy_keys",
     "require_runtime_session_open",
     "validate_policy_hints_no_physical",

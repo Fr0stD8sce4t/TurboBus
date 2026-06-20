@@ -23,6 +23,7 @@ from daemon_support import (
     receipt_to_trace,
     receipt_trace_line_from_trace,
 )
+from state_offload_common import RuntimeBenchmarkState
 from turbobus.runtime.evidence import validate_runtime_receipts
 from turbobus.schema import TransferReceipt, WorkloadKind
 
@@ -56,13 +57,13 @@ def run_benchmark(
     *,
     session_factory=None,
     buffer_factory=None,
-    loader_factory=None,
+    core_factory=None,
 ) -> dict:
     with runtime_context(
         args,
         session_factory=session_factory,
         buffer_factory=buffer_factory,
-        loader_factory=loader_factory,
+        core_factory=core_factory,
     ) as runtime:
         warmup_samples = run_warmup(runtime, args)
         samples = [
@@ -85,16 +86,16 @@ def run_warmup(runtime, args) -> list[dict]:
 
 
 def run_load_iteration(runtime, args, *, iteration: int, phase: str) -> dict:
-    loader = runtime.loader
+    core = runtime.core
     names = bucket_names(args, iteration=iteration)
     trace_event("model_load_batch_start", phase=phase, iteration=iteration, buckets=len(names))
     start = time.perf_counter()
-    batch = loader.load_batch(names)
+    batch = core.submit_prefetch_states(names, operation="load_batch")
     trace_event("model_load_batch_submitted", phase=phase, iteration=iteration)
     batch.wait()
     trace_event("model_load_batch_waited", phase=phase, iteration=iteration)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
-    receipt = first_receipt(batch.handles)
+    receipt = first_receipt(batch)
     trace = receipt_to_trace(receipt)
     gib_per_second = (
         (int(trace["bytes_total"]) / (1024**3)) / (elapsed_ms / 1000.0)
@@ -124,12 +125,17 @@ def run_load_iteration(runtime, args, *, iteration: int, phase: str) -> dict:
 def first_receipt(handles) -> TransferReceipt:
     unique = []
     seen = set()
-    for handle in handles:
+    source_handles = getattr(handles, "receipt_handles", None)
+    if source_handles is None:
+        source_handles = getattr(handles, "handles", handles)
+    for handle in source_handles:
         key = id(handle)
         if key in seen:
             continue
         seen.add(key)
         receipt = getattr(handle, "receipt", None)
+        if receipt is None:
+            receipt = getattr(handle, "_receipt", None)
         if isinstance(receipt, TransferReceipt):
             unique.append(receipt)
     if len(unique) != 1:
@@ -269,7 +275,7 @@ def config_dict(args) -> dict[str, object]:
 
 
 @contextlib.contextmanager
-def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_factory=None):
+def runtime_context(args, *, session_factory=None, buffer_factory=None, core_factory=None):
     if session_factory is None:
         session_factory = ProductionRuntimeSessionFactory()
     if buffer_factory is None:
@@ -292,16 +298,16 @@ def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_f
             trace_event("runtime_context_register_cpu_done")
             args.source_buffer_id = buffers.cpu_buffer.buffer_id
             args.destination_buffer_id = buffers.gpu_buffer.buffer_id
-            trace_event("runtime_context_make_loader_start")
-            if loader_factory is None:
-                loader = make_loader(args, session, buffers)
+            trace_event("runtime_context_make_core_start")
+            if core_factory is None:
+                core = make_core(args, session, buffers)
             else:
-                loader = loader_factory(args, session, buffers)
-            trace_event("runtime_context_make_loader_done")
+                core = core_factory(args, session, buffers)
+            trace_event("runtime_context_make_core_done")
             yield RuntimeBenchmarkState(
                 session=session,
                 buffers=buffers,
-                loader=loader,
+                core=core,
             )
         finally:
             trace_event("runtime_context_release_buffers_start")
@@ -309,18 +315,20 @@ def runtime_context(args, *, session_factory=None, buffer_factory=None, loader_f
             trace_event("runtime_context_release_buffers_done")
 
 
-def make_loader(args, session, buffers):
-    from turbobus.adapters.model_loading import ModelWeightLoader
+def make_core(args, session, buffers):
+    from turbobus.schema import WorkloadKind
+    from turbobus.state_offload import PackedStateRegistry, model_weight_state_spec
 
     policy_hints = {
         "chunk_bytes": int(args.chunk_bytes),
         "transfer_mode": benchmark_transfer_mode(args),
         "skip_verification": not bool(args.verify),
     }
-    loader = ModelWeightLoader(
-        session,
+    core = session.make_state_offload(
+        model_weight_state_spec(),
         buffers.cpu_buffer,
         buffers.gpu_buffer,
+        workload_kind=WorkloadKind.MODEL_WEIGHTS,
         policy_hints=policy_hints,
         metadata={
             "benchmark": "model-loading",
@@ -337,19 +345,16 @@ def make_loader(args, session, buffers):
         intent_prefix=f"model-load-{args.run_id}",
         wait_timeout_seconds=args.wait_timeout_seconds,
     )
-    loader.add_packed_buckets(
-        "bucket-",
-        bucket_bytes=int(args.bucket_bytes),
-        bucket_count=int(args.bucket_count),
+    core.register_registry(
+        PackedStateRegistry(
+            prefix="bucket-",
+            cpu_tensor=buffers.cpu_buffer,
+            gpu_tensor=buffers.gpu_buffer,
+            bucket_bytes=int(args.bucket_bytes),
+            bucket_count=int(args.bucket_count),
+        )
     )
-    return loader
-
-
-class RuntimeBenchmarkState:
-    def __init__(self, *, session, buffers, loader) -> None:
-        self.session = session
-        self.buffers = buffers
-        self.loader = loader
+    return core
 
 
 class RuntimeBuffers:

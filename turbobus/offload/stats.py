@@ -27,6 +27,17 @@ class TransferStats:
 class TransferStatsSnapshot:
     payload: Mapping[str, object]
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, TransferStats):
+            return (
+                self.bytes == other.bytes
+                and self.direct_chunks == other.direct_chunks
+                and self.relay_chunks == other.relay_chunks
+            )
+        if isinstance(other, TransferStatsSnapshot):
+            return self.as_dict() == other.as_dict()
+        return NotImplemented
+
     @property
     def bytes(self) -> int:
         return int(self.payload.get("bytes", 0) or 0)

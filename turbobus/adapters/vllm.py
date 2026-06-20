@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
@@ -8,10 +8,10 @@ from typing import Iterable, Mapping
 from ..client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
 from ..offload.context import forbidden_physical_policy_keys
 from ..offload.stats import TransferStats, TransferStatsSnapshot
-from ..runtime.evidence import validate_adapter_transfer_stats_collection
+from ..runtime.evidence import validate_transfer_stats_collection
 from ..runtime_session import TurboBusRuntimeSession
 from ..schema import WorkloadKind
-from .inference import InferenceKVSlot, InferenceKVSlotAdapter
+from .inference import InferenceKVSlot, InferenceKVSlotBinding
 from ..offload.store import OffloadBatch
 
 logger = logging.getLogger(__name__)
@@ -43,8 +43,8 @@ class VllmKVGroup:
     layer_id: int | None = None
 
 
-class VllmKVSlotAdapter:
-    """vLLM-shaped wrapper around TurboBus inference KV slot adapters."""
+class VllmKVSlotBinding:
+    """vLLM-shaped wrapper around TurboBus inference KV slot bindings."""
 
     def __init__(
         self,
@@ -62,8 +62,8 @@ class VllmKVSlotAdapter:
         self.client = runtime_session
         self.groups: dict[int, VllmKVGroup] = {group.group_id: group for group in groups}
         self.runtime_session = runtime_session
-        self.adapters = {}
-        self.transfer_context: AdapterTransferContext | None = None
+        self.slot_bindings = {}
+        self.transfer_context: TransferContext | None = None
         created_groups: list[dict[str, object]] = []
         try:
             for group in self.groups.values():
@@ -86,7 +86,7 @@ class VllmKVSlotAdapter:
                 created_groups.append(group_resources)
                 cpu_buffer = runtime_session.register_cpu_buffer(cpu_buffer)
                 gpu_buffer = runtime_session.register_cuda_buffer(gpu_buffer)
-                group_context = runtime_session.make_adapter_transfer_context(
+                group_context = runtime_session.make_transfer_context(
                     cpu_buffer,
                     gpu_buffer,
                     workload_kind=workload_kind,
@@ -98,7 +98,7 @@ class VllmKVSlotAdapter:
                     intent_prefix=_group_intent_prefix(intent_prefix, group.group_id),
                     wait_timeout_seconds=wait_timeout_seconds,
                 )
-                adapter = InferenceKVSlotAdapter._from_transfer_context(
+                slot_binding = InferenceKVSlotBinding._from_transfer_context(
                     runtime_session,
                     group_context,
                     cpu_buffer,
@@ -106,20 +106,20 @@ class VllmKVSlotAdapter:
                 )
                 if self.transfer_context is None:
                     self.transfer_context = group_context
-                self.adapters[group.group_id] = adapter
+                self.slot_bindings[group.group_id] = slot_binding
         except Exception:
             _rollback_group_initialization(runtime_session, created_groups)
             raise
         if self.transfer_context is None:
-            raise ValueError("vLLM adapter requires at least one group")
+            raise ValueError("vLLM KV binding requires at least one group")
         self._registered_names: set[str] = set()
         self._request_group_names: dict[str, dict[int, tuple[str, ...]]] = {}
 
     def lifecycle_group_bindings(self) -> list[dict[str, object]]:
         bindings: list[dict[str, object]] = []
         for group_id, group in sorted(self.groups.items()):
-            adapter = self.adapters[group_id]
-            transfer_context = adapter.transfer_context
+            slot_binding = self.slot_bindings[group_id]
+            transfer_context = slot_binding.transfer_context
             bindings.append(
                 {
                     "group_id": int(group_id),
@@ -176,7 +176,7 @@ class VllmKVSlotAdapter:
             )
 
         for group_id, slots in slots_by_group.items():
-            self.adapters[group_id].register_slots(slots)
+            self.slot_bindings[group_id].register_slots(slots)
             for slot in slots:
                 self._registered_names.add(slot.name)
         self._merge_request_group_names(request_group_names)
@@ -240,12 +240,12 @@ class VllmKVSlotAdapter:
             return ()
         removed: list[str] = []
         for group_id, names in sorted(grouped_names.items()):
-            adapter = self.adapters.get(group_id)
-            if adapter is None:
+            slot_binding = self.slot_bindings.get(group_id)
+            if slot_binding is None:
                 continue
             for name in names:
                 try:
-                    adapter.remove(name)
+                    slot_binding.remove(name)
                 except KeyError:
                     pass
                 self._registered_names.discard(name)
@@ -271,7 +271,7 @@ class VllmKVSlotAdapter:
         batches = []
         submit_method = "submit_restore_prefix" if operation == "restore" else "submit_save_prefix"
         for group_id, names in names_by_group.items():
-            submit = getattr(self.adapters[group_id], submit_method)
+            submit = getattr(self.slot_bindings[group_id], submit_method)
             batch = submit(names)
             batches.append(batch)
         return batches
@@ -291,7 +291,7 @@ class VllmKVSlotAdapter:
                     if operation == "restore"
                     else "submit_save_prefix"
                 )
-                submit = getattr(self.adapters[group_id], submit_method)
+                submit = getattr(self.slot_bindings[group_id], submit_method)
                 batch = submit(names)
             else:
                 batch_method = (
@@ -299,7 +299,7 @@ class VllmKVSlotAdapter:
                     if operation == "restore"
                     else "submit_save_batch"
                 )
-                batch = getattr(self.adapters[group_id], batch_method)(names)
+                batch = getattr(self.slot_bindings[group_id], batch_method)(names)
             batches.append(batch)
         return batches
 
@@ -319,7 +319,7 @@ class VllmKVSlotAdapter:
     @staticmethod
     def _run_submitted_batches(batches: Iterable[OffloadBatch]) -> list[OffloadBatch]:
         resolved = list(batches)
-        VllmKVSlotAdapter._wait_batches(resolved)
+        VllmKVSlotBinding._wait_batches(resolved)
         return resolved
 
     @staticmethod
@@ -338,9 +338,9 @@ class VllmKVSlotAdapter:
         #  * ========================================================================
         #  * 步骤1：聚合 RuntimeSession 绑定 vLLM stats 快照
         #  * ========================================================================
-        #  * 数据源：每个 group 的 InferenceKVSlotAdapter transfer stats snapshot
+        #  * 数据源：每个 group 的 InferenceKVSlotBinding transfer stats snapshot
         #  * 操作：
-        #  *   1) 收集每个 group 的 RuntimeSession adapter evidence
+        #  *   1) 收集每个 group 的 RuntimeSession transfer evidence
         #  *   2) 只聚合已绑定 evidence 的统计摘要，不开放 route policy
         #  */
         logger.info("开始聚合 RuntimeSession 绑定 vLLM stats 快照...")
@@ -349,7 +349,7 @@ class VllmKVSlotAdapter:
         group_snapshots: list[dict[str, object]] = []
         total = TransferStats()
         for group_id, names in names_by_group.items():
-            stats = self.adapters[int(group_id)].transfer_stats(tuple(names))
+            stats = self.slot_bindings[int(group_id)].transfer_stats(tuple(names))
             group_snapshot = stats.as_dict()
             group_snapshot["group_id"] = int(group_id)
             group_snapshots.append(group_snapshot)
@@ -358,7 +358,7 @@ class VllmKVSlotAdapter:
         # // 1.2 构造 vLLM 聚合快照
         snapshot = {
             "transfer_state": "runtime_session_bound",
-            "adapter": "vllm_kv_slot_adapter",
+            "binding": "vllm_kv_slot_binding",
             "group_count": len(group_snapshots),
             "groups": group_snapshots,
             "bytes": int(total.bytes),
@@ -374,13 +374,13 @@ class VllmKVSlotAdapter:
             "relay_bytes": sum(
                 int(item.get("relay_bytes", 0) or 0) for item in group_snapshots
             ),
-            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_transfer": False,
         }
         logger.info(
             "RuntimeSession 绑定 vLLM stats 快照聚合完成, receipts: %s",
             snapshot["receipt_count"],
         )
-        validate_adapter_transfer_stats_collection(snapshot)
+        validate_transfer_stats_collection(snapshot)
         return TransferStatsSnapshot(snapshot)
 
     def _register_and_group(
@@ -443,7 +443,7 @@ def _group_metadata(
     invalid_keys = forbidden_physical_policy_keys(metadata)
     if invalid_keys:
         raise ValueError(
-            "vLLM adapter metadata must not choose physical paths: "
+            "vLLM connector metadata must not choose physical paths: "
             + ", ".join(str(key) for key in invalid_keys)
         )
     metadata["group_id"] = int(group_id)
@@ -549,7 +549,7 @@ def _rollback_registered_buffer(
             if not bool(getattr(runtime_session, "closed", False)):
                 runtime_session.cleanup_buffer(
                     buffer_id,
-                    reason="runtime_vllm_adapter_creation_failed",
+                    reason="runtime_vllm_binding_creation_failed",
                     force=True,
                 )
                 return
@@ -598,7 +598,7 @@ def _tensor_nbytes(tensor) -> int:
 
 def _require_runtime_session_open(runtime_session) -> None:
     if not isinstance(runtime_session, TurboBusRuntimeSession):
-        raise TypeError("vLLM adapter requires a TurboBusRuntimeSession")
+        raise TypeError("vLLM KV binding requires a TurboBusRuntimeSession")
     if bool(getattr(runtime_session, "closed", False)):
         raise RuntimeError("runtime session is closed")
 
@@ -745,3 +745,4 @@ def _contiguous_runs(block_ids: list[int]) -> list[tuple[int, list[int]]]:
         current = [block_id]
     runs.append((start_index, current))
     return runs
+

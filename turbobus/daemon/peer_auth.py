@@ -28,6 +28,29 @@ def authenticated_peer_required_response(
     )
 
 
+def peer_uid(peer_identity: PeerIdentity | None) -> str | None:
+    if peer_identity is None or not peer_identity.authenticated:
+        return None
+    if peer_identity.user_id is None:
+        return None
+    return str(peer_identity.user_id)
+
+
+def peer_gid(peer_identity: PeerIdentity | None) -> int | None:
+    if peer_identity is None or not peer_identity.authenticated:
+        return None
+    return None if peer_identity.group_id is None else int(peer_identity.group_id)
+
+
+def require_authenticated_peer(peer_identity: PeerIdentity | None) -> PeerIdentity:
+    if peer_identity is None or not peer_identity.authenticated:
+        reason = "peer identity is unavailable"
+        if peer_identity is not None:
+            reason = peer_identity.unsupported_reason or "peer identity is unauthenticated"
+        raise ValueError(f"authenticated peer credentials are required: {reason}")
+    return peer_identity
+
+
 def bind_job_identity_to_peer(
     *,
     user_id: str | None,
@@ -123,8 +146,11 @@ def peer_identity_from_socket(conn: socket.socket) -> PeerIdentity:
 __all__ = [
     "authenticated_peer_required_response",
     "bind_job_identity_to_peer",
+    "peer_gid",
     "peer_identity_from_socket",
     "peer_identity_same_connection",
+    "peer_uid",
+    "require_authenticated_peer",
     "validate_peer_owner_match",
     "validate_unix_socket_support",
 ]

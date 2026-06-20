@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Iterable
 
 from .server import TurboBusDaemon
+from ..socket_security import UnixSocketSecurityPolicy
 from ..topology import DaemonResourceInventory, TopologyProvider
 from ..topology.cuda_nvml import CudaNvmlTopologyProvider, TopologyDiscoveryError
 
@@ -28,6 +30,13 @@ class DaemonStartupConfig:
     relay_min_direct_ratio: float = 0.0
     session_timeout_seconds: float = 0.0
     profile_max_age_seconds: float = 0.0
+    require_root: bool = False
+    socket_group: str | None = None
+    socket_mode: int | str = 0o600
+    max_sessions_per_uid: int = 16
+    max_jobs_per_uid: int = 64
+    max_buffers_per_uid: int = 4096
+    max_buffer_bytes_per_uid: int = 0
 
     def __post_init__(self) -> None:
         min_relay_count = int(self.min_relay_count)
@@ -39,6 +48,9 @@ class DaemonStartupConfig:
             raise ValueError("min_chunks_for_relay must be non-negative")
         if self.target_gpu is not None and int(self.target_gpu) < 0:
             raise ValueError("target_gpu must be non-negative")
+        socket_mode = _parse_socket_mode(self.socket_mode)
+        if not bool(self.require_root) and os.name == "nt":
+            pass
         object.__setattr__(
             self,
             "topology_provider",
@@ -59,6 +71,23 @@ class DaemonStartupConfig:
         )
         if self.target_gpu is not None:
             object.__setattr__(self, "target_gpu", int(self.target_gpu))
+        object.__setattr__(self, "require_root", bool(self.require_root))
+        object.__setattr__(self, "socket_mode", socket_mode)
+        if self.socket_group is not None:
+            group = str(self.socket_group).strip()
+            if not group:
+                raise ValueError("socket_group must be non-empty")
+            object.__setattr__(self, "socket_group", group)
+        for field_name in (
+            "max_sessions_per_uid",
+            "max_jobs_per_uid",
+            "max_buffers_per_uid",
+            "max_buffer_bytes_per_uid",
+        ):
+            value = int(getattr(self, field_name))
+            if value < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+            object.__setattr__(self, field_name, value)
 
 
 def build_topology_provider(name: str) -> TopologyProvider:
@@ -73,6 +102,7 @@ def create_production_daemon(
     *,
     topology_provider: TopologyProvider | None = None,
 ) -> TurboBusDaemon:
+    _validate_root_policy(config)
     provider = topology_provider or build_topology_provider(config.topology_provider)
     inventory = _snapshot_or_startup_error(provider)
     relays = relay_candidates_for_policy(inventory, config)
@@ -88,6 +118,14 @@ def create_production_daemon(
         relay_min_direct_ratio=config.relay_min_direct_ratio,
         topology_provider=provider,
         require_authenticated_peers=config.require_peer_credentials,
+        socket_security_policy=UnixSocketSecurityPolicy(
+            mode=config.socket_mode,
+            group=config.socket_group,
+        ),
+        max_sessions_per_uid=config.max_sessions_per_uid,
+        max_jobs_per_uid=config.max_jobs_per_uid,
+        max_buffers_per_uid=config.max_buffers_per_uid,
+        max_buffer_bytes_per_uid=config.max_buffer_bytes_per_uid,
     )
 
 
@@ -152,6 +190,25 @@ def _reject_fixture_inventory(inventory: DaemonResourceInventory) -> None:
         raise DaemonStartupError(
             "production daemon startup cannot use synthetic topology fixtures"
         )
+
+
+def _parse_socket_mode(value: int | str) -> int:
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if not raw:
+            raise ValueError("socket_mode must be non-empty")
+        base = 8 if raw.startswith("0o") or raw.startswith("0") else 8
+        return int(raw, base)
+    return int(value)
+
+
+def _validate_root_policy(config: DaemonStartupConfig) -> None:
+    if not bool(config.require_root):
+        return
+    if os.name == "nt" or not hasattr(os, "geteuid"):
+        raise DaemonStartupError("require_root is only supported on POSIX platforms")
+    if os.geteuid() != 0:
+        raise DaemonStartupError("daemon startup requires root privileges")
 
 
 __all__ = [

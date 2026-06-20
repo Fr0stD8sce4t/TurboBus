@@ -16,7 +16,7 @@ from .schema import TransferMode
 @dataclass(frozen=True)
 class PlannerEngineOptions:
     min_chunks_for_relay: int = 2
-    min_pool_bytes: int = 12 * 1024 * 1024
+    min_pool_bytes: int = 0
     relay_min_effective_bw_gbps: float = 0.0
     relay_min_direct_ratio: float = 0.0
 
@@ -210,9 +210,7 @@ class PlannerEngine:
             for index, path in enumerate(paths):
                 weight = max(path_weights[index], 1e-12)
                 score = (assigned_scores[index] + float(chunk.bytes)) / weight
-                if score < best_score or (
-                    math.isclose(score, best_score) and weight > best_weight
-                ):
+                if score < best_score:
                     best_score = score
                     best_weight = weight
                     selected = index
@@ -222,7 +220,7 @@ class PlannerEngine:
         assignments = tuple(
             PlannerPathAssignment(
                 path=path,
-                chunks=_coalesced_path_chunks(path, assignment_chunks[index]),
+                chunks=tuple(assignment_chunks[index]),
             )
             for index, path in enumerate(paths)
             if assignment_chunks[index]
@@ -425,7 +423,41 @@ def _range_fields(range_item) -> tuple[int, int, int]:
     )
 
 
+def plan_transfer_ranges(
+    ranges: Iterable,
+    chunk_bytes: int,
+    profile,
+    mode: TransferMode | str = TransferMode.POOL,
+    *,
+    direction: str = "h2d",
+    options: PlannerEngineOptions | None = None,
+) -> PlannerTransferPlan:
+    # /*
+    #  * ========================================================================
+    #  * 步骤1：规划 range transfer
+    #  * ========================================================================
+    #  * 数据源：调用方给定的 range 列表和 profile
+    #  * 操作：
+    #  *   1) 构造 PlannerEngine
+    #  *   2) 委托 plan_ranges 保持 offsets
+    #  */
+    logger = __import__("logging").getLogger(__name__)
+    logger.info("开始规划 range transfer...")
+
+    # // 1.1 构造 planner 并提交 range 规划
+    plan = PlannerEngine(options).plan_ranges(
+        ranges,
+        chunk_bytes,
+        profile,
+        mode,
+        direction=direction,
+    )
+    logger.info("range transfer 规划完成, bytes: %s", plan.total_bytes)
+    return plan
+
+
 __all__ = [
     "PlannerEngine",
     "PlannerEngineOptions",
+    "plan_transfer_ranges",
 ]

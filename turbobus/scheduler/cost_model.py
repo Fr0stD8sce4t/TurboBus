@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import math
 
 from ..planner_types import PlannerTransferPlan
 from ..schema import TransferMode
@@ -621,10 +622,14 @@ def relay_profile_with_load_feedback(
     )
     adjusted_h2d = float(pcie_pool_adjustment["scheduler_weight_h2d_gbps"])
     adjusted_d2h = float(pcie_pool_adjustment["scheduler_weight_d2h_gbps"])
+    pcie_admission_state = str(
+        pcie_pool_adjustment.get("admission_state", admission_state)
+    )
+    pcie_admission_reason = pcie_pool_adjustment.get("admission_reason")
     path_cost_model = {
         "source": "daemon_scheduler_unified_cost_model",
-        "admission_state": str(admission_state),
-        "admission_reason": admission_reason,
+        "admission_state": pcie_admission_state,
+        "admission_reason": pcie_admission_reason or admission_reason,
         "h2d_cost_score": h2d_score,
         "d2h_cost_score": d2h_score,
         "pcie_bandwidth_pool": pcie_pool_adjustment,
@@ -675,8 +680,8 @@ def relay_profile_with_load_feedback(
             "h2d_pressure_summary": h2d_summary,
             "d2h_pressure_summary": d2h_summary,
             "relay_load": dict(runtime_view.relay_load.get(relay, {})),
-            "admission_state": str(admission_state),
-            "admission_reason": admission_reason,
+            "admission_state": pcie_admission_state,
+            "admission_reason": pcie_admission_reason or admission_reason,
             "workload_kind": runtime_view.workload_kind,
             "priority": int(runtime_view.priority),
             "source": "daemon_scheduler_unified_cost_model",
@@ -834,6 +839,27 @@ def _pcie_pool_adjustment(
         direction="d2h",
         path_kind=path_kind,
     )
+    h2d_confidence = _path_pcie_confidence(
+        target_record=target_record,
+        relay_record=relay_record,
+        path_kind=path_kind,
+    )
+    d2h_confidence = h2d_confidence
+    h2d_adjusted = _adjusted_pcie_weight(
+        float(h2d_weight),
+        h2d_limit,
+        h2d_confidence,
+    )
+    d2h_adjusted = _adjusted_pcie_weight(
+        float(d2h_weight),
+        d2h_limit,
+        d2h_confidence,
+    )
+    relay_saturated = (
+        str(path_kind).lower() == "relay"
+        and relay_record
+        and (h2d_limit <= 0.0 or d2h_limit <= 0.0)
+    )
     return {
         "source": "daemon_pcie_bandwidth_pool_scheduler_weight",
         "available": bool(pool.get("available", False)),
@@ -844,18 +870,13 @@ def _pcie_pool_adjustment(
         "topology_version": pool.get("topology_version"),
         "input_scheduler_weight_h2d_gbps": float(h2d_weight),
         "input_scheduler_weight_d2h_gbps": float(d2h_weight),
-        "scheduler_weight_h2d_gbps": (
-            min(float(h2d_weight), h2d_limit)
-            if h2d_limit > 0.0
-            else float(h2d_weight)
-        ),
-        "scheduler_weight_d2h_gbps": (
-            min(float(d2h_weight), d2h_limit)
-            if d2h_limit > 0.0
-            else float(d2h_weight)
-        ),
+        "scheduler_weight_h2d_gbps": h2d_adjusted,
+        "scheduler_weight_d2h_gbps": d2h_adjusted,
         "available_h2d_gbps": h2d_limit,
         "available_d2h_gbps": d2h_limit,
+        "confidence": min(h2d_confidence, d2h_confidence),
+        "admission_state": "filtered" if relay_saturated else "available",
+        "admission_reason": "pcie_edge_saturated" if relay_saturated else None,
         "target_path": target_record,
         "relay_path": relay_record,
     }
@@ -875,11 +896,15 @@ def _path_pcie_limit(
     )
     candidates = []
     if target_record:
-        candidates.append(float(target_record.get(field_name, 0.0) or 0.0))
+        candidates.append(_pcie_available_value(target_record, field_name))
     if str(path_kind).lower() == "relay" and relay_record:
-        candidates.append(float(relay_record.get(field_name, 0.0) or 0.0))
-    candidates = [value for value in candidates if value > 0.0]
-    return min(candidates) if candidates else 0.0
+        candidates.append(_pcie_available_value(relay_record, field_name))
+    finite_candidates = [
+        max(0.0, value)
+        for value in candidates
+        if math.isfinite(float(value))
+    ]
+    return min(finite_candidates) if finite_candidates else 0.0
 
 
 def _pcie_pool_path_record(
@@ -893,6 +918,53 @@ def _pcie_pool_path_record(
         if isinstance(record, Mapping):
             return dict(record)
     return {}
+
+
+def _path_pcie_confidence(
+    *,
+    target_record: Mapping[str, object],
+    relay_record: Mapping[str, object],
+    path_kind: str,
+) -> float:
+    values = []
+    for record in (target_record, relay_record if str(path_kind).lower() == "relay" else {}):
+        if record:
+            edges = record.get("edge_ids", ()) or ()
+            edge_confidences = []
+            for edge in record.get("edges", ()) or ():
+                if isinstance(edge, Mapping):
+                    edge_confidences.append(float(edge.get("confidence", 0.0) or 0.0))
+            if edge_confidences:
+                values.append(min(edge_confidences))
+            elif edges:
+                values.append(0.0)
+    return min(values) if values else 0.0
+
+
+def _pcie_available_value(
+    record: Mapping[str, object],
+    field_name: str,
+) -> float:
+    if not record:
+        return math.inf
+    if not bool(record.get("load_known", False)):
+        return float(record.get(field_name, 0.0) or 0.0)
+    return float(record.get(field_name, 0.0) or 0.0)
+
+
+def _adjusted_pcie_weight(
+    weight: float,
+    limit: float,
+    confidence: float,
+) -> float:
+    adjusted = float(weight)
+    if float(limit) <= 0.0:
+        adjusted *= 0.05
+    else:
+        adjusted = min(adjusted, float(limit))
+    if float(confidence) < 0.5:
+        adjusted *= 0.85
+    return max(1e-12, adjusted)
 
 
 def bandwidth_after_pressure(bandwidth: float, pressure: float) -> float:

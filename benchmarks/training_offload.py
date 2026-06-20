@@ -22,6 +22,12 @@ from daemon_support import (
     receipt_to_trace,
     receipt_trace_line_from_trace,
 )
+from state_offload_common import (
+    RuntimeBenchmarkState,
+    RuntimeBuffers,
+    allocate_torch_runtime_buffers,
+    make_state_offload_core,
+)
 from turbobus.runtime.evidence import validate_runtime_receipts
 from turbobus.schema import TransferReceipt, WorkloadKind
 
@@ -52,13 +58,13 @@ def run_benchmark(
     *,
     session_factory=None,
     buffer_factory=None,
-    manager_factory=None,
+    core_factory=None,
 ) -> dict:
     with runtime_context(
         args,
         session_factory=session_factory,
         buffer_factory=buffer_factory,
-        manager_factory=manager_factory,
+        core_factory=core_factory,
     ) as runtime:
         warmup_samples = run_warmup(runtime, args)
         samples = [
@@ -83,9 +89,15 @@ def run_warmup(runtime, args) -> list[dict]:
 def run_iteration(runtime, args, *, iteration: int, phase: str) -> dict:
     names = active_bucket_names(args, iteration=iteration)
     start = time.perf_counter()
-    prefetch = run_transfer(runtime.manager.prefetch_batch(names), operation="prefetch")
+    prefetch = run_transfer(
+        runtime.core.submit_prefetch_states(names, operation="prefetch"),
+        operation="prefetch",
+    )
     compute_ms = run_compute_delay(args.compute_delay_ms)
-    offload = run_transfer(runtime.manager.offload_batch(names), operation="offload")
+    offload = run_transfer(
+        runtime.core.submit_offload_states(names, operation="offload"),
+        operation="offload",
+    )
     iteration_ms = (time.perf_counter() - start) * 1000.0
     transfer_ms = prefetch["transfer_ms"] + offload["transfer_ms"]
     return {
@@ -105,7 +117,7 @@ def run_transfer(batch, *, operation: str) -> dict:
     start = time.perf_counter()
     batch.wait()
     elapsed_ms = (time.perf_counter() - start) * 1000.0
-    receipt = first_receipt(batch.handles)
+    receipt = first_receipt(batch)
     trace = receipt_to_trace(receipt)
     return {
         "operation": operation,
@@ -127,12 +139,17 @@ def run_transfer(batch, *, operation: str) -> dict:
 def first_receipt(handles) -> TransferReceipt:
     unique = []
     seen = set()
-    for handle in handles:
+    source_handles = getattr(handles, "receipt_handles", None)
+    if source_handles is None:
+        source_handles = getattr(handles, "handles", handles)
+    for handle in source_handles:
         key = id(handle)
         if key in seen:
             continue
         seen.add(key)
         receipt = getattr(handle, "receipt", None)
+        if receipt is None:
+            receipt = getattr(handle, "_receipt", None)
         if isinstance(receipt, TransferReceipt):
             unique.append(receipt)
     if len(unique) != 1:
@@ -316,7 +333,7 @@ def config_dict(args) -> dict[str, object]:
 
 
 @contextlib.contextmanager
-def runtime_context(args, *, session_factory=None, buffer_factory=None, manager_factory=None):
+def runtime_context(args, *, session_factory=None, buffer_factory=None, core_factory=None):
     if session_factory is None:
         session_factory = ProductionRuntimeSessionFactory()
     if buffer_factory is None:
@@ -329,133 +346,42 @@ def runtime_context(args, *, session_factory=None, buffer_factory=None, manager_
             session.register_cpu_buffer(buffers.cpu_buffer)
             args.cpu_buffer_id = buffers.cpu_buffer.buffer_id
             args.gpu_buffer_id = buffers.gpu_buffer.buffer_id
-            if manager_factory is None:
-                manager = make_manager(args, session, buffers)
+            if core_factory is None:
+                core = make_core(args, session, buffers)
             else:
-                manager = manager_factory(args, session, buffers)
+                core = core_factory(args, session, buffers)
             yield RuntimeBenchmarkState(
                 session=session,
                 buffers=buffers,
-                manager=manager,
+                core=core,
             )
         finally:
             buffers.release()
 
 
-def make_manager(args, session, buffers):
-    from turbobus.adapters.training_offload import TrainingOffloadManager
+def make_core(args, session, buffers):
+    from turbobus.state_offload import training_state_spec
 
-    manager = TrainingOffloadManager(
-        session,
-        buffers.cpu_buffer,
-        buffers.gpu_buffer,
+    return make_state_offload_core(
+        session=session,
+        buffers=buffers,
+        args=args,
+        benchmark_name="training-offload",
+        spec=training_state_spec(),
         workload_kind=workload_kind(args.workload_kind),
-        metadata={
-            "benchmark": "training-offload",
-            "policy": args.policy,
-            "storage_layout": args.storage_layout,
-            "bucket_count": int(args.bucket_count),
-            "active_buckets": active_bucket_count(args),
-            "bucket_bytes": int(args.bucket_bytes),
-            "chunk_bytes": int(args.chunk_bytes),
-        },
-        intent_prefix=f"{args.intent_prefix}-{args.run_id}",
-        wait_timeout_seconds=args.wait_timeout_seconds,
+        active_bucket_count=active_bucket_count,
     )
-    manager.add_packed_buckets(
-        "bucket-",
-        bucket_bytes=int(args.bucket_bytes),
-        bucket_count=int(args.bucket_count),
-    )
-    return manager
-
-
-class RuntimeBenchmarkState:
-    def __init__(self, *, session, buffers, manager) -> None:
-        self.session = session
-        self.buffers = buffers
-        self.manager = manager
-
-
-class RuntimeBuffers:
-    def __init__(self, *, cpu_buffer, gpu_buffer, target_allocation=None) -> None:
-        self.cpu_buffer = cpu_buffer
-        self.gpu_buffer = gpu_buffer
-        self.target_allocation = target_allocation
-
-    def release(self) -> None:
-        target_releaser = getattr(self.target_allocation, "release", None)
-        if callable(target_releaser):
-            target_releaser()
-        releaser = getattr(self.cpu_buffer, "release", None)
-        if callable(releaser):
-            releaser()
-
-
-class NativeCudaDeviceAllocation:
-    def __init__(self, *, ptr: int, size_bytes: int, backend) -> None:
-        self.ptr = int(ptr)
-        self.size_bytes = int(size_bytes)
-        self._backend = backend
-        self._released = False
-
-    def release(self) -> None:
-        if self._released:
-            return
-        self._backend.free_device_memory(self.ptr)
-        self._released = True
 
 
 class TorchRuntimeBufferFactory:
     def allocate(self, args) -> RuntimeBuffers:
-        torch = require_torch()
         byte_count = total_bytes(args)
-        run_id = str(args.run_id).replace("/", "-")
-        cpu_buffer_id = args.cpu_buffer_id or f"training-offload-cpu-{run_id}"
-        gpu_buffer_id = args.gpu_buffer_id or f"training-offload-gpu-{run_id}"
-
-        from turbobus.backends.cuda import default_cuda_backend
-        from turbobus.client import CudaIpcDeviceBuffer, SharedPinnedCpuBuffer
-
-        cpu_buffer = None
-        target_allocation = None
-        try:
-            cpu_buffer = SharedPinnedCpuBuffer.allocate(
-                buffer_id=cpu_buffer_id,
-                job_id=args.job_id,
-                size_bytes=byte_count,
-                name_prefix="turbobus-training-offload",
-            )
-            source = torch.empty(byte_count, dtype=torch.uint8, pin_memory=True)
-            source.random_(0, 256)
-            cpu_buffer.write(source.numpy().tobytes())
-
-            torch.cuda.set_device(int(args.target_gpu))
-            default_cuda_backend.set_device(int(args.target_gpu))
-            target_allocation = NativeCudaDeviceAllocation(
-                ptr=default_cuda_backend.allocate_device_memory(byte_count),
-                size_bytes=byte_count,
-                backend=default_cuda_backend,
-            )
-            gpu_buffer = CudaIpcDeviceBuffer.from_device_pointer(
-                buffer_id=gpu_buffer_id,
-                job_id=args.job_id,
-                device_index=int(args.target_gpu),
-                size_bytes=byte_count,
-                device_ptr=target_allocation.ptr,
-                backend=default_cuda_backend,
-            )
-            return RuntimeBuffers(
-                cpu_buffer=cpu_buffer,
-                gpu_buffer=gpu_buffer,
-                target_allocation=target_allocation,
-            )
-        except Exception:
-            if target_allocation is not None:
-                target_allocation.release()
-            if cpu_buffer is not None:
-                cpu_buffer.release()
-            raise
+        return allocate_torch_runtime_buffers(
+            args=args,
+            byte_count=byte_count,
+            benchmark_name="training-offload",
+            require_torch=require_torch,
+        )
 
 
 class ProductionRuntimeSessionFactory:

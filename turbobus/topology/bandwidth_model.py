@@ -48,7 +48,7 @@ def edge_availability(
     capacity = max(0.0, float(capacity_gbps))
     h2d_used = normalized_load.h2d_used_gbps if normalized_load.known else 0.0
     d2h_used = normalized_load.d2h_used_gbps if normalized_load.known else 0.0
-    return PcieEdgeAvailability(
+    availability = PcieEdgeAvailability(
         edge_id=str(edge_id),
         capacity_gbps=capacity,
         h2d_used_gbps=h2d_used,
@@ -58,6 +58,18 @@ def edge_availability(
         load_known=normalized_load.known,
         source=normalized_load.source,
     )
+    record = availability.as_dict()
+    if isinstance(load, Mapping):
+        for key in ("load_source", "sample_age_ms", "confidence"):
+            if key in load:
+                record[key] = load[key]
+        return _PcieEdgeAvailabilityMapping(record)
+    return availability
+
+
+class _PcieEdgeAvailabilityMapping(dict):
+    def as_dict(self) -> dict[str, object]:
+        return dict(self)
 
 
 def path_available_bandwidth(

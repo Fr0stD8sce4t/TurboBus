@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import os
@@ -72,8 +72,6 @@ from .runtime.session_state import (
 )
 from .runtime.session_records import (
     initialize_runtime_entrypoint_record,
-    record_runtime_adapter_context,
-    record_runtime_adapter_evidence,
     record_runtime_buffer_cleanup,
     record_runtime_buffer_registered,
     record_runtime_close_recovery,
@@ -82,8 +80,16 @@ from .runtime.session_records import (
     record_runtime_receipt_finalized,
     record_runtime_session_close,
     record_runtime_session_open,
+    record_runtime_transfer_context,
+    record_runtime_transfer_evidence,
     record_runtime_transfer_recovery,
     runtime_entrypoint_snapshot,
+)
+from .runtime.services import (
+    RuntimeBufferService,
+    RuntimeEvidenceRecorder,
+    RuntimeStateOffloadFactory,
+    RuntimeTransferService,
 )
 from .runtime_options import RuntimeOptions
 from .schema import (
@@ -218,6 +224,26 @@ class TurboBusRuntimeSession:
         init=False,
         repr=False,
     )
+    _evidence_recorder: RuntimeEvidenceRecorder | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _transfer_service: RuntimeTransferService | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _buffer_service: RuntimeBufferService | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _state_offload_factory: RuntimeStateOffloadFactory | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _closed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -231,6 +257,10 @@ class TurboBusRuntimeSession:
             worker_client_factory=WorkerServiceSocketClient,
         )
         initialize_runtime_entrypoint_record(self)
+        self._evidence_recorder = RuntimeEvidenceRecorder(self)
+        self._transfer_service = RuntimeTransferService(self)
+        self._buffer_service = RuntimeBufferService(self)
+        self._state_offload_factory = RuntimeStateOffloadFactory(self)
 
     @classmethod
     def open(
@@ -530,6 +560,17 @@ class TurboBusRuntimeSession:
         *,
         runtime_owned: bool = False,
     ) -> SharedPinnedCpuBuffer:
+        return self._buffer_service_required().register_cpu_buffer(
+            buffer,
+            runtime_owned=runtime_owned,
+        )
+
+    def _register_cpu_buffer_impl(
+        self,
+        buffer: SharedPinnedCpuBuffer,
+        *,
+        runtime_owned: bool = False,
+    ) -> SharedPinnedCpuBuffer:
         self._require_open()
         if not isinstance(buffer, SharedPinnedCpuBuffer):
             raise TypeError("buffer must be a SharedPinnedCpuBuffer")
@@ -559,6 +600,19 @@ class TurboBusRuntimeSession:
         *,
         name_prefix: str = "turbobus-runtime",
     ) -> SharedPinnedCpuBuffer:
+        return self._buffer_service_required().allocate_cpu_buffer(
+            buffer_id,
+            size_bytes,
+            name_prefix=name_prefix,
+        )
+
+    def _allocate_cpu_buffer_impl(
+        self,
+        buffer_id: str,
+        size_bytes: int,
+        *,
+        name_prefix: str = "turbobus-runtime",
+    ) -> SharedPinnedCpuBuffer:
         self._require_open()
         buffer = SharedPinnedCpuBuffer.allocate(
             buffer_id=str(buffer_id),
@@ -573,6 +627,12 @@ class TurboBusRuntimeSession:
             raise
 
     def register_cuda_buffer(
+        self,
+        buffer: CudaIpcDeviceBuffer,
+    ) -> CudaIpcDeviceBuffer:
+        return self._buffer_service_required().register_cuda_buffer(buffer)
+
+    def _register_cuda_buffer_impl(
         self,
         buffer: CudaIpcDeviceBuffer,
     ) -> CudaIpcDeviceBuffer:
@@ -601,7 +661,22 @@ class TurboBusRuntimeSession:
         self._require_open()
         return runtime_entrypoint_snapshot(self)
 
-    def record_adapter_lifecycle_evidence(
+    def record_transfer_lifecycle_evidence(
+        self,
+        *,
+        evidence_id: str,
+        operation: str,
+        intent_ids: Sequence[str],
+        receipt_ids: Sequence[str],
+    ) -> None:
+        return self._evidence_recorder_required().record_transfer_lifecycle(
+            evidence_id=evidence_id,
+            operation=operation,
+            intent_ids=intent_ids,
+            receipt_ids=receipt_ids,
+        )
+
+    def _record_transfer_lifecycle_evidence_impl(
         self,
         *,
         evidence_id: str,
@@ -611,29 +686,56 @@ class TurboBusRuntimeSession:
     ) -> None:
         # /*
         #  * ========================================================================
-        #  * 步骤1：绑定适配器生命周期证据
+        #  * 步骤1：绑定 transfer 生命周期证据
         #  * ========================================================================
         #  * 目标对象：TurboBusRuntimeSession entrypoint record
         #  * 操作：
-        #  *   1) 接收 adapter lifecycle evidence 的 intent/receipt 标识
+        #  *   1) 接收 transfer lifecycle evidence 的 intent/receipt 标识
         #  *   2) 写入 RuntimeSession 生产入口快照
         #  */
-        logger.info("开始绑定适配器生命周期证据...")
+        logger.info("开始绑定 transfer 生命周期证据...")
 
         # // 1.1 确认 RuntimeSession 仍处于打开状态
         self._require_open()
 
         # // 1.2 写入 RuntimeSession entrypoint record
-        record_runtime_adapter_evidence(
+        record_runtime_transfer_evidence(
             self._runtime_entrypoint_record,
             evidence_id=evidence_id,
             operation=operation,
             intent_ids=tuple(str(intent_id) for intent_id in intent_ids),
             receipt_ids=tuple(str(receipt_id) for receipt_id in receipt_ids),
         )
-        logger.info("适配器生命周期证据绑定完成, evidence_id: %s", evidence_id)
+        logger.info("transfer 生命周期证据绑定完成, evidence_id: %s", evidence_id)
 
-    def record_adapter_transfer_context(
+    def record_transfer_context(
+        self,
+        *,
+        context_id: str,
+        workload_kind: str,
+        cpu_buffer_id: str,
+        gpu_buffer_id: str,
+        intent_prefix: str,
+        priority: int,
+        policy_hints: Mapping[str, object],
+        metadata: Mapping[str, object],
+        state: str = "created",
+        error: str | None = None,
+    ) -> None:
+        return self._evidence_recorder_required().record_transfer_context(
+            context_id=context_id,
+            workload_kind=workload_kind,
+            cpu_buffer_id=cpu_buffer_id,
+            gpu_buffer_id=gpu_buffer_id,
+            intent_prefix=intent_prefix,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            state=state,
+            error=error,
+        )
+
+    def _record_transfer_context_impl(
         self,
         *,
         context_id: str,
@@ -649,20 +751,20 @@ class TurboBusRuntimeSession:
     ) -> None:
         # /*
         #  * ========================================================================
-        #  * 步骤1：绑定适配器构造证据
+        #  * 步骤1：绑定 transfer 构造证据
         #  * ========================================================================
         #  * 目标对象：TurboBusRuntimeSession entrypoint record
         #  * 操作：
-        #  *   1) 接收 AdapterTransferContext 的构造绑定
+        #  *   1) 接收 TransferContext 的构造绑定
         #  *   2) 写入 RuntimeSession 生产入口快照
         #  */
-        logger.info("开始绑定适配器构造证据...")
+        logger.info("开始绑定 transfer 构造证据...")
 
         # // 1.1 确认 RuntimeSession 仍处于打开状态
         self._require_open()
 
         # // 1.2 写入 RuntimeSession entrypoint record
-        record_runtime_adapter_context(
+        record_runtime_transfer_context(
             self._runtime_entrypoint_record,
             context_id=context_id,
             workload_kind=workload_kind,
@@ -675,7 +777,7 @@ class TurboBusRuntimeSession:
             state=state,
             error=error,
         )
-        logger.info("适配器构造证据绑定完成, context_id: %s", context_id)
+        logger.info("transfer 构造证据绑定完成, context_id: %s", context_id)
 
     def fetch_h2d(
         self,
@@ -690,10 +792,9 @@ class TurboBusRuntimeSession:
         policy_hints: Mapping[str, object] | None = None,
         intent_id: str | None = None,
     ) -> TransferReceipt:
-        return self._submit_transfer_intent(
+        return self._transfer_service_required().fetch_h2d(
             source,
             target,
-            direction="h2d",
             ranges=ranges,
             chunk_bytes=chunk_bytes,
             workload_kind=workload_kind,
@@ -716,10 +817,9 @@ class TurboBusRuntimeSession:
         policy_hints: Mapping[str, object] | None = None,
         intent_id: str | None = None,
     ) -> TransferReceipt:
-        return self._submit_transfer_intent(
+        return self._transfer_service_required().offload_d2h(
             source,
             target,
-            direction="d2h",
             ranges=ranges,
             chunk_bytes=chunk_bytes,
             workload_kind=workload_kind,
@@ -736,13 +836,23 @@ class TurboBusRuntimeSession:
         wait: bool = True,
         timeout_seconds: float | None = None,
     ) -> TransferReceipt:
-        return self._submit_runtime_intent(
+        return self._transfer_service_required().submit_intent(
             intent,
             wait=wait,
             timeout_seconds=timeout_seconds,
         )
 
     def wait_transfer_receipt(
+        self,
+        intent_id: str,
+        timeout_seconds: float | None = None,
+    ) -> TransferReceipt:
+        return self._transfer_service_required().wait_receipt(
+            intent_id,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _wait_transfer_receipt_impl(
         self,
         intent_id: str,
         timeout_seconds: float | None = None,
@@ -770,6 +880,17 @@ class TurboBusRuntimeSession:
         )
 
     def recover_transfer_state(
+        self,
+        *,
+        intent_id: str | None = None,
+        transfer_id: str | None = None,
+    ) -> dict[str, object]:
+        return self._transfer_service_required().recover_state(
+            intent_id=intent_id,
+            transfer_id=transfer_id,
+        )
+
+    def _recover_transfer_state_impl(
         self,
         *,
         intent_id: str | None = None,
@@ -1252,7 +1373,30 @@ class TurboBusRuntimeSession:
         )
         return self._submit_runtime_intent(intent)
 
-    def make_adapter_transfer_context(
+    def make_transfer_context(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        return self._state_offload_factory_required().make_transfer_context(
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+
+    def _make_transfer_context_impl(
         self,
         cpu_buffer,
         gpu_buffer,
@@ -1265,7 +1409,7 @@ class TurboBusRuntimeSession:
         wait_timeout_seconds: float | None = None,
     ):
         self._require_open()
-        from .offload.context import AdapterTransferContext
+        from .offload.context import TransferContext
 
         session_was_open = self._session_id is not None
         cpu_buffer_id = str(getattr(cpu_buffer, "buffer_id", ""))
@@ -1286,7 +1430,7 @@ class TurboBusRuntimeSession:
                     getattr(self.runtime_options, "chunk_bytes", 16 * 1024 * 1024)
                 )
             resolved_metadata = runtime_metadata_without_physical_routes(metadata)
-            context = AdapterTransferContext(
+            context = TransferContext(
                 job_id=self.job_id,
                 session_id=session_id,
                 cpu_buffer_id=cpu_buffer.buffer_id,
@@ -1300,8 +1444,8 @@ class TurboBusRuntimeSession:
                 intent_prefix=intent_prefix,
                 wait_timeout_seconds=wait_timeout_seconds,
             )
-            context_id = _adapter_transfer_context_id(context)
-            self.record_adapter_transfer_context(
+            context_id = _transfer_context_id(context)
+            self.record_transfer_context(
                 context_id=context_id,
                 workload_kind=str(context.workload_kind.value),
                 cpu_buffer_id=context.cpu_buffer_id,
@@ -1314,7 +1458,7 @@ class TurboBusRuntimeSession:
             return context
         except Exception as exc:
             if context_id is None:
-                context_id = _adapter_transfer_context_id_from_parts(
+                context_id = _transfer_context_id_from_parts(
                     session_id=session_id or self._session_id or "unopened",
                     cpu_buffer_id=cpu_buffer_id or "unknown-cpu-buffer",
                     gpu_buffer_id=gpu_buffer_id or "unknown-gpu-buffer",
@@ -1322,7 +1466,7 @@ class TurboBusRuntimeSession:
                     workload_kind=workload_kind,
                 )
             try:
-                self.record_adapter_transfer_context(
+                self.record_transfer_context(
                     context_id=context_id,
                     workload_kind=str(WorkloadKind(workload_kind).value),
                     cpu_buffer_id=cpu_buffer_id or "unknown-cpu-buffer",
@@ -1348,11 +1492,11 @@ class TurboBusRuntimeSession:
                 )
             except Exception:
                 pass
-            self._rollback_adapter_transfer_context_buffer(
+            self._rollback_transfer_context_buffer(
                 cpu_buffer_id,
                 was_registered=cpu_buffer_was_registered,
             )
-            self._rollback_adapter_transfer_context_buffer(
+            self._rollback_transfer_context_buffer(
                 gpu_buffer_id,
                 was_registered=gpu_buffer_was_registered,
             )
@@ -1379,9 +1523,32 @@ class TurboBusRuntimeSession:
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ):
+        return self._state_offload_factory_required().make_offload_store(
+            cpu_buffer,
+            gpu_buffer,
+            workload_kind=workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=metadata,
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
+        )
+
+    def _make_offload_store_impl(
+        self,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str = WorkloadKind.GENERIC,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
         from .offload.store import OffloadStore
 
-        context = self.make_adapter_transfer_context(
+        context = self._make_transfer_context_impl(
             cpu_buffer,
             gpu_buffer,
             workload_kind=workload_kind,
@@ -1393,68 +1560,62 @@ class TurboBusRuntimeSession:
         )
         return OffloadStore(self, context)
 
-    def make_training_offload_manager(
+    def make_state_offload(
         self,
+        spec,
         cpu_buffer,
         gpu_buffer,
         *,
-        workload_kind: WorkloadKind | str = WorkloadKind.TRAINING_STATE,
-        priority: int = 0,
-        metadata: Mapping[str, object] | None = None,
-        intent_prefix: str | None = None,
-        wait_timeout_seconds: float | None = None,
-    ):
-        from .adapters.training_offload import TrainingOffloadManager
-
-        context = self.make_adapter_transfer_context(
-            cpu_buffer,
-            gpu_buffer,
-            workload_kind=workload_kind,
-            priority=priority,
-            metadata=metadata,
-            intent_prefix=intent_prefix,
-            wait_timeout_seconds=wait_timeout_seconds,
-        )
-        return TrainingOffloadManager._from_transfer_context(
-            self,
-            context,
-            cpu_buffer,
-            gpu_buffer,
-        )
-
-    def make_model_weight_loader(
-        self,
-        cpu_buffer,
-        gpu_buffer,
-        *,
+        workload_kind: WorkloadKind | str | None = None,
         priority: int = 0,
         policy_hints: Mapping[str, object] | None = None,
         metadata: Mapping[str, object] | None = None,
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
-        manifest=None,
     ):
-        from .adapters.model_loading import ModelWeightLoader
-
-        context = self.make_adapter_transfer_context(
+        return self._state_offload_factory_required().make_state_offload(
+            spec,
             cpu_buffer,
             gpu_buffer,
-            workload_kind=WorkloadKind.MODEL_WEIGHTS,
+            workload_kind=workload_kind,
             priority=priority,
             policy_hints=policy_hints,
             metadata=metadata,
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
-        return ModelWeightLoader._from_transfer_context(
-            self,
-            context,
+
+    def _make_state_offload_impl(
+        self,
+        spec,
+        cpu_buffer,
+        gpu_buffer,
+        *,
+        workload_kind: WorkloadKind | str | None = None,
+        priority: int = 0,
+        policy_hints: Mapping[str, object] | None = None,
+        metadata: Mapping[str, object] | None = None,
+        intent_prefix: str | None = None,
+        wait_timeout_seconds: float | None = None,
+    ):
+        from .state_offload import StateOffloadCore, workload_kind_for_spec
+
+        resolved_workload_kind = (
+            workload_kind_for_spec(spec) if workload_kind is None else workload_kind
+        )
+        context = self._make_transfer_context_impl(
             cpu_buffer,
             gpu_buffer,
-            manifest=manifest,
+            workload_kind=resolved_workload_kind,
+            priority=priority,
+            policy_hints=policy_hints,
+            metadata=spec.validate_metadata(metadata),
+            intent_prefix=intent_prefix,
+            wait_timeout_seconds=wait_timeout_seconds,
         )
+        return StateOffloadCore(self, context, spec)
 
-    def make_inference_kv_slot_adapter(
+    def make_inference_kv_binding(
         self,
         cpu_backing,
         gpu_kv_backing,
@@ -1465,9 +1626,9 @@ class TurboBusRuntimeSession:
         intent_prefix: str | None = None,
         wait_timeout_seconds: float | None = None,
     ):
-        from .adapters.inference import InferenceKVSlotAdapter
+        from .adapters.inference import InferenceKVSlotBinding
 
-        context = self.make_adapter_transfer_context(
+        context = self.make_transfer_context(
             cpu_backing,
             gpu_kv_backing,
             workload_kind=workload_kind,
@@ -1476,14 +1637,14 @@ class TurboBusRuntimeSession:
             intent_prefix=intent_prefix,
             wait_timeout_seconds=wait_timeout_seconds,
         )
-        return InferenceKVSlotAdapter._from_transfer_context(
+        return InferenceKVSlotBinding._from_transfer_context(
             self,
             context,
             cpu_backing,
             gpu_kv_backing,
         )
 
-    def make_vllm_kv_slot_adapter(
+    def make_vllm_kv_binding(
         self,
         groups,
         *,
@@ -1494,9 +1655,9 @@ class TurboBusRuntimeSession:
         wait_timeout_seconds: float | None = None,
         gpu_buffer_id: str = "vllm-kv-gpu",
     ):
-        from .adapters.vllm import VllmKVSlotAdapter
+        from .adapters.vllm import VllmKVSlotBinding
 
-        return VllmKVSlotAdapter(
+        return VllmKVSlotBinding(
             self,
             groups,
             workload_kind=workload_kind,
@@ -1676,6 +1837,19 @@ class TurboBusRuntimeSession:
 
 
     def cleanup_buffer(
+        self,
+        buffer_id: str,
+        *,
+        reason: str = "runtime_buffer_released",
+        force: bool = False,
+    ) -> DaemonResponse:
+        return self._buffer_service_required().cleanup_buffer(
+            buffer_id,
+            reason=reason,
+            force=force,
+        )
+
+    def _cleanup_buffer_impl(
         self,
         buffer_id: str,
         *,
@@ -1922,7 +2096,7 @@ class TurboBusRuntimeSession:
             retention_record["payload"] = dict(response.payload)
         return retention_record
 
-    def _rollback_adapter_transfer_context_buffer(
+    def _rollback_transfer_context_buffer(
         self,
         buffer_id: str,
         *,
@@ -1935,7 +2109,7 @@ class TurboBusRuntimeSession:
             try:
                 self.cleanup_buffer(
                     normalized_id,
-                    reason="runtime_adapter_context_creation_failed",
+                    reason="runtime_transfer_context_creation_failed",
                     force=True,
                 )
                 return
@@ -1951,7 +2125,7 @@ class TurboBusRuntimeSession:
             self._cleanup_local_cpu_buffer(
                 normalized_id,
                 buffer,
-                reason="runtime_adapter_context_creation_failed",
+                reason="runtime_transfer_context_creation_failed",
                 runtime_owned=runtime_owned,
             )
 
@@ -2402,6 +2576,78 @@ class TurboBusRuntimeSession:
             self.recover_transfer_state,
         )
 
+    def _evidence_recorder_required(self) -> RuntimeEvidenceRecorder:
+        # /*
+        #  * ========================================================================
+        #  * 步骤1：获取 runtime evidence recorder
+        #  * ========================================================================
+        #  * 目标对象：TurboBusRuntimeSession 服务组合
+        #  * 操作：
+        #  *   1) 懒加载 RuntimeEvidenceRecorder
+        #  *   2) 返回统一 evidence 写入入口
+        #  */
+        logger.info("开始获取 runtime evidence recorder...")
+
+        # // 1.1 懒加载 evidence recorder
+        if self._evidence_recorder is None:
+            self._evidence_recorder = RuntimeEvidenceRecorder(self)
+        logger.info("runtime evidence recorder 获取完成")
+        return self._evidence_recorder
+
+    def _transfer_service_required(self) -> RuntimeTransferService:
+        # /*
+        #  * ========================================================================
+        #  * 步骤2：获取 runtime transfer service
+        #  * ========================================================================
+        #  * 目标对象：TurboBusRuntimeSession 服务组合
+        #  * 操作：
+        #  *   1) 懒加载 RuntimeTransferService
+        #  *   2) 返回统一 transfer 入口
+        #  */
+        logger.info("开始获取 runtime transfer service...")
+
+        # // 2.1 懒加载 transfer service
+        if self._transfer_service is None:
+            self._transfer_service = RuntimeTransferService(self)
+        logger.info("runtime transfer service 获取完成")
+        return self._transfer_service
+
+    def _buffer_service_required(self) -> RuntimeBufferService:
+        # /*
+        #  * ========================================================================
+        #  * 步骤3：获取 runtime buffer service
+        #  * ========================================================================
+        #  * 目标对象：TurboBusRuntimeSession 服务组合
+        #  * 操作：
+        #  *   1) 懒加载 RuntimeBufferService
+        #  *   2) 返回统一 buffer 入口
+        #  */
+        logger.info("开始获取 runtime buffer service...")
+
+        # // 3.1 懒加载 buffer service
+        if self._buffer_service is None:
+            self._buffer_service = RuntimeBufferService(self)
+        logger.info("runtime buffer service 获取完成")
+        return self._buffer_service
+
+    def _state_offload_factory_required(self) -> RuntimeStateOffloadFactory:
+        # /*
+        #  * ========================================================================
+        #  * 步骤4：获取 state offload factory
+        #  * ========================================================================
+        #  * 目标对象：TurboBusRuntimeSession 服务组合
+        #  * 操作：
+        #  *   1) 懒加载 RuntimeStateOffloadFactory
+        #  *   2) 返回唯一 state offload 构造入口
+        #  */
+        logger.info("开始获取 state offload factory...")
+
+        # // 4.1 懒加载 state offload factory
+        if self._state_offload_factory is None:
+            self._state_offload_factory = RuntimeStateOffloadFactory(self)
+        logger.info("state offload factory 获取完成")
+        return self._state_offload_factory
+
 
 def _daemon_startup_config_with_runtime_planner_options(
     config: DaemonStartupConfig,
@@ -2416,8 +2662,8 @@ def _daemon_startup_config_with_runtime_planner_options(
     )
 
 
-def _adapter_transfer_context_id(context) -> str:
-    return _adapter_transfer_context_id_from_parts(
+def _transfer_context_id(context) -> str:
+    return _transfer_context_id_from_parts(
         session_id=context.session_id,
         cpu_buffer_id=context.cpu_buffer_id,
         gpu_buffer_id=context.gpu_buffer_id,
@@ -2426,7 +2672,7 @@ def _adapter_transfer_context_id(context) -> str:
     )
 
 
-def _adapter_transfer_context_id_from_parts(
+def _transfer_context_id_from_parts(
     *,
     session_id: str,
     cpu_buffer_id: str,
@@ -2436,28 +2682,29 @@ def _adapter_transfer_context_id_from_parts(
 ) -> str:
     # /*
     #  * ========================================================================
-    #  * 步骤1：生成适配器构造证据标识
+    #  * 步骤1：生成 transfer 构造证据标识
     #  * ========================================================================
     #  * 数据源：RuntimeSession session/buffer/context 字段
     #  * 操作：
     #  *   1) 归一化构造上下文关键字段
     #  *   2) 生成稳定的 RuntimeSession entrypoint record key
     #  */
-    logger.info("开始生成适配器构造证据标识...")
+    logger.info("开始生成 transfer 构造证据标识...")
 
     # // 1.1 归一化 workload 与 intent 前缀
     workload = str(getattr(workload_kind, "value", workload_kind))
-    prefix = str(intent_prefix or "adapter")
+    prefix = str(intent_prefix or "transfer")
 
     # // 1.2 生成稳定 context_id
     context_id = (
-        f"adapter-context-{session_id}-{workload}-{prefix}-"
+        f"transfer-context-{session_id}-{workload}-{prefix}-"
         f"{cpu_buffer_id}-{gpu_buffer_id}"
     )
-    logger.info("适配器构造证据标识生成完成, context_id: %s", context_id)
+    logger.info("transfer 构造证据标识生成完成, context_id: %s", context_id)
     return context_id
 
 
 
 
 __all__ = ["ManagedProductionStartupError", "TurboBusRuntimeSession"]
+

@@ -725,6 +725,17 @@ def _relay_candidates_for_profile(
                 pressure_summaries=pressure_summaries,
             )
             load_adjustments.append(relay_adjustment)
+            if str(relay_adjustment.get("admission_state", "")).lower() == "filtered":
+                filtered_relays.append(
+                    {
+                        "relay_device": relay_device,
+                        "reason": str(
+                            relay_adjustment.get("admission_reason")
+                            or "relay path filtered"
+                        ),
+                    }
+                )
+                continue
             available_relays.append(adjusted_profile)
             continue
         if defer_relay_admission:

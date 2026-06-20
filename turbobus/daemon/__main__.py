@@ -28,6 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--relay-min-direct-ratio", type=float, default=0.0)
     parser.add_argument("--session-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--profile-max-age-seconds", type=float, default=0.0)
+    parser.add_argument("--require-root", action="store_true")
+    parser.add_argument("--socket-group", default=None)
+    parser.add_argument("--socket-mode", default="0600")
+    parser.add_argument("--max-sessions-per-uid", type=int, default=16)
+    parser.add_argument("--max-jobs-per-uid", type=int, default=64)
+    parser.add_argument("--max-buffers-per-uid", type=int, default=4096)
+    parser.add_argument("--max-buffer-bytes-per-uid", type=int, default=0)
     parser.add_argument(
         "--socket-path",
         required=True,
@@ -51,6 +58,13 @@ def startup_config_from_args(args) -> DaemonStartupConfig:
         relay_min_direct_ratio=args.relay_min_direct_ratio,
         session_timeout_seconds=args.session_timeout_seconds,
         profile_max_age_seconds=args.profile_max_age_seconds,
+        require_root=args.require_root,
+        socket_group=args.socket_group,
+        socket_mode=args.socket_mode,
+        max_sessions_per_uid=args.max_sessions_per_uid,
+        max_jobs_per_uid=args.max_jobs_per_uid,
+        max_buffers_per_uid=args.max_buffers_per_uid,
+        max_buffer_bytes_per_uid=args.max_buffer_bytes_per_uid,
     )
 
 

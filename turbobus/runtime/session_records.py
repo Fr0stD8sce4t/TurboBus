@@ -25,14 +25,14 @@ def initialize_runtime_entrypoint_record(session) -> None:
         ),
         "plan_source": "daemon_scheduler",
         "route_policy_visible_to_application": False,
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
         "created_at": time.time(),
         "session": {},
         "buffers": {},
         "intents": {},
         "receipts": {},
-        "adapter_contexts": {},
-        "adapter_evidence": {},
+        "transfer_contexts": {},
+        "transfer_evidence": {},
         "close": {},
     }
 
@@ -159,7 +159,7 @@ def record_runtime_receipt_finalized(
     }
 
 
-def record_runtime_adapter_evidence(
+def record_runtime_transfer_evidence(
     record: dict[str, object],
     *,
     evidence_id: str,
@@ -169,24 +169,24 @@ def record_runtime_adapter_evidence(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤1：记录适配器证据边界
+    #  * 步骤1：记录 transfer 生命周期证据边界
     #  * ========================================================================
     #  * 目标对象：runtime entrypoint record
     #  * 操作：
-    #  *   1) 记录 adapter evidence 与 RuntimeSession 的 intent/receipt 对齐关系
-    #  *   2) 只保存可验证快照，不暴露物理路径选择
+    #  *   1) 记录 transfer evidence 与 RuntimeSession 的 intent/receipt 对齐关系
+    #  *   2) 保持 transfer evidence 为唯一 runtime 记录源
     #  */
-    logger.info("开始记录适配器证据边界...")
+    logger.info("开始记录 transfer 生命周期证据边界...")
 
-    # // 1.1 获取 RuntimeSession adapter evidence 记录表
-    adapter_evidence = _entry(record, "adapter_evidence")
+    # // 1.1 获取 RuntimeSession transfer evidence 记录表
+    transfer_evidence = _entry(record, "transfer_evidence")
 
     # // 1.2 归一化 intent 与 receipt 标识
     normalized_intent_ids = [str(intent_id) for intent_id in intent_ids]
     normalized_receipt_ids = [str(receipt_id) for receipt_id in receipt_ids]
 
     # // 1.3 写入可验证的 RuntimeSession 对齐记录
-    adapter_evidence[str(evidence_id)] = {
+    entry = {
         "evidence_id": str(evidence_id),
         "operation": str(operation),
         "intent_ids": normalized_intent_ids,
@@ -198,10 +198,13 @@ def record_runtime_adapter_evidence(
         ),
         "recorded_at": time.time(),
     }
-    logger.info("适配器证据边界记录完成, evidence_id: %s", evidence_id)
+    transfer_evidence[str(evidence_id)] = dict(entry)
+
+    # // 1.4 完成 transfer evidence 记录
+    logger.info("transfer 生命周期证据边界记录完成, evidence_id: %s", evidence_id)
 
 
-def record_runtime_adapter_context(
+def record_runtime_transfer_context(
     record: dict[str, object],
     *,
     context_id: str,
@@ -217,22 +220,22 @@ def record_runtime_adapter_context(
 ) -> None:
     # /*
     #  * ========================================================================
-    #  * 步骤1：记录适配器构造边界
+    #  * 步骤1：记录 transfer 构造证据边界
     #  * ========================================================================
     #  * 目标对象：RuntimeSession entrypoint record
     #  * 操作：
-    #  *   1) 记录 AdapterTransferContext 来源和 buffer 绑定
-    #  *   2) 记录 policy/metadata 已由 RuntimeSession 去物理路径
+    #  *   1) 记录 TransferContext 来源和 buffer 绑定
+    #  *   2) 保持 transfer context 为唯一 runtime 记录源
     #  */
-    logger.info("开始记录适配器构造边界...")
+    logger.info("开始记录 transfer 构造证据边界...")
 
-    # // 1.1 获取 adapter context 记录表
-    adapter_contexts = _entry(record, "adapter_contexts")
+    # // 1.1 获取 transfer context 记录表
+    transfer_contexts = _entry(record, "transfer_contexts")
 
-    # // 1.2 写入 RuntimeSession 构造记录
-    adapter_contexts[str(context_id)] = {
+    # // 1.2 写入 RuntimeSession transfer 构造记录
+    transfer_entry = {
         "context_id": str(context_id),
-        "factory": "TurboBusRuntimeSession.make_adapter_transfer_context",
+        "factory": "TurboBusRuntimeSession.make_transfer_context",
         "state": str(state),
         "workload_kind": str(workload_kind),
         "cpu_buffer_id": str(cpu_buffer_id),
@@ -243,13 +246,16 @@ def record_runtime_adapter_context(
         "metadata": dict(metadata),
         "policy_source": "daemon_scheduler",
         "buffer_registration_source": "TurboBusRuntimeSession",
-        "route_policy_visible_to_adapter": False,
+        "route_policy_visible_to_transfer": False,
         "physical_route_control": False,
         "recorded_at": time.time(),
     }
     if error is not None:
-        adapter_contexts[str(context_id)]["error"] = str(error)
-    logger.info("适配器构造边界记录完成, context_id: %s", context_id)
+        transfer_entry["error"] = str(error)
+    transfer_contexts[str(context_id)] = dict(transfer_entry)
+
+    # // 1.3 完成 transfer context 记录
+    logger.info("transfer 构造证据边界记录完成, context_id: %s", context_id)
 
 
 def record_runtime_buffer_cleanup(
@@ -295,7 +301,7 @@ def record_runtime_session_close(
         {
             "entrypoint": "TurboBusRuntimeSession.close",
             "plan_source": "daemon_scheduler",
-            "route_policy_visible_to_adapter": False,
+            "route_policy_visible_to_transfer": False,
             "route_policy_visible_to_application": False,
             "closed_at": time.time(),
             "ok": bool(response_ok),
@@ -369,7 +375,7 @@ def record_runtime_close_recovery(
     ]
     close_record["recovery_source"] = "TurboBusRuntimeSession.recover_transfer_state"
     close_record["receipt_source"] = "TransferReceipt"
-    close_record["route_policy_visible_to_adapter"] = False
+    close_record["route_policy_visible_to_transfer"] = False
     close_record["recorded_at"] = time.time()
     logger.info("关闭恢复边界记录完成, recovered: %s", len(intent_recovery_evidence))
 
@@ -440,8 +446,8 @@ def _receipt_entries_contain_all(
 
 __all__ = [
     "initialize_runtime_entrypoint_record",
-    "record_runtime_adapter_context",
-    "record_runtime_adapter_evidence",
+    "record_runtime_transfer_context",
+    "record_runtime_transfer_evidence",
     "record_runtime_buffer_cleanup",
     "record_runtime_buffer_registered",
     "record_runtime_close_recovery",

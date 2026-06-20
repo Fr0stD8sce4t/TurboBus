@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Protocol
 
 
-class FrameworkAdapter(Protocol):
-    """Marker protocol for framework-facing TurboBus adapters."""
+class FrameworkBinding(Protocol):
+    """Marker protocol for framework-facing TurboBus bindings."""
 
 
-__all__ = ["FrameworkAdapter"]
+__all__ = ["FrameworkBinding"]

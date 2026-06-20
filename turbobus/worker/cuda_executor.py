@@ -791,7 +791,7 @@ def _worker_runtime_feedback_for_handle(
             else max(0.0, (handle.completed_at - handle.submitted_at) * 1000.0)
         ),
         "target_device": int(handle.target_device),
-        "relay_gpus": handle.relay_gpus,
+        "relay_gpus": list(handle.relay_gpus),
     }
 
 
@@ -1023,7 +1023,7 @@ def _exact_daemon_plan_payload(
                 raise ValueError("daemon plan relay is not authorized by worker ticket")
             plan_path["relay_device"] = relay_gpu
         else:
-            plan_path["relay_device"] = -1
+            continue
         plan_path["enabled"] = True
         chunks = []
         for chunk in assignment.get("chunks", ()) or ():
@@ -1053,7 +1053,7 @@ def _exact_daemon_plan_payload(
         raise ValueError("daemon plan has no authorized executable chunks")
     if tuple(execution_ranges) != request.data_plane.ranges:
         raise ValueError("authorized ranges do not match daemon plan")
-    declared_total_bytes = int(source_plan.get("total_bytes", total_bytes))
+    declared_total_bytes = sum(int(item["bytes"]) for item in request.data_plane.ranges)
     if declared_total_bytes != total_bytes:
         raise ValueError("daemon plan total bytes do not match assigned chunks")
     return {
@@ -1511,7 +1511,7 @@ def _canonical_worker_completion_evidence(
         ),
         "plan_source": "daemon",
         "relay_gpu": request.data_plane.relay_gpu,
-        "relay_gpus": relay_gpus,
+        "relay_gpus": list(relay_gpus),
         "target_device": int(target_device),
         "src_buffer_id": request.data_plane.src_handle.buffer_id,
         "dst_buffer_id": request.data_plane.dst_handle.buffer_id,

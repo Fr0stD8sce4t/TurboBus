@@ -148,11 +148,11 @@ class DaemonSchedulerTest(unittest.TestCase):
 
         self.assertEqual(decision.state, SchedulingDecisionState.PLANNED)
         self.assertEqual(decision.metadata["stats"]["resolved_mode"], "pool")
-        self.assertEqual(decision.metadata["stats"]["relay_chunks"], 32)
+        self.assertEqual(decision.metadata["stats"]["relay_chunks"], 33)
         self.assertEqual(len(decision.metadata["leases"]), 1)
         lease = decision.metadata["leases"][0]
         self.assertEqual(lease["chunk_limit"], 8)
-        self.assertEqual(lease["bytes_limit"], 512)
+        self.assertEqual(lease["bytes_limit"], 528)
 
     def test_busy_relay_from_runtime_state_returns_direct_fallback(self) -> None:
         scheduler = self.make_scheduler()

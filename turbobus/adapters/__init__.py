@@ -1,21 +1,9 @@
-from .base import FrameworkAdapter
-from .inference import InferenceKVSlot, InferenceKVSlotAdapter, make_contiguous_kv_slots
-from .model_loading import (
-    ModelWeightBucket,
-    ModelWeightLoadLifecycle,
-    ModelWeightLoader,
-    ModelWeightManifest,
-    ModelWeightTensor,
-)
-from .training_offload import (
-    TrainingOffloadBucket,
-    TrainingOffloadLifecycle,
-    TrainingOffloadManager,
-)
+from .base import FrameworkBinding
+from .inference import InferenceKVSlot, InferenceKVSlotBinding, make_contiguous_kv_slots
 from .vllm import (
     VllmKVBlockRef,
     VllmKVGroup,
-    VllmKVSlotAdapter,
+    VllmKVSlotBinding,
     block_bytes_from_vllm_kv_tensor,
     make_vllm_block_refs_from_ids,
     make_vllm_layer_block_refs_from_ids,
@@ -37,20 +25,12 @@ from .vllm_kv_connector import (
 )
 
 __all__ = [
-    "FrameworkAdapter",
+    "FrameworkBinding",
     "InferenceKVSlot",
-    "InferenceKVSlotAdapter",
-    "ModelWeightBucket",
-    "ModelWeightLoadLifecycle",
-    "ModelWeightLoader",
-    "ModelWeightManifest",
-    "ModelWeightTensor",
-    "TrainingOffloadBucket",
-    "TrainingOffloadLifecycle",
-    "TrainingOffloadManager",
+    "InferenceKVSlotBinding",
     "VllmKVBlockRef",
     "VllmKVGroup",
-    "VllmKVSlotAdapter",
+    "VllmKVSlotBinding",
     "VllmAllocationEvent",
     "VllmIntegrationState",
     "VllmTurboBusIntegration",

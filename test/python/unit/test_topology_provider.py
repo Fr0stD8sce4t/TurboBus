@@ -117,6 +117,25 @@ class TopologyProviderTest(unittest.TestCase):
         self.assertIsNone(inventory.fabric_links[0].link_count)
         self.assertTrue(inventory.fabric_links[0].enabled)
 
+    def test_cuda_provider_parses_multi_gpu_topology_with_nic_columns(self) -> None:
+        provider = CudaNvmlTopologyProvider(
+            EightGpuFakeCudaProbe(),
+            cache_max_age_seconds=0.0,
+            now=FakeClock(100.0),
+        )
+
+        inventory = provider.snapshot()
+
+        nvlink = next(
+            link
+            for link in inventory.fabric_links
+            if link.src_device_id == 5 and link.dst_device_id == 6
+        )
+        self.assertEqual(nvlink.fabric, "nvlink")
+        self.assertEqual(nvlink.raw_link_type, "NV4")
+        self.assertEqual(nvlink.link_count, 4)
+        self.assertEqual(nvlink.bandwidth_gbps, 100.0)
+
     def test_production_startup_selects_eligible_relays_from_provider_inventory(self) -> None:
         config = DaemonStartupConfig(
             target_gpu=0,
@@ -277,6 +296,38 @@ class PixFakeCudaProbe(FakeCudaProbe):
             "        GPU0    GPU1",
             "GPU0    X       PIX",
             "GPU1    PIX     X",
+        )
+
+
+class EightGpuFakeCudaProbe:
+    def query_gpu_inventory(self):
+        return tuple(
+            {
+                "device_id": device_id,
+                "uuid": f"GPU-{device_id}",
+                "pci_bus_id": f"0000:{device_id + 1:02X}:00.0",
+                "memory_mib": "80",
+                "pcie_link_gen_current": "4",
+                "pcie_link_width_current": "16",
+            }
+            for device_id in range(8)
+        )
+
+    def query_topology_matrix(self):
+        return (
+            "        GPU0    GPU1    GPU2    GPU3    GPU4    GPU5    GPU6    GPU7    NIC0    NIC1  NIC2     NIC3    CPU Affinity    NUMA Affinity   GPU NUMA ID",
+            "GPU0     X      PIX     NODE    NODE    SYS     SYS     SYS     SYS     NODE    NODE  NODE     SYS     0-15,32-47      0               N/A",
+            "GPU1    PIX      X      NODE    NODE    SYS     SYS     SYS     SYS     NODE    NODE  NODE     SYS     0-15,32-47      0               N/A",
+            "GPU2    NODE    NODE     X      PIX     SYS     SYS     SYS     SYS     NODE    NODE  NODE     SYS     0-15,32-47      0               N/A",
+            "GPU3    NODE    NODE    PIX      X      SYS     SYS     SYS     SYS     NODE    NODE  NODE     SYS     0-15,32-47      0               N/A",
+            "GPU4    SYS     SYS     SYS     SYS      X      PIX     NODE    NODE    SYS     SYS   SYS      NODE    16-31,48-63     1               N/A",
+            "GPU5    SYS     SYS     SYS     SYS     PIX      X      NV4     NODE    SYS     SYS   SYS      NODE    16-31,48-63     1               N/A",
+            "GPU6    SYS     SYS     SYS     SYS     NODE    NV4      X      PIX     SYS     SYS   SYS      NODE    16-31,48-63     1               N/A",
+            "GPU7    SYS     SYS     SYS     SYS     NODE    NODE    PIX      X      SYS     SYS   SYS      NODE    16-31,48-63     1               N/A",
+            "NIC0    NODE    NODE    NODE    NODE    SYS     SYS     SYS     SYS      X      NODE  NODE     SYS",
+            "NIC1    NODE    NODE    NODE    NODE    SYS     SYS     SYS     SYS     NODE     X    PIX      SYS",
+            "NIC2    NODE    NODE    NODE    NODE    SYS     SYS   SYS     SYS     NODE    PIX    X       SYS",
+            "NIC3    SYS     SYS     SYS     SYS     NODE    NODE    NODE    NODE    SYS     SYS   SYS       X",
         )
 
 

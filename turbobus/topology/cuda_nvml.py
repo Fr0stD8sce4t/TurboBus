@@ -396,13 +396,15 @@ def _fabric_links_from_topology_matrix(
     gpu_ids = {gpu.device_id for gpu in gpus}
     pcie_by_device = {path.device_id: path for path in pcie_paths}
     rows = [line.split() for line in matrix_lines if str(line).strip()]
-    header = next((row for row in rows if row and row[0].startswith("GPU")), None)
+    header = _topology_matrix_gpu_header(rows, gpu_ids)
     if not header:
         return ()
 
     links: list[FabricLinkRecord] = []
     for row in rows:
         if not row or not row[0].startswith("GPU"):
+            continue
+        if len(row) > 1 and _matrix_gpu_id(row[1]) is not None:
             continue
         src = _matrix_gpu_id(row[0])
         if src is None or src not in gpu_ids:
@@ -440,6 +442,21 @@ def _fabric_links_from_topology_matrix(
                 )
             )
     return tuple(links)
+
+
+def _topology_matrix_gpu_header(
+    rows: Sequence[Sequence[str]],
+    gpu_ids: set[int],
+) -> tuple[str, ...]:
+    for row in rows:
+        header_gpu_ids = tuple(
+            gpu_id
+            for cell in row
+            if (gpu_id := _matrix_gpu_id(cell)) is not None and gpu_id in gpu_ids
+        )
+        if len(header_gpu_ids) >= 2:
+            return tuple(str(cell) for cell in row[: len(header_gpu_ids)])
+    return ()
 
 
 def _matrix_gpu_id(value: str) -> int | None:
